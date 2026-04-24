@@ -200,7 +200,6 @@ type classificationPromptData struct {
 	ProjectID            string
 	ProjectDescription   string
 	RelevantConversation string
-	RecentDecisions      string
 	AuthorName           string
 	ChannelHint          string
 	ThreadContext        string
@@ -285,7 +284,6 @@ func renderClassificationPrompt(input agent.DecisionInput) (string, error) {
 		ProjectID:            input.ProjectID,
 		ProjectDescription:   strings.TrimSpace(input.Context.Project.Description),
 		RelevantConversation: formatConversationMemory(input.Context.ConversationMemory),
-		RecentDecisions:      formatRecentDecisions(input.Context.RecentDecisions),
 		AuthorName:           firstNonEmpty(strings.TrimSpace(event.ActorName), strings.TrimSpace(event.Provenance.Actor), "unknown"),
 		ChannelHint:          classificationChannelHint(event),
 		ThreadContext:        classificationThreadContext(event),

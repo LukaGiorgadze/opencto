@@ -57,6 +57,43 @@ func TestApprovalMessageBuildsReviewFromPlan(t *testing.T) {
 	}
 }
 
+func TestClarificationMessagePrefersUserFacingMessage(t *testing.T) {
+	t.Parallel()
+
+	message := clarificationMessage(&agent.ClarificationRequest{
+		Message:   "I understand you want to scan your computer's local networks for cameras. Which computer should I scan?",
+		Questions: []string{"Which computer should I scan?"},
+		Reason:    "Blocked by: the specific computer is not identified",
+	})
+
+	if strings.Count(message, "Which computer should I scan?") != 1 {
+		t.Fatalf("expected question to appear once, got %q", message)
+	}
+	if strings.Contains(message, "Blocked by:") {
+		t.Fatalf("expected reason to stay internal when message exists, got %q", message)
+	}
+}
+
+func TestClarificationMessageFallsBackToQuestionsThenReason(t *testing.T) {
+	t.Parallel()
+
+	message := clarificationMessage(&agent.ClarificationRequest{
+		Questions: []string{"", "Which environment should I deploy to?"},
+		Reason:    "Blocked by: the deployment target is not specified",
+	})
+
+	if message != "Which environment should I deploy to?" {
+		t.Fatalf("expected question fallback, got %q", message)
+	}
+
+	message = clarificationMessage(&agent.ClarificationRequest{
+		Reason: "Blocked by: the deployment target is not specified",
+	})
+	if message != "Blocked by: the deployment target is not specified" {
+		t.Fatalf("expected reason fallback, got %q", message)
+	}
+}
+
 func TestSelectionSnapshotStripsPromptNoise(t *testing.T) {
 	t.Parallel()
 

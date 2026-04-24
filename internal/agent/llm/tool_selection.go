@@ -21,7 +21,6 @@ type toolSelectionPromptData struct {
 	ProjectDescription   string
 	KnownFacts           string
 	OpenContradictions   string
-	RecentDecisions      string
 	OS                   string
 	Arch                 string
 	Shell                string
@@ -141,7 +140,6 @@ func renderToolSelectionPrompt(input agent.ToolSelectionInput) (string, error) {
 		ProjectDescription:   strings.TrimSpace(input.Context.Project.Description),
 		KnownFacts:           formatKnownFacts(input.Context.ProjectFacts),
 		OpenContradictions:   formatOpenContradictions(input.Context.OpenContradictions),
-		RecentDecisions:      formatRecentDecisions(input.Context.RecentDecisions),
 		OS:                   input.Runtime.OS,
 		Arch:                 input.Runtime.Arch,
 		Shell:                firstNonEmpty(strings.TrimSpace(input.Runtime.Shell), "unknown"),

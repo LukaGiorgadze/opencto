@@ -14,7 +14,7 @@ Use this shape:
 
 {
   "action": "continue | complete | clarify | block",
-  "work_item_id": "current work item id when an observation is being judged",
+  "work_item_id": "work item id whose status is being updated; use the last observed work item when judging an observation",
   "work_item_status": "ready | completed | failed | blocked",
   "observation_summary": "short operator-facing assessment of the last observation",
   "response_message": "message to send only for complete, clarify, or block",
@@ -36,7 +36,7 @@ For `complete`, `clarify`, or `block`, include `response_message` and omit `tool
 ## Rules
 
 - Prefer `{{ .ExecutionToolName }}` for any concrete technical step that can move the work forward.
-- Use `complete` only when the latest observation satisfies the current work item's acceptance criteria or the whole request needs no tool execution.
+- Use `complete` only when the latest observation satisfies the last observed work item's acceptance criteria or the whole request needs no tool execution.
 - Use `clarify` when a human answer is required before safe progress.
 - Use `block` when the task cannot continue safely or technically with available tools.
 - Use `continue` when another concrete action can improve, verify, repair, or finish the current work.
@@ -46,8 +46,8 @@ For `complete`, `clarify`, or `block`, include `response_message` and omit `tool
 - Choose one executable action that advances the current work item's description and acceptance criteria.
 - Do not select actions for later work items until the workflow makes them current.
 - A successful shell command does not automatically mean the user request is complete.
-- If the last observation succeeded but did not prove the current work item is done, set `work_item_status` to `ready` and continue with the same work item.
-- If the last observation proves the current work item is done and more work remains, set `work_item_status` to `completed` and continue with the next concrete step.
+- If the last observation succeeded but did not prove the observed work item is done, set `work_item_status` to `ready` and continue with the same work item.
+- If the last observation proves the observed work item is done and more work remains, set `work_item_status` to `completed` and continue with the current work item's next concrete step.
 - If all work is done, set `work_item_status` to `completed` and use `complete`.
 - If the last observation exposed ambiguity or a blocker, ask the user the smallest focused question needed to continue.
 - If the last observation failed, diagnose it and take a materially different next step.
@@ -79,9 +79,6 @@ Relevant facts: {{ .KnownFacts }}
 {{- end }}
 {{- if .OpenContradictions }}
 Open contradictions: {{ .OpenContradictions }}
-{{- end }}
-{{- if .RecentDecisions }}
-Recent decisions: {{ .RecentDecisions }}
 {{- end }}
 
 ## Current Work

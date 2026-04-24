@@ -51,12 +51,6 @@ func TestBuildToolSelectionMessagesSeparatesConversationRoles(t *testing.T) {
 				CreatedAt: time.Now().UTC(),
 				UpdatedAt: time.Now().UTC(),
 			}},
-			RecentDecisions: []domain.ADR{{
-				ID:        "adr-1",
-				Title:     "Use Temporal",
-				Summary:   "Temporal coordinates long-running work.",
-				CreatedAt: time.Now().UTC(),
-			}},
 		},
 		Classification: agent.Classification{
 			Intent:   agent.ClassificationIntentActionRequest,
@@ -162,6 +156,7 @@ func TestBuildToolSelectionMessagesSeparatesConversationRoles(t *testing.T) {
 		"Inbound request: deploy the app",
 		"Work item: wi-1",
 		"Observation: staging target not found",
+		"Recent decisions:",
 	} {
 		if strings.Contains(prompt, removed) {
 			t.Fatalf("system prompt should not include conversation message %q\n%s", removed, prompt)

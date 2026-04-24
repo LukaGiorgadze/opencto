@@ -208,6 +208,7 @@ func executeDecision(ctx workflow.Context, event domain.Event, projectID string,
 
 		feedback := executionFeedback(executionResult)
 		observationHistory = append(observationHistory, *feedback)
+		advanceCompletedObservationForSelection(&currentDecision, *feedback, workflow.Now(ctx))
 
 		selection, err := selectTool(ctx, activities.ToolSelectionRequest{
 			ProjectID:          projectID,
@@ -401,18 +402,19 @@ func clarificationMessage(clarification *agent.ClarificationRequest) string {
 	if clarification == nil {
 		return ""
 	}
-	parts := make([]string, 0, 1+len(clarification.Questions))
 	if message := strings.TrimSpace(clarification.Message); message != "" {
-		parts = append(parts, message)
-	} else if reason := strings.TrimSpace(clarification.Reason); reason != "" {
-		parts = append(parts, reason)
+		return message
 	}
+	parts := make([]string, 0, len(clarification.Questions))
 	for _, question := range clarification.Questions {
 		if question = strings.TrimSpace(question); question != "" {
 			parts = append(parts, question)
 		}
 	}
-	return strings.Join(parts, " ")
+	if len(parts) > 0 {
+		return strings.Join(parts, " ")
+	}
+	return strings.TrimSpace(clarification.Reason)
 }
 
 func directReplyMessage(decision agent.DecisionOutput) string {
@@ -647,6 +649,22 @@ func advanceSuccessfulWorkItem(decision *agent.DecisionOutput, now time.Time, ma
 	syncPlanStatus(decision, now)
 }
 
+func advanceCompletedObservationForSelection(decision *agent.DecisionOutput, feedback agent.ExecutionFeedback, now time.Time) {
+	if feedback.Status != string(domain.ExecutionStatusSucceeded) || strings.TrimSpace(feedback.Error) != "" {
+		return
+	}
+	index := workItemIndexByID(decision.WorkItems, feedback.WorkItemID)
+	if index < 0 || decision.WorkItems[index].Status == domain.WorkItemStatusCompleted {
+		return
+	}
+	if nextIncompleteWorkItemIndexAfter(decision.WorkItems, index) < 0 {
+		return
+	}
+	decision.WorkItems[index].Status = domain.WorkItemStatusCompleted
+	decision.WorkItems[index].UpdatedAt = now
+	syncPlanStatus(decision, now)
+}
+
 func applyResponseOutcome(decision *agent.DecisionOutput, now time.Time) {
 	isClarification := looksLikeClarificationMessage(directReplyMessage(*decision))
 
@@ -679,6 +697,28 @@ func markCurrentWorkItemStatus(decision *agent.DecisionOutput, status domain.Wor
 func firstIncompleteWorkItemIndex(items []domain.WorkItem) int {
 	for index, item := range items {
 		if item.Status != domain.WorkItemStatusCompleted {
+			return index
+		}
+	}
+	return -1
+}
+
+func nextIncompleteWorkItemIndexAfter(items []domain.WorkItem, index int) int {
+	for next := index + 1; next < len(items); next++ {
+		if items[next].Status != domain.WorkItemStatusCompleted {
+			return next
+		}
+	}
+	return -1
+}
+
+func workItemIndexByID(items []domain.WorkItem, workItemID string) int {
+	workItemID = strings.TrimSpace(workItemID)
+	if workItemID == "" {
+		return -1
+	}
+	for index, item := range items {
+		if item.ID == workItemID {
 			return index
 		}
 	}

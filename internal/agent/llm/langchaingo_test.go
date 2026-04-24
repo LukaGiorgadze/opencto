@@ -72,7 +72,6 @@ func TestRenderClassificationPromptUsesStructuredContext(t *testing.T) {
 		"Project: OpenCTO",
 		"Project Description: Self-hosted AI technical co-founder",
 		"Recent conversation: The agent asked which staging target should receive the deploy.",
-		"Recent decisions: Use Temporal: Temporal coordinates long-running work.",
 		"The inbound event is provided as the user message.",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -89,6 +88,7 @@ func TestRenderClassificationPromptUsesStructuredContext(t *testing.T) {
 		"Current State:",
 		"Active work:",
 		"Open contradictions:",
+		"Recent decisions:",
 		"Message: deploy to staging",
 		"Timestamp: 2026-04-23T09:30:00Z",
 	} {

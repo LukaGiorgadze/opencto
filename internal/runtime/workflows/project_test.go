@@ -718,7 +718,10 @@ func TestTaskWorkflowContinuesAcrossExecutionCycles(t *testing.T) {
 		feedback := request.Feedback
 		return request.ProjectID == "project-1" &&
 			request.ExecutionCycle == 2 &&
-			request.CurrentWorkItemID == "wi-1" &&
+			request.CurrentWorkItemID == "wi-2" &&
+			len(request.Decision.WorkItems) == 2 &&
+			request.Decision.WorkItems[0].Status == domain.WorkItemStatusCompleted &&
+			request.Decision.WorkItems[1].Status == domain.WorkItemStatusReady &&
 			feedback != nil &&
 			feedback.Cycle == 1 &&
 			feedback.WorkItemID == "wi-1" &&
