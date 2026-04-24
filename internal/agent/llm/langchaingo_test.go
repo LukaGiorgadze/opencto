@@ -28,7 +28,6 @@ func TestRenderClassificationPromptUsesStructuredContext(t *testing.T) {
 				ChannelID:   "channel-1",
 				ChannelType: domain.ChannelTypeDiscord,
 				Metadata: map[string]string{
-					"author_role":    "owner",
 					"thread_context": "deployment thread",
 				},
 				CreatedAt: time.Date(2026, 4, 23, 9, 30, 0, 0, time.UTC),
@@ -74,7 +73,7 @@ func TestRenderClassificationPromptUsesStructuredContext(t *testing.T) {
 		"Open contradictions: database choice",
 		"Recent conversation: The agent asked which staging target should receive the deploy.",
 		"Recent decisions: Use Temporal: Temporal coordinates long-running work.",
-		"Author: luka (role: owner)",
+		"Author: luka",
 		"Channel: discord:channel-1",
 		"Thread context: deployment thread",
 		"Message: deploy to staging",
@@ -371,9 +370,6 @@ func TestRenderClarificationPromptUsesAvailableContextOnly(t *testing.T) {
 				Body:        "deploy it",
 				ChannelID:   "channel-1",
 				ChannelType: domain.ChannelTypeDiscord,
-				Metadata: map[string]string{
-					"author_role": "owner",
-				},
 			},
 			ProjectFacts: []domain.MemoryFact{{
 				ID:        "fact-1",
@@ -420,7 +416,7 @@ func TestRenderClarificationPromptUsesAvailableContextOnly(t *testing.T) {
 		"Known facts: deployment_target: vercel",
 		"Open contradictions: deployment target",
 		"Recent conversation: assistant: Which environment should I deploy to: staging or production?",
-		"Author: luka (role: owner)",
+		"Author: luka",
 		"Message: deploy it",
 		"Classifier intent: ACTION_REQUEST",
 		"Classifier route: clarify",
@@ -508,7 +504,6 @@ func TestRenderPlanningPromptUsesSupportedContext(t *testing.T) {
 				ActorName: "luka",
 				Body:      "add email verification to signup",
 				Metadata: map[string]string{
-					"author_role":           "owner",
 					"clarification_summary": "Target the existing signup flow.",
 					"resolved_answers":      "Use Supabase Auth and ship to staging first.",
 				},

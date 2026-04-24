@@ -148,7 +148,6 @@ type classificationPromptData struct {
 	RelevantConversation string
 	RecentDecisions      string
 	AuthorName           string
-	AuthorRole           string
 	ChannelHint          string
 	ThreadContext        string
 	MessageText          string
@@ -165,7 +164,6 @@ type clarificationPromptData struct {
 	OpenContradictions          string
 	RelevantConversation        string
 	AuthorName                  string
-	AuthorRole                  string
 	ChannelHint                 string
 	ThreadContext               string
 	OriginalMessage             string
@@ -189,7 +187,6 @@ type planningPromptData struct {
 	KnownIntegrations    string
 	AutonomyThreshold    int
 	AuthorName           string
-	AuthorRole           string
 	OriginalMessage      string
 	ClarificationSummary string
 	ResolvedAnswers      string
@@ -245,7 +242,6 @@ func renderClassificationPrompt(input agent.DecisionInput) (string, error) {
 		RelevantConversation: formatConversationMemory(input.Context.ConversationMemory),
 		RecentDecisions:      formatRecentDecisions(input.Context.RecentDecisions),
 		AuthorName:           firstNonEmpty(strings.TrimSpace(event.ActorName), strings.TrimSpace(event.Provenance.Actor), "unknown"),
-		AuthorRole:           firstNonEmpty(strings.TrimSpace(event.Metadata["author_role"]), "unknown"),
 		ChannelHint:          classificationChannelHint(event),
 		ThreadContext:        classificationThreadContext(event),
 		MessageText:          strings.TrimSpace(event.Body),
@@ -271,7 +267,6 @@ func renderClarificationPrompt(input agent.ClarificationInput) (string, error) {
 		OpenContradictions:          formatOpenContradictions(input.Context.OpenContradictions),
 		RelevantConversation:        formatConversationMemory(input.Context.ConversationMemory),
 		AuthorName:                  firstNonEmpty(strings.TrimSpace(event.ActorName), strings.TrimSpace(event.Provenance.Actor), "unknown"),
-		AuthorRole:                  firstNonEmpty(strings.TrimSpace(event.Metadata["author_role"]), "unknown"),
 		ChannelHint:                 classificationChannelHint(event),
 		ThreadContext:               classificationThreadContext(event),
 		OriginalMessage:             strings.TrimSpace(event.Body),
@@ -304,7 +299,6 @@ func renderPlanningPrompt(input agent.PlanningInput) (string, error) {
 		KnownIntegrations:    formatKnownIntegrations(input.Context.Integrations),
 		AutonomyThreshold:    clampRiskTierValue(input.AutonomyThreshold),
 		AuthorName:           firstNonEmpty(strings.TrimSpace(event.ActorName), strings.TrimSpace(event.Provenance.Actor), "unknown"),
-		AuthorRole:           firstNonEmpty(strings.TrimSpace(event.Metadata["author_role"]), "unknown"),
 		OriginalMessage:      strings.TrimSpace(event.Body),
 		ClarificationSummary: firstNonEmpty(planningClarificationSummary(event), "none"),
 		ResolvedAnswers:      firstNonEmpty(planningResolvedAnswers(event), "none"),
