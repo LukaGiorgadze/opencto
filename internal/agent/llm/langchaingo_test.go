@@ -556,9 +556,6 @@ func TestRenderPlanningPromptUsesSupportedContext(t *testing.T) {
 
 	for _, want := range []string{
 		"Project: OpenCTO (project-1)",
-		"Known facts: auth_provider: supabase",
-		"Recent conversation: The agent asked whether to target the existing signup flow and which environment to ship first.",
-		"Integrations: vercel [ready]",
 		"Autonomy Threshold: 1",
 		"Clarification summary: Target the existing signup flow.",
 		"Resolved answers: Use Supabase Auth and ship to staging first.",
@@ -570,6 +567,60 @@ func TestRenderPlanningPromptUsesSupportedContext(t *testing.T) {
 	}
 	if strings.Contains(prompt, "{{") {
 		t.Fatalf("prompt still contains template markers:\n%s", prompt)
+	}
+	for _, removed := range []string{
+		"Current State:",
+		"Known facts:",
+		"Recent conversation:",
+		"Active work:",
+		"Open contradictions:",
+		"Integrations:",
+	} {
+		if strings.Contains(prompt, removed) {
+			t.Fatalf("prompt still contains removed planning context %q\n%s", removed, prompt)
+		}
+	}
+}
+
+func TestRenderPlanningPromptOmitsEmptyClarificationFields(t *testing.T) {
+	t.Parallel()
+
+	input := agent.PlanningInput{
+		ProjectID:         "project-1",
+		AutonomyThreshold: 1,
+		AvailableSkills:   []string{"nextjs"},
+		Context: agent.Context{
+			Project: domain.Project{
+				ID:   "project-1",
+				Name: "OpenCTO",
+			},
+			Event: domain.Event{
+				ID:        "event-4b",
+				ProjectID: "project-1",
+				ActorName: "luka",
+				Body:      "add email verification to signup",
+			},
+		},
+		Classification: agent.Classification{
+			Intent:   agent.ClassificationIntentActionRequest,
+			RoutedTo: agent.ClassificationRoutePlan,
+			Tier:     domain.RiskTierConsequential,
+		},
+	}
+
+	prompt, err := renderPlanningPrompt(input)
+	if err != nil {
+		t.Fatalf("render planning prompt: %v", err)
+	}
+
+	for _, removed := range []string{
+		"Clarification summary:",
+		"Resolved answers:",
+		"none",
+	} {
+		if strings.Contains(prompt, removed) {
+			t.Fatalf("prompt should omit empty planning field %q\n%s", removed, prompt)
+		}
 	}
 }
 

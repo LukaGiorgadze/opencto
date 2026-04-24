@@ -70,6 +70,7 @@ type ToolSelectionRequest struct {
 	ProjectID          string                    `json:"project_id"`
 	Event              domain.Event              `json:"event"`
 	Decision           agent.DecisionOutput      `json:"decision"`
+	CurrentWorkItemID  string                    `json:"current_work_item_id,omitempty"`
 	Feedback           *agent.ExecutionFeedback  `json:"feedback,omitempty"`
 	ExecutionCycle     int                       `json:"execution_cycle"`
 	ObservationHistory []agent.ExecutionFeedback `json:"observation_history,omitempty"`
@@ -93,6 +94,8 @@ type ExecuteToolResult struct {
 	Tool             domain.ToolType        `json:"tool,omitempty"`
 	Status           domain.ExecutionStatus `json:"status"`
 	RequestedAction  string                 `json:"requested_action,omitempty"`
+	Command          string                 `json:"command,omitempty"`
+	Args             []string               `json:"args,omitempty"`
 	Observation      string                 `json:"observation,omitempty"`
 	Error            string                 `json:"error,omitempty"`
 	WorkingDirectory string                 `json:"working_directory,omitempty"`
@@ -726,6 +729,7 @@ func (a *Activities) SelectTool(ctx context.Context, request ToolSelectionReques
 		Classification:     request.Decision.Classification,
 		Plan:               request.Decision.Plan,
 		WorkItems:          request.Decision.WorkItems,
+		CurrentWorkItemID:  request.CurrentWorkItemID,
 		Runtime:            buildRuntimeContext(a.WorkspaceRoot),
 		ExecutionCycle:     request.ExecutionCycle,
 		LastObservation:    request.Feedback,
@@ -906,6 +910,8 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 		Tool:             request.ToolChoice.Type,
 		Status:           attempt.Status,
 		RequestedAction:  request.ToolChoice.Intent,
+		Command:          request.ToolChoice.Command,
+		Args:             request.ToolChoice.Args,
 		Observation:      attempt.OutputSummary,
 		Error:            errorMessage,
 		WorkingDirectory: request.ToolChoice.WorkingDir,

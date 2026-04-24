@@ -15,37 +15,28 @@ import (
 )
 
 type toolSelectionPromptData struct {
-	ProjectName           string
-	ProjectID             string
-	ProjectState          string
-	ProjectDescription    string
-	KnownFacts            string
-	OpenContradictions    string
-	RecentDecisions       string
-	OS                    string
-	Arch                  string
-	Shell                 string
-	ProjectRoot           string
-	RequestSummary        string
-	ClassificationIntent  agent.ClassificationIntent
-	ClassificationRoute   agent.ClassificationRoute
-	ClassificationTier    domain.RiskTier
-	PlanSummary           string
-	PlanExecutionOrder    string
-	PlanTestStrategy      string
-	WorkItems             string
-	ExecutionCycle        int
-	HasObservationHistory bool
-	ObservationHistory    string
-	HasLastObservation    bool
-	LastWorkItemID        string
-	LastTool              string
-	LastInput             string
-	LastStatus            string
-	LastObservation       string
-	LastError             string
-	RegisteredTools       string
-	ExecutionToolName     string
+	ProjectName          string
+	ProjectID            string
+	ProjectState         string
+	ProjectDescription   string
+	KnownFacts           string
+	OpenContradictions   string
+	RecentDecisions      string
+	OS                   string
+	Arch                 string
+	Shell                string
+	ProjectRoot          string
+	ClassificationIntent agent.ClassificationIntent
+	ClassificationRoute  agent.ClassificationRoute
+	ClassificationTier   domain.RiskTier
+	PlanSummary          string
+	PlanExecutionOrder   string
+	PlanTestStrategy     string
+	WorkItems            string
+	CurrentWorkItem      string
+	ExecutionCycle       int
+	RegisteredTools      string
+	ExecutionToolName    string
 }
 
 type shellToolInput struct {
@@ -62,14 +53,9 @@ func (e *OpenAIEngine) selectToolWithRegisteredTools(ctx context.Context, input 
 		return agent.ToolChoice{}, fmt.Errorf("tool selection model is not configured")
 	}
 
-	systemPrompt, err := renderToolSelectionPrompt(input)
+	messages, err := buildToolSelectionMessages(input)
 	if err != nil {
 		return agent.ToolChoice{}, err
-	}
-
-	messages := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
-		llms.TextParts(llms.ChatMessageTypeHuman, "Choose the next action now. If execution is needed, call the Shell tool. If a direct response is correct, return plain text only."),
 	}
 
 	response, err := e.toolModel.GenerateContent(
@@ -84,6 +70,27 @@ func (e *OpenAIEngine) selectToolWithRegisteredTools(ctx context.Context, input 
 	return toolChoiceFromContentResponse(response, input)
 }
 
+func buildToolSelectionMessages(input agent.ToolSelectionInput) ([]llms.MessageContent, error) {
+	systemPrompt, err := renderToolSelectionPrompt(input)
+	if err != nil {
+		return nil, err
+	}
+
+	messages := []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
+	}
+	if userText := strings.TrimSpace(input.Context.Event.Body); userText != "" {
+		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, userText))
+	}
+	for _, feedback := range toolSelectionFeedback(input) {
+		message := formatToolObservationMessage(feedback)
+		if message != "" {
+			messages = append(messages, llms.TextParts(llms.ChatMessageTypeAI, message))
+		}
+	}
+	return messages, nil
+}
+
 func renderToolSelectionPrompt(input agent.ToolSelectionInput) (string, error) {
 	projectName := strings.TrimSpace(input.Context.Project.Name)
 	if projectName == "" {
@@ -91,39 +98,28 @@ func renderToolSelectionPrompt(input agent.ToolSelectionInput) (string, error) {
 	}
 
 	data := toolSelectionPromptData{
-		ProjectName:           projectName,
-		ProjectID:             input.ProjectID,
-		ProjectState:          formatProjectState(input.Context.ActiveWorkItems, input.Context.OpenContradictions),
-		ProjectDescription:    strings.TrimSpace(input.Context.Project.Description),
-		KnownFacts:            formatKnownFacts(input.Context.ProjectFacts),
-		OpenContradictions:    formatOpenContradictions(input.Context.OpenContradictions),
-		RecentDecisions:       formatRecentDecisions(input.Context.RecentDecisions),
-		OS:                    input.Runtime.OS,
-		Arch:                  input.Runtime.Arch,
-		Shell:                 firstNonEmpty(strings.TrimSpace(input.Runtime.Shell), "unknown"),
-		ProjectRoot:           firstNonEmpty(strings.TrimSpace(input.Runtime.WorkspaceRoot), "."),
-		RequestSummary:        strings.TrimSpace(input.Context.Event.Body),
-		ClassificationIntent:  input.Classification.Intent,
-		ClassificationRoute:   input.Classification.RoutedTo,
-		ClassificationTier:    input.Classification.Tier,
-		PlanSummary:           strings.TrimSpace(input.Plan.Summary),
-		PlanExecutionOrder:    formatExecutionOrderMetadata(input.Plan.Metadata["execution_order_json"]),
-		PlanTestStrategy:      strings.TrimSpace(input.Plan.Metadata["test_strategy"]),
-		WorkItems:             formatSelectionWorkItems(input.WorkItems),
-		ExecutionCycle:        input.ExecutionCycle,
-		HasObservationHistory: len(input.ObservationHistory) > 1,
-		ObservationHistory:    formatObservationHistory(input.ObservationHistory),
-		HasLastObservation:    input.LastObservation != nil,
-		RegisteredTools:       strings.Join(toolregistry.SelectorPromptSummaries(), "\n"),
-		ExecutionToolName:     toolregistry.SelectorToolShellName,
-	}
-	if input.LastObservation != nil {
-		data.LastWorkItemID = strings.TrimSpace(input.LastObservation.WorkItemID)
-		data.LastTool = string(input.LastObservation.Tool)
-		data.LastInput = strings.TrimSpace(input.LastObservation.RequestedAction)
-		data.LastStatus = strings.TrimSpace(input.LastObservation.Status)
-		data.LastObservation = strings.TrimSpace(input.LastObservation.Observation)
-		data.LastError = strings.TrimSpace(input.LastObservation.Error)
+		ProjectName:          projectName,
+		ProjectID:            input.ProjectID,
+		ProjectState:         formatProjectState(input.Context.ActiveWorkItems, input.Context.OpenContradictions),
+		ProjectDescription:   strings.TrimSpace(input.Context.Project.Description),
+		KnownFacts:           formatKnownFacts(input.Context.ProjectFacts),
+		OpenContradictions:   formatOpenContradictions(input.Context.OpenContradictions),
+		RecentDecisions:      formatRecentDecisions(input.Context.RecentDecisions),
+		OS:                   input.Runtime.OS,
+		Arch:                 input.Runtime.Arch,
+		Shell:                firstNonEmpty(strings.TrimSpace(input.Runtime.Shell), "unknown"),
+		ProjectRoot:          firstNonEmpty(strings.TrimSpace(input.Runtime.WorkspaceRoot), "."),
+		ClassificationIntent: input.Classification.Intent,
+		ClassificationRoute:  input.Classification.RoutedTo,
+		ClassificationTier:   input.Classification.Tier,
+		PlanSummary:          strings.TrimSpace(input.Plan.Summary),
+		PlanExecutionOrder:   formatExecutionOrderMetadata(input.Plan.Metadata["execution_order_json"]),
+		PlanTestStrategy:     strings.TrimSpace(input.Plan.Metadata["test_strategy"]),
+		WorkItems:            formatSelectionWorkItems(input.WorkItems),
+		CurrentWorkItem:      formatSelectionCurrentWorkItem(input.WorkItems, input.CurrentWorkItemID),
+		ExecutionCycle:       input.ExecutionCycle,
+		RegisteredTools:      strings.Join(toolregistry.SelectorPromptSummaries(), "\n"),
+		ExecutionToolName:    toolregistry.SelectorToolShellName,
 	}
 
 	return prompts.Render("tool_choice.tmpl", data)
@@ -181,6 +177,14 @@ func shellToolChoiceFromInput(definition toolregistry.SelectorDefinition, call l
 	if commandText == "" {
 		return agent.ToolChoice{}, fmt.Errorf("%s tool requires a command", definition.Name)
 	}
+	command := commandText
+	commandArgs := trimStringList(args.Args, 100)
+	wrapped := false
+	if shouldWrapShellCommand(commandText, commandArgs) {
+		command = firstNonEmpty(strings.TrimSpace(input.Runtime.Shell), "/bin/sh")
+		commandArgs = []string{"-lc", commandText}
+		wrapped = true
+	}
 
 	metadata := map[string]string{
 		"model_tool":   definition.Name,
@@ -189,18 +193,29 @@ func shellToolChoiceFromInput(definition toolregistry.SelectorDefinition, call l
 	if multiple {
 		metadata["dropped_additional_tool_calls"] = "true"
 	}
+	if wrapped {
+		metadata["wrapped_shell_command"] = "true"
+		metadata["original_command"] = commandText
+	}
 
 	return agent.ToolChoice{
 		Type:         definition.Type,
 		Intent:       firstNonEmpty(strings.TrimSpace(args.Description), commandText),
-		Command:      commandText,
-		Args:         trimStringList(args.Args, 100),
+		Command:      command,
+		Args:         commandArgs,
 		WorkingDir:   firstNonEmpty(strings.TrimSpace(args.WorkingDir), strings.TrimSpace(input.Runtime.WorkspaceRoot)),
 		TimeoutMs:    clampToolTimeoutMs(args.TimeoutMs),
 		InputSummary: firstNonEmpty(strings.TrimSpace(args.Description), commandText, strings.TrimSpace(input.Context.Event.Body)),
 		Destructive:  args.Destructive,
 		Metadata:     metadata,
 	}, nil
+}
+
+func shouldWrapShellCommand(command string, args []string) bool {
+	if len(args) > 0 {
+		return false
+	}
+	return strings.ContainsAny(command, " \t\r\n;&|<>*$`()")
 }
 
 func formatPlanMetadataList(value string) string {
@@ -250,29 +265,60 @@ func formatSelectionWorkItems(items []domain.WorkItem) string {
 	return strings.Join(parts, "; ")
 }
 
-func formatObservationHistory(history []agent.ExecutionFeedback) string {
-	if len(history) <= 1 {
-		return ""
+func formatSelectionCurrentWorkItem(items []domain.WorkItem, currentID string) string {
+	currentID = strings.TrimSpace(currentID)
+	if currentID == "" {
+		return "none"
 	}
-	// Exclude the last entry — it is already rendered as "Last Observation".
-	prior := history[:len(history)-1]
-	parts := make([]string, 0, len(prior))
-	for _, obs := range prior {
-		entry := fmt.Sprintf("- Cycle %d [%s] %s → %s", obs.Cycle, obs.Tool, strings.TrimSpace(obs.RequestedAction), strings.TrimSpace(obs.Status))
-		observation := strings.TrimSpace(obs.Observation)
-		if observation != "" {
-			// Truncate long observations to keep the prompt concise.
-			if len(observation) > 200 {
-				observation = observation[:200] + "…"
-			}
-			entry += ": " + observation
+	for _, item := range items {
+		if item.ID == currentID {
+			return formatSelectionWorkItems([]domain.WorkItem{item})
 		}
-		if errMsg := strings.TrimSpace(obs.Error); errMsg != "" {
-			entry += " (error: " + errMsg + ")"
-		}
-		parts = append(parts, entry)
 	}
-	return strings.Join(parts, "\n")
+	return fmt.Sprintf("unknown [id=%s]", currentID)
+}
+
+func toolSelectionFeedback(input agent.ToolSelectionInput) []agent.ExecutionFeedback {
+	if len(input.ObservationHistory) > 0 {
+		return input.ObservationHistory
+	}
+	if input.LastObservation != nil {
+		return []agent.ExecutionFeedback{*input.LastObservation}
+	}
+	return nil
+}
+
+func formatToolObservationMessage(feedback agent.ExecutionFeedback) string {
+	lines := []string{
+		"Work item: " + firstNonEmpty(strings.TrimSpace(feedback.WorkItemID), "unknown"),
+		"Tool: " + strings.TrimSpace(string(feedback.Tool)),
+		"Input: " + strings.TrimSpace(feedback.RequestedAction),
+	}
+	if command := strings.TrimSpace(feedback.Command); command != "" {
+		lines = append(lines, "Command: "+command)
+	}
+	if len(feedback.Args) > 0 {
+		lines = append(lines, "Args: "+formatToolArgs(feedback.Args))
+	}
+	if workingDir := strings.TrimSpace(feedback.Metadata["working_directory"]); workingDir != "" {
+		lines = append(lines, "Working directory: "+workingDir)
+	}
+	lines = append(lines,
+		"Status: "+strings.TrimSpace(feedback.Status),
+		"Observation: "+strings.TrimSpace(feedback.Observation),
+	)
+	if errMsg := strings.TrimSpace(feedback.Error); errMsg != "" {
+		lines = append(lines, "Error: "+errMsg)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatToolArgs(args []string) string {
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return strings.Join(args, " ")
+	}
+	return string(encoded)
 }
 
 func clampToolTimeoutMs(value int) int {

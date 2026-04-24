@@ -13,7 +13,7 @@ import (
 	toolregistry "github.com/opencto/opencto/internal/tools"
 )
 
-func TestRenderToolSelectionPromptUsesRenderedSystemPrompt(t *testing.T) {
+func TestBuildToolSelectionMessagesSeparatesConversationRoles(t *testing.T) {
 	t.Parallel()
 
 	input := agent.ToolSelectionInput{
@@ -92,6 +92,7 @@ func TestRenderToolSelectionPromptUsesRenderedSystemPrompt(t *testing.T) {
 				"complexity":               "M",
 			},
 		}},
+		CurrentWorkItemID: "wi-1",
 		Runtime: agent.RuntimeContext{
 			OS:            "darwin",
 			Arch:          "arm64",
@@ -104,30 +105,48 @@ func TestRenderToolSelectionPromptUsesRenderedSystemPrompt(t *testing.T) {
 			WorkItemID:      "wi-1",
 			Tool:            domain.ToolTypeShell,
 			RequestedAction: "deploy app",
+			Command:         "sh",
+			Args:            []string{"-lc", "deploy --target staging"},
 			Status:          "failed",
 			Observation:     "staging target not found",
 			Error:           "exit status 1",
+			Metadata: map[string]string{
+				"working_directory": "/tmp/opencto",
+			},
 		},
 	}
 
-	prompt, err := renderToolSelectionPrompt(input)
+	messages, err := buildToolSelectionMessages(input)
 	if err != nil {
-		t.Fatalf("render tool selection prompt: %v", err)
+		t.Fatalf("build tool selection messages: %v", err)
+	}
+	if len(messages) != 3 {
+		t.Fatalf("expected system, user, assistant messages, got %d", len(messages))
+	}
+	if messages[0].Role != llms.ChatMessageTypeSystem {
+		t.Fatalf("expected first message to be system, got %q", messages[0].Role)
+	}
+	if messages[1].Role != llms.ChatMessageTypeHuman {
+		t.Fatalf("expected second message to be human, got %q", messages[1].Role)
+	}
+	if messages[2].Role != llms.ChatMessageTypeAI {
+		t.Fatalf("expected third message to be assistant, got %q", messages[2].Role)
 	}
 
+	prompt := messageText(messages[0])
 	for _, want := range []string{
 		"Project: OpenCTO (project-1)",
 		"Project root: /tmp/opencto",
 		"Relevant facts: deployment_target: staging",
-		"Inbound request: deploy the app",
 		"Execution cycle: 2",
 		"Plan summary: Deploy the app safely.",
 		"Execution order: [Verify deployment target] -> [Deploy application]",
 		"Test strategy: Check the deployed app after rollout.",
 		"Work items: Deploy application [id=wi-1,status=ready,tier=2]: Run the deployment command (depends_on=Verify deployment target)",
-		"Work item: wi-1",
-		"Tool: shell",
-		"Observation: staging target not found",
+		"Current work item: Deploy application [id=wi-1,status=ready,tier=2]: Run the deployment command (depends_on=Verify deployment target)",
+		"Choose one executable action that advances the current work item's description and acceptance criteria.",
+		"Do not select actions for later work items until the workflow makes them current.",
+		"Choose the next action now.",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q\n%s", want, prompt)
@@ -138,6 +157,36 @@ func TestRenderToolSelectionPromptUsesRenderedSystemPrompt(t *testing.T) {
 	}
 	if strings.Contains(prompt, "Reply") {
 		t.Fatalf("prompt should not mention Reply as a tool:\n%s", prompt)
+	}
+	for _, removed := range []string{
+		"Inbound request: deploy the app",
+		"Work item: wi-1",
+		"Observation: staging target not found",
+	} {
+		if strings.Contains(prompt, removed) {
+			t.Fatalf("system prompt should not include conversation message %q\n%s", removed, prompt)
+		}
+	}
+
+	if got := messageText(messages[1]); got != "deploy the app" {
+		t.Fatalf("unexpected human message: %q", got)
+	}
+
+	assistantMessage := messageText(messages[2])
+	for _, want := range []string{
+		"Work item: wi-1",
+		"Tool: shell",
+		"Input: deploy app",
+		"Command: sh",
+		`Args: ["-lc","deploy --target staging"]`,
+		"Working directory: /tmp/opencto",
+		"Status: failed",
+		"Observation: staging target not found",
+		"Error: exit status 1",
+	} {
+		if !strings.Contains(assistantMessage, want) {
+			t.Fatalf("assistant message missing %q\n%s", want, assistantMessage)
+		}
 	}
 }
 
@@ -194,6 +243,49 @@ func TestToolChoiceFromShellToolCallWrapsCommand(t *testing.T) {
 	}
 	if choice.Metadata["model_tool"] != toolregistry.SelectorToolShellName {
 		t.Fatalf("expected model_tool metadata, got %#v", choice.Metadata)
+	}
+}
+
+func TestToolChoiceFromShellToolCallWrapsCompoundCommand(t *testing.T) {
+	t.Parallel()
+
+	input := agent.ToolSelectionInput{
+		Context: agent.Context{
+			Event: domain.Event{Body: "inspect workspace"},
+		},
+		Runtime: agent.RuntimeContext{
+			Shell:         "/bin/zsh",
+			WorkspaceRoot: "/tmp/opencto",
+		},
+	}
+
+	choice, err := toolChoiceFromToolCall(llms.ToolCall{
+		ID:   "call-1",
+		Type: "function",
+		FunctionCall: &llms.FunctionCall{
+			Name: toolregistry.SelectorToolShellName,
+			Arguments: `{
+				"command":"pwd; ls -la",
+				"args":[],
+				"working_dir":null,
+				"timeout_ms":120000,
+				"description":"inspect workspace",
+				"destructive":false
+			}`,
+		},
+	}, input, false)
+	if err != nil {
+		t.Fatalf("toolChoiceFromToolCall: %v", err)
+	}
+
+	if choice.Command != "/bin/zsh" {
+		t.Fatalf("expected shell wrapper command, got %q", choice.Command)
+	}
+	if len(choice.Args) != 2 || choice.Args[0] != "-lc" || choice.Args[1] != "pwd; ls -la" {
+		t.Fatalf("unexpected wrapped args: %#v", choice.Args)
+	}
+	if choice.Metadata["wrapped_shell_command"] != "true" {
+		t.Fatalf("expected wrapped shell metadata, got %#v", choice.Metadata)
 	}
 }
 
@@ -291,4 +383,15 @@ func TestOpenCTOToolDefinitionsUseStrictCompatibleRequiredLists(t *testing.T) {
 	if len(toolregistry.SelectorDefinitions()) != 1 {
 		t.Fatalf("expected exactly one selector tool, got %d", len(toolregistry.SelectorDefinitions()))
 	}
+}
+
+func messageText(message llms.MessageContent) string {
+	parts := make([]string, 0, len(message.Parts))
+	for _, part := range message.Parts {
+		text, ok := part.(llms.TextContent)
+		if ok {
+			parts = append(parts, text.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }

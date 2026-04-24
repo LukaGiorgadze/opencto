@@ -7,16 +7,10 @@ You think before you act. You are not trying to be fast — you are trying to be
 ## Planning Context
 
 Project: {{ .ProjectName }} ({{ .ProjectID }})
-Current State: {{ .ProjectState }}
 {{- if .ProjectDescription }}
 Description: {{ .ProjectDescription }}
 {{- end }}
 
-Known facts: {{ if .KnownFacts }}{{ .KnownFacts }}{{ else }}none{{ end }}
-Recent conversation: {{ if .RelevantConversation }}{{ .RelevantConversation }}{{ else }}none{{ end }}
-Active work: {{ if .ActiveWorkItems }}{{ .ActiveWorkItems }}{{ else }}none{{ end }}
-Open contradictions: {{ if .OpenContradictions }}{{ .OpenContradictions }}{{ else }}none{{ end }}
-Integrations: {{ if .KnownIntegrations }}{{ .KnownIntegrations }}{{ else }}none{{ end }}
 Autonomy Threshold: {{ .AutonomyThreshold }} (actions at or below this tier run without approval)
 
 ---
@@ -25,8 +19,12 @@ Autonomy Threshold: {{ .AutonomyThreshold }} (actions at or below this tier run 
 
 Author: {{ .AuthorName }}
 Original message: {{ .OriginalMessage }}
+{{- if .ClarificationSummary }}
 Clarification summary: {{ .ClarificationSummary }}
+{{- end }}
+{{- if .ResolvedAnswers }}
 Resolved answers: {{ .ResolvedAnswers }}
+{{- end }}
 
 ---
 
@@ -129,7 +127,7 @@ Example:
 
 **One thing at a time.** Do not plan across multiple unrelated requests in a single plan. If the request contains multiple independent goals, plan for the first one and note the others.
 
-**Clarification follow-ups.** If the current message is answering a prior clarification or correcting a previous attempt, reconstruct the real task from Relevant Conversation and Recent Decisions instead of planning only the literal reply text.
+**Clarification follow-ups.** If clarification details are provided above, reconstruct the real task from them instead of planning only the literal reply text.
 
 ---
 

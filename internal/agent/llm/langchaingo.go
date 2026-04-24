@@ -175,13 +175,7 @@ type clarificationPromptData struct {
 type planningPromptData struct {
 	ProjectName          string
 	ProjectID            string
-	ProjectState         string
 	ProjectDescription   string
-	KnownFacts           string
-	ActiveWorkItems      string
-	RelevantConversation string
-	OpenContradictions   string
-	KnownIntegrations    string
 	AutonomyThreshold    int
 	AuthorName           string
 	OriginalMessage      string
@@ -284,18 +278,12 @@ func renderPlanningPrompt(input agent.PlanningInput) (string, error) {
 	data := planningPromptData{
 		ProjectName:          projectName,
 		ProjectID:            input.ProjectID,
-		ProjectState:         formatProjectState(input.Context.ActiveWorkItems, input.Context.OpenContradictions),
 		ProjectDescription:   strings.TrimSpace(input.Context.Project.Description),
-		KnownFacts:           formatKnownFacts(input.Context.ProjectFacts),
-		ActiveWorkItems:      formatActiveWorkItems(input.Context.ActiveWorkItems),
-		RelevantConversation: formatConversationMemory(input.Context.ConversationMemory),
-		OpenContradictions:   formatOpenContradictions(input.Context.OpenContradictions),
-		KnownIntegrations:    formatKnownIntegrations(input.Context.Integrations),
 		AutonomyThreshold:    clampRiskTierValue(input.AutonomyThreshold),
 		AuthorName:           firstNonEmpty(strings.TrimSpace(event.ActorName), strings.TrimSpace(event.Provenance.Actor), "unknown"),
 		OriginalMessage:      strings.TrimSpace(event.Body),
-		ClarificationSummary: firstNonEmpty(planningClarificationSummary(event), "none"),
-		ResolvedAnswers:      firstNonEmpty(planningResolvedAnswers(event), "none"),
+		ClarificationSummary: strings.TrimSpace(planningClarificationSummary(event)),
+		ResolvedAnswers:      strings.TrimSpace(planningResolvedAnswers(event)),
 		AvailableSkills:      formatAvailableSkills(input.AvailableSkills),
 	}
 	return prompts.Render("plan.tmpl", data)

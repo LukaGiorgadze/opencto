@@ -360,10 +360,11 @@ func TestTaskWorkflowRequestsApprovalWhenPolicyRequiresIt(t *testing.T) {
 	approvalSelectionDecision := decision
 	approvalSelectionDecision.ToolChoice = agent.ToolChoice{}
 	env.OnActivity("Activities.SelectTool", mock.Anything, activities.ToolSelectionRequest{
-		ProjectID:      "project-1",
-		Event:          event,
-		Decision:       approvalSelectionDecision,
-		ExecutionCycle: 1,
+		ProjectID:         "project-1",
+		Event:             event,
+		Decision:          approvalSelectionDecision,
+		CurrentWorkItemID: "work-item-1",
+		ExecutionCycle:    1,
 	}).Return(activities.ToolSelectionResult{ToolChoice: &approvalToolChoice}, nil)
 	env.OnActivity("Activities.PersistDecision", mock.Anything, mock.Anything).Return(nil).Times(2)
 	env.OnActivity("Activities.EvaluatePolicy", mock.Anything, event, mock.MatchedBy(func(choice agent.ToolChoice) bool {
@@ -554,10 +555,11 @@ func TestTaskWorkflowReportsPolicyDenialWithoutFailing(t *testing.T) {
 	env.OnActivity("Activities.Classify", mock.Anything, event).Return(classification, nil)
 	env.OnActivity("Activities.Plan", mock.Anything, event, classification).Return(decision, nil)
 	env.OnActivity("Activities.SelectTool", mock.Anything, activities.ToolSelectionRequest{
-		ProjectID:      "project-1",
-		Event:          event,
-		Decision:       decision,
-		ExecutionCycle: 1,
+		ProjectID:         "project-1",
+		Event:             event,
+		Decision:          decision,
+		CurrentWorkItemID: "work-item-denied",
+		ExecutionCycle:    1,
 	}).Return(activities.ToolSelectionResult{ToolChoice: &toolChoice}, nil)
 	env.OnActivity("Activities.PersistDecision", mock.Anything, mock.Anything).Return(nil).Times(2)
 	env.OnActivity("Activities.EvaluatePolicy", mock.Anything, event, mock.MatchedBy(func(choice agent.ToolChoice) bool {
@@ -661,10 +663,11 @@ func TestTaskWorkflowContinuesAcrossExecutionCycles(t *testing.T) {
 	env.OnActivity("Activities.Plan", mock.Anything, event, classification).Return(plannedDecision, nil)
 	firstToolChoice := firstToolDecision.ToolChoice
 	env.OnActivity("Activities.SelectTool", mock.Anything, activities.ToolSelectionRequest{
-		ProjectID:      "project-1",
-		Event:          event,
-		Decision:       plannedDecision,
-		ExecutionCycle: 1,
+		ProjectID:         "project-1",
+		Event:             event,
+		Decision:          plannedDecision,
+		CurrentWorkItemID: "wi-1",
+		ExecutionCycle:    1,
 	}).Return(activities.ToolSelectionResult{ToolChoice: &firstToolChoice}, nil)
 	env.OnActivity("Activities.PersistDecision", mock.Anything, mock.Anything).Return(nil).Times(5)
 	env.OnActivity("Activities.EvaluatePolicy", mock.Anything, event, mock.MatchedBy(func(choice agent.ToolChoice) bool {
@@ -687,6 +690,7 @@ func TestTaskWorkflowContinuesAcrossExecutionCycles(t *testing.T) {
 		feedback := request.Feedback
 		return request.ProjectID == "project-1" &&
 			request.ExecutionCycle == 2 &&
+			request.CurrentWorkItemID == "wi-2" &&
 			feedback != nil &&
 			feedback.Cycle == 1 &&
 			feedback.WorkItemID == "wi-1" &&
@@ -775,10 +779,11 @@ func TestTaskWorkflowCanAskForClarificationAfterInspectionCycle(t *testing.T) {
 	env.OnActivity("Activities.Plan", mock.Anything, event, classification).Return(plannedDecision, nil)
 	clarifyToolChoice := firstToolDecision.ToolChoice
 	env.OnActivity("Activities.SelectTool", mock.Anything, activities.ToolSelectionRequest{
-		ProjectID:      "project-1",
-		Event:          event,
-		Decision:       plannedDecision,
-		ExecutionCycle: 1,
+		ProjectID:         "project-1",
+		Event:             event,
+		Decision:          plannedDecision,
+		CurrentWorkItemID: "wi-1",
+		ExecutionCycle:    1,
 	}).Return(activities.ToolSelectionResult{ToolChoice: &clarifyToolChoice}, nil)
 	env.OnActivity("Activities.PersistDecision", mock.Anything, mock.Anything).Return(nil).Times(3)
 	env.OnActivity("Activities.EvaluatePolicy", mock.Anything, event, mock.MatchedBy(func(choice agent.ToolChoice) bool {
@@ -800,6 +805,7 @@ func TestTaskWorkflowCanAskForClarificationAfterInspectionCycle(t *testing.T) {
 		feedback := request.Feedback
 		return request.ProjectID == "project-1" &&
 			request.ExecutionCycle == 2 &&
+			request.CurrentWorkItemID == "wi-1" &&
 			feedback != nil &&
 			feedback.Cycle == 1 &&
 			feedback.WorkItemID == "wi-1" &&

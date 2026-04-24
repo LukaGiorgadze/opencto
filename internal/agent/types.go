@@ -129,6 +129,8 @@ type ExecutionFeedback struct {
 	Tool            domain.ToolType   `json:"tool"`
 	Status          string            `json:"status"`
 	RequestedAction string            `json:"requested_action,omitempty"`
+	Command         string            `json:"command,omitempty"`
+	Args            []string          `json:"args,omitempty"`
 	Observation     string            `json:"observation,omitempty"`
 	Error           string            `json:"error,omitempty"`
 	Metadata        map[string]string `json:"metadata,omitempty"`
@@ -177,6 +179,7 @@ type ToolSelectionInput struct {
 	Classification     Classification
 	Plan               domain.Plan
 	WorkItems          []domain.WorkItem
+	CurrentWorkItemID  string
 	Runtime            RuntimeContext
 	ExecutionCycle     int
 	LastObservation    *ExecutionFeedback

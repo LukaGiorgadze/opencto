@@ -64,10 +64,11 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			}
 			var selection activities.ToolSelectionResult
 			if err := workflow.ExecuteActivity(ctx, "Activities.SelectTool", activities.ToolSelectionRequest{
-				ProjectID:      input.ProjectID,
-				Event:          input.Event,
-				Decision:       selectionSnapshot(decision),
-				ExecutionCycle: 1,
+				ProjectID:         input.ProjectID,
+				Event:             input.Event,
+				Decision:          selectionSnapshot(decision),
+				CurrentWorkItemID: currentSelectionWorkItemID(decision),
+				ExecutionCycle:    1,
 			}).Get(ctx, &selection); err != nil {
 				return TaskWorkflowResult{}, err
 			}
@@ -80,10 +81,11 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			}
 			var selection activities.ToolSelectionResult
 			if err := workflow.ExecuteActivity(ctx, "Activities.SelectTool", activities.ToolSelectionRequest{
-				ProjectID:      input.ProjectID,
-				Event:          input.Event,
-				Decision:       selectionSnapshot(decision),
-				ExecutionCycle: 1,
+				ProjectID:         input.ProjectID,
+				Event:             input.Event,
+				Decision:          selectionSnapshot(decision),
+				CurrentWorkItemID: currentSelectionWorkItemID(decision),
+				ExecutionCycle:    1,
 			}).Get(ctx, &selection); err != nil {
 				return TaskWorkflowResult{}, err
 			}
@@ -232,6 +234,7 @@ func executeDecision(ctx workflow.Context, event domain.Event, projectID string,
 			ProjectID:          projectID,
 			Event:              event,
 			Decision:           selectionSnapshot(currentDecision),
+			CurrentWorkItemID:  currentSelectionWorkItemID(currentDecision),
 			Feedback:           feedback,
 			ExecutionCycle:     cycle + 1,
 			ObservationHistory: observationHistory,
@@ -323,6 +326,8 @@ func executionFeedback(result activities.ExecuteToolResult) *agent.ExecutionFeed
 		Tool:            result.Tool,
 		Status:          string(result.Status),
 		RequestedAction: result.RequestedAction,
+		Command:         result.Command,
+		Args:            result.Args,
 		Observation:     result.Observation,
 		Error:           result.Error,
 		Metadata:        metadata,
@@ -525,6 +530,14 @@ func currentExecutionWorkItem(decision agent.DecisionOutput) (domain.WorkItem, e
 		return domain.WorkItem{}, fmt.Errorf("no incomplete work item available for execution")
 	}
 	return decision.WorkItems[index], nil
+}
+
+func currentSelectionWorkItemID(decision agent.DecisionOutput) string {
+	index := firstIncompleteWorkItemIndex(decision.WorkItems)
+	if index < 0 {
+		return ""
+	}
+	return decision.WorkItems[index].ID
 }
 
 func advanceSuccessfulWorkItem(decision *agent.DecisionOutput, now time.Time, markCompleted bool) {
