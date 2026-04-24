@@ -203,6 +203,43 @@ func TestSearchMemoryFallsBackToTextSearchWhenEmbeddingQueryFails(t *testing.T) 
 	}
 }
 
+func TestLoadContextReusesQueryEmbeddingAcrossMemoryCategories(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "memory.db"), "", time.Second)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	event := domain.Event{
+		ID:          "event-1",
+		ProjectID:   "default",
+		Kind:        domain.EventKindMessage,
+		ChannelID:   "channel-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		ActorName:   "luka",
+		Body:        "tell me ip address of herome.kids",
+		CreatedAt:   time.Now().UTC(),
+	}
+	if err := store.Append(context.Background(), event); err != nil {
+		t.Fatalf("append event: %v", err)
+	}
+
+	embedder := &countingEmbedder{queryEmbedding: []float32{1, 0, 0}}
+	activities := Activities{
+		Store:          store,
+		MemoryEmbedder: embedder,
+	}
+
+	if _, err := activities.loadContext(context.Background(), event); err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if embedder.queryCalls != 1 {
+		t.Fatalf("expected one query embedding for context load, got %d", embedder.queryCalls)
+	}
+}
+
 func TestPersistConversationMemoryStoresTextWhenEmbeddingFails(t *testing.T) {
 	t.Parallel()
 
@@ -254,4 +291,18 @@ func (f failingEmbedder) EmbedDocuments(context.Context, []string) ([][]float32,
 
 func (f failingEmbedder) EmbedQuery(context.Context, string) ([]float32, error) {
 	return nil, f.err
+}
+
+type countingEmbedder struct {
+	queryCalls     int
+	queryEmbedding []float32
+}
+
+func (c *countingEmbedder) EmbedDocuments(context.Context, []string) ([][]float32, error) {
+	return nil, nil
+}
+
+func (c *countingEmbedder) EmbedQuery(context.Context, string) ([]float32, error) {
+	c.queryCalls++
+	return c.queryEmbedding, nil
 }

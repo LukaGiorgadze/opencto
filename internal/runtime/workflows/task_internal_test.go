@@ -37,7 +37,7 @@ func TestApprovalMessageBuildsReviewFromPlan(t *testing.T) {
 			},
 		},
 		policy.Result{
-			Reasons: []string{"network egress requested"},
+			Reasons: []string{"destructive or secret-sensitive action"},
 		},
 	)
 
@@ -47,7 +47,7 @@ func TestApprovalMessageBuildsReviewFromPlan(t *testing.T) {
 		"1. [T0] Verify deployment target",
 		"2. [T2] Deploy to staging (awaiting approval)",
 		"Approval ID: `approval-1`",
-		"Reason: network egress requested",
+		"Reason: destructive or secret-sensitive action",
 		"approve approval-1",
 	} {
 		if !strings.Contains(message, want) {

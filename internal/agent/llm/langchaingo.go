@@ -1075,7 +1075,6 @@ func normalizeToolChoice(output agent.ToolChoice, input agent.ToolSelectionInput
 		output.Command = ""
 		output.Args = nil
 		output.TimeoutMs = 0
-		output.NetworkEgress = false
 		output.Destructive = false
 		return output, nil
 	}
@@ -1085,9 +1084,6 @@ func normalizeToolChoice(output agent.ToolChoice, input agent.ToolSelectionInput
 	}
 	if output.Command == "" {
 		return agent.ToolChoice{}, fmt.Errorf("%w: shell tool response is missing a command", agent.ErrInvalidToolChoice)
-	}
-	if len(output.Args) == 0 {
-		return agent.ToolChoice{}, fmt.Errorf("%w: shell tool response is missing wrapped shell args", agent.ErrInvalidToolChoice)
 	}
 	if output.Intent == "" {
 		return agent.ToolChoice{}, fmt.Errorf("%w: shell tool response is missing an intent", agent.ErrInvalidToolChoice)

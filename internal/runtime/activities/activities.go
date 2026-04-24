@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
-	"path/filepath"
 	goruntime "runtime"
 	"strconv"
 	"strings"
@@ -135,7 +133,8 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event) (agent
 	if err != nil {
 		return agent.Context{}, err
 	}
-	conversation, err := a.searchMemory(ctx, event.ProjectID, domain.MemoryCategoryConversation, event.Body, 10)
+	queryEmbedding, hasQueryEmbedding := a.embedMemoryQuery(ctx, event.ProjectID, event.Body)
+	conversation, err := a.searchMemoryWithQueryEmbedding(ctx, event.ProjectID, domain.MemoryCategoryConversation, event.Body, 10, queryEmbedding, hasQueryEmbedding)
 	if err != nil {
 		return agent.Context{}, err
 	}
@@ -144,7 +143,7 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event) (agent
 		recentConversation,
 		syntheticConversationFromEvents(recentEvents, event, 4),
 	)
-	facts, err := a.searchMemory(ctx, event.ProjectID, domain.MemoryCategoryProjectFact, event.Body, 10)
+	facts, err := a.searchMemoryWithQueryEmbedding(ctx, event.ProjectID, domain.MemoryCategoryProjectFact, event.Body, 10, queryEmbedding, hasQueryEmbedding)
 	if err != nil {
 		return agent.Context{}, err
 	}
@@ -426,17 +425,28 @@ func contradictionResolutionSummary(events []domain.Event, current domain.Event)
 }
 
 func (a *Activities) searchMemory(ctx context.Context, projectID string, category domain.MemoryCategory, query string, limit int) ([]domain.MemoryFact, error) {
-	if a.MemoryEmbedder != nil && strings.TrimSpace(query) != "" {
-		embedding, err := a.MemoryEmbedder.EmbedQuery(ctx, query)
-		if err != nil {
-			a.warn("semantic memory query failed; falling back to text search",
-				slog.String("project_id", projectID),
-				slog.String("category", string(category)),
-				slog.String("error", err.Error()),
-			)
-			return a.Store.SearchByCategory(ctx, projectID, category, query, limit)
-		}
-		facts, err := a.Store.SearchByCategorySimilar(ctx, projectID, category, embedding, limit)
+	queryEmbedding, ok := a.embedMemoryQuery(ctx, projectID, query)
+	return a.searchMemoryWithQueryEmbedding(ctx, projectID, category, query, limit, queryEmbedding, ok)
+}
+
+func (a *Activities) embedMemoryQuery(ctx context.Context, projectID, query string) ([]float32, bool) {
+	if a.MemoryEmbedder == nil || strings.TrimSpace(query) == "" {
+		return nil, false
+	}
+	embedding, err := a.MemoryEmbedder.EmbedQuery(ctx, query)
+	if err != nil {
+		a.warn("semantic memory query failed; falling back to text search",
+			slog.String("project_id", projectID),
+			slog.String("error", err.Error()),
+		)
+		return nil, false
+	}
+	return embedding, true
+}
+
+func (a *Activities) searchMemoryWithQueryEmbedding(ctx context.Context, projectID string, category domain.MemoryCategory, query string, limit int, queryEmbedding []float32, hasQueryEmbedding bool) ([]domain.MemoryFact, error) {
+	if hasQueryEmbedding {
+		facts, err := a.Store.SearchByCategorySimilar(ctx, projectID, category, queryEmbedding, limit)
 		if err != nil {
 			a.warn("semantic memory search failed; falling back to text search",
 				slog.String("project_id", projectID),
@@ -756,7 +766,6 @@ func (a *Activities) EvaluatePolicy(ctx context.Context, event domain.Event, cho
 		Args:          choice.Args,
 		WorkingDir:    choice.WorkingDir,
 		WorkspaceRoot: a.WorkspaceRoot,
-		NetworkEgress: choice.NetworkEgress,
 		Destructive:   choice.Destructive,
 	})
 }
@@ -979,79 +988,12 @@ func toolChoiceTimeout(choice agent.ToolChoice) time.Duration {
 func buildRuntimeContext(workspaceRoot string) agent.RuntimeContext {
 	shellPath := strings.TrimSpace(os.Getenv("SHELL"))
 	return agent.RuntimeContext{
-		OS:                goruntime.GOOS,
-		Arch:              goruntime.GOARCH,
-		Shell:             shellPath,
-		PreferredShell:    preferredShell(shellPath),
-		Path:              os.Getenv("PATH"),
-		AvailableCommands: availableCommands(shellPath),
-		WorkspaceRoot:     workspaceRoot,
+		OS:            goruntime.GOOS,
+		Arch:          goruntime.GOARCH,
+		Shell:         shellPath,
+		Path:          os.Getenv("PATH"),
+		WorkspaceRoot: workspaceRoot,
 	}
-}
-
-func preferredShell(shellPath string) string {
-	shellPath = strings.TrimSpace(shellPath)
-	if shellPath == "" {
-		return ""
-	}
-	base := filepath.Base(shellPath)
-	switch base {
-	case "bash", "zsh", "sh":
-		return shellPath
-	default:
-		return ""
-	}
-}
-
-func availableCommands(shellPath string) []string {
-	candidates := []string{
-		"bash",
-		"zsh",
-		"sh",
-		"env",
-		"python3",
-		"python",
-		"node",
-		"npm",
-		"pnpm",
-		"go",
-		"git",
-		"curl",
-		"wget",
-		"dig",
-		"host",
-		"nslookup",
-		"getent",
-		"ping",
-		"nc",
-		"jq",
-		"sqlite3",
-		"docker",
-		"task",
-		"make",
-	}
-	if goruntime.GOOS == "windows" {
-		candidates = append([]string{"powershell", "cmd"}, candidates...)
-	}
-
-	found := make([]string, 0, len(candidates)+1)
-	seen := map[string]struct{}{}
-	if preferred := filepath.Base(strings.TrimSpace(shellPath)); preferred != "" {
-		if _, err := exec.LookPath(preferred); err == nil {
-			found = append(found, preferred)
-			seen[preferred] = struct{}{}
-		}
-	}
-	for _, candidate := range candidates {
-		if _, ok := seen[candidate]; ok {
-			continue
-		}
-		if _, err := exec.LookPath(candidate); err == nil {
-			found = append(found, candidate)
-			seen[candidate] = struct{}{}
-		}
-	}
-	return found
 }
 
 func (a *Activities) PersistConversationMemory(ctx context.Context, event domain.Event, summary string) error {

@@ -16,7 +16,6 @@ type Request struct {
 	Args           []string        `json:"args,omitempty"`
 	WorkingDir     string          `json:"working_dir,omitempty"`
 	WorkspaceRoot  string          `json:"workspace_root,omitempty"`
-	NetworkEgress  bool            `json:"network_egress,omitempty"`
 	SecretExposure bool            `json:"secret_exposure,omitempty"`
 	Destructive    bool            `json:"destructive,omitempty"`
 	Production     bool            `json:"production,omitempty"`
@@ -84,10 +83,6 @@ func (e *StaticEngine) Evaluate(_ context.Context, req Request) (Result, error) 
 		result.Tier = domain.RiskTierConsequential
 		result.RequiresApproval = true
 		result.Reasons = append(result.Reasons, "destructive or secret-sensitive action")
-	case req.NetworkEgress:
-		result.Tier = domain.RiskTierConsequential
-		result.RequiresApproval = true
-		result.Reasons = append(result.Reasons, "network egress requested")
 	default:
 		result.Tier = domain.RiskTierSafeLocalChange
 	}

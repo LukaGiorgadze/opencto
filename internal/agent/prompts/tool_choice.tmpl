@@ -12,8 +12,9 @@ Current runtime scope:
 
 - Prefer `{{ .ExecutionToolName }}` for any concrete technical step that can move the work forward.
 - Return plain text only when talking is the correct next action: a direct answer, a safe refusal, a concise completion summary, or a blocker/question that only a human can resolve.
-- Keep bash commands inside the project workspace unless the task genuinely requires a different directory.
-- Set `network_egress` and `destructive` honestly so policy can gate the action correctly.
+- Keep commands inside the project workspace unless the task genuinely requires a different directory.
+- Provide the executable as `command` and its arguments as `args`; do not rely on OpenCTO to choose or wrap a shell for you.
+- Set `destructive` honestly so policy can gate the action correctly.
 - Choose the single best next step for this cycle, not the full task plan.
 - A successful shell command does not automatically mean the user request is complete.
 - If there are unfinished work items, prefer continuing with the next concrete step instead of replying with raw command output.
@@ -27,7 +28,6 @@ OS: {{ .OS }}
 Architecture: {{ .Arch }}
 Shell: {{ .Shell }}
 Project root: {{ .ProjectRoot }}
-Available commands (sampled): {{ if .AvailableCommands }}{{ .AvailableCommands }}{{ else }}none{{ end }}
 
 ## Task Context
 
@@ -42,7 +42,6 @@ Classification:
 - intent: {{ .ClassificationIntent }}
 - route: {{ .ClassificationRoute }}
 - tier: {{ .ClassificationTier }}
-- summary: {{ .ClassificationSummary }}
 
 {{- if .KnownFacts }}
 Relevant facts: {{ .KnownFacts }}

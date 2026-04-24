@@ -372,13 +372,13 @@ func TestTaskWorkflowRequestsApprovalWhenPolicyRequiresIt(t *testing.T) {
 		Allowed:          true,
 		RequiresApproval: true,
 		Tier:             domain.RiskTierConsequential,
-		Reasons:          []string{"network egress requested"},
+		Reasons:          []string{"destructive or secret-sensitive action"},
 	}, nil)
 	env.OnActivity("Activities.CreateApprovalRequest", mock.Anything, mock.Anything, policy.Result{
 		Allowed:          true,
 		RequiresApproval: true,
 		Tier:             domain.RiskTierConsequential,
-		Reasons:          []string{"network egress requested"},
+		Reasons:          []string{"destructive or secret-sensitive action"},
 	}).Return(approval, nil)
 
 	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{
@@ -430,12 +430,12 @@ func TestTaskWorkflowConsumesApprovedApprovalOnResume(t *testing.T) {
 			},
 		},
 		ToolChoice: agent.ToolChoice{
-			Type:          domain.ToolTypeShell,
-			Intent:        "Install dependencies",
-			Command:       "/bin/zsh",
-			Args:          []string{"-lc", "npm install"},
-			WorkingDir:    ".",
-			NetworkEgress: true,
+			Type:        domain.ToolTypeShell,
+			Intent:      "Install dependencies",
+			Command:     "/bin/zsh",
+			Args:        []string{"-lc", "npm install"},
+			WorkingDir:  ".",
+			Destructive: true,
 		},
 	}
 	approval := domain.ApprovalRequest{
@@ -454,7 +454,7 @@ func TestTaskWorkflowConsumesApprovedApprovalOnResume(t *testing.T) {
 		Allowed:          true,
 		RequiresApproval: true,
 		Tier:             domain.RiskTierConsequential,
-		Reasons:          []string{"network egress requested"},
+		Reasons:          []string{"destructive or secret-sensitive action"},
 	}, nil)
 	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.MatchedBy(func(request activities.ExecuteToolRequest) bool {
 		return request.WorkItemID == "work-item-approved" &&
@@ -534,19 +534,19 @@ func TestTaskWorkflowReportsPolicyDenialWithoutFailing(t *testing.T) {
 		},
 	}
 	toolChoice := agent.ToolChoice{
-		Type:          domain.ToolTypeShell,
-		Intent:        "Install React app dependencies",
-		Command:       "/bin/zsh",
-		Args:          []string{"-lc", "npm install"},
-		WorkingDir:    "/Users/luka/projects/helloworld",
-		InputSummary:  "Install React app dependencies",
-		NetworkEgress: true,
+		Type:         domain.ToolTypeShell,
+		Intent:       "Install React app dependencies",
+		Command:      "/bin/zsh",
+		Args:         []string{"-lc", "npm install"},
+		WorkingDir:   "/Users/luka/projects/helloworld",
+		InputSummary: "Install React app dependencies",
+		Destructive:  true,
 	}
 	denial := policy.Result{
 		Tier:             domain.RiskTierConsequential,
 		Allowed:          false,
 		RequiresApproval: true,
-		Reasons:          []string{"network egress requested"},
+		Reasons:          []string{"destructive or secret-sensitive action"},
 		Violations:       []string{"working directory is outside project workspace"},
 	}
 
@@ -567,12 +567,12 @@ func TestTaskWorkflowReportsPolicyDenialWithoutFailing(t *testing.T) {
 	env.OnActivity("Activities.PersistConversationMemory", mock.Anything, event, mock.MatchedBy(func(message string) bool {
 		return strings.Contains(message, "policy blocked") &&
 			strings.Contains(message, "working directory is outside project workspace") &&
-			strings.Contains(message, "network egress requested")
+			strings.Contains(message, "destructive or secret-sensitive action")
 	})).Return(nil)
 	env.OnActivity("Activities.ReportResult", mock.Anything, event, mock.MatchedBy(func(message string) bool {
 		return strings.Contains(message, "policy blocked") &&
 			strings.Contains(message, "working directory is outside project workspace") &&
-			strings.Contains(message, "network egress requested")
+			strings.Contains(message, "destructive or secret-sensitive action")
 	})).Return(nil)
 
 	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{

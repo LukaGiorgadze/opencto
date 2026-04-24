@@ -25,16 +25,21 @@ var selectorDefinitions = []SelectorDefinition{
 	{
 		Name:          SelectorToolShellName,
 		Type:          domain.ToolTypeShell,
-		Description:   "Execute one guarded shell command in the project workspace. Use this for any concrete terminal action OpenCTO can perform today.",
+		Description:   "Execute any shell command in the project workspace. Use this for any concrete terminal action OpenCTO can perform safely.",
 		PromptSummary: "- `" + SelectorToolShellName + "` is the only execution tool wired to the host today.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
-			"required": ["command", "working_dir", "timeout_ms", "description", "network_egress", "destructive"],
+			"required": ["command", "args", "working_dir", "timeout_ms", "description", "destructive"],
 			"additionalProperties": false,
 			"properties": {
 				"command": {
 					"type": "string",
-					"description": "The shell command to run for the next execution step."
+					"description": "The executable to run for the next execution step."
+				},
+				"args": {
+					"type": "array",
+					"items": {"type": "string"},
+					"description": "Arguments for the executable. Use an empty array when there are no arguments."
 				},
 				"working_dir": {
 					"type": ["string", "null"],
@@ -48,10 +53,6 @@ var selectorDefinitions = []SelectorDefinition{
 				"description": {
 					"type": ["string", "null"],
 					"description": "One sentence describing what this command achieves. Use null when the command itself is self-explanatory."
-				},
-				"network_egress": {
-					"type": ["boolean", "null"],
-					"description": "Set true when the command will access the network. Use null when unknown."
 				},
 				"destructive": {
 					"type": ["boolean", "null"],

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
@@ -27,12 +26,10 @@ type toolSelectionPromptData struct {
 	Arch                  string
 	Shell                 string
 	ProjectRoot           string
-	AvailableCommands     string
 	RequestSummary        string
 	ClassificationIntent  agent.ClassificationIntent
 	ClassificationRoute   agent.ClassificationRoute
 	ClassificationTier    domain.RiskTier
-	ClassificationSummary string
 	PlanSummary           string
 	PlanExecutionOrder    string
 	PlanTestStrategy      string
@@ -52,12 +49,12 @@ type toolSelectionPromptData struct {
 }
 
 type shellToolInput struct {
-	Command       string `json:"command"`
-	WorkingDir    string `json:"working_dir,omitempty"`
-	TimeoutMs     int    `json:"timeout_ms,omitempty"`
-	Description   string `json:"description,omitempty"`
-	NetworkEgress bool   `json:"network_egress,omitempty"`
-	Destructive   bool   `json:"destructive,omitempty"`
+	Command     string   `json:"command"`
+	Args        []string `json:"args,omitempty"`
+	WorkingDir  string   `json:"working_dir,omitempty"`
+	TimeoutMs   int      `json:"timeout_ms,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Destructive bool     `json:"destructive,omitempty"`
 }
 
 func (e *OpenAIEngine) selectToolWithRegisteredTools(ctx context.Context, input agent.ToolSelectionInput) (agent.ToolChoice, error) {
@@ -103,14 +100,12 @@ func renderToolSelectionPrompt(input agent.ToolSelectionInput) (string, error) {
 		RecentDecisions:       formatRecentDecisions(input.Context.RecentDecisions),
 		OS:                    input.Runtime.OS,
 		Arch:                  input.Runtime.Arch,
-		Shell:                 firstNonEmpty(strings.TrimSpace(input.Runtime.PreferredShell), strings.TrimSpace(input.Runtime.Shell), "unknown"),
+		Shell:                 firstNonEmpty(strings.TrimSpace(input.Runtime.Shell), "unknown"),
 		ProjectRoot:           firstNonEmpty(strings.TrimSpace(input.Runtime.WorkspaceRoot), "."),
-		AvailableCommands:     strings.Join(input.Runtime.AvailableCommands, ", "),
 		RequestSummary:        strings.TrimSpace(input.Context.Event.Body),
 		ClassificationIntent:  input.Classification.Intent,
 		ClassificationRoute:   input.Classification.RoutedTo,
 		ClassificationTier:    input.Classification.Tier,
-		ClassificationSummary: strings.TrimSpace(input.Classification.Summary),
 		PlanSummary:           strings.TrimSpace(input.Plan.Summary),
 		PlanExecutionOrder:    formatExecutionOrderMetadata(input.Plan.Metadata["execution_order_json"]),
 		PlanTestStrategy:      strings.TrimSpace(input.Plan.Metadata["test_strategy"]),
@@ -187,7 +182,6 @@ func shellToolChoiceFromInput(definition toolregistry.SelectorDefinition, call l
 		return agent.ToolChoice{}, fmt.Errorf("%s tool requires a command", definition.Name)
 	}
 
-	command, wrappedArgs := wrapShellCommand(input.Runtime, commandText)
 	metadata := map[string]string{
 		"model_tool":   definition.Name,
 		"tool_call_id": call.ID,
@@ -197,16 +191,15 @@ func shellToolChoiceFromInput(definition toolregistry.SelectorDefinition, call l
 	}
 
 	return agent.ToolChoice{
-		Type:          definition.Type,
-		Intent:        firstNonEmpty(strings.TrimSpace(args.Description), commandText),
-		Command:       command,
-		Args:          wrappedArgs,
-		WorkingDir:    firstNonEmpty(strings.TrimSpace(args.WorkingDir), strings.TrimSpace(input.Runtime.WorkspaceRoot)),
-		TimeoutMs:     clampToolTimeoutMs(args.TimeoutMs),
-		InputSummary:  firstNonEmpty(strings.TrimSpace(args.Description), commandText, strings.TrimSpace(input.Context.Event.Body)),
-		NetworkEgress: args.NetworkEgress,
-		Destructive:   args.Destructive,
-		Metadata:      metadata,
+		Type:         definition.Type,
+		Intent:       firstNonEmpty(strings.TrimSpace(args.Description), commandText),
+		Command:      commandText,
+		Args:         trimStringList(args.Args, 100),
+		WorkingDir:   firstNonEmpty(strings.TrimSpace(args.WorkingDir), strings.TrimSpace(input.Runtime.WorkspaceRoot)),
+		TimeoutMs:    clampToolTimeoutMs(args.TimeoutMs),
+		InputSummary: firstNonEmpty(strings.TrimSpace(args.Description), commandText, strings.TrimSpace(input.Context.Event.Body)),
+		Destructive:  args.Destructive,
+		Metadata:     metadata,
 	}, nil
 }
 
@@ -280,53 +273,6 @@ func formatObservationHistory(history []agent.ExecutionFeedback) string {
 		parts = append(parts, entry)
 	}
 	return strings.Join(parts, "\n")
-}
-
-func wrapShellCommand(runtime agent.RuntimeContext, commandText string) (string, []string) {
-	commandText = strings.TrimSpace(commandText)
-	if runtime.OS == "windows" {
-		shellCommand := selectWindowsShell(runtime)
-		base := strings.ToLower(filepath.Base(shellCommand))
-		switch base {
-		case "powershell", "pwsh", "powershell.exe", "pwsh.exe":
-			return shellCommand, []string{"-Command", commandText}
-		default:
-			return shellCommand, []string{"/C", commandText}
-		}
-	}
-
-	shellCommand := selectUnixShell(runtime)
-	return shellCommand, []string{"-lc", commandText}
-}
-
-func selectUnixShell(runtime agent.RuntimeContext) string {
-	if preferred := strings.TrimSpace(runtime.PreferredShell); preferred != "" {
-		return preferred
-	}
-	for _, candidate := range runtime.AvailableCommands {
-		switch candidate {
-		case "bash", "zsh", "sh":
-			return candidate
-		}
-	}
-	return "sh"
-}
-
-func selectWindowsShell(runtime agent.RuntimeContext) string {
-	if preferred := strings.TrimSpace(runtime.PreferredShell); preferred != "" {
-		base := strings.ToLower(filepath.Base(preferred))
-		switch base {
-		case "powershell", "pwsh", "cmd", "powershell.exe", "pwsh.exe", "cmd.exe":
-			return preferred
-		}
-	}
-	for _, candidate := range runtime.AvailableCommands {
-		switch strings.ToLower(candidate) {
-		case "powershell", "pwsh", "cmd", "powershell.exe", "pwsh.exe", "cmd.exe":
-			return candidate
-		}
-	}
-	return "cmd"
 }
 
 func clampToolTimeoutMs(value int) int {

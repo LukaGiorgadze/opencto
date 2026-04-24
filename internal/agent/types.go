@@ -106,7 +106,6 @@ type ToolChoice struct {
 	TimeoutMs       int               `json:"timeout_ms,omitempty"`
 	InputSummary    string            `json:"input_summary,omitempty"`
 	ResponseMessage string            `json:"response_message,omitempty"`
-	NetworkEgress   bool              `json:"network_egress,omitempty"`
 	Destructive     bool              `json:"destructive,omitempty"`
 	Metadata        map[string]string `json:"metadata,omitempty"`
 }
@@ -120,7 +119,6 @@ func (c ToolChoice) IsZero() bool {
 		c.TimeoutMs == 0 &&
 		c.InputSummary == "" &&
 		c.ResponseMessage == "" &&
-		!c.NetworkEgress &&
 		!c.Destructive &&
 		len(c.Metadata) == 0
 }
@@ -152,13 +150,11 @@ type DecisionInput struct {
 }
 
 type RuntimeContext struct {
-	OS                string   `json:"os"`
-	Arch              string   `json:"arch"`
-	Shell             string   `json:"shell,omitempty"`
-	PreferredShell    string   `json:"preferred_shell,omitempty"`
-	Path              string   `json:"path,omitempty"`
-	AvailableCommands []string `json:"available_commands,omitempty"`
-	WorkspaceRoot     string   `json:"workspace_root,omitempty"`
+	OS            string `json:"os"`
+	Arch          string `json:"arch"`
+	Shell         string `json:"shell,omitempty"`
+	Path          string `json:"path,omitempty"`
+	WorkspaceRoot string `json:"workspace_root,omitempty"`
 }
 
 type ClarificationInput struct {

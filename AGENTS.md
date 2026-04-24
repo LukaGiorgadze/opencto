@@ -376,7 +376,6 @@ Before dangerous execution, policy must evaluate at least:
 - risk tier
 - path safety
 - command safety
-- network egress safety
 - secret exposure risk
 - destructive action risk
 - financial / production impact

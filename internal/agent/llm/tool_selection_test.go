@@ -93,11 +93,10 @@ func TestRenderToolSelectionPromptUsesRenderedSystemPrompt(t *testing.T) {
 			},
 		}},
 		Runtime: agent.RuntimeContext{
-			OS:                "darwin",
-			Arch:              "arm64",
-			PreferredShell:    "/bin/zsh",
-			WorkspaceRoot:     "/tmp/opencto",
-			AvailableCommands: []string{"zsh", "git", "go"},
+			OS:            "darwin",
+			Arch:          "arm64",
+			Shell:         "/bin/zsh",
+			WorkspaceRoot: "/tmp/opencto",
 		},
 		ExecutionCycle: 2,
 		LastObservation: &agent.ExecutionFeedback{
@@ -150,10 +149,9 @@ func TestToolChoiceFromShellToolCallWrapsCommand(t *testing.T) {
 			Event: domain.Event{Body: "run tests"},
 		},
 		Runtime: agent.RuntimeContext{
-			OS:                "darwin",
-			PreferredShell:    "/bin/zsh",
-			WorkspaceRoot:     "/tmp/opencto",
-			AvailableCommands: []string{"zsh", "git"},
+			OS:            "darwin",
+			Shell:         "/bin/zsh",
+			WorkspaceRoot: "/tmp/opencto",
 		},
 	}
 
@@ -163,11 +161,11 @@ func TestToolChoiceFromShellToolCallWrapsCommand(t *testing.T) {
 		FunctionCall: &llms.FunctionCall{
 			Name: toolregistry.SelectorToolShellName,
 			Arguments: `{
-				"command":"go test ./...",
+				"command":"go",
+				"args":["test","./..."],
 				"working_dir":"internal",
 				"timeout_ms":45000,
 				"description":"run the Go test suite",
-				"network_egress":false,
 				"destructive":false
 			}`,
 		},
@@ -179,10 +177,10 @@ func TestToolChoiceFromShellToolCallWrapsCommand(t *testing.T) {
 	if choice.Type != domain.ToolTypeShell {
 		t.Fatalf("expected shell tool, got %q", choice.Type)
 	}
-	if choice.Command != "/bin/zsh" {
-		t.Fatalf("expected zsh wrapper, got %q", choice.Command)
+	if choice.Command != "go" {
+		t.Fatalf("expected model-selected command, got %q", choice.Command)
 	}
-	if len(choice.Args) != 2 || choice.Args[0] != "-lc" || choice.Args[1] != "go test ./..." {
+	if len(choice.Args) != 2 || choice.Args[0] != "test" || choice.Args[1] != "./..." {
 		t.Fatalf("unexpected args: %#v", choice.Args)
 	}
 	if choice.WorkingDir != "internal" {
