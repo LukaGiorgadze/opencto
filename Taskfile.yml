@@ -1,0 +1,86 @@
+version: "3"
+
+dotenv:
+  - .env
+
+vars:
+  CONFIG: '{{default "config/config.example.toml" .CONFIG}}'
+  ACTOR: '{{default "local-user" .ACTOR}}'
+  BODY: '{{default "hello from task inject" .BODY}}'
+
+tasks:
+  default:
+    cmds:
+      - task: dev
+
+  dev:
+    aliases: [run]
+    desc: Run the OpenCTO app in serve mode.
+    cmd: go run ./cmd/opencto -config {{.CONFIG}} -mode serve
+
+  serve:
+    aliases: [app]
+    desc: Run the OpenCTO app in serve mode.
+    cmd: go run ./cmd/opencto -config {{.CONFIG}} -mode serve
+
+  worker:
+    desc: Run the Temporal worker only.
+    cmd: go run ./cmd/opencto -config {{.CONFIG}} -mode worker
+
+  validate:
+    desc: Validate the OpenCTO configuration.
+    cmd: go run ./cmd/opencto -config {{.CONFIG}} -mode validate
+
+  inject:
+    desc: Inject a local event. Override BODY and ACTOR as needed.
+    cmd: go run ./cmd/opencto -config {{.CONFIG}} -mode inject -actor '{{.ACTOR}}' -body '{{.BODY}}'
+
+  infra:up:
+    aliases: [up]
+    desc: Start Temporal and supporting infrastructure.
+    cmd: docker compose up -d
+
+  infra:down:
+    aliases: [down]
+    desc: Stop Temporal and supporting infrastructure.
+    cmd: docker compose down
+
+  infra:reset:
+    desc: Stop infrastructure and remove volumes.
+    cmd: docker compose down -v
+
+  infra:logs:
+    desc: Tail infrastructure logs.
+    cmd: docker compose logs -f postgresql temporal temporal-ui
+
+  infra:ps:
+    desc: Show infrastructure container status.
+    cmd: docker compose ps
+
+  infra:config:
+    desc: Render the effective Docker Compose configuration.
+    cmd: docker compose config
+
+  tidy:
+    desc: Tidy Go module dependencies with local caches.
+    cmd: env GOCACHE=.gocache GOMODCACHE=.gomodcache go mod tidy
+
+  fmt:
+    aliases: [format]
+    desc: Format Go source files.
+    cmd: gofmt -w $(find cmd internal pkg -type f -name '*.go')
+
+  test:
+    desc: Run the Go test suite.
+    cmd: go test ./...
+
+  test:race:
+    desc: Run the Go test suite with the race detector.
+    cmd: go test ./... --race
+
+  check:
+    desc: Run validation and tests.
+    deps:
+      - validate
+      - test
+    cmd: wait

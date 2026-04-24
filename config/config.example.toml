@@ -1,0 +1,44 @@
+[project]
+id = "default"
+name = "OpenCTO"
+workspace_root = "."
+adr_dir = "docs/adr"
+
+[memory]
+path = "data/memory.db"
+sqlite_vec_path = ""
+sqlite_vec_required = false
+busy_timeout = "5s"
+
+[llm]
+provider = "openai"
+model_reasoning = "gpt-5.4-mini"
+model_fast = "gpt-5.4-nano"
+embedding_model = "text-embedding-3-small"
+embedding_dimensions = 1536
+api_key_env = "OPENAI_API_KEY"
+
+[policy]
+autonomy_threshold = 1
+require_owner_for_tier3 = true
+workspace_root = "."
+denied_commands = ["sudo", "rm", "dd"]
+
+[temporal]
+host_port = "127.0.0.1:7233"
+namespace = "default"
+task_queue = "opencto"
+continue_as_new_after_events = 1000
+
+[channels.discord]
+enabled = true
+token_env = "DISCORD_TOKEN"
+application_id_env = "DISCORD_APPLICATION_ID"
+
+[vault]
+provider = "keyring"
+service = "opencto"
+
+[observability]
+log_level = "INFO"
+json_logs = true
