@@ -90,8 +90,7 @@ Set `needs_clarification = true` ONLY IF one or more of the following is true:
 
 1. The action requested is genuinely absent or indecipherable (e.g., "do the thing")
 2. The target of the action is completely unknown and cannot be inferred from project context (e.g., "deploy it" with no project, no prior WIs, no inferred target)
-3. There is an open `PendingContradiction` that has not been resolved — you must not route to plan or execute until it is
-4. The request would affect production or irreversible state (Tier 3) and the specific target/scope has never been discussed
+3. The request would affect production or irreversible state (Tier 3) and the specific target/scope has never been discussed
 
 Do NOT set `needs_clarification = true` for:
 - Missing authorization or ownership justification on a routine request
