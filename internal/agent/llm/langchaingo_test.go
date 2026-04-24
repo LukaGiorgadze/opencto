@@ -69,8 +69,6 @@ func TestRenderClassificationPromptUsesStructuredContext(t *testing.T) {
 	for _, want := range []string{
 		"Project: OpenCTO",
 		"Project Description: Self-hosted AI technical co-founder",
-		"Active work: Ship staging deployment [ready]",
-		"Open contradictions: database choice",
 		"Recent conversation: The agent asked which staging target should receive the deploy.",
 		"Recent decisions: Use Temporal: Temporal coordinates long-running work.",
 		"Author: luka",
@@ -88,6 +86,15 @@ func TestRenderClassificationPromptUsesStructuredContext(t *testing.T) {
 	}
 	if strings.Contains(prompt, "Attachments:") {
 		t.Fatalf("prompt still contains removed attachments field:\n%s", prompt)
+	}
+	for _, removed := range []string{
+		"Current State:",
+		"Active work:",
+		"Open contradictions:",
+	} {
+		if strings.Contains(prompt, removed) {
+			t.Fatalf("prompt still contains removed classifier context %q\n%s", removed, prompt)
+		}
 	}
 }
 

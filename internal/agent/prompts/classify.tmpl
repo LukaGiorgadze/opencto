@@ -10,13 +10,10 @@ Your output routes the event to the correct downstream workflow. A wrong classif
 
 Project: {{ .ProjectName }}
 Project ID: {{ .ProjectID }}
-Current State: {{ .ProjectState }}
 {{- if .ProjectDescription }}
 Project Description: {{ .ProjectDescription }}
 {{- end }}
 
-Active work: {{ if .ActiveWorkItems }}{{ .ActiveWorkItems }}{{ else }}none{{ end }}
-Open contradictions: {{ if .OpenContradictions }}{{ .OpenContradictions }}{{ else }}none{{ end }}
 Recent conversation: {{ if .RelevantConversation }}{{ .RelevantConversation }}{{ else }}none{{ end }}
 Recent decisions: {{ if .RecentDecisions }}{{ .RecentDecisions }}{{ else }}none{{ end }}
 

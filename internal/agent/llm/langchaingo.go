@@ -141,10 +141,7 @@ func invokeJSON[T any](ctx context.Context, model llms.Model, prompt string, pay
 type classificationPromptData struct {
 	ProjectName          string
 	ProjectID            string
-	ProjectState         string
 	ProjectDescription   string
-	ActiveWorkItems      string
-	OpenContradictions   string
 	RelevantConversation string
 	RecentDecisions      string
 	AuthorName           string
@@ -235,10 +232,7 @@ func renderClassificationPrompt(input agent.DecisionInput) (string, error) {
 	data := classificationPromptData{
 		ProjectName:          projectName,
 		ProjectID:            input.ProjectID,
-		ProjectState:         formatProjectState(input.Context.ActiveWorkItems, input.Context.OpenContradictions),
 		ProjectDescription:   strings.TrimSpace(input.Context.Project.Description),
-		ActiveWorkItems:      formatActiveWorkItems(input.Context.ActiveWorkItems),
-		OpenContradictions:   formatOpenContradictions(input.Context.OpenContradictions),
 		RelevantConversation: formatConversationMemory(input.Context.ConversationMemory),
 		RecentDecisions:      formatRecentDecisions(input.Context.RecentDecisions),
 		AuthorName:           firstNonEmpty(strings.TrimSpace(event.ActorName), strings.TrimSpace(event.Provenance.Actor), "unknown"),
