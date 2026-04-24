@@ -25,9 +25,10 @@ type OpenAIEngine struct {
 	toolModel        llms.Model
 }
 
-func NewOpenAIEngine(apiKey, reasoningModelID, fastModelID string) (*OpenAIEngine, error) {
+func NewOpenAIEngine(apiKey, baseURL, reasoningModelID, fastModelID string) (*OpenAIEngine, error) {
 	reasoningModel, err := openai.New(
 		openai.WithToken(apiKey),
+		openai.WithBaseURL(baseURL),
 		openai.WithModel(reasoningModelID),
 		openai.WithResponseFormat(openai.ResponseFormatJSON),
 	)
@@ -37,6 +38,7 @@ func NewOpenAIEngine(apiKey, reasoningModelID, fastModelID string) (*OpenAIEngin
 
 	fastModel, err := openai.New(
 		openai.WithToken(apiKey),
+		openai.WithBaseURL(baseURL),
 		openai.WithModel(fastModelID),
 		openai.WithResponseFormat(openai.ResponseFormatJSON),
 	)
@@ -46,6 +48,7 @@ func NewOpenAIEngine(apiKey, reasoningModelID, fastModelID string) (*OpenAIEngin
 
 	toolModel, err := openai.New(
 		openai.WithToken(apiKey),
+		openai.WithBaseURL(baseURL),
 		openai.WithModel(reasoningModelID),
 	)
 	if err != nil {
@@ -161,7 +164,6 @@ type clarificationPromptData struct {
 	ActiveWorkItems             string
 	OpenContradictions          string
 	RelevantConversation        string
-	RecentDecisions             string
 	AuthorName                  string
 	AuthorRole                  string
 	ChannelHint                 string
@@ -183,8 +185,6 @@ type planningPromptData struct {
 	KnownFacts           string
 	ActiveWorkItems      string
 	RelevantConversation string
-	RecentDecisions      string
-	RecentDeployments    string
 	OpenContradictions   string
 	KnownIntegrations    string
 	AutonomyThreshold    int
@@ -213,7 +213,6 @@ type planningLLMOutput struct {
 	WorkItems        []planningLLMWorkItem `json:"work_items"`
 	ExecutionOrder   [][]string            `json:"execution_order"`
 	TestStrategy     string                `json:"test_strategy"`
-	DiscordMessage   string                `json:"discord_message"`
 }
 
 type planningLLMWorkItem struct {
@@ -271,7 +270,6 @@ func renderClarificationPrompt(input agent.ClarificationInput) (string, error) {
 		ActiveWorkItems:             formatActiveWorkItems(input.Context.ActiveWorkItems),
 		OpenContradictions:          formatOpenContradictions(input.Context.OpenContradictions),
 		RelevantConversation:        formatConversationMemory(input.Context.ConversationMemory),
-		RecentDecisions:             formatRecentDecisions(input.Context.RecentDecisions),
 		AuthorName:                  firstNonEmpty(strings.TrimSpace(event.ActorName), strings.TrimSpace(event.Provenance.Actor), "unknown"),
 		AuthorRole:                  firstNonEmpty(strings.TrimSpace(event.Metadata["author_role"]), "unknown"),
 		ChannelHint:                 classificationChannelHint(event),
@@ -302,8 +300,6 @@ func renderPlanningPrompt(input agent.PlanningInput) (string, error) {
 		KnownFacts:           formatKnownFacts(input.Context.ProjectFacts),
 		ActiveWorkItems:      formatActiveWorkItems(input.Context.ActiveWorkItems),
 		RelevantConversation: formatConversationMemory(input.Context.ConversationMemory),
-		RecentDecisions:      formatRecentDecisions(input.Context.RecentDecisions),
-		RecentDeployments:    formatRecentDeployments(input.Context.RecentDecisions),
 		OpenContradictions:   formatOpenContradictions(input.Context.OpenContradictions),
 		KnownIntegrations:    formatKnownIntegrations(input.Context.Integrations),
 		AutonomyThreshold:    clampRiskTierValue(input.AutonomyThreshold),
@@ -423,10 +419,6 @@ func normalizePlanningOutput(input agent.PlanningInput, output planningLLMOutput
 		return agent.PlanningOutput{}, fmt.Errorf("%w: planning response is missing a summary", agent.ErrInvalidPlanningOutput)
 	}
 	requiresApproval := output.RequiresApproval || planningRequiresApproval(workItems, clampRiskTierValue(input.AutonomyThreshold))
-	discordMessage := strings.TrimSpace(output.DiscordMessage)
-	if discordMessage == "" {
-		return agent.PlanningOutput{}, fmt.Errorf("%w: planning response is missing a discord review message", agent.ErrInvalidPlanningOutput)
-	}
 	testStrategy := strings.TrimSpace(output.TestStrategy)
 	if testStrategy == "" {
 		return agent.PlanningOutput{}, fmt.Errorf("%w: planning response is missing a test strategy", agent.ErrInvalidPlanningOutput)
@@ -450,7 +442,6 @@ func normalizePlanningOutput(input agent.PlanningInput, output planningLLMOutput
 			"risks_json":              encodeJSONMetadata(trimStringList(output.Risks, 8)),
 			"execution_order_json":    encodeJSONMetadata(executionOrder),
 			"test_strategy":           testStrategy,
-			"discord_message":         discordMessage,
 			"requires_approval":       strconv.FormatBool(requiresApproval),
 			"clarification_summary":   firstNonEmpty(planningClarificationSummary(input.Context.Event), "none"),
 			"resolved_answers":        firstNonEmpty(planningResolvedAnswers(input.Context.Event), "none"),
@@ -849,33 +840,6 @@ func formatKnownFacts(items []domain.MemoryFact) string {
 			parts = append(parts, value)
 		case key != "":
 			parts = append(parts, key)
-		}
-	}
-	return strings.Join(parts, "; ")
-}
-
-func formatRecentDeployments(items []domain.ADR) string {
-	if len(items) == 0 {
-		return ""
-	}
-	parts := make([]string, 0, len(items))
-	for _, item := range items {
-		title := strings.TrimSpace(item.Title)
-		summary := strings.TrimSpace(item.Summary)
-		combined := strings.ToLower(title + " " + summary)
-		if !strings.Contains(combined, "deploy") && !strings.Contains(combined, "release") && !strings.Contains(combined, "rollout") {
-			continue
-		}
-		switch {
-		case title != "" && summary != "":
-			parts = append(parts, title+": "+summary)
-		case title != "":
-			parts = append(parts, title)
-		case summary != "":
-			parts = append(parts, summary)
-		}
-		if len(parts) == 3 {
-			break
 		}
 	}
 	return strings.Join(parts, "; ")

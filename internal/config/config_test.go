@@ -34,6 +34,9 @@ workspace_root = "."
 	if cfg.LLM.EmbeddingModel != "text-embedding-3-small" {
 		t.Fatalf("unexpected embedding model: %s", cfg.LLM.EmbeddingModel)
 	}
+	if cfg.LLM.BaseURL != "http://127.0.0.1:4000" {
+		t.Fatalf("unexpected llm base url: %s", cfg.LLM.BaseURL)
+	}
 	if cfg.LLM.EmbeddingDimensions != 1536 {
 		t.Fatalf("unexpected embedding dimensions: %d", cfg.LLM.EmbeddingDimensions)
 	}
@@ -79,6 +82,7 @@ workspace_root = "."
 
 [llm]
 api_key = "test-key"
+base_url = "http://127.0.0.1:4000"
 embedding_model = "text-embedding-3-large"
 embedding_dimensions = 1024
 `)
@@ -93,6 +97,9 @@ embedding_dimensions = 1024
 
 	if cfg.LLM.APIKey != "test-key" {
 		t.Fatalf("unexpected api key: %s", cfg.LLM.APIKey)
+	}
+	if cfg.LLM.BaseURL != "http://127.0.0.1:4000" {
+		t.Fatalf("unexpected llm base url: %s", cfg.LLM.BaseURL)
 	}
 	if cfg.LLM.EmbeddingModel != "text-embedding-3-large" {
 		t.Fatalf("unexpected embedding model: %s", cfg.LLM.EmbeddingModel)

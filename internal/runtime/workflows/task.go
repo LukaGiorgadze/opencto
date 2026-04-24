@@ -33,18 +33,8 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			return TaskWorkflowResult{}, err
 		}
 
-		var loaded agent.Context
-		if err := workflow.ExecuteActivity(ctx, "Activities.LoadContext", input.Event).Get(ctx, &loaded); err != nil {
-			return TaskWorkflowResult{}, err
-		}
-
-		decisionInput := agent.DecisionInput{
-			ProjectID: input.ProjectID,
-			Context:   loaded,
-		}
-
 		var classification agent.Classification
-		if err := workflow.ExecuteActivity(ctx, "Activities.Classify", decisionInput).Get(ctx, &classification); err != nil {
+		if err := workflow.ExecuteActivity(ctx, "Activities.Classify", input.Event).Get(ctx, &classification); err != nil {
 			return TaskWorkflowResult{}, err
 		}
 
@@ -60,32 +50,50 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 		var decision agent.DecisionOutput
 		switch {
 		case classification.RequiresClarification():
-			if err := workflow.ExecuteActivity(ctx, "Activities.Clarify", decisionInput, classification).Get(ctx, &decision); err != nil {
+			if err := workflow.ExecuteActivity(ctx, "Activities.Clarify", input.Event, classification).Get(ctx, &decision); err != nil {
 				return TaskWorkflowResult{}, err
 			}
 		case classification.RoutedTo == agent.ClassificationRouteIngest:
-			if err := workflow.ExecuteActivity(ctx, "Activities.Ingest", decisionInput, classification).Get(ctx, &decision); err != nil {
+			if err := workflow.ExecuteActivity(ctx, "Activities.Ingest", input.Event, classification).Get(ctx, &decision); err != nil {
 				return TaskWorkflowResult{}, err
 			}
 			return TaskWorkflowResult{Completed: true, Decision: decision}, nil
 		case classification.RoutedTo == agent.ClassificationRouteExecute, classification.RoutedTo == agent.ClassificationRouteAnswer:
-			if err := workflow.ExecuteActivity(ctx, "Activities.PrepareReadyDecision", decisionInput, classification).Get(ctx, &decision); err != nil {
+			if err := workflow.ExecuteActivity(ctx, "Activities.PrepareReadyDecision", input.Event, classification).Get(ctx, &decision); err != nil {
 				return TaskWorkflowResult{}, err
 			}
-			if err := workflow.ExecuteActivity(ctx, "Activities.SelectTool", decisionInput, decision, (*agent.ExecutionFeedback)(nil), 1, []agent.ExecutionFeedback(nil)).Get(ctx, &decision); err != nil {
+			var selection activities.ToolSelectionResult
+			if err := workflow.ExecuteActivity(ctx, "Activities.SelectTool", activities.ToolSelectionRequest{
+				ProjectID:      input.ProjectID,
+				Event:          input.Event,
+				Decision:       selectionSnapshot(decision),
+				ExecutionCycle: 1,
+			}).Get(ctx, &selection); err != nil {
+				return TaskWorkflowResult{}, err
+			}
+			if err := applyToolSelection(&decision, selection); err != nil {
 				return TaskWorkflowResult{}, err
 			}
 		default:
-			if err := workflow.ExecuteActivity(ctx, "Activities.Plan", decisionInput, classification).Get(ctx, &decision); err != nil {
+			if err := workflow.ExecuteActivity(ctx, "Activities.Plan", input.Event, classification).Get(ctx, &decision); err != nil {
 				return TaskWorkflowResult{}, err
 			}
-			if err := workflow.ExecuteActivity(ctx, "Activities.SelectTool", decisionInput, decision, (*agent.ExecutionFeedback)(nil), 1, []agent.ExecutionFeedback(nil)).Get(ctx, &decision); err != nil {
+			var selection activities.ToolSelectionResult
+			if err := workflow.ExecuteActivity(ctx, "Activities.SelectTool", activities.ToolSelectionRequest{
+				ProjectID:      input.ProjectID,
+				Event:          input.Event,
+				Decision:       selectionSnapshot(decision),
+				ExecutionCycle: 1,
+			}).Get(ctx, &selection); err != nil {
+				return TaskWorkflowResult{}, err
+			}
+			if err := applyToolSelection(&decision, selection); err != nil {
 				return TaskWorkflowResult{}, err
 			}
 		}
 
 		if decision.Classification.RequiresClarification() {
-			if err := workflow.ExecuteActivity(ctx, "Activities.PersistDecision", decision).Get(ctx, nil); err != nil {
+			if err := workflow.ExecuteActivity(ctx, "Activities.PersistDecision", persistenceSnapshot(decision)).Get(ctx, nil); err != nil {
 				return TaskWorkflowResult{}, err
 			}
 			message := decision.Classification.Summary
@@ -98,7 +106,7 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 		}
 		if message := directReplyMessage(decision); message != "" {
 			applyResponseOutcome(&decision, workflow.Now(ctx))
-			if err := workflow.ExecuteActivity(ctx, "Activities.PersistDecision", decision).Get(ctx, nil); err != nil {
+			if err := workflow.ExecuteActivity(ctx, "Activities.PersistDecision", persistenceSnapshot(decision)).Get(ctx, nil); err != nil {
 				return TaskWorkflowResult{}, err
 			}
 			_ = workflow.ExecuteActivity(ctx, "Activities.PersistConversationMemory", input.Event, message).Get(ctx, nil)
@@ -106,35 +114,28 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			return TaskWorkflowResult{Completed: true, Decision: decision}, nil
 		}
 
-		return executeDecision(ctx, input.Event, decisionInput, decision)
+		return executeDecision(ctx, input.Event, input.ProjectID, decision, nil)
 	}
 
 	if input.Decision == nil {
 		return TaskWorkflowResult{}, fmt.Errorf("resumed task is missing decision payload")
 	}
-	if err := workflow.ExecuteActivity(ctx, "Activities.RevalidateApproval", input.ProjectID, input.ApprovalID).Get(ctx, nil); err != nil {
+	approvedApproval, err := approvedApprovalForResume(ctx, input)
+	if err != nil {
 		return TaskWorkflowResult{}, err
 	}
 
-	var loaded agent.Context
-	if err := workflow.ExecuteActivity(ctx, "Activities.LoadContext", input.Event).Get(ctx, &loaded); err != nil {
-		return TaskWorkflowResult{}, err
-	}
-
-	return executeDecision(ctx, input.Event, agent.DecisionInput{
-		ProjectID: input.ProjectID,
-		Context:   loaded,
-	}, *input.Decision)
+	return executeDecision(ctx, input.Event, input.ProjectID, *input.Decision, approvedApproval)
 }
 
-func executeDecision(ctx workflow.Context, event domain.Event, decisionInput agent.DecisionInput, decision agent.DecisionOutput) (TaskWorkflowResult, error) {
+func executeDecision(ctx workflow.Context, event domain.Event, projectID string, decision agent.DecisionOutput, approvedApproval *domain.ApprovalRequest) (TaskWorkflowResult, error) {
 	currentDecision := decision
 	var observationHistory []agent.ExecutionFeedback
 	for cycle := executionCycleFromChoice(currentDecision.ToolChoice); cycle <= maxExecutionCycles; cycle++ {
 		if err := prepareDecisionForExecution(&currentDecision, cycle, workflow.Now(ctx)); err != nil {
 			return TaskWorkflowResult{}, err
 		}
-		if err := workflow.ExecuteActivity(ctx, "Activities.PersistDecision", currentDecision).Get(ctx, nil); err != nil {
+		if err := workflow.ExecuteActivity(ctx, "Activities.PersistDecision", persistenceSnapshot(currentDecision)).Get(ctx, nil); err != nil {
 			return TaskWorkflowResult{}, err
 		}
 
@@ -143,44 +144,80 @@ func executeDecision(ctx workflow.Context, event domain.Event, decisionInput age
 			return TaskWorkflowResult{}, err
 		}
 		if !policyResult.Allowed {
-			return TaskWorkflowResult{}, domain.ErrPolicyDenied
+			message := policyDeniedMessage(policyResult, currentDecision)
+			currentDecision.ResponseMessage = message
+			markCurrentWorkItemStatus(&currentDecision, domain.WorkItemStatusBlocked, workflow.Now(ctx))
+			if err := workflow.ExecuteActivity(ctx, "Activities.PersistDecision", persistenceSnapshot(currentDecision)).Get(ctx, nil); err != nil {
+				return TaskWorkflowResult{}, err
+			}
+			_ = workflow.ExecuteActivity(ctx, "Activities.PersistConversationMemory", event, message).Get(ctx, nil)
+			_ = workflow.ExecuteActivity(ctx, "Activities.ReportResult", event, message).Get(ctx, nil)
+			return TaskWorkflowResult{Completed: true, Decision: currentDecision}, nil
 		}
 		if policyResult.RequiresApproval {
-			markCurrentWorkItemStatus(&currentDecision, domain.WorkItemStatusAwaitingApproval, workflow.Now(ctx))
-			if err := workflow.ExecuteActivity(ctx, "Activities.PersistDecision", currentDecision).Get(ctx, nil); err != nil {
+			workItem, err := currentExecutionWorkItem(currentDecision)
+			if err != nil {
 				return TaskWorkflowResult{}, err
 			}
+			if approvalCoversWorkItem(approvedApproval, workItem, policyResult) {
+				approvedApproval = nil
+			} else {
+				markCurrentWorkItemStatus(&currentDecision, domain.WorkItemStatusAwaitingApproval, workflow.Now(ctx))
+				if err := workflow.ExecuteActivity(ctx, "Activities.PersistDecision", persistenceSnapshot(currentDecision)).Get(ctx, nil); err != nil {
+					return TaskWorkflowResult{}, err
+				}
 
-			var approval domain.ApprovalRequest
-			if err := workflow.ExecuteActivity(ctx, "Activities.CreateApprovalRequest", currentDecision, policyResult).Get(ctx, &approval); err != nil {
-				return TaskWorkflowResult{}, err
+				var approval domain.ApprovalRequest
+				if err := workflow.ExecuteActivity(ctx, "Activities.CreateApprovalRequest", currentDecision, policyResult).Get(ctx, &approval); err != nil {
+					return TaskWorkflowResult{}, err
+				}
+				_ = workflow.ExecuteActivity(ctx, "Activities.ReportResult", event, approvalMessage(approval, currentDecision, policyResult)).Get(ctx, nil)
+				return TaskWorkflowResult{
+					AwaitingApproval: true,
+					ApprovalRequest:  &approval,
+					Decision:         currentDecision,
+				}, nil
 			}
-			_ = workflow.ExecuteActivity(ctx, "Activities.ReportResult", event, approvalMessage(approval, currentDecision, policyResult)).Get(ctx, nil)
-			return TaskWorkflowResult{
-				AwaitingApproval: true,
-				ApprovalRequest:  &approval,
-				Decision:         currentDecision,
-			}, nil
 		}
 
 		var executionResult activities.ExecuteToolResult
-		if err := workflow.ExecuteActivity(ctx, "Activities.ExecuteTool", currentDecision).Get(ctx, &executionResult); err != nil {
+		workItem, err := currentExecutionWorkItem(currentDecision)
+		if err != nil {
+			return TaskWorkflowResult{}, err
+		}
+		if err := workflow.ExecuteActivity(ctx, "Activities.ExecuteTool", activities.ExecuteToolRequest{
+			ProjectID:  firstNonEmpty(currentDecision.Plan.ProjectID, projectID, event.ProjectID),
+			WorkItemID: workItem.ID,
+			RiskTier:   workItem.RiskTier,
+			ToolChoice: currentDecision.ToolChoice,
+		}).Get(ctx, &executionResult); err != nil {
 			return TaskWorkflowResult{}, err
 		}
 
-		if executionResult.Attempt.Status == domain.ExecutionStatusSucceeded {
-			advanceSuccessfulWorkItem(&currentDecision, workflow.Now(ctx))
+		deferCompletion := false
+		if executionResult.Status == domain.ExecutionStatusSucceeded {
+			deferCompletion = shouldDeferCompletionForSelector(currentDecision, workItem)
+			advanceSuccessfulWorkItem(&currentDecision, workflow.Now(ctx), !deferCompletion)
 		} else {
 			markCurrentWorkItemStatus(&currentDecision, domain.WorkItemStatusFailed, workflow.Now(ctx))
 		}
-		if err := workflow.ExecuteActivity(ctx, "Activities.PersistDecision", currentDecision).Get(ctx, nil); err != nil {
+		if err := workflow.ExecuteActivity(ctx, "Activities.PersistDecision", persistenceSnapshot(currentDecision)).Get(ctx, nil); err != nil {
 			return TaskWorkflowResult{}, err
+		}
+
+		if !deferCompletion && allWorkItemsCompleted(currentDecision.WorkItems) {
+			summary := executionSummary(executionResult, cycle)
+			currentDecision.ResponseMessage = summary
+			_ = workflow.ExecuteActivity(ctx, "Activities.PersistConversationMemory", event, summary).Get(ctx, nil)
+			_ = workflow.ExecuteActivity(ctx, "Activities.WriteADR", currentDecision.Plan.ProjectID, "Execution Summary", summary, []string{currentDecision.Plan.Summary}).Get(ctx, nil)
+			_ = workflow.ExecuteActivity(ctx, "Activities.ReportResult", event, summary).Get(ctx, nil)
+			return TaskWorkflowResult{Completed: true, Decision: currentDecision}, nil
 		}
 
 		if cycle == maxExecutionCycles {
 			summary := cycleLimitSummary(executionResult, cycle)
 			applyResponseOutcome(&currentDecision, workflow.Now(ctx))
-			_ = workflow.ExecuteActivity(ctx, "Activities.PersistDecision", currentDecision).Get(ctx, nil)
+			_ = workflow.ExecuteActivity(ctx, "Activities.PersistDecision", persistenceSnapshot(currentDecision)).Get(ctx, nil)
 			_ = workflow.ExecuteActivity(ctx, "Activities.PersistConversationMemory", event, summary).Get(ctx, nil)
 			_ = workflow.ExecuteActivity(ctx, "Activities.WriteADR", currentDecision.Plan.ProjectID, "Execution Summary", summary, []string{currentDecision.Plan.Summary}).Get(ctx, nil)
 			_ = workflow.ExecuteActivity(ctx, "Activities.ReportResult", event, summary).Get(ctx, nil)
@@ -188,19 +225,26 @@ func executeDecision(ctx workflow.Context, event domain.Event, decisionInput age
 		}
 
 		feedback := executionFeedback(executionResult)
-		if feedback.Metadata == nil {
-			feedback.Metadata = map[string]string{}
-		}
-		feedback.Metadata["working_directory"] = executionResult.Invocation.WorkingDirectory
 		observationHistory = append(observationHistory, *feedback)
 
-		if err := workflow.ExecuteActivity(ctx, "Activities.SelectTool", decisionInput, currentDecision, feedback, cycle+1, observationHistory).Get(ctx, &currentDecision); err != nil {
+		var selection activities.ToolSelectionResult
+		if err := workflow.ExecuteActivity(ctx, "Activities.SelectTool", activities.ToolSelectionRequest{
+			ProjectID:          projectID,
+			Event:              event,
+			Decision:           selectionSnapshot(currentDecision),
+			Feedback:           feedback,
+			ExecutionCycle:     cycle + 1,
+			ObservationHistory: observationHistory,
+		}).Get(ctx, &selection); err != nil {
+			return TaskWorkflowResult{}, err
+		}
+		if err := applyToolSelection(&currentDecision, selection); err != nil {
 			return TaskWorkflowResult{}, err
 		}
 
 		if message := directReplyMessage(currentDecision); message != "" {
 			applyResponseOutcome(&currentDecision, workflow.Now(ctx))
-			if err := workflow.ExecuteActivity(ctx, "Activities.PersistDecision", currentDecision).Get(ctx, nil); err != nil {
+			if err := workflow.ExecuteActivity(ctx, "Activities.PersistDecision", persistenceSnapshot(currentDecision)).Get(ctx, nil); err != nil {
 				return TaskWorkflowResult{}, err
 			}
 			_ = workflow.ExecuteActivity(ctx, "Activities.PersistConversationMemory", event, message).Get(ctx, nil)
@@ -209,7 +253,7 @@ func executeDecision(ctx workflow.Context, event domain.Event, decisionInput age
 			return TaskWorkflowResult{Completed: true, Decision: currentDecision}, nil
 		}
 
-		if err := workflow.ExecuteActivity(ctx, "Activities.PersistDecision", currentDecision).Get(ctx, nil); err != nil {
+		if err := workflow.ExecuteActivity(ctx, "Activities.PersistDecision", persistenceSnapshot(currentDecision)).Get(ctx, nil); err != nil {
 			return TaskWorkflowResult{}, err
 		}
 	}
@@ -217,31 +261,83 @@ func executeDecision(ctx workflow.Context, event domain.Event, decisionInput age
 	return TaskWorkflowResult{Completed: true, Decision: currentDecision}, nil
 }
 
+func approvedApprovalForResume(ctx workflow.Context, input TaskWorkflowInput) (*domain.ApprovalRequest, error) {
+	if input.ApprovalRequest != nil {
+		approval := *input.ApprovalRequest
+		if err := validateApprovedApproval(input.ProjectID, input.ApprovalID, approval); err != nil {
+			return nil, err
+		}
+		return &approval, nil
+	}
+
+	var approval domain.ApprovalRequest
+	if err := workflow.ExecuteActivity(ctx, "Activities.RevalidateApproval", input.ProjectID, input.ApprovalID).Get(ctx, &approval); err != nil {
+		return nil, err
+	}
+	return &approval, nil
+}
+
+func validateApprovedApproval(projectID, approvalID string, approval domain.ApprovalRequest) error {
+	if strings.TrimSpace(approval.ID) == "" {
+		return fmt.Errorf("approved resume is missing approval payload")
+	}
+	if approval.ID != approvalID {
+		return fmt.Errorf("approval payload mismatch: expected %q, got %q", approvalID, approval.ID)
+	}
+	if approval.ProjectID != projectID {
+		return fmt.Errorf("approval project mismatch: expected %q, got %q", projectID, approval.ProjectID)
+	}
+	if approval.Status != domain.ApprovalStatusApproved {
+		return domain.ErrApprovalRequired
+	}
+	return nil
+}
+
+func approvalCoversWorkItem(approval *domain.ApprovalRequest, workItem domain.WorkItem, result policy.Result) bool {
+	if approval == nil {
+		return false
+	}
+	if approval.Status != domain.ApprovalStatusApproved {
+		return false
+	}
+	if approval.WorkItemID != workItem.ID {
+		return false
+	}
+	return approval.RiskTier >= result.Tier
+}
+
 func executionFeedback(result activities.ExecuteToolResult) *agent.ExecutionFeedback {
+	metadata := map[string]string{}
+	if result.WorkingDirectory != "" {
+		metadata["working_directory"] = result.WorkingDirectory
+	}
+	if result.ResultCode != "" {
+		metadata["result_code"] = result.ResultCode
+	}
+	if len(metadata) == 0 {
+		metadata = nil
+	}
 	return &agent.ExecutionFeedback{
-		Cycle:           result.Attempt.Attempt,
-		WorkItemID:      result.Attempt.WorkItemID,
-		Tool:            result.Invocation.ChosenTool,
-		Status:          result.Observation.Status,
-		RequestedAction: result.Invocation.RequestedIntent,
-		Observation:     result.Observation.Summary,
-		Error:           result.Observation.Error,
-		Metadata:        copyMetadata(result.Observation.Metadata),
+		Cycle:           result.Cycle,
+		WorkItemID:      result.WorkItemID,
+		Tool:            result.Tool,
+		Status:          string(result.Status),
+		RequestedAction: result.RequestedAction,
+		Observation:     result.Observation,
+		Error:           result.Error,
+		Metadata:        metadata,
 	}
 }
 
 func executionSummary(result activities.ExecuteToolResult, attempt int) string {
 	output := firstNonEmpty(
-		result.Observation.Summary,
-		result.Invocation.OutputSummary,
-		result.Attempt.OutputSummary,
-		result.Observation.Error,
-		result.Invocation.ErrorDetails,
+		result.Observation,
+		result.Error,
 	)
 	if output == "" {
 		output = "Execution completed."
 	}
-	if result.Attempt.Status == domain.ExecutionStatusFailed {
+	if result.Status == domain.ExecutionStatusFailed {
 		return fmt.Sprintf("Attempt %d failed: %s", attempt, output)
 	}
 	return output
@@ -249,6 +345,39 @@ func executionSummary(result activities.ExecuteToolResult, attempt int) string {
 
 func cycleLimitSummary(result activities.ExecuteToolResult, cycle int) string {
 	return fmt.Sprintf("Stopped after %d execution cycles. Last observation: %s", cycle, executionSummary(result, cycle))
+}
+
+func policyDeniedMessage(result policy.Result, decision agent.DecisionOutput) string {
+	action := firstNonEmpty(decision.ToolChoice.Intent, decision.ToolChoice.InputSummary, decision.Plan.Summary, "the selected action")
+	action = strings.Join(strings.Fields(action), " ")
+	reason := policyReason(result)
+	if reason == "" {
+		return fmt.Sprintf("I couldn't run `%s` because policy blocked it.", action)
+	}
+	return fmt.Sprintf("I couldn't run `%s` because policy blocked it: %s.", action, reason)
+}
+
+func policyReason(result policy.Result) string {
+	parts := make([]string, 0, len(result.Violations)+len(result.Reasons))
+	seen := map[string]struct{}{}
+	parts = appendPolicyReasons(parts, seen, result.Violations)
+	parts = appendPolicyReasons(parts, seen, result.Reasons)
+	return strings.Join(parts, "; ")
+}
+
+func appendPolicyReasons(parts []string, seen map[string]struct{}, values []string) []string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		parts = append(parts, value)
+	}
+	return parts
 }
 
 func clarificationMessage(clarification *agent.ClarificationRequest) string {
@@ -270,10 +399,90 @@ func clarificationMessage(clarification *agent.ClarificationRequest) string {
 }
 
 func directReplyMessage(decision agent.DecisionOutput) string {
+	if message := strings.TrimSpace(decision.ResponseMessage); message != "" {
+		return message
+	}
 	if message := strings.TrimSpace(decision.ToolChoice.ResponseMessage); message != "" {
 		return message
 	}
 	return ""
+}
+
+func applyToolSelection(decision *agent.DecisionOutput, selection activities.ToolSelectionResult) error {
+	if decision == nil {
+		return fmt.Errorf("decision is required")
+	}
+	if message := strings.TrimSpace(selection.ResponseMessage); message != "" {
+		decision.ResponseMessage = message
+		decision.ToolChoice = agent.ToolChoice{}
+		return nil
+	}
+	if selection.ToolChoice == nil {
+		return fmt.Errorf("tool selection returned no action")
+	}
+	decision.ResponseMessage = ""
+	decision.ToolChoice = *selection.ToolChoice
+	return nil
+}
+
+func selectionSnapshot(decision agent.DecisionOutput) agent.DecisionOutput {
+	snapshot := decision
+	snapshot.ToolChoice = agent.ToolChoice{}
+	snapshot.ResponseMessage = ""
+	snapshot.Plan.Steps = nil
+	snapshot.Plan.WorkItemIDs = nil
+	snapshot.Plan.Metadata = keepPlanMetadata(snapshot.Plan.Metadata, "execution_order_json", "test_strategy")
+	for idx := range snapshot.WorkItems {
+		snapshot.WorkItems[idx].Metadata = keepPlanMetadata(snapshot.WorkItems[idx].Metadata, "depends_on_json")
+	}
+	return snapshot
+}
+
+func persistenceSnapshot(decision agent.DecisionOutput) agent.DecisionOutput {
+	snapshot := decision
+	snapshot.Classification = agent.Classification{}
+	snapshot.ToolChoice = agent.ToolChoice{}
+	snapshot.ResponseMessage = ""
+	snapshot.DependencyAudit = nil
+	snapshot.Plan.Metadata = dropPlanMetadata(snapshot.Plan.Metadata, "discord_message")
+	return snapshot
+}
+
+func keepPlanMetadata(source map[string]string, keys ...string) map[string]string {
+	if len(source) == 0 || len(keys) == 0 {
+		return nil
+	}
+	kept := make(map[string]string, len(keys))
+	for _, key := range keys {
+		if value := strings.TrimSpace(source[key]); value != "" {
+			kept[key] = value
+		}
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	return kept
+}
+
+func dropPlanMetadata(source map[string]string, keys ...string) map[string]string {
+	if len(source) == 0 {
+		return nil
+	}
+	drop := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		drop[key] = struct{}{}
+	}
+	kept := make(map[string]string, len(source))
+	for key, value := range source {
+		if _, ok := drop[key]; ok {
+			continue
+		}
+		kept[key] = value
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	return kept
 }
 
 func prepareDecisionForExecution(decision *agent.DecisionOutput, cycle int, now time.Time) error {
@@ -300,14 +509,32 @@ func prepareDecisionForExecution(decision *agent.DecisionOutput, cycle int, now 
 	return nil
 }
 
-func advanceSuccessfulWorkItem(decision *agent.DecisionOutput, now time.Time) {
+func currentExecutionWorkItem(decision agent.DecisionOutput) (domain.WorkItem, error) {
+	requestedID := strings.TrimSpace(decision.ToolChoice.Metadata["work_item_id"])
+	if requestedID != "" {
+		for _, item := range decision.WorkItems {
+			if item.ID == requestedID {
+				return item, nil
+			}
+		}
+		return domain.WorkItem{}, fmt.Errorf("work item %q not found for tool execution", requestedID)
+	}
+
+	index := firstIncompleteWorkItemIndex(decision.WorkItems)
+	if index < 0 {
+		return domain.WorkItem{}, fmt.Errorf("no incomplete work item available for execution")
+	}
+	return decision.WorkItems[index], nil
+}
+
+func advanceSuccessfulWorkItem(decision *agent.DecisionOutput, now time.Time, markCompleted bool) {
 	index := firstIncompleteWorkItemIndex(decision.WorkItems)
 	if index < 0 {
 		syncPlanStatus(decision, now)
 		return
 	}
 
-	if hasLaterIncompleteWorkItems(decision.WorkItems, index) {
+	if markCompleted {
 		decision.WorkItems[index].Status = domain.WorkItemStatusCompleted
 	}
 	decision.WorkItems[index].UpdatedAt = now
@@ -352,13 +579,15 @@ func firstIncompleteWorkItemIndex(items []domain.WorkItem) int {
 	return -1
 }
 
-func hasLaterIncompleteWorkItems(items []domain.WorkItem, current int) bool {
-	for index := current + 1; index < len(items); index++ {
-		if items[index].Status != domain.WorkItemStatusCompleted {
-			return true
-		}
+func allWorkItemsCompleted(items []domain.WorkItem) bool {
+	if len(items) == 0 {
+		return false
 	}
-	return false
+	return firstIncompleteWorkItemIndex(items) < 0
+}
+
+func shouldDeferCompletionForSelector(decision agent.DecisionOutput, workItem domain.WorkItem) bool {
+	return len(decision.WorkItems) == 1 && workItem.RiskTier == domain.RiskTierObserve
 }
 
 func syncPlanStatus(decision *agent.DecisionOutput, now time.Time) {
@@ -432,17 +661,6 @@ func executionCycleFromChoice(choice agent.ToolChoice) int {
 	return cycle
 }
 
-func copyMetadata(source map[string]string) map[string]string {
-	if len(source) == 0 {
-		return nil
-	}
-	cloned := make(map[string]string, len(source))
-	for key, value := range source {
-		cloned[key] = value
-	}
-	return cloned
-}
-
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if trimmed := strings.TrimSpace(value); trimmed != "" {
@@ -453,21 +671,11 @@ func firstNonEmpty(values ...string) string {
 }
 
 func approvalMessage(approval domain.ApprovalRequest, decision agent.DecisionOutput, result policy.Result) string {
-	reasons := strings.Join(result.Reasons, "; ")
+	reasons := policyReason(result)
 	if reasons == "" {
 		reasons = "policy requires approval for this action"
 	}
-	reviewMessage := strings.TrimSpace(decision.Plan.Metadata["discord_message"])
-	if reviewMessage == "" {
-		summary := strings.TrimSpace(decision.Plan.Summary)
-		if summary == "" {
-			summary = strings.TrimSpace(decision.ToolChoice.Intent)
-		}
-		if summary == "" {
-			summary = "planned execution"
-		}
-		reviewMessage = fmt.Sprintf("Approval required for `%s`.", summary)
-	}
+	reviewMessage := approvalReviewMessage(decision)
 	return fmt.Sprintf("%s\n\nApproval ID: `%s`\nRisk tier: `%d`\nReason: %s\nReply with `approve %s` or `reject %s optional comment`.",
 		reviewMessage,
 		approval.ID,
@@ -476,4 +684,39 @@ func approvalMessage(approval domain.ApprovalRequest, decision agent.DecisionOut
 		approval.ID,
 		approval.ID,
 	)
+}
+
+func approvalReviewMessage(decision agent.DecisionOutput) string {
+	summary := firstNonEmpty(decision.Plan.Summary, decision.ToolChoice.Intent, "planned execution")
+	lines := []string{
+		"Approval required before I continue.",
+		"",
+		summary,
+	}
+	if len(decision.WorkItems) == 0 {
+		return strings.Join(lines, "\n")
+	}
+
+	lines = append(lines, "")
+	for index, item := range decision.WorkItems {
+		title := strings.TrimSpace(item.Title)
+		if title == "" {
+			title = fmt.Sprintf("Work item %d", index+1)
+		}
+		suffix := ""
+		if item.Status == domain.WorkItemStatusAwaitingApproval {
+			suffix = " (awaiting approval)"
+		} else if workItemRequiresApproval(item) {
+			suffix = " (approval required)"
+		}
+		lines = append(lines, fmt.Sprintf("%d. [T%d] %s%s", index+1, item.RiskTier, title, suffix))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func workItemRequiresApproval(item domain.WorkItem) bool {
+	if item.RiskTier >= domain.RiskTierConsequential {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(item.Metadata["requires_approval"]), "true")
 }

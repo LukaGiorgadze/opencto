@@ -40,9 +40,10 @@ func ResolveOpenAIAPIKey(cfg config.LLMConfig) (string, APIKeySource, error) {
 	return value, APIKeySourceEnvironment, nil
 }
 
-func NewOpenAIEmbedder(apiKey, embeddingModel string, dimensions int) (*embeddings.EmbedderImpl, error) {
+func NewOpenAIEmbedder(apiKey, baseURL, embeddingModel string, dimensions int) (*embeddings.EmbedderImpl, error) {
 	options := []openai.Option{
 		openai.WithToken(apiKey),
+		openai.WithBaseURL(baseURL),
 		openai.WithEmbeddingModel(embeddingModel),
 	}
 	if dimensions > 0 {

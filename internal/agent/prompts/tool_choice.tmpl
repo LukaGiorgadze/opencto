@@ -21,7 +21,7 @@ Current runtime scope:
 - If the last observation failed, diagnose it and take a materially different next step.
 - Keep command descriptions short and operator-facing.
 
-## Host Environment
+## Runtime
 
 OS: {{ .OS }}
 Architecture: {{ .Arch }}
@@ -29,21 +29,13 @@ Shell: {{ .Shell }}
 Project root: {{ .ProjectRoot }}
 Available commands (sampled): {{ if .AvailableCommands }}{{ .AvailableCommands }}{{ else }}none{{ end }}
 
-## Project Context
+## Task Context
 
 Project: {{ .ProjectName }} ({{ .ProjectID }})
 Current State: {{ .ProjectState }}
 {{- if .ProjectDescription }}
 Description: {{ .ProjectDescription }}
 {{- end }}
-Known Facts: {{ if .KnownFacts }}{{ .KnownFacts }}{{ else }}none{{ end }}
-Active Work Items: {{ if .ActiveWorkItems }}{{ .ActiveWorkItems }}{{ else }}none{{ end }}
-Open Contradictions: {{ if .OpenContradictions }}{{ .OpenContradictions }}{{ else }}none{{ end }}
-Recent Decisions: {{ if .RecentDecisions }}{{ .RecentDecisions }}{{ else }}none{{ end }}
-
-## Current Decision Context
-
-Execution cycle: {{ .ExecutionCycle }}
 
 Inbound request: {{ .RequestSummary }}
 Classification:
@@ -52,13 +44,27 @@ Classification:
 - tier: {{ .ClassificationTier }}
 - summary: {{ .ClassificationSummary }}
 
+{{- if .KnownFacts }}
+Relevant facts: {{ .KnownFacts }}
+{{- end }}
+{{- if .OpenContradictions }}
+Open contradictions: {{ .OpenContradictions }}
+{{- end }}
+{{- if .RecentDecisions }}
+Recent decisions: {{ .RecentDecisions }}
+{{- end }}
+
+## Current Work
+
+Execution cycle: {{ .ExecutionCycle }}
 Plan summary: {{ if .PlanSummary }}{{ .PlanSummary }}{{ else }}none{{ end }}
-Plan assumptions: {{ .PlanAssumptions }}
-Plan risks: {{ .PlanRisks }}
-Execution order: {{ .PlanExecutionOrder }}
-Test strategy: {{ if .PlanTestStrategy }}{{ .PlanTestStrategy }}{{ else }}none{{ end }}
-Plan steps: {{ .PlanSteps }}
 Work items: {{ .WorkItems }}
+{{- if .PlanExecutionOrder }}
+Execution order: {{ .PlanExecutionOrder }}
+{{- end }}
+{{- if .PlanTestStrategy }}
+Test strategy: {{ .PlanTestStrategy }}
+{{- end }}
 
 {{- if .HasObservationHistory }}
 ## Execution History

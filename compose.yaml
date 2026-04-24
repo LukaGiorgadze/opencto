@@ -120,6 +120,50 @@ services:
     ports:
       - "8080:8080"
 
+  litellm:
+    image: docker.litellm.ai/berriai/litellm:main-latest
+    container_name: opencto-litellm
+    restart: unless-stopped
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://temporal:temporal@postgresql:5432/postgres
+    volumes:
+      - ./litellm.yaml:/app/litellm.yaml:ro
+    command:
+      - "--config=/app/litellm.yaml"
+    networks:
+      - opencto-network
+    ports:
+      - "4000:4000"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: opencto-prometheus
+    restart: unless-stopped
+    networks:
+      - opencto-network
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+
 networks:
   opencto-network:
     driver: bridge
@@ -127,3 +171,4 @@ networks:
 
 volumes:
   postgresql_data:
+  prometheus_data:

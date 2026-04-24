@@ -6,7 +6,7 @@ Your output routes the event to the correct downstream workflow. A wrong classif
 
 ---
 
-## Project Context
+## Classification Context
 
 Project: {{ .ProjectName }}
 Project ID: {{ .ProjectID }}
@@ -15,10 +15,10 @@ Current State: {{ .ProjectState }}
 Project Description: {{ .ProjectDescription }}
 {{- end }}
 
-Active Work Items: {{ if .ActiveWorkItems }}{{ .ActiveWorkItems }}{{ else }}none{{ end }}
-Open Contradictions: {{ if .OpenContradictions }}{{ .OpenContradictions }}{{ else }}none{{ end }}
-Relevant Conversation: {{ if .RelevantConversation }}{{ .RelevantConversation }}{{ else }}none{{ end }}
-Recent Decisions (last 3): {{ if .RecentDecisions }}{{ .RecentDecisions }}{{ else }}none{{ end }}
+Active work: {{ if .ActiveWorkItems }}{{ .ActiveWorkItems }}{{ else }}none{{ end }}
+Open contradictions: {{ if .OpenContradictions }}{{ .OpenContradictions }}{{ else }}none{{ end }}
+Recent conversation: {{ if .RelevantConversation }}{{ .RelevantConversation }}{{ else }}none{{ end }}
+Recent decisions: {{ if .RecentDecisions }}{{ .RecentDecisions }}{{ else }}none{{ end }}
 
 ---
 

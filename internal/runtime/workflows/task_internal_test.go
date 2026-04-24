@@ -9,7 +9,7 @@ import (
 	"github.com/opencto/opencto/internal/policy"
 )
 
-func TestApprovalMessagePrefersPlannedDiscordReviewMessage(t *testing.T) {
+func TestApprovalMessageBuildsReviewFromPlan(t *testing.T) {
 	t.Parallel()
 
 	message := approvalMessage(
@@ -19,9 +19,17 @@ func TestApprovalMessagePrefersPlannedDiscordReviewMessage(t *testing.T) {
 		},
 		agent.DecisionOutput{
 			Plan: domain.Plan{
-				Summary: "Fallback summary",
-				Metadata: map[string]string{
-					"discord_message": "Plan review message.",
+				Summary: "Deploy the current build to staging after verification.",
+			},
+			WorkItems: []domain.WorkItem{
+				{
+					Title:    "Verify deployment target",
+					RiskTier: domain.RiskTierObserve,
+				},
+				{
+					Title:    "Deploy to staging",
+					RiskTier: domain.RiskTierConsequential,
+					Status:   domain.WorkItemStatusAwaitingApproval,
 				},
 			},
 			ToolChoice: agent.ToolChoice{
@@ -34,7 +42,10 @@ func TestApprovalMessagePrefersPlannedDiscordReviewMessage(t *testing.T) {
 	)
 
 	for _, want := range []string{
-		"Plan review message.",
+		"Approval required before I continue.",
+		"Deploy the current build to staging after verification.",
+		"1. [T0] Verify deployment target",
+		"2. [T2] Deploy to staging (awaiting approval)",
 		"Approval ID: `approval-1`",
 		"Reason: network egress requested",
 		"approve approval-1",
@@ -42,5 +53,99 @@ func TestApprovalMessagePrefersPlannedDiscordReviewMessage(t *testing.T) {
 		if !strings.Contains(message, want) {
 			t.Fatalf("approval message missing %q\n%s", want, message)
 		}
+	}
+}
+
+func TestSelectionSnapshotStripsPromptNoise(t *testing.T) {
+	t.Parallel()
+
+	decision := agent.DecisionOutput{
+		Classification: agent.Classification{
+			Intent:   agent.ClassificationIntentActionRequest,
+			RoutedTo: agent.ClassificationRoutePlan,
+		},
+		Plan: domain.Plan{
+			ID:          "plan-1",
+			ProjectID:   "project-1",
+			Steps:       []domain.PlanStep{{ID: "wi-1", Title: "Inspect repo"}},
+			WorkItemIDs: []string{"wi-1"},
+			Metadata: map[string]string{
+				"assumptions_json":     `["use defaults"]`,
+				"execution_order_json": `[["Inspect repo"]]`,
+				"test_strategy":        "Read the file.",
+			},
+		},
+		WorkItems: []domain.WorkItem{{
+			ID:     "wi-1",
+			Title:  "Inspect repo",
+			Status: domain.WorkItemStatusReady,
+			Metadata: map[string]string{
+				"acceptance_criteria_json": `["repo listed"]`,
+				"depends_on_json":          `["Prepare workspace"]`,
+				"rollback":                 "N/A",
+				"skills_json":              `["go"]`,
+			},
+		}},
+		ToolChoice:      agent.ToolChoice{Type: domain.ToolTypeShell, Intent: "old tool"},
+		ResponseMessage: "old response",
+	}
+
+	snapshot := selectionSnapshot(decision)
+
+	if !snapshot.ToolChoice.IsZero() || snapshot.ResponseMessage != "" {
+		t.Fatalf("expected tool and response to be stripped: %#v", snapshot)
+	}
+	if len(snapshot.Plan.Steps) != 0 || len(snapshot.Plan.WorkItemIDs) != 0 {
+		t.Fatalf("expected duplicate plan steps and ids to be stripped: %#v", snapshot.Plan)
+	}
+	if _, ok := snapshot.Plan.Metadata["discord_message"]; ok {
+		t.Fatalf("expected discord message to be omitted from selector metadata")
+	}
+	if _, ok := snapshot.Plan.Metadata["execution_order_json"]; !ok {
+		t.Fatalf("expected execution order to be preserved")
+	}
+	if _, ok := snapshot.WorkItems[0].Metadata["acceptance_criteria_json"]; ok {
+		t.Fatalf("expected acceptance criteria to be omitted from selector work item metadata")
+	}
+	if _, ok := snapshot.WorkItems[0].Metadata["depends_on_json"]; !ok {
+		t.Fatalf("expected dependencies to be preserved")
+	}
+}
+
+func TestPersistenceSnapshotKeepsOnlyPersistedPlanState(t *testing.T) {
+	t.Parallel()
+
+	decision := agent.DecisionOutput{
+		Classification: agent.Classification{
+			Intent:   agent.ClassificationIntentActionRequest,
+			RoutedTo: agent.ClassificationRoutePlan,
+		},
+		Plan: domain.Plan{
+			ID:        "plan-1",
+			ProjectID: "project-1",
+			Metadata: map[string]string{
+				"discord_message":      "legacy channel copy",
+				"execution_order_json": `[["Inspect repo"]]`,
+			},
+		},
+		WorkItems:       []domain.WorkItem{{ID: "wi-1", ProjectID: "project-1"}},
+		ToolChoice:      agent.ToolChoice{Type: domain.ToolTypeShell, Intent: "run command"},
+		ResponseMessage: "done",
+		DependencyAudit: &agent.DependencyAudit{Dependency: "example"},
+	}
+
+	snapshot := persistenceSnapshot(decision)
+
+	if !snapshot.Classification.IsZero() || !snapshot.ToolChoice.IsZero() || snapshot.ResponseMessage != "" || snapshot.DependencyAudit != nil {
+		t.Fatalf("expected non-persisted decision fields to be stripped: %#v", snapshot)
+	}
+	if snapshot.Plan.ID != "plan-1" || len(snapshot.WorkItems) != 1 || snapshot.WorkItems[0].ID != "wi-1" {
+		t.Fatalf("expected plan and work item state to be preserved: %#v", snapshot)
+	}
+	if _, ok := snapshot.Plan.Metadata["discord_message"]; ok {
+		t.Fatalf("expected legacy discord message metadata to be stripped")
+	}
+	if _, ok := snapshot.Plan.Metadata["execution_order_json"]; !ok {
+		t.Fatalf("expected structural plan metadata to be preserved")
 	}
 }

@@ -3,6 +3,7 @@ package activities
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,24 +65,60 @@ type Activities struct {
 	AvailableSkills   []string
 	MemoryEmbedder    SemanticEmbedder
 	EmbeddingModel    string
+	Logger            *slog.Logger
 }
 
-type ToolObservation struct {
-	Status   string            `json:"status"`
-	Summary  string            `json:"summary,omitempty"`
-	Error    string            `json:"error,omitempty"`
-	Metadata map[string]string `json:"metadata,omitempty"`
+type ToolSelectionRequest struct {
+	ProjectID          string                    `json:"project_id"`
+	Event              domain.Event              `json:"event"`
+	Decision           agent.DecisionOutput      `json:"decision"`
+	Feedback           *agent.ExecutionFeedback  `json:"feedback,omitempty"`
+	ExecutionCycle     int                       `json:"execution_cycle"`
+	ObservationHistory []agent.ExecutionFeedback `json:"observation_history,omitempty"`
+}
+
+type ToolSelectionResult struct {
+	ToolChoice      *agent.ToolChoice `json:"tool_choice,omitempty"`
+	ResponseMessage string            `json:"response_message,omitempty"`
+}
+
+type ExecuteToolRequest struct {
+	ProjectID  string           `json:"project_id"`
+	WorkItemID string           `json:"work_item_id"`
+	RiskTier   domain.RiskTier  `json:"risk_tier"`
+	ToolChoice agent.ToolChoice `json:"tool_choice"`
 }
 
 type ExecuteToolResult struct {
-	Observation ToolObservation
-	Invocation  domain.ToolInvocation
-	Attempt     domain.ExecutionAttempt
+	Cycle            int                    `json:"cycle"`
+	WorkItemID       string                 `json:"work_item_id,omitempty"`
+	Tool             domain.ToolType        `json:"tool,omitempty"`
+	Status           domain.ExecutionStatus `json:"status"`
+	RequestedAction  string                 `json:"requested_action,omitempty"`
+	Observation      string                 `json:"observation,omitempty"`
+	Error            string                 `json:"error,omitempty"`
+	WorkingDirectory string                 `json:"working_directory,omitempty"`
+	ResultCode       string                 `json:"result_code,omitempty"`
 }
 
 const maxObservationSummaryLength = 1500
 
 func (a *Activities) LoadContext(ctx context.Context, event domain.Event) (agent.Context, error) {
+	return a.loadContext(ctx, event)
+}
+
+func (a *Activities) loadDecisionInput(ctx context.Context, event domain.Event) (agent.DecisionInput, error) {
+	loaded, err := a.loadContext(ctx, event)
+	if err != nil {
+		return agent.DecisionInput{}, err
+	}
+	return agent.DecisionInput{
+		ProjectID: event.ProjectID,
+		Context:   loaded,
+	}, nil
+}
+
+func (a *Activities) loadContext(ctx context.Context, event domain.Event) (agent.Context, error) {
 	recentConversation, err := a.recentConversationFacts(ctx, event, 6)
 	if err != nil {
 		return agent.Context{}, err
@@ -392,11 +429,21 @@ func (a *Activities) searchMemory(ctx context.Context, projectID string, categor
 	if a.MemoryEmbedder != nil && strings.TrimSpace(query) != "" {
 		embedding, err := a.MemoryEmbedder.EmbedQuery(ctx, query)
 		if err != nil {
-			return nil, err
+			a.warn("semantic memory query failed; falling back to text search",
+				slog.String("project_id", projectID),
+				slog.String("category", string(category)),
+				slog.String("error", err.Error()),
+			)
+			return a.Store.SearchByCategory(ctx, projectID, category, query, limit)
 		}
 		facts, err := a.Store.SearchByCategorySimilar(ctx, projectID, category, embedding, limit)
 		if err != nil {
-			return nil, err
+			a.warn("semantic memory search failed; falling back to text search",
+				slog.String("project_id", projectID),
+				slog.String("category", string(category)),
+				slog.String("error", err.Error()),
+			)
+			return a.Store.SearchByCategory(ctx, projectID, category, query, limit)
 		}
 		if len(facts) > 0 {
 			return facts, nil
@@ -405,20 +452,39 @@ func (a *Activities) searchMemory(ctx context.Context, projectID string, categor
 	return a.Store.SearchByCategory(ctx, projectID, category, query, limit)
 }
 
+func (a *Activities) warn(message string, attrs ...slog.Attr) {
+	if a.Logger == nil {
+		return
+	}
+	args := make([]any, 0, len(attrs))
+	for _, attr := range attrs {
+		args = append(args, attr)
+	}
+	a.Logger.Warn(message, args...)
+}
+
 func (a *Activities) PersistEvent(ctx context.Context, event domain.Event) error {
 	return a.Store.Append(ctx, event)
 }
 
-func (a *Activities) Classify(ctx context.Context, input agent.DecisionInput) (agent.Classification, error) {
+func (a *Activities) Classify(ctx context.Context, event domain.Event) (agent.Classification, error) {
 	if a.Engine == nil {
 		return agent.Classification{}, fmt.Errorf("decision engine is not configured")
+	}
+	input, err := a.loadDecisionInput(ctx, event)
+	if err != nil {
+		return agent.Classification{}, err
 	}
 	return a.Engine.Classify(ctx, input)
 }
 
-func (a *Activities) Clarify(ctx context.Context, input agent.DecisionInput, classification agent.Classification) (agent.DecisionOutput, error) {
+func (a *Activities) Clarify(ctx context.Context, event domain.Event, classification agent.Classification) (agent.DecisionOutput, error) {
 	if a.Engine == nil {
 		return agent.DecisionOutput{}, fmt.Errorf("decision engine is not configured")
+	}
+	input, err := a.loadDecisionInput(ctx, event)
+	if err != nil {
+		return agent.DecisionOutput{}, err
 	}
 
 	clarification, err := a.Engine.Clarify(ctx, agent.ClarificationInput{
@@ -464,9 +530,13 @@ func (a *Activities) buildClarificationDecision(input agent.DecisionInput, class
 	}, nil
 }
 
-func (a *Activities) Plan(ctx context.Context, input agent.DecisionInput, classification agent.Classification) (agent.DecisionOutput, error) {
+func (a *Activities) Plan(ctx context.Context, event domain.Event, classification agent.Classification) (agent.DecisionOutput, error) {
 	if a.Engine == nil {
 		return agent.DecisionOutput{}, fmt.Errorf("decision engine is not configured")
+	}
+	input, err := a.loadDecisionInput(ctx, event)
+	if err != nil {
+		return agent.DecisionOutput{}, err
 	}
 	output, err := a.Engine.Plan(ctx, agent.PlanningInput{
 		ProjectID:         input.ProjectID,
@@ -548,7 +618,7 @@ func (a *Activities) Plan(ctx context.Context, input agent.DecisionInput, classi
 	}, nil
 }
 
-func (a *Activities) PrepareReadyDecision(_ context.Context, input agent.DecisionInput, classification agent.Classification) (agent.DecisionOutput, error) {
+func (a *Activities) PrepareReadyDecision(_ context.Context, event domain.Event, classification agent.Classification) (agent.DecisionOutput, error) {
 	now := time.Now().UTC()
 	planID, err := domain.NewID()
 	if err != nil {
@@ -568,8 +638,8 @@ func (a *Activities) PrepareReadyDecision(_ context.Context, input agent.Decisio
 
 	plan := domain.Plan{
 		ID:          planID,
-		ProjectID:   input.ProjectID,
-		EventID:     input.Context.Event.ID,
+		ProjectID:   event.ProjectID,
+		EventID:     event.ID,
 		Status:      domain.PlanStatusReady,
 		Decision:    classification.PlanDecision(),
 		Summary:     classification.Summary,
@@ -577,7 +647,7 @@ func (a *Activities) PrepareReadyDecision(_ context.Context, input agent.Decisio
 		Steps: []domain.PlanStep{{
 			ID:          workItemID,
 			Title:       title,
-			Description: input.Context.Event.Body,
+			Description: event.Body,
 			ToolHint:    domain.ToolTypeShell,
 		}},
 		CreatedAt: now,
@@ -589,10 +659,10 @@ func (a *Activities) PrepareReadyDecision(_ context.Context, input agent.Decisio
 
 	workItem := domain.WorkItem{
 		ID:          workItemID,
-		ProjectID:   input.ProjectID,
+		ProjectID:   event.ProjectID,
 		PlanID:      planID,
 		Title:       workItemTitle,
-		Description: input.Context.Event.Body,
+		Description: event.Body,
 		Status:      domain.WorkItemStatusReady,
 		RiskTier:    classification.Tier,
 		CreatedAt:   now,
@@ -606,7 +676,11 @@ func (a *Activities) PrepareReadyDecision(_ context.Context, input agent.Decisio
 	}, nil
 }
 
-func (a *Activities) Ingest(ctx context.Context, input agent.DecisionInput, classification agent.Classification) (agent.DecisionOutput, error) {
+func (a *Activities) Ingest(ctx context.Context, event domain.Event, classification agent.Classification) (agent.DecisionOutput, error) {
+	input, err := a.loadDecisionInput(ctx, event)
+	if err != nil {
+		return agent.DecisionOutput{}, err
+	}
 	memoryValue := strings.TrimSpace(input.Context.Event.Body)
 	if memoryValue == "" {
 		memoryValue = classification.Summary
@@ -624,26 +698,36 @@ func (a *Activities) Ingest(ctx context.Context, input agent.DecisionInput, clas
 	return agent.DecisionOutput{Classification: classification}, nil
 }
 
-func (a *Activities) SelectTool(ctx context.Context, input agent.DecisionInput, decision agent.DecisionOutput, feedback *agent.ExecutionFeedback, executionCycle int, history []agent.ExecutionFeedback) (agent.DecisionOutput, error) {
+func (a *Activities) SelectTool(ctx context.Context, request ToolSelectionRequest) (ToolSelectionResult, error) {
 	if a.Engine == nil {
-		return agent.DecisionOutput{}, fmt.Errorf("decision engine is not configured")
+		return ToolSelectionResult{}, fmt.Errorf("decision engine is not configured")
+	}
+	input, err := a.loadDecisionInput(ctx, request.Event)
+	if err != nil {
+		return ToolSelectionResult{}, err
+	}
+	projectID := strings.TrimSpace(request.ProjectID)
+	if projectID == "" {
+		projectID = input.ProjectID
 	}
 	toolChoice, err := a.Engine.SelectTool(ctx, agent.ToolSelectionInput{
-		ProjectID:          input.ProjectID,
+		ProjectID:          projectID,
 		Context:            input.Context,
-		Classification:     decision.Classification,
-		Plan:               decision.Plan,
-		WorkItems:          decision.WorkItems,
+		Classification:     request.Decision.Classification,
+		Plan:               request.Decision.Plan,
+		WorkItems:          request.Decision.WorkItems,
 		Runtime:            buildRuntimeContext(a.WorkspaceRoot),
-		ExecutionCycle:     executionCycle,
-		LastObservation:    feedback,
-		ObservationHistory: history,
+		ExecutionCycle:     request.ExecutionCycle,
+		LastObservation:    request.Feedback,
+		ObservationHistory: request.ObservationHistory,
 	})
 	if err != nil {
-		return agent.DecisionOutput{}, err
+		return ToolSelectionResult{}, err
 	}
-	decision.ToolChoice = toolChoice
-	return decision, nil
+	if message := strings.TrimSpace(toolChoice.ResponseMessage); message != "" {
+		return ToolSelectionResult{ResponseMessage: message}, nil
+	}
+	return ToolSelectionResult{ToolChoice: &toolChoice}, nil
 }
 
 func (a *Activities) PersistDecision(ctx context.Context, decision agent.DecisionOutput) error {
@@ -715,12 +799,15 @@ func (a *Activities) RevalidateApproval(ctx context.Context, projectID, approval
 	return approval, nil
 }
 
-func (a *Activities) ExecuteTool(ctx context.Context, decision agent.DecisionOutput) (ExecuteToolResult, error) {
-	workItem, err := workItemForChoice(decision)
-	if err != nil {
-		return ExecuteToolResult{}, err
+func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest) (ExecuteToolResult, error) {
+	projectID := strings.TrimSpace(request.ProjectID)
+	if projectID == "" {
+		return ExecuteToolResult{}, fmt.Errorf("project_id is required")
 	}
-
+	workItemID := strings.TrimSpace(request.WorkItemID)
+	if workItemID == "" {
+		return ExecuteToolResult{}, fmt.Errorf("work_item_id is required")
+	}
 	now := time.Now().UTC()
 	executionID, err := domain.NewID()
 	if err != nil {
@@ -733,15 +820,15 @@ func (a *Activities) ExecuteTool(ctx context.Context, decision agent.DecisionOut
 
 	attempt := domain.ExecutionAttempt{
 		ID:         executionID,
-		ProjectID:  decision.Plan.ProjectID,
-		WorkItemID: workItem.ID,
+		ProjectID:  projectID,
+		WorkItemID: workItemID,
 		Status:     domain.ExecutionStatusRunning,
-		Attempt:    executionCycle(decision.ToolChoice.Metadata),
-		Tool:       decision.ToolChoice.Type,
-		Summary:    decision.ToolChoice.Intent,
+		Attempt:    executionCycle(request.ToolChoice.Metadata),
+		Tool:       request.ToolChoice.Type,
+		Summary:    request.ToolChoice.Intent,
 		StartedAt:  now,
 		Metadata: map[string]string{
-			"execution_cycle": fmt.Sprintf("%d", executionCycle(decision.ToolChoice.Metadata)),
+			"execution_cycle": fmt.Sprintf("%d", executionCycle(request.ToolChoice.Metadata)),
 		},
 	}
 	if err := a.Store.UpsertExecutionAttempt(ctx, attempt); err != nil {
@@ -749,30 +836,30 @@ func (a *Activities) ExecuteTool(ctx context.Context, decision agent.DecisionOut
 	}
 
 	result, err := a.Shell.Run(ctx, shell.Request{
-		ProjectID:          decision.Plan.ProjectID,
-		Intent:             decision.ToolChoice.Intent,
-		Command:            decision.ToolChoice.Command,
-		Args:               decision.ToolChoice.Args,
-		WorkingDir:         decision.ToolChoice.WorkingDir,
+		ProjectID:          projectID,
+		Intent:             request.ToolChoice.Intent,
+		Command:            request.ToolChoice.Command,
+		Args:               request.ToolChoice.Args,
+		WorkingDir:         request.ToolChoice.WorkingDir,
 		WorkspaceRoot:      a.WorkspaceRoot,
-		Timeout:            toolChoiceTimeout(decision.ToolChoice),
-		RiskTier:           workItem.RiskTier,
-		FallbackCandidates: toolregistry.FallbackCandidates(decision.ToolChoice.Type),
+		Timeout:            toolChoiceTimeout(request.ToolChoice),
+		RiskTier:           request.RiskTier,
+		FallbackCandidates: toolregistry.FallbackCandidates(request.ToolChoice.Type),
 	})
 
 	completedAt := time.Now().UTC()
 	attempt.CompletedAt = &completedAt
 	invocation := domain.ToolInvocation{
 		ID:                 invocationID,
-		ProjectID:          decision.Plan.ProjectID,
+		ProjectID:          projectID,
 		ExecutionAttemptID: executionID,
-		RequestedIntent:    decision.ToolChoice.Intent,
-		ChosenTool:         decision.ToolChoice.Type,
-		FallbackCandidates: toolregistry.FallbackCandidates(decision.ToolChoice.Type),
-		RiskTier:           workItem.RiskTier,
-		WorkingDirectory:   decision.ToolChoice.WorkingDir,
-		TimeoutSeconds:     int(toolChoiceTimeout(decision.ToolChoice).Seconds()),
-		InputSummary:       decision.ToolChoice.InputSummary,
+		RequestedIntent:    request.ToolChoice.Intent,
+		ChosenTool:         request.ToolChoice.Type,
+		FallbackCandidates: toolregistry.FallbackCandidates(request.ToolChoice.Type),
+		RiskTier:           request.RiskTier,
+		WorkingDirectory:   request.ToolChoice.WorkingDir,
+		TimeoutSeconds:     int(toolChoiceTimeout(request.ToolChoice).Seconds()),
+		InputSummary:       request.ToolChoice.InputSummary,
 		OutputSummary:      strings.TrimSpace(result.Stdout),
 		ResultCode:         fmt.Sprintf("%d", result.ExitCode),
 		CreatedAt:          now,
@@ -784,29 +871,17 @@ func (a *Activities) ExecuteTool(ctx context.Context, decision agent.DecisionOut
 		},
 	}
 
-	observation := ToolObservation{
-		Metadata: map[string]string{
-			"tool":              string(decision.ToolChoice.Type),
-			"working_directory": decision.ToolChoice.WorkingDir,
-			"result_code":       invocation.ResultCode,
-			"work_item_id":      workItem.ID,
-			"execution_cycle":   fmt.Sprintf("%d", attempt.Attempt),
-		},
-	}
+	var errorMessage string
 	if err != nil {
 		attempt.Status = domain.ExecutionStatusFailed
 		attempt.OutputSummary = summarizeObservation(result.Stdout, result.Stderr, err)
 		invocation.ErrorDetails = err.Error()
 		invocation.OutputSummary = attempt.OutputSummary
-		observation.Status = string(domain.ExecutionStatusFailed)
-		observation.Summary = attempt.OutputSummary
-		observation.Error = err.Error()
+		errorMessage = err.Error()
 	} else {
 		attempt.Status = domain.ExecutionStatusSucceeded
 		attempt.OutputSummary = summarizeObservation(result.Stdout, result.Stderr, nil)
 		invocation.OutputSummary = attempt.OutputSummary
-		observation.Status = string(domain.ExecutionStatusSucceeded)
-		observation.Summary = attempt.OutputSummary
 	}
 
 	if persistErr := a.Store.UpsertExecutionAttempt(ctx, attempt); persistErr != nil {
@@ -817,9 +892,15 @@ func (a *Activities) ExecuteTool(ctx context.Context, decision agent.DecisionOut
 	}
 
 	return ExecuteToolResult{
-		Observation: observation,
-		Invocation:  invocation,
-		Attempt:     attempt,
+		Cycle:            attempt.Attempt,
+		WorkItemID:       workItemID,
+		Tool:             request.ToolChoice.Type,
+		Status:           attempt.Status,
+		RequestedAction:  request.ToolChoice.Intent,
+		Observation:      attempt.OutputSummary,
+		Error:            errorMessage,
+		WorkingDirectory: request.ToolChoice.WorkingDir,
+		ResultCode:       invocation.ResultCode,
 	}, nil
 }
 
@@ -1015,12 +1096,29 @@ func (a *Activities) PersistConversationMemory(ctx context.Context, event domain
 
 	embeddings, err := a.MemoryEmbedder.EmbedDocuments(ctx, []string{summary})
 	if err != nil {
-		return err
+		a.warn("conversation memory embedding failed; stored text memory without vector",
+			slog.String("project_id", fact.ProjectID),
+			slog.String("fact_id", fact.ID),
+			slog.String("error", err.Error()),
+		)
+		return nil
 	}
 	if len(embeddings) != 1 {
-		return fmt.Errorf("expected 1 embedding, got %d", len(embeddings))
+		a.warn("conversation memory embedding returned unexpected result count; stored text memory without vector",
+			slog.String("project_id", fact.ProjectID),
+			slog.String("fact_id", fact.ID),
+			slog.Int("embedding_count", len(embeddings)),
+		)
+		return nil
 	}
-	return a.Store.UpsertFactEmbedding(ctx, fact.ProjectID, fact.ID, fact.Category, a.EmbeddingModel, embeddings[0])
+	if err := a.Store.UpsertFactEmbedding(ctx, fact.ProjectID, fact.ID, fact.Category, a.EmbeddingModel, embeddings[0]); err != nil {
+		a.warn("conversation memory embedding persistence failed; stored text memory without vector",
+			slog.String("project_id", fact.ProjectID),
+			slog.String("fact_id", fact.ID),
+			slog.String("error", err.Error()),
+		)
+	}
+	return nil
 }
 
 func normalizeConversationMemoryText(value string) string {
@@ -1076,10 +1174,10 @@ func (a *Activities) ReportResult(ctx context.Context, event domain.Event, messa
 	return a.Reporter.Report(ctx, event, message)
 }
 
-func (a *Activities) ResolveApproval(ctx context.Context, signal signals.ApprovalDecisionSignal) error {
+func (a *Activities) ResolveApproval(ctx context.Context, signal signals.ApprovalDecisionSignal) (domain.ApprovalRequest, error) {
 	approval, err := a.Store.GetByID(ctx, signal.ProjectID, signal.ApprovalID)
 	if err != nil {
-		return err
+		return domain.ApprovalRequest{}, err
 	}
 	if signal.Approved {
 		approval.Status = domain.ApprovalStatusApproved
@@ -1089,7 +1187,10 @@ func (a *Activities) ResolveApproval(ctx context.Context, signal signals.Approva
 	approval.DecidedBy = signal.ActorName
 	approval.UpdatedAt = signal.DecidedAt.UTC()
 	approval.DecidedAt = &approval.UpdatedAt
-	return a.Store.UpsertApproval(ctx, approval)
+	if err := a.Store.UpsertApproval(ctx, approval); err != nil {
+		return domain.ApprovalRequest{}, err
+	}
+	return approval, nil
 }
 
 func (a *Activities) ResolveContradiction(ctx context.Context, signal signals.ContradictionResolutionSignal) error {

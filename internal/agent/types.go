@@ -7,14 +7,14 @@ import (
 )
 
 type Context struct {
-	Event              domain.Event
-	Project            domain.Project
-	ConversationMemory []domain.MemoryFact
-	ProjectFacts       []domain.MemoryFact
-	OpenContradictions []domain.PendingContradiction
-	Integrations       []domain.Integration
-	ActiveWorkItems    []domain.WorkItem
-	RecentDecisions    []domain.ADR
+	Event              domain.Event                  `json:"event"`
+	Project            domain.Project                `json:"project"`
+	ConversationMemory []domain.MemoryFact           `json:"conversation_memory,omitempty"`
+	ProjectFacts       []domain.MemoryFact           `json:"project_facts,omitempty"`
+	OpenContradictions []domain.PendingContradiction `json:"open_contradictions,omitempty"`
+	Integrations       []domain.Integration          `json:"integrations,omitempty"`
+	ActiveWorkItems    []domain.WorkItem             `json:"active_work_items,omitempty"`
+	RecentDecisions    []domain.ADR                  `json:"recent_decisions,omitempty"`
 }
 
 type ClassificationIntent string
@@ -49,6 +49,16 @@ type Classification struct {
 	ContradictionRisk  bool                 `json:"contradiction_risk"`
 	RoutedTo           ClassificationRoute  `json:"routed_to"`
 	Summary            string               `json:"summary"`
+}
+
+func (c Classification) IsZero() bool {
+	return c.Intent == "" &&
+		c.Tier == 0 &&
+		c.Confidence == 0 &&
+		!c.NeedsClarification &&
+		!c.ContradictionRisk &&
+		c.RoutedTo == "" &&
+		c.Summary == ""
 }
 
 func (c Classification) RequiresClarification() bool {
@@ -101,6 +111,20 @@ type ToolChoice struct {
 	Metadata        map[string]string `json:"metadata,omitempty"`
 }
 
+func (c ToolChoice) IsZero() bool {
+	return c.Type == "" &&
+		c.Intent == "" &&
+		c.Command == "" &&
+		len(c.Args) == 0 &&
+		c.WorkingDir == "" &&
+		c.TimeoutMs == 0 &&
+		c.InputSummary == "" &&
+		c.ResponseMessage == "" &&
+		!c.NetworkEgress &&
+		!c.Destructive &&
+		len(c.Metadata) == 0
+}
+
 type ExecutionFeedback struct {
 	Cycle           int               `json:"cycle"`
 	WorkItemID      string            `json:"work_item_id,omitempty"`
@@ -113,17 +137,18 @@ type ExecutionFeedback struct {
 }
 
 type DecisionOutput struct {
-	Classification  Classification        `json:"classification"`
+	Classification  Classification        `json:"classification,omitzero"`
 	Clarification   *ClarificationRequest `json:"clarification,omitempty"`
-	Plan            domain.Plan           `json:"plan"`
+	Plan            domain.Plan           `json:"plan,omitzero"`
 	WorkItems       []domain.WorkItem     `json:"work_items,omitempty"`
-	ToolChoice      ToolChoice            `json:"tool_choice"`
+	ToolChoice      ToolChoice            `json:"tool_choice,omitempty,omitzero"`
+	ResponseMessage string                `json:"response_message,omitempty"`
 	DependencyAudit *DependencyAudit      `json:"dependency_audit,omitempty"`
 }
 
 type DecisionInput struct {
-	ProjectID string
-	Context   Context
+	ProjectID string  `json:"project_id"`
+	Context   Context `json:"context"`
 }
 
 type RuntimeContext struct {

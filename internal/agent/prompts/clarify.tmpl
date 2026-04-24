@@ -7,7 +7,7 @@ Every question is latency. Ask only what a strong senior engineer would ask befo
 
 ---
 
-## Project Context
+## Clarification Context
 
 Project: {{ .ProjectName }} ({{ .ProjectID }})
 Current State: {{ .ProjectState }}
@@ -15,11 +15,10 @@ Current State: {{ .ProjectState }}
 Description: {{ .ProjectDescription }}
 {{- end }}
 
-Known Facts: {{ if .KnownFacts }}{{ .KnownFacts }}{{ else }}none{{ end }}
-Active Work Items: {{ if .ActiveWorkItems }}{{ .ActiveWorkItems }}{{ else }}none{{ end }}
-Open Contradictions: {{ if .OpenContradictions }}{{ .OpenContradictions }}{{ else }}none{{ end }}
-Relevant Conversation: {{ if .RelevantConversation }}{{ .RelevantConversation }}{{ else }}none{{ end }}
-Recent Decisions: {{ if .RecentDecisions }}{{ .RecentDecisions }}{{ else }}none{{ end }}
+Known facts: {{ if .KnownFacts }}{{ .KnownFacts }}{{ else }}none{{ end }}
+Active work: {{ if .ActiveWorkItems }}{{ .ActiveWorkItems }}{{ else }}none{{ end }}
+Open contradictions: {{ if .OpenContradictions }}{{ .OpenContradictions }}{{ else }}none{{ end }}
+Recent conversation: {{ if .RelevantConversation }}{{ .RelevantConversation }}{{ else }}none{{ end }}
 
 ---
 

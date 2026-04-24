@@ -2,6 +2,7 @@ package activities
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -159,4 +160,98 @@ func TestLoadContextResolvesRecentContradictionsAndCarriesConversationForward(t 
 	if len(openContradictions) != 0 {
 		t.Fatalf("expected store contradiction to be resolved, got %d open contradictions", len(openContradictions))
 	}
+}
+
+func TestSearchMemoryFallsBackToTextSearchWhenEmbeddingQueryFails(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "memory.db"), "", time.Second)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	fact := domain.MemoryFact{
+		ID:        "fact-1",
+		ProjectID: "default",
+		Category:  domain.MemoryCategoryConversation,
+		Key:       "event-1",
+		Value:     "remember the release train uses Temporal",
+		Status:    "active",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := store.UpsertFact(context.Background(), fact); err != nil {
+		t.Fatalf("upsert fact: %v", err)
+	}
+
+	activities := Activities{
+		Store:          store,
+		MemoryEmbedder: failingEmbedder{err: errors.New("embedding model unavailable")},
+	}
+
+	facts, err := activities.searchMemory(context.Background(), "default", domain.MemoryCategoryConversation, "Temporal", 10)
+	if err != nil {
+		t.Fatalf("search memory: %v", err)
+	}
+	if len(facts) != 1 {
+		t.Fatalf("expected text search fallback result, got %d", len(facts))
+	}
+	if facts[0].ID != fact.ID {
+		t.Fatalf("unexpected fallback fact: %s", facts[0].ID)
+	}
+}
+
+func TestPersistConversationMemoryStoresTextWhenEmbeddingFails(t *testing.T) {
+	t.Parallel()
+
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "memory.db"), "", time.Second)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	event := domain.Event{
+		ID:          "event-1",
+		ProjectID:   "default",
+		Kind:        domain.EventKindMessage,
+		ChannelID:   "channel-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		ActorName:   "luka",
+		Body:        "remember Temporal setup",
+		CreatedAt:   time.Now().UTC(),
+	}
+	activities := Activities{
+		Store:          store,
+		MemoryEmbedder: failingEmbedder{err: errors.New("embedding model unavailable")},
+		EmbeddingModel: "text-embedding-3-small",
+	}
+
+	if err := activities.PersistConversationMemory(context.Background(), event, event.Body); err != nil {
+		t.Fatalf("persist conversation memory: %v", err)
+	}
+
+	facts, err := store.SearchByCategory(context.Background(), "default", domain.MemoryCategoryConversation, "Temporal", 10)
+	if err != nil {
+		t.Fatalf("search stored text fact: %v", err)
+	}
+	if len(facts) != 1 {
+		t.Fatalf("expected stored text fact, got %d", len(facts))
+	}
+	if facts[0].EmbeddingID != "" {
+		t.Fatalf("expected text-only memory fact, got embedding id %q", facts[0].EmbeddingID)
+	}
+}
+
+type failingEmbedder struct {
+	err error
+}
+
+func (f failingEmbedder) EmbedDocuments(context.Context, []string) ([][]float32, error) {
+	return nil, f.err
+}
+
+func (f failingEmbedder) EmbedQuery(context.Context, string) ([]float32, error) {
+	return nil, f.err
 }

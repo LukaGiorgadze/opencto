@@ -432,7 +432,7 @@ Prefer concise ADRs and structured summaries.
 
 ## Testing Rules
 
-Every non-trivial change should come with tests unless the task is explicitly documentation-only.
+Every major change should come with tests unless the task is explicitly documentation-only.
 
 Minimum test expectations:
 - unit tests for pure logic
@@ -451,6 +451,8 @@ Always cover:
 - invalid structured LLM output
 - shell timeout and cancellation
 - project scoping
+
+IMPORTANT: Do not write tests for small, medium and non major changes.
 
 ---
 

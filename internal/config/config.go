@@ -41,6 +41,7 @@ type memoryFileConfig struct {
 
 type llmFileConfig struct {
 	Provider            string `toml:"provider"`
+	BaseURL             string `toml:"base_url"`
 	ModelReasoning      string `toml:"model_reasoning"`
 	ModelFast           string `toml:"model_fast"`
 	EmbeddingModel      string `toml:"embedding_model"`
@@ -65,6 +66,7 @@ type MemoryConfig struct {
 
 type LLMConfig struct {
 	Provider            string `toml:"provider"`
+	BaseURL             string `toml:"base_url"`
 	ModelReasoning      string `toml:"model_reasoning"`
 	ModelFast           string `toml:"model_fast"`
 	EmbeddingModel      string `toml:"embedding_model"`
@@ -127,6 +129,7 @@ func Load(path string) (Config, error) {
 		},
 		LLM: LLMConfig{
 			Provider:            raw.LLM.Provider,
+			BaseURL:             raw.LLM.BaseURL,
 			ModelReasoning:      raw.LLM.ModelReasoning,
 			ModelFast:           raw.LLM.ModelFast,
 			EmbeddingModel:      raw.LLM.EmbeddingModel,
@@ -177,6 +180,9 @@ func (c *Config) applyDefaults() error {
 	if c.LLM.Provider == "" {
 		c.LLM.Provider = "openai"
 	}
+	if c.LLM.BaseURL == "" {
+		c.LLM.BaseURL = "http://127.0.0.1:4000"
+	}
 	if c.LLM.ModelReasoning == "" {
 		c.LLM.ModelReasoning = "gpt-5.4"
 	}
@@ -190,7 +196,7 @@ func (c *Config) applyDefaults() error {
 		c.LLM.EmbeddingDimensions = 1536
 	}
 	if c.LLM.APIKeyEnv == "" {
-		c.LLM.APIKeyEnv = "OPENAI_API_KEY"
+		c.LLM.APIKeyEnv = "LITELLM_PROXY_KEY"
 	}
 	if c.Policy.WorkspaceRoot == "" {
 		c.Policy.WorkspaceRoot = c.Project.WorkspaceRoot

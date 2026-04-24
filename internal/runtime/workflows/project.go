@@ -55,6 +55,7 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 				Event:            paused.Event,
 				ResumedFromPause: true,
 				ApprovalID:       paused.ApprovalID,
+				ApprovalRequest:  paused.ApprovalRequest,
 				Decision:         &paused.Decision,
 			}).Get(ctx, &result)
 			state.ActiveTaskID = ""
@@ -83,9 +84,10 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 			}
 			if result.AwaitingApproval && result.ApprovalRequest != nil {
 				state.PausedByApproval[result.ApprovalRequest.ID] = PausedTaskState{
-					ApprovalID: result.ApprovalRequest.ID,
-					Event:      event,
-					Decision:   result.Decision,
+					ApprovalID:      result.ApprovalRequest.ID,
+					ApprovalRequest: result.ApprovalRequest,
+					Event:           event,
+					Decision:        result.Decision,
 				}
 			}
 			continue
@@ -102,8 +104,14 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 			var signal ApprovalDecisionSignal
 			c.Receive(ctx, &signal)
 			paused, ok := state.PausedByApproval[signal.ApprovalID]
-			var ignored bool
-			_ = workflow.ExecuteChildWorkflow(ctx, ApprovalWorkflowName, signal).Get(ctx, &ignored)
+			var approval domain.ApprovalRequest
+			if err := workflow.ExecuteChildWorkflow(ctx, ApprovalWorkflowName, signal).Get(ctx, &approval); err != nil {
+				if ok {
+					message := fmt.Sprintf("I couldn't record approval `%s`: %s", signal.ApprovalID, rootCauseErrorMessage(err))
+					_ = workflow.ExecuteActivity(ctx, "Activities.ReportResult", paused.Event, message).Get(ctx, nil)
+				}
+				return
+			}
 			if !signal.Approved {
 				if ok {
 					message := fmt.Sprintf("Approval `%s` was rejected by %s.", signal.ApprovalID, signal.ActorName)
@@ -119,6 +127,7 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 				return
 			}
 			delete(state.PausedByApproval, signal.ApprovalID)
+			paused.ApprovalRequest = &approval
 			_ = workflow.ExecuteActivity(ctx, "Activities.ReportResult", paused.Event, fmt.Sprintf("Approval `%s` was accepted by %s. Resuming task.", signal.ApprovalID, signal.ActorName)).Get(ctx, nil)
 			state.ResumeQueue = append(state.ResumeQueue, paused)
 		})

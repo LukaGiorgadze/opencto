@@ -20,9 +20,9 @@ const (
 )
 
 type ProjectWorkflowInput struct {
-	ProjectID                string
-	ContinueAsNewAfterEvents int
-	Snapshot                 *ProjectWorkflowState
+	ProjectID                string                `json:"project_id"`
+	ContinueAsNewAfterEvents int                   `json:"continue_as_new_after_events,omitempty"`
+	Snapshot                 *ProjectWorkflowState `json:"snapshot,omitempty"`
 }
 
 type ApprovalDecisionSignal = signals.ApprovalDecisionSignal
@@ -30,32 +30,34 @@ type EnqueueEventSignal = signals.EnqueueEventSignal
 type ContradictionResolutionSignal = signals.ContradictionResolutionSignal
 
 type ProjectWorkflowState struct {
-	ProjectID         string
-	Queue             []domain.Event
-	ResumeQueue       []PausedTaskState
-	ActiveTaskID      string
-	PausedByApproval  map[string]PausedTaskState
-	ProcessedEvents   int
-	UpdatedAtUnixNano int64
+	ProjectID         string                     `json:"project_id"`
+	Queue             []domain.Event             `json:"queue,omitempty"`
+	ResumeQueue       []PausedTaskState          `json:"resume_queue,omitempty"`
+	ActiveTaskID      string                     `json:"active_task_id,omitempty"`
+	PausedByApproval  map[string]PausedTaskState `json:"paused_by_approval,omitempty"`
+	ProcessedEvents   int                        `json:"processed_events"`
+	UpdatedAtUnixNano int64                      `json:"updated_at_unix_nano,omitempty"`
 }
 
 type PausedTaskState struct {
-	ApprovalID string
-	Event      domain.Event
-	Decision   agent.DecisionOutput
+	ApprovalID      string                  `json:"approval_id"`
+	ApprovalRequest *domain.ApprovalRequest `json:"approval_request,omitempty"`
+	Event           domain.Event            `json:"event"`
+	Decision        agent.DecisionOutput    `json:"decision"`
 }
 
 type TaskWorkflowInput struct {
-	ProjectID        string
-	Event            domain.Event
-	ResumedFromPause bool
-	ApprovalID       string
-	Decision         *agent.DecisionOutput
+	ProjectID        string                  `json:"project_id"`
+	Event            domain.Event            `json:"event"`
+	ResumedFromPause bool                    `json:"resumed_from_pause,omitempty"`
+	ApprovalID       string                  `json:"approval_id,omitempty"`
+	ApprovalRequest  *domain.ApprovalRequest `json:"approval_request,omitempty"`
+	Decision         *agent.DecisionOutput   `json:"decision,omitempty"`
 }
 
 type TaskWorkflowResult struct {
-	Completed        bool
-	AwaitingApproval bool
-	ApprovalRequest  *domain.ApprovalRequest
-	Decision         agent.DecisionOutput
+	Completed        bool                    `json:"completed"`
+	AwaitingApproval bool                    `json:"awaiting_approval,omitempty"`
+	ApprovalRequest  *domain.ApprovalRequest `json:"approval_request,omitempty"`
+	Decision         agent.DecisionOutput    `json:"decision"`
 }

@@ -9,26 +9,26 @@ import (
 )
 
 type Request struct {
-	ProjectID      string
-	Intent         string
-	ToolType       domain.ToolType
-	Command        string
-	Args           []string
-	WorkingDir     string
-	WorkspaceRoot  string
-	NetworkEgress  bool
-	SecretExposure bool
-	Destructive    bool
-	Production     bool
-	Financial      bool
+	ProjectID      string          `json:"project_id"`
+	Intent         string          `json:"intent,omitempty"`
+	ToolType       domain.ToolType `json:"tool_type,omitempty"`
+	Command        string          `json:"command,omitempty"`
+	Args           []string        `json:"args,omitempty"`
+	WorkingDir     string          `json:"working_dir,omitempty"`
+	WorkspaceRoot  string          `json:"workspace_root,omitempty"`
+	NetworkEgress  bool            `json:"network_egress,omitempty"`
+	SecretExposure bool            `json:"secret_exposure,omitempty"`
+	Destructive    bool            `json:"destructive,omitempty"`
+	Production     bool            `json:"production,omitempty"`
+	Financial      bool            `json:"financial,omitempty"`
 }
 
 type Result struct {
-	Tier             domain.RiskTier
-	Allowed          bool
-	RequiresApproval bool
-	Reasons          []string
-	Violations       []string
+	Tier             domain.RiskTier `json:"tier"`
+	Allowed          bool            `json:"allowed"`
+	RequiresApproval bool            `json:"requires_approval,omitempty"`
+	Reasons          []string        `json:"reasons,omitempty"`
+	Violations       []string        `json:"violations,omitempty"`
 }
 
 type Engine interface {

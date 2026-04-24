@@ -21,7 +21,6 @@ type toolSelectionPromptData struct {
 	ProjectState          string
 	ProjectDescription    string
 	KnownFacts            string
-	ActiveWorkItems       string
 	OpenContradictions    string
 	RecentDecisions       string
 	OS                    string
@@ -35,11 +34,8 @@ type toolSelectionPromptData struct {
 	ClassificationTier    domain.RiskTier
 	ClassificationSummary string
 	PlanSummary           string
-	PlanAssumptions       string
-	PlanRisks             string
 	PlanExecutionOrder    string
 	PlanTestStrategy      string
-	PlanSteps             string
 	WorkItems             string
 	ExecutionCycle        int
 	HasObservationHistory bool
@@ -103,7 +99,6 @@ func renderToolSelectionPrompt(input agent.ToolSelectionInput) (string, error) {
 		ProjectState:          formatProjectState(input.Context.ActiveWorkItems, input.Context.OpenContradictions),
 		ProjectDescription:    strings.TrimSpace(input.Context.Project.Description),
 		KnownFacts:            formatKnownFacts(input.Context.ProjectFacts),
-		ActiveWorkItems:       formatActiveWorkItems(input.Context.ActiveWorkItems),
 		OpenContradictions:    formatOpenContradictions(input.Context.OpenContradictions),
 		RecentDecisions:       formatRecentDecisions(input.Context.RecentDecisions),
 		OS:                    input.Runtime.OS,
@@ -117,11 +112,8 @@ func renderToolSelectionPrompt(input agent.ToolSelectionInput) (string, error) {
 		ClassificationTier:    input.Classification.Tier,
 		ClassificationSummary: strings.TrimSpace(input.Classification.Summary),
 		PlanSummary:           strings.TrimSpace(input.Plan.Summary),
-		PlanAssumptions:       formatPlanMetadataList(input.Plan.Metadata["assumptions_json"]),
-		PlanRisks:             formatPlanMetadataList(input.Plan.Metadata["risks_json"]),
 		PlanExecutionOrder:    formatExecutionOrderMetadata(input.Plan.Metadata["execution_order_json"]),
 		PlanTestStrategy:      strings.TrimSpace(input.Plan.Metadata["test_strategy"]),
-		PlanSteps:             formatPlanSteps(input.Plan.Steps),
 		WorkItems:             formatSelectionWorkItems(input.WorkItems),
 		ExecutionCycle:        input.ExecutionCycle,
 		HasObservationHistory: len(input.ObservationHistory) > 1,
@@ -218,26 +210,6 @@ func shellToolChoiceFromInput(definition toolregistry.SelectorDefinition, call l
 	}, nil
 }
 
-func formatPlanSteps(steps []domain.PlanStep) string {
-	if len(steps) == 0 {
-		return "none"
-	}
-	parts := make([]string, 0, len(steps))
-	for _, step := range steps {
-		title := strings.TrimSpace(step.Title)
-		if title == "" {
-			title = "untitled step"
-		}
-		description := strings.TrimSpace(step.Description)
-		if description != "" {
-			parts = append(parts, title+": "+description)
-			continue
-		}
-		parts = append(parts, title)
-	}
-	return strings.Join(parts, "; ")
-}
-
 func formatPlanMetadataList(value string) string {
 	items := decodeJSONMetadataList(value)
 	if len(items) == 0 {
@@ -249,7 +221,7 @@ func formatPlanMetadataList(value string) string {
 func formatExecutionOrderMetadata(value string) string {
 	groups := decodeJSONMetadataMatrix(value)
 	if len(groups) == 0 {
-		return "none"
+		return ""
 	}
 	parts := make([]string, 0, len(groups))
 	for _, group := range groups {
@@ -269,25 +241,13 @@ func formatSelectionWorkItems(items []domain.WorkItem) string {
 			title = "untitled work item"
 		}
 		description := strings.TrimSpace(item.Description)
-		entry := fmt.Sprintf("%s [id=%s,risk=%d,status=%s]", title, item.ID, item.RiskTier, item.Status)
+		entry := fmt.Sprintf("%s [id=%s,status=%s,tier=%d]", title, item.ID, item.Status, item.RiskTier)
 		if description != "" {
 			entry += ": " + description
 		}
 		var details []string
-		if acceptance := formatPlanMetadataList(item.Metadata["acceptance_criteria_json"]); acceptance != "none" {
-			details = append(details, "acceptance="+acceptance)
-		}
-		if rollback := strings.TrimSpace(item.Metadata["rollback"]); rollback != "" {
-			details = append(details, "rollback="+rollback)
-		}
-		if skills := formatPlanMetadataList(item.Metadata["skills_json"]); skills != "none" {
-			details = append(details, "skills="+skills)
-		}
 		if dependsOn := formatPlanMetadataList(item.Metadata["depends_on_json"]); dependsOn != "none" {
 			details = append(details, "depends_on="+dependsOn)
-		}
-		if complexity := strings.TrimSpace(item.Metadata["complexity"]); complexity != "" {
-			details = append(details, "complexity="+complexity)
 		}
 		if len(details) > 0 {
 			entry += " (" + strings.Join(details, "; ") + ")"

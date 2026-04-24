@@ -70,10 +70,10 @@ func TestRenderClassificationPromptUsesStructuredContext(t *testing.T) {
 	for _, want := range []string{
 		"Project: OpenCTO",
 		"Project Description: Self-hosted AI technical co-founder",
-		"Active Work Items: Ship staging deployment [ready]",
-		"Open Contradictions: database choice",
-		"Relevant Conversation: The agent asked which staging target should receive the deploy.",
-		"Recent Decisions (last 3): Use Temporal: Temporal coordinates long-running work.",
+		"Active work: Ship staging deployment [ready]",
+		"Open contradictions: database choice",
+		"Recent conversation: The agent asked which staging target should receive the deploy.",
+		"Recent decisions: Use Temporal: Temporal coordinates long-running work.",
 		"Author: luka (role: owner)",
 		"Channel: discord:channel-1",
 		"Thread context: deployment thread",
@@ -417,9 +417,9 @@ func TestRenderClarificationPromptUsesAvailableContextOnly(t *testing.T) {
 
 	for _, want := range []string{
 		"Project: OpenCTO (project-1)",
-		"Known Facts: deployment_target: vercel",
-		"Open Contradictions: deployment target",
-		"Relevant Conversation: assistant: Which environment should I deploy to: staging or production?",
+		"Known facts: deployment_target: vercel",
+		"Open contradictions: deployment target",
+		"Recent conversation: assistant: Which environment should I deploy to: staging or production?",
 		"Author: luka (role: owner)",
 		"Message: deploy it",
 		"Classifier intent: ACTION_REQUEST",
@@ -554,11 +554,9 @@ func TestRenderPlanningPromptUsesSupportedContext(t *testing.T) {
 
 	for _, want := range []string{
 		"Project: OpenCTO (project-1)",
-		"Known Facts & Decisions:\nauth_provider: supabase",
-		"Relevant Conversation: The agent asked whether to target the existing signup flow and which environment to ship first.",
-		"Recent Decisions: Deployment Summary: Deployed the staging environment to Vercel.",
-		"Recent Deployments: Deployment Summary: Deployed the staging environment to Vercel.",
-		"Known Integrations: vercel [ready]",
+		"Known facts: auth_provider: supabase",
+		"Recent conversation: The agent asked whether to target the existing signup flow and which environment to ship first.",
+		"Integrations: vercel [ready]",
 		"Autonomy Threshold: 1",
 		"Clarification summary: Target the existing signup flow.",
 		"Resolved answers: Use Supabase Auth and ship to staging first.",
@@ -603,8 +601,7 @@ func TestNormalizePlanningOutputMapsPlanMetadataAndWorkItems(t *testing.T) {
 			{"Audit Supabase CLI dependency"},
 			{"Enable email verification in Supabase"},
 		},
-		TestStrategy:   "Verify the signup flow on staging with a real test email.",
-		DiscordMessage: "Plan review message.",
+		TestStrategy: "Verify the signup flow on staging with a real test email.",
 		WorkItems: []planningLLMWorkItem{
 			{
 				Title:              "Audit Supabase CLI dependency",
@@ -639,8 +636,8 @@ func TestNormalizePlanningOutputMapsPlanMetadataAndWorkItems(t *testing.T) {
 	if output.Plan.Summary != "Add email verification to the existing signup flow and validate it on staging." {
 		t.Fatalf("unexpected plan summary: %q", output.Plan.Summary)
 	}
-	if output.Plan.Metadata["discord_message"] != "Plan review message." {
-		t.Fatalf("unexpected discord message metadata: %#v", output.Plan.Metadata)
+	if _, ok := output.Plan.Metadata["discord_message"]; ok {
+		t.Fatalf("did not expect channel-specific review copy in metadata: %#v", output.Plan.Metadata)
 	}
 	if output.Plan.Metadata["requires_approval"] != "true" {
 		t.Fatalf("expected requires approval metadata, got %#v", output.Plan.Metadata)
@@ -674,45 +671,5 @@ func TestNormalizePlanningOutputMapsPlanMetadataAndWorkItems(t *testing.T) {
 	}
 	if output.Plan.Steps[1].ToolHint != domain.ToolTypeShell {
 		t.Fatalf("expected shell tool hint, got %q", output.Plan.Steps[1].ToolHint)
-	}
-}
-
-func TestNormalizePlanningOutputRejectsMissingDiscordMessage(t *testing.T) {
-	t.Parallel()
-
-	input := agent.PlanningInput{
-		ProjectID:         "project-1",
-		AutonomyThreshold: 1,
-		Context: agent.Context{
-			Event: domain.Event{
-				ID:        "event-4",
-				ProjectID: "project-1",
-				Body:      "add email verification to signup",
-			},
-		},
-		Classification: agent.Classification{
-			Intent:   agent.ClassificationIntentActionRequest,
-			RoutedTo: agent.ClassificationRoutePlan,
-			Tier:     domain.RiskTierConsequential,
-			Summary:  "Email verification requested.",
-		},
-	}
-
-	_, err := normalizePlanningOutput(input, planningLLMOutput{
-		PlanSummary:    "Plan summary.",
-		TestStrategy:   "Run tests.",
-		ExecutionOrder: [][]string{{"Audit dependency"}},
-		WorkItems: []planningLLMWorkItem{{
-			Title:              "Audit dependency",
-			Description:        "Review the dependency before using it.",
-			AcceptanceCriteria: []string{"Package metadata reviewed"},
-			Rollback:           "N/A",
-			ToolHint:           "shell",
-			Tier:               0,
-			Complexity:         "S",
-		}},
-	})
-	if err == nil {
-		t.Fatalf("expected validation error for missing discord message")
 	}
 }

@@ -8,10 +8,13 @@ Recommended local setup:
 
 ```bash
 export OPENAI_API_KEY="sk-..."
+export LITELLM_PROXY_KEY="sk-admin"
 task worker
 ```
 
-The sample config keeps `api_key_env = "OPENAI_API_KEY"`. A direct `llm.api_key` value is also supported for local-only testing, but environment variables or a vault-backed secret are safer.
+`task worker` now runs through `air`, so code changes rebuild and restart automatically.
+
+When using the local LiteLLM proxy, `OPENAI_API_KEY` is the upstream provider key for LiteLLM and `LITELLM_PROXY_KEY` is the key OpenCTO uses to authenticate to LiteLLM. The sample config keeps `api_key_env = "LITELLM_PROXY_KEY"`. A direct `llm.api_key` value is also supported for local-only testing, but environment variables or a vault-backed secret are safer.
 
 ## Discord
 
@@ -34,6 +37,7 @@ export DISCORD_APPLICATION_ID="..."
 6. Run `task serve`.
 
 `task worker` alone does not start the Discord adapter. Use `task serve` when Discord is enabled.
+`task serve` also runs through `air`, so config and Go code changes trigger a rebuild automatically.
 
 Approval commands in Discord are plain messages:
 

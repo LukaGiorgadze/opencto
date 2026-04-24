@@ -122,6 +122,7 @@ func main() {
 			AvailableSkills:   availableSkills,
 			MemoryEmbedder:    openAI.Embedder,
 			EmbeddingModel:    cfg.LLM.EmbeddingModel,
+			Logger:            logger,
 		}
 
 		worker := runtime.NewWorker(temporalClient, cfg.Temporal.TaskQueue, activitySet)
@@ -214,12 +215,13 @@ func buildDecisionEngine(cfg config.Config, logger *slog.Logger) agent.Engine {
 		logger.Warn("openai api key is loaded directly from config; prefer environment variables or vault-backed secrets for local and production safety")
 	}
 
-	engine, err := agentllm.NewOpenAIEngine(apiKey, cfg.LLM.ModelReasoning, cfg.LLM.ModelFast)
+	engine, err := agentllm.NewOpenAIEngine(apiKey, cfg.LLM.BaseURL, cfg.LLM.ModelReasoning, cfg.LLM.ModelFast)
 	if err != nil {
 		logger.Warn("failed to initialize openai decision engine", slog.String("error", err.Error()))
 		return unavailable(err.Error())
 	}
 	logger.Info("openai decision engine configured",
+		slog.String("base_url", cfg.LLM.BaseURL),
 		slog.String("model_reasoning", cfg.LLM.ModelReasoning),
 		slog.String("model_fast", cfg.LLM.ModelFast),
 		slog.String("api_key_source", string(source)),
@@ -243,13 +245,14 @@ func buildOpenAIServices(cfg config.Config, logger *slog.Logger) openAIServices 
 		return openAIServices{Engine: engine}
 	}
 
-	embedder, err := agentllm.NewOpenAIEmbedder(apiKey, cfg.LLM.EmbeddingModel, cfg.LLM.EmbeddingDimensions)
+	embedder, err := agentllm.NewOpenAIEmbedder(apiKey, cfg.LLM.BaseURL, cfg.LLM.EmbeddingModel, cfg.LLM.EmbeddingDimensions)
 	if err != nil {
 		logger.Warn("failed to initialize openai memory embedder; continuing without semantic memory", slog.String("error", err.Error()))
 		return openAIServices{Engine: engine}
 	}
 
 	logger.Info("openai memory embedder configured",
+		slog.String("base_url", cfg.LLM.BaseURL),
 		slog.String("embedding_model", cfg.LLM.EmbeddingModel),
 		slog.Int("embedding_dimensions", cfg.LLM.EmbeddingDimensions),
 		slog.String("api_key_source", string(source)),
