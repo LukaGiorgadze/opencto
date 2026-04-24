@@ -136,6 +136,24 @@ type ExecutionFeedback struct {
 	Metadata        map[string]string `json:"metadata,omitempty"`
 }
 
+type AgentLoopAction string
+
+const (
+	AgentLoopActionContinue AgentLoopAction = "continue"
+	AgentLoopActionComplete AgentLoopAction = "complete"
+	AgentLoopActionClarify  AgentLoopAction = "clarify"
+	AgentLoopActionBlock    AgentLoopAction = "block"
+)
+
+type AgentLoopDecision struct {
+	Action             AgentLoopAction       `json:"action"`
+	WorkItemID         string                `json:"work_item_id,omitempty"`
+	WorkItemStatus     domain.WorkItemStatus `json:"work_item_status,omitempty"`
+	ObservationSummary string                `json:"observation_summary,omitempty"`
+	ToolChoice         *ToolChoice           `json:"tool_choice,omitempty"`
+	ResponseMessage    string                `json:"response_message,omitempty"`
+}
+
 type DecisionOutput struct {
 	Classification  Classification        `json:"classification,omitzero"`
 	Clarification   *ClarificationRequest `json:"clarification,omitempty"`
@@ -191,4 +209,5 @@ type Engine interface {
 	Clarify(context.Context, ClarificationInput) (*ClarificationRequest, error)
 	Plan(context.Context, PlanningInput) (PlanningOutput, error)
 	SelectTool(context.Context, ToolSelectionInput) (ToolChoice, error)
+	DecideNextAction(context.Context, ToolSelectionInput) (AgentLoopDecision, error)
 }

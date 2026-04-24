@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -65,12 +67,12 @@ func NewOpenAIEngine(apiKey, baseURL, reasoningModelID, fastModelID string) (*Op
 }
 
 func (e *OpenAIEngine) Classify(ctx context.Context, input agent.DecisionInput) (agent.Classification, error) {
-	prompt, err := renderClassificationPrompt(input)
+	messages, err := buildClassificationMessages(input)
 	if err != nil {
 		return agent.Classification{}, err
 	}
 
-	output, err := invokeJSON[agent.Classification](ctx, e.fastModel, prompt, nil)
+	output, err := invokeJSONMessages[agent.Classification](ctx, e.fastModel, messages)
 	if err != nil {
 		return agent.Classification{}, err
 	}
@@ -78,12 +80,12 @@ func (e *OpenAIEngine) Classify(ctx context.Context, input agent.DecisionInput) 
 }
 
 func (e *OpenAIEngine) Clarify(ctx context.Context, input agent.ClarificationInput) (*agent.ClarificationRequest, error) {
-	prompt, err := renderClarificationPrompt(input)
+	messages, err := buildClarificationMessages(input)
 	if err != nil {
 		return nil, err
 	}
 
-	output, err := invokeJSON[clarificationLLMOutput](ctx, e.reasoningModel, prompt, nil)
+	output, err := invokeJSONMessages[clarificationLLMOutput](ctx, e.reasoningModel, messages)
 	if err != nil {
 		return nil, err
 	}
@@ -95,12 +97,12 @@ func (e *OpenAIEngine) Clarify(ctx context.Context, input agent.ClarificationInp
 }
 
 func (e *OpenAIEngine) Plan(ctx context.Context, input agent.PlanningInput) (agent.PlanningOutput, error) {
-	prompt, err := renderPlanningPrompt(input)
+	messages, err := buildPlanningMessages(input)
 	if err != nil {
 		return agent.PlanningOutput{}, err
 	}
 
-	output, err := invokeJSON[planningLLMOutput](ctx, e.reasoningModel, prompt, nil)
+	output, err := invokeJSONMessages[planningLLMOutput](ctx, e.reasoningModel, messages)
 	if err != nil {
 		return agent.PlanningOutput{}, err
 	}
@@ -108,34 +110,89 @@ func (e *OpenAIEngine) Plan(ctx context.Context, input agent.PlanningInput) (age
 }
 
 func (e *OpenAIEngine) SelectTool(ctx context.Context, input agent.ToolSelectionInput) (agent.ToolChoice, error) {
-	output, err := e.selectToolWithRegisteredTools(ctx, input)
+	decision, err := e.DecideNextAction(ctx, input)
 	if err != nil {
 		return agent.ToolChoice{}, err
 	}
-	return normalizeToolChoice(output, input)
+	if decision.ToolChoice != nil {
+		return *decision.ToolChoice, nil
+	}
+	if strings.TrimSpace(decision.ResponseMessage) != "" {
+		return agent.ToolChoice{
+			Intent:          decision.ResponseMessage,
+			InputSummary:    strings.TrimSpace(input.Context.Event.Body),
+			ResponseMessage: decision.ResponseMessage,
+			Metadata: map[string]string{
+				"agent_loop_action": string(decision.Action),
+			},
+		}, nil
+	}
+	return agent.ToolChoice{}, fmt.Errorf("%w: decision did not include a tool or response", agent.ErrInvalidAgentLoopDecision)
 }
 
-func invokeJSON[T any](ctx context.Context, model llms.Model, prompt string, payload any) (T, error) {
+func (e *OpenAIEngine) DecideNextAction(ctx context.Context, input agent.ToolSelectionInput) (agent.AgentLoopDecision, error) {
+	output, err := e.decideNextActionWithJSON(ctx, input)
+	if err != nil {
+		return agent.AgentLoopDecision{}, err
+	}
+	return output, nil
+}
+
+func invokeJSONMessages[T any](ctx context.Context, model llms.Model, messages []llms.MessageContent) (T, error) {
 	var zero T
 
-	promptText := prompt
-	if payload != nil {
-		body, err := json.Marshal(payload)
-		if err != nil {
-			return zero, err
-		}
-		promptText += "\n\nInput JSON:\n" + string(body)
-	}
-	raw, err := llms.GenerateFromSinglePrompt(ctx, model, promptText)
+	response, err := model.GenerateContent(ctx, messages)
 	if err != nil {
+		return zero, err
+	}
+	if response == nil || len(response.Choices) == 0 {
+		return zero, fmt.Errorf("model returned no choices")
+	}
+
+	return decodeJSONOutput[T](response.Choices[0].Content)
+}
+
+func decodeJSONOutput[T any](raw string) (T, error) {
+	var zero T
+
+	decoder := json.NewDecoder(strings.NewReader(extractJSON(raw)))
+	var first json.RawMessage
+	if err := decoder.Decode(&first); err != nil {
+		return zero, err
+	}
+
+	for {
+		var extra json.RawMessage
+		err := decoder.Decode(&extra)
+		if err == nil {
+			if !sameJSONValue(first, extra) {
+				return zero, fmt.Errorf("model returned multiple conflicting JSON values")
+			}
+			continue
+		}
+		if err == io.EOF {
+			break
+		}
 		return zero, err
 	}
 
 	var output T
-	if err := json.Unmarshal([]byte(extractJSON(raw)), &output); err != nil {
+	if err := json.Unmarshal(first, &output); err != nil {
 		return zero, err
 	}
 	return output, nil
+}
+
+func sameJSONValue(left, right json.RawMessage) bool {
+	var leftValue any
+	if err := json.Unmarshal(left, &leftValue); err != nil {
+		return false
+	}
+	var rightValue any
+	if err := json.Unmarshal(right, &rightValue); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(leftValue, rightValue)
 }
 
 type classificationPromptData struct {
@@ -238,6 +295,37 @@ func renderClassificationPrompt(input agent.DecisionInput) (string, error) {
 	return prompts.Render("classify.tmpl", data)
 }
 
+func buildClassificationMessages(input agent.DecisionInput) ([]llms.MessageContent, error) {
+	systemPrompt, err := renderClassificationPrompt(input)
+	if err != nil {
+		return nil, err
+	}
+	return []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
+		llms.TextParts(llms.ChatMessageTypeHuman, formatClassificationUserMessage(input)),
+	}, nil
+}
+
+func formatClassificationUserMessage(input agent.DecisionInput) string {
+	event := input.Context.Event
+	parts := []string{
+		"## Inbound Event",
+		"",
+		"Author: " + firstNonEmpty(strings.TrimSpace(event.ActorName), strings.TrimSpace(event.Provenance.Actor), "unknown"),
+		"Channel: " + classificationChannelHint(event),
+	}
+	if threadContext := classificationThreadContext(event); threadContext != "" {
+		parts = append(parts, "Thread context: "+threadContext)
+	}
+	parts = append(parts,
+		"Message: "+strings.TrimSpace(event.Body),
+		"Timestamp: "+classificationTimestamp(event),
+		"",
+		"Classify this inbound event. Return JSON only.",
+	)
+	return strings.Join(parts, "\n")
+}
+
 func renderClarificationPrompt(input agent.ClarificationInput) (string, error) {
 	event := input.Context.Event
 	projectName := strings.TrimSpace(input.Context.Project.Name)
@@ -268,6 +356,43 @@ func renderClarificationPrompt(input agent.ClarificationInput) (string, error) {
 	return prompts.Render("clarify.tmpl", data)
 }
 
+func buildClarificationMessages(input agent.ClarificationInput) ([]llms.MessageContent, error) {
+	systemPrompt, err := renderClarificationPrompt(input)
+	if err != nil {
+		return nil, err
+	}
+	return []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
+		llms.TextParts(llms.ChatMessageTypeHuman, formatClarificationUserMessage(input)),
+	}, nil
+}
+
+func formatClarificationUserMessage(input agent.ClarificationInput) string {
+	event := input.Context.Event
+	parts := []string{
+		"## Inbound Request",
+		"",
+		"Author: " + firstNonEmpty(strings.TrimSpace(event.ActorName), strings.TrimSpace(event.Provenance.Actor), "unknown"),
+		"Channel: " + classificationChannelHint(event),
+	}
+	if threadContext := classificationThreadContext(event); threadContext != "" {
+		parts = append(parts, "Thread context: "+threadContext)
+	}
+	parts = append(parts,
+		"Message: "+strings.TrimSpace(event.Body),
+		"",
+		"Classifier intent: "+string(input.Classification.Intent),
+		"Classifier route: "+string(input.Classification.RoutedTo),
+		"Classifier tier: "+strconv.Itoa(int(input.Classification.Tier)),
+		"Classifier confidence: "+strconv.FormatFloat(input.Classification.Confidence, 'f', -1, 64),
+		"Classifier contradiction risk: "+strconv.FormatBool(input.Classification.ContradictionRisk),
+		"Classifier summary: "+strings.TrimSpace(input.Classification.Summary),
+		"",
+		"Ask for the minimum missing information needed to move forward. Return JSON only.",
+	)
+	return strings.Join(parts, "\n")
+}
+
 func renderPlanningPrompt(input agent.PlanningInput) (string, error) {
 	event := input.Context.Event
 	projectName := strings.TrimSpace(input.Context.Project.Name)
@@ -287,6 +412,38 @@ func renderPlanningPrompt(input agent.PlanningInput) (string, error) {
 		AvailableSkills:      formatAvailableSkills(input.AvailableSkills),
 	}
 	return prompts.Render("plan.tmpl", data)
+}
+
+func buildPlanningMessages(input agent.PlanningInput) ([]llms.MessageContent, error) {
+	systemPrompt, err := renderPlanningPrompt(input)
+	if err != nil {
+		return nil, err
+	}
+	return []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
+		llms.TextParts(llms.ChatMessageTypeHuman, formatPlanningUserMessage(input)),
+	}, nil
+}
+
+func formatPlanningUserMessage(input agent.PlanningInput) string {
+	event := input.Context.Event
+	parts := []string{
+		"## Request",
+		"",
+		"Author: " + firstNonEmpty(strings.TrimSpace(event.ActorName), strings.TrimSpace(event.Provenance.Actor), "unknown"),
+		"Original message: " + strings.TrimSpace(event.Body),
+	}
+	if summary := strings.TrimSpace(planningClarificationSummary(event)); summary != "" {
+		parts = append(parts, "Clarification summary: "+summary)
+	}
+	if answers := strings.TrimSpace(planningResolvedAnswers(event)); answers != "" {
+		parts = append(parts, "Resolved answers: "+answers)
+	}
+	parts = append(parts,
+		"",
+		"Produce a plan for this request. Return JSON only.",
+	)
+	return strings.Join(parts, "\n")
 }
 
 func normalizeClarificationOutput(input agent.ClarificationInput, output clarificationLLMOutput) (agent.ClarificationRequest, error) {

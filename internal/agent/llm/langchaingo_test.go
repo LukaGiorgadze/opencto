@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tmc/langchaingo/llms"
+
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
 )
@@ -71,11 +73,7 @@ func TestRenderClassificationPromptUsesStructuredContext(t *testing.T) {
 		"Project Description: Self-hosted AI technical co-founder",
 		"Recent conversation: The agent asked which staging target should receive the deploy.",
 		"Recent decisions: Use Temporal: Temporal coordinates long-running work.",
-		"Author: luka",
-		"Channel: discord:channel-1",
-		"Thread context: deployment thread",
-		"Message: deploy to staging",
-		"Timestamp: 2026-04-23T09:30:00Z",
+		"The inbound event is provided as the user message.",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q\n%s", want, prompt)
@@ -91,9 +89,62 @@ func TestRenderClassificationPromptUsesStructuredContext(t *testing.T) {
 		"Current State:",
 		"Active work:",
 		"Open contradictions:",
+		"Message: deploy to staging",
+		"Timestamp: 2026-04-23T09:30:00Z",
 	} {
 		if strings.Contains(prompt, removed) {
 			t.Fatalf("prompt still contains removed classifier context %q\n%s", removed, prompt)
+		}
+	}
+}
+
+func TestBuildClassificationMessagesSeparatesSystemAndUser(t *testing.T) {
+	t.Parallel()
+
+	input := agent.DecisionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{
+				ID:   "project-1",
+				Name: "OpenCTO",
+			},
+			Event: domain.Event{
+				ID:          "event-1",
+				ProjectID:   "project-1",
+				ActorName:   "luka",
+				Body:        "deploy to staging",
+				ChannelID:   "channel-1",
+				ChannelType: domain.ChannelTypeDiscord,
+				CreatedAt:   time.Date(2026, 4, 23, 9, 30, 0, 0, time.UTC),
+			},
+		},
+	}
+
+	messages, err := buildClassificationMessages(input)
+	if err != nil {
+		t.Fatalf("build classification messages: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected system and user messages, got %d", len(messages))
+	}
+	if messages[0].Role != llms.ChatMessageTypeSystem {
+		t.Fatalf("expected first message to be system, got %q", messages[0].Role)
+	}
+	if messages[1].Role != llms.ChatMessageTypeHuman {
+		t.Fatalf("expected second message to be human, got %q", messages[1].Role)
+	}
+	if got := messageText(messages[0]); strings.Contains(got, "Message: deploy to staging") {
+		t.Fatalf("system prompt should not include user message:\n%s", got)
+	}
+	userMessage := messageText(messages[1])
+	for _, want := range []string{
+		"Author: luka",
+		"Channel: discord:channel-1",
+		"Message: deploy to staging",
+		"Timestamp: 2026-04-23T09:30:00Z",
+	} {
+		if !strings.Contains(userMessage, want) {
+			t.Fatalf("user message missing %q\n%s", want, userMessage)
 		}
 	}
 }
@@ -423,11 +474,10 @@ func TestRenderClarificationPromptUsesAvailableContextOnly(t *testing.T) {
 		"Known facts: deployment_target: vercel",
 		"Open contradictions: deployment target",
 		"Recent conversation: assistant: Which environment should I deploy to: staging or production?",
-		"Author: luka",
-		"Message: deploy it",
 		"Classifier intent: ACTION_REQUEST",
 		"Classifier route: clarify",
 		"Classifier contradiction risk: true",
+		"The inbound request is provided as the user message.",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q\n%s", want, prompt)
@@ -437,11 +487,62 @@ func TestRenderClarificationPromptUsesAvailableContextOnly(t *testing.T) {
 		"Prior clarification rounds:",
 		"Previously asked:",
 		"Answers received:",
+		"Message: deploy it",
 		"{{",
 	} {
 		if strings.Contains(prompt, unwanted) {
 			t.Fatalf("prompt still contains unsupported content %q\n%s", unwanted, prompt)
 		}
+	}
+}
+
+func TestBuildClarificationMessagesSeparatesSystemAndUser(t *testing.T) {
+	t.Parallel()
+
+	input := agent.ClarificationInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{
+				ID:   "project-1",
+				Name: "OpenCTO",
+			},
+			Event: domain.Event{
+				ID:          "event-2",
+				ProjectID:   "project-1",
+				ActorName:   "luka",
+				Body:        "deploy it",
+				ChannelID:   "channel-1",
+				ChannelType: domain.ChannelTypeDiscord,
+			},
+		},
+		Classification: agent.Classification{
+			Intent:            agent.ClassificationIntentActionRequest,
+			Tier:              domain.RiskTierOwnerApproval,
+			Confidence:        0.91,
+			RoutedTo:          agent.ClassificationRouteClarify,
+			ContradictionRisk: true,
+			Summary:           "Deployment target is unclear.",
+		},
+	}
+
+	messages, err := buildClarificationMessages(input)
+	if err != nil {
+		t.Fatalf("build clarification messages: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected system and user messages, got %d", len(messages))
+	}
+	if messages[0].Role != llms.ChatMessageTypeSystem {
+		t.Fatalf("expected first message to be system, got %q", messages[0].Role)
+	}
+	if messages[1].Role != llms.ChatMessageTypeHuman {
+		t.Fatalf("expected second message to be human, got %q", messages[1].Role)
+	}
+	if got := messageText(messages[0]); strings.Contains(got, "Message: deploy it") {
+		t.Fatalf("system prompt should not include user message:\n%s", got)
+	}
+	if got := messageText(messages[1]); !strings.Contains(got, "Message: deploy it") {
+		t.Fatalf("user message missing request:\n%s", got)
 	}
 }
 
@@ -557,9 +658,8 @@ func TestRenderPlanningPromptUsesSupportedContext(t *testing.T) {
 	for _, want := range []string{
 		"Project: OpenCTO (project-1)",
 		"Autonomy Threshold: 1",
-		"Clarification summary: Target the existing signup flow.",
-		"Resolved answers: Use Supabase Auth and ship to staging first.",
 		"Available skills: nextjs, supabase",
+		"The request is provided as the user message.",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q\n%s", want, prompt)
@@ -575,9 +675,70 @@ func TestRenderPlanningPromptUsesSupportedContext(t *testing.T) {
 		"Active work:",
 		"Open contradictions:",
 		"Integrations:",
+		"Original message: add email verification to signup",
+		"Clarification summary: Target the existing signup flow.",
+		"Resolved answers: Use Supabase Auth and ship to staging first.",
 	} {
 		if strings.Contains(prompt, removed) {
 			t.Fatalf("prompt still contains removed planning context %q\n%s", removed, prompt)
+		}
+	}
+}
+
+func TestBuildPlanningMessagesSeparatesSystemAndUser(t *testing.T) {
+	t.Parallel()
+
+	input := agent.PlanningInput{
+		ProjectID:         "project-1",
+		AutonomyThreshold: 1,
+		AvailableSkills:   []string{"nextjs"},
+		Context: agent.Context{
+			Project: domain.Project{
+				ID:   "project-1",
+				Name: "OpenCTO",
+			},
+			Event: domain.Event{
+				ID:        "event-3",
+				ProjectID: "project-1",
+				ActorName: "luka",
+				Body:      "add email verification to signup",
+				Metadata: map[string]string{
+					"clarification_summary": "Target the existing signup flow.",
+					"resolved_answers":      "Use Supabase Auth and ship to staging first.",
+				},
+			},
+		},
+		Classification: agent.Classification{
+			Intent:   agent.ClassificationIntentActionRequest,
+			RoutedTo: agent.ClassificationRoutePlan,
+			Tier:     domain.RiskTierConsequential,
+		},
+	}
+
+	messages, err := buildPlanningMessages(input)
+	if err != nil {
+		t.Fatalf("build planning messages: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected system and user messages, got %d", len(messages))
+	}
+	if messages[0].Role != llms.ChatMessageTypeSystem {
+		t.Fatalf("expected first message to be system, got %q", messages[0].Role)
+	}
+	if messages[1].Role != llms.ChatMessageTypeHuman {
+		t.Fatalf("expected second message to be human, got %q", messages[1].Role)
+	}
+	if got := messageText(messages[0]); strings.Contains(got, "Original message: add email verification to signup") {
+		t.Fatalf("system prompt should not include user message:\n%s", got)
+	}
+	userMessage := messageText(messages[1])
+	for _, want := range []string{
+		"Original message: add email verification to signup",
+		"Clarification summary: Target the existing signup flow.",
+		"Resolved answers: Use Supabase Auth and ship to staging first.",
+	} {
+		if !strings.Contains(userMessage, want) {
+			t.Fatalf("user message missing %q\n%s", want, userMessage)
 		}
 	}
 }

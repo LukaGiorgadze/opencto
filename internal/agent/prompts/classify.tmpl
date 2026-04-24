@@ -19,18 +19,6 @@ Recent decisions: {{ if .RecentDecisions }}{{ .RecentDecisions }}{{ else }}none{
 
 ---
 
-## Inbound Event
-
-Author: {{ .AuthorName }}
-Channel: {{ .ChannelHint }}
-{{- if .ThreadContext }}
-Thread context: {{ .ThreadContext }}
-{{- end }}
-Message: {{ .MessageText }}
-Timestamp: {{ .Timestamp }}
-
----
-
 ## Classification Schema
 
 Return strict JSON only. No markdown. No explanation. No preamble.
@@ -166,4 +154,4 @@ Output: {"intent":"CONTEXT_UPDATE","tier":0,"confidence":0.97,"needs_clarificati
 
 ---
 
-Now classify the inbound event above. Return JSON only.
+The inbound event is provided as the user message. Return JSON only.

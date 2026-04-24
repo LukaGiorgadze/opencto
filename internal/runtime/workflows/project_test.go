@@ -288,6 +288,20 @@ func TestTaskWorkflowResumesAfterApproval(t *testing.T) {
 		RequestedAction: "run test command",
 		Observation:     "done",
 	}, nil)
+	env.OnActivity("Activities.SelectTool", mock.Anything, mock.MatchedBy(func(request activities.ToolSelectionRequest) bool {
+		feedback := request.Feedback
+		return request.ExecutionCycle == 2 &&
+			request.CurrentWorkItemID == "work-item-1" &&
+			feedback != nil &&
+			feedback.WorkItemID == "work-item-1" &&
+			feedback.Status == string(domain.ExecutionStatusSucceeded) &&
+			feedback.Observation == "done"
+	})).Return(activities.ToolSelectionResult{
+		Action:          agent.AgentLoopActionComplete,
+		WorkItemID:      "work-item-1",
+		WorkItemStatus:  domain.WorkItemStatusCompleted,
+		ResponseMessage: "done",
+	}, nil)
 	env.OnActivity("Activities.PersistConversationMemory", mock.Anything, event, "done").Return(nil)
 	env.OnActivity("Activities.WriteADR", mock.Anything, "project-1", "Execution Summary", "done", []string{"Run one command."}).Return(domain.ADR{}, nil)
 	env.OnActivity("Activities.ReportResult", mock.Anything, event, "done").Return(nil)
@@ -468,6 +482,20 @@ func TestTaskWorkflowConsumesApprovedApprovalOnResume(t *testing.T) {
 		Status:          domain.ExecutionStatusSucceeded,
 		RequestedAction: "Install dependencies",
 		Observation:     "dependencies installed",
+	}, nil)
+	env.OnActivity("Activities.SelectTool", mock.Anything, mock.MatchedBy(func(request activities.ToolSelectionRequest) bool {
+		feedback := request.Feedback
+		return request.ExecutionCycle == 2 &&
+			request.CurrentWorkItemID == "work-item-approved" &&
+			feedback != nil &&
+			feedback.WorkItemID == "work-item-approved" &&
+			feedback.Status == string(domain.ExecutionStatusSucceeded) &&
+			feedback.Observation == "dependencies installed"
+	})).Return(activities.ToolSelectionResult{
+		Action:          agent.AgentLoopActionComplete,
+		WorkItemID:      "work-item-approved",
+		WorkItemStatus:  domain.WorkItemStatusCompleted,
+		ResponseMessage: "dependencies installed",
 	}, nil)
 	env.OnActivity("Activities.PersistConversationMemory", mock.Anything, event, "dependencies installed").Return(nil)
 	env.OnActivity("Activities.WriteADR", mock.Anything, "project-1", "Execution Summary", "dependencies installed", []string{"Install dependencies after approval."}).Return(domain.ADR{}, nil)
@@ -669,7 +697,7 @@ func TestTaskWorkflowContinuesAcrossExecutionCycles(t *testing.T) {
 		CurrentWorkItemID: "wi-1",
 		ExecutionCycle:    1,
 	}).Return(activities.ToolSelectionResult{ToolChoice: &firstToolChoice}, nil)
-	env.OnActivity("Activities.PersistDecision", mock.Anything, mock.Anything).Return(nil).Times(5)
+	env.OnActivity("Activities.PersistDecision", mock.Anything, mock.Anything).Return(nil).Times(4)
 	env.OnActivity("Activities.EvaluatePolicy", mock.Anything, event, mock.MatchedBy(func(choice agent.ToolChoice) bool {
 		return choice.Metadata["execution_cycle"] == "1" && choice.Metadata["work_item_id"] == "wi-1"
 	})).Return(policy.Result{Allowed: true}, nil)
@@ -690,13 +718,18 @@ func TestTaskWorkflowContinuesAcrossExecutionCycles(t *testing.T) {
 		feedback := request.Feedback
 		return request.ProjectID == "project-1" &&
 			request.ExecutionCycle == 2 &&
-			request.CurrentWorkItemID == "wi-2" &&
+			request.CurrentWorkItemID == "wi-1" &&
 			feedback != nil &&
 			feedback.Cycle == 1 &&
 			feedback.WorkItemID == "wi-1" &&
 			feedback.Status == string(domain.ExecutionStatusSucceeded) &&
 			feedback.Observation == "located the target folder and the page entry point"
-	})).Return(activities.ToolSelectionResult{ToolChoice: &secondToolChoice}, nil)
+	})).Return(activities.ToolSelectionResult{
+		Action:         agent.AgentLoopActionContinue,
+		WorkItemID:     "wi-1",
+		WorkItemStatus: domain.WorkItemStatusCompleted,
+		ToolChoice:     &secondToolChoice,
+	}, nil)
 	env.OnActivity("Activities.EvaluatePolicy", mock.Anything, event, mock.MatchedBy(func(choice agent.ToolChoice) bool {
 		return choice.Metadata["execution_cycle"] == "2" && choice.Metadata["work_item_id"] == "wi-2"
 	})).Return(policy.Result{Allowed: true}, nil)
@@ -711,6 +744,22 @@ func TestTaskWorkflowContinuesAcrossExecutionCycles(t *testing.T) {
 		Status:          domain.ExecutionStatusSucceeded,
 		RequestedAction: "create the landing page files",
 		Observation:     "landing page files created",
+	}, nil)
+	env.OnActivity("Activities.SelectTool", mock.Anything, mock.MatchedBy(func(request activities.ToolSelectionRequest) bool {
+		feedback := request.Feedback
+		return request.ProjectID == "project-1" &&
+			request.ExecutionCycle == 3 &&
+			request.CurrentWorkItemID == "wi-2" &&
+			feedback != nil &&
+			feedback.Cycle == 2 &&
+			feedback.WorkItemID == "wi-2" &&
+			feedback.Status == string(domain.ExecutionStatusSucceeded) &&
+			feedback.Observation == "landing page files created"
+	})).Return(activities.ToolSelectionResult{
+		Action:          agent.AgentLoopActionComplete,
+		WorkItemID:      "wi-2",
+		WorkItemStatus:  domain.WorkItemStatusCompleted,
+		ResponseMessage: finalMessage,
 	}, nil)
 	env.OnActivity("Activities.PersistConversationMemory", mock.Anything, event, finalMessage).Return(nil)
 	env.OnActivity("Activities.WriteADR", mock.Anything, "project-1", "Execution Summary", finalMessage, []string{"Create the landing page in iterative steps."}).Return(domain.ADR{}, nil)
@@ -731,6 +780,266 @@ func TestTaskWorkflowContinuesAcrossExecutionCycles(t *testing.T) {
 	}
 	if !result.Completed {
 		t.Fatalf("expected workflow to complete after multiple execution cycles")
+	}
+}
+
+func TestTaskWorkflowRepairsAfterFailedToolObservation(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.TaskWorkflow)
+	env.RegisterActivityWithOptions(&activities.Activities{}, activity.RegisterOptions{Name: "Activities."})
+
+	event := domain.Event{
+		ID:        "event-repair",
+		ProjectID: "project-1",
+		Body:      "run the tests and fix the obvious issue",
+	}
+	classification := agent.Classification{
+		Intent:   agent.ClassificationIntentActionRequest,
+		RoutedTo: agent.ClassificationRoutePlan,
+		Summary:  "Run tests and repair failures.",
+	}
+	plannedDecision := agent.DecisionOutput{
+		Classification: classification,
+		Plan: domain.Plan{
+			ID:        "plan-repair",
+			ProjectID: "project-1",
+			EventID:   event.ID,
+			Summary:   "Run tests, repair the failure, then verify.",
+		},
+		WorkItems: []domain.WorkItem{{
+			ID:        "wi-repair",
+			ProjectID: "project-1",
+			Title:     "Repair failing tests",
+			Status:    domain.WorkItemStatusReady,
+		}},
+	}
+	firstTool := agent.ToolChoice{Type: domain.ToolTypeShell, Intent: "run tests"}
+	repairTool := agent.ToolChoice{Type: domain.ToolTypeShell, Intent: "inspect the failing package"}
+	finalMessage := "tests pass after repairing the failure"
+
+	env.OnActivity("Activities.PersistEvent", mock.Anything, event).Return(nil)
+	env.OnActivity("Activities.Classify", mock.Anything, event).Return(classification, nil)
+	env.OnActivity("Activities.Plan", mock.Anything, event, classification).Return(plannedDecision, nil)
+	env.OnActivity("Activities.SelectTool", mock.Anything, activities.ToolSelectionRequest{
+		ProjectID:         "project-1",
+		Event:             event,
+		Decision:          plannedDecision,
+		CurrentWorkItemID: "wi-repair",
+		ExecutionCycle:    1,
+	}).Return(activities.ToolSelectionResult{ToolChoice: &firstTool}, nil)
+	env.OnActivity("Activities.PersistDecision", mock.Anything, mock.Anything).Return(nil).Times(4)
+	env.OnActivity("Activities.EvaluatePolicy", mock.Anything, event, mock.MatchedBy(func(choice agent.ToolChoice) bool {
+		return choice.Metadata["execution_cycle"] == "1" &&
+			choice.Metadata["work_item_id"] == "wi-repair"
+	})).Return(policy.Result{Allowed: true}, nil)
+	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.MatchedBy(func(request activities.ExecuteToolRequest) bool {
+		return request.WorkItemID == "wi-repair" &&
+			request.ToolChoice.Metadata["execution_cycle"] == "1"
+	})).Return(activities.ExecuteToolResult{
+		Cycle:           1,
+		WorkItemID:      "wi-repair",
+		Tool:            domain.ToolTypeShell,
+		Status:          domain.ExecutionStatusFailed,
+		RequestedAction: "run tests",
+		Observation:     "go test ./... failed in internal/runtime",
+		Error:           "exit status 1",
+		ResultCode:      "1",
+	}, nil)
+	env.OnActivity("Activities.SelectTool", mock.Anything, mock.MatchedBy(func(request activities.ToolSelectionRequest) bool {
+		feedback := request.Feedback
+		return request.ExecutionCycle == 2 &&
+			request.CurrentWorkItemID == "wi-repair" &&
+			feedback != nil &&
+			feedback.WorkItemID == "wi-repair" &&
+			feedback.Status == string(domain.ExecutionStatusFailed) &&
+			feedback.Error == "exit status 1"
+	})).Return(activities.ToolSelectionResult{
+		Action:         agent.AgentLoopActionContinue,
+		WorkItemID:     "wi-repair",
+		WorkItemStatus: domain.WorkItemStatusReady,
+		ToolChoice:     &repairTool,
+	}, nil)
+	env.OnActivity("Activities.EvaluatePolicy", mock.Anything, event, mock.MatchedBy(func(choice agent.ToolChoice) bool {
+		return choice.Metadata["execution_cycle"] == "2" &&
+			choice.Metadata["work_item_id"] == "wi-repair" &&
+			choice.Intent == "inspect the failing package"
+	})).Return(policy.Result{Allowed: true}, nil)
+	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.MatchedBy(func(request activities.ExecuteToolRequest) bool {
+		return request.WorkItemID == "wi-repair" &&
+			request.ToolChoice.Metadata["execution_cycle"] == "2"
+	})).Return(activities.ExecuteToolResult{
+		Cycle:           2,
+		WorkItemID:      "wi-repair",
+		Tool:            domain.ToolTypeShell,
+		Status:          domain.ExecutionStatusSucceeded,
+		RequestedAction: "inspect the failing package",
+		Observation:     finalMessage,
+	}, nil)
+	env.OnActivity("Activities.SelectTool", mock.Anything, mock.MatchedBy(func(request activities.ToolSelectionRequest) bool {
+		feedback := request.Feedback
+		return request.ExecutionCycle == 3 &&
+			request.CurrentWorkItemID == "wi-repair" &&
+			feedback != nil &&
+			feedback.WorkItemID == "wi-repair" &&
+			feedback.Status == string(domain.ExecutionStatusSucceeded) &&
+			feedback.Observation == finalMessage
+	})).Return(activities.ToolSelectionResult{
+		Action:          agent.AgentLoopActionComplete,
+		WorkItemID:      "wi-repair",
+		WorkItemStatus:  domain.WorkItemStatusCompleted,
+		ResponseMessage: finalMessage,
+	}, nil)
+	env.OnActivity("Activities.PersistConversationMemory", mock.Anything, event, finalMessage).Return(nil)
+	env.OnActivity("Activities.WriteADR", mock.Anything, "project-1", "Execution Summary", finalMessage, []string{"Run tests, repair the failure, then verify."}).Return(domain.ADR{}, nil)
+	env.OnActivity("Activities.ReportResult", mock.Anything, event, finalMessage).Return(nil)
+
+	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{
+		ProjectID: "project-1",
+		Event:     event,
+	})
+
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("task workflow failed: %v", err)
+	}
+
+	var result workflows.TaskWorkflowResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatalf("get result: %v", err)
+	}
+	if got := result.Decision.WorkItems[0].Status; got != domain.WorkItemStatusCompleted {
+		t.Fatalf("expected work item to complete after repair, got %q", got)
+	}
+}
+
+func TestTaskWorkflowContinuesSameWorkItemWhenSuccessIsInsufficient(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.TaskWorkflow)
+	env.RegisterActivityWithOptions(&activities.Activities{}, activity.RegisterOptions{Name: "Activities."})
+
+	event := domain.Event{
+		ID:        "event-insufficient",
+		ProjectID: "project-1",
+		Body:      "add the missing config and verify it",
+	}
+	classification := agent.Classification{
+		Intent:   agent.ClassificationIntentActionRequest,
+		RoutedTo: agent.ClassificationRoutePlan,
+		Summary:  "Add and verify config.",
+	}
+	plannedDecision := agent.DecisionOutput{
+		Classification: classification,
+		Plan: domain.Plan{
+			ID:        "plan-insufficient",
+			ProjectID: "project-1",
+			EventID:   event.ID,
+			Summary:   "Inspect config, add what is missing, and verify.",
+		},
+		WorkItems: []domain.WorkItem{{
+			ID:        "wi-config",
+			ProjectID: "project-1",
+			Title:     "Add missing config",
+			Status:    domain.WorkItemStatusReady,
+		}},
+	}
+	inspectTool := agent.ToolChoice{Type: domain.ToolTypeShell, Intent: "inspect config"}
+	addTool := agent.ToolChoice{Type: domain.ToolTypeShell, Intent: "add missing config"}
+	finalMessage := "config added and verified"
+
+	env.OnActivity("Activities.PersistEvent", mock.Anything, event).Return(nil)
+	env.OnActivity("Activities.Classify", mock.Anything, event).Return(classification, nil)
+	env.OnActivity("Activities.Plan", mock.Anything, event, classification).Return(plannedDecision, nil)
+	env.OnActivity("Activities.SelectTool", mock.Anything, activities.ToolSelectionRequest{
+		ProjectID:         "project-1",
+		Event:             event,
+		Decision:          plannedDecision,
+		CurrentWorkItemID: "wi-config",
+		ExecutionCycle:    1,
+	}).Return(activities.ToolSelectionResult{ToolChoice: &inspectTool}, nil)
+	env.OnActivity("Activities.PersistDecision", mock.Anything, mock.Anything).Return(nil).Times(4)
+	env.OnActivity("Activities.EvaluatePolicy", mock.Anything, event, mock.MatchedBy(func(choice agent.ToolChoice) bool {
+		return choice.Metadata["execution_cycle"] == "1" &&
+			choice.Metadata["work_item_id"] == "wi-config"
+	})).Return(policy.Result{Allowed: true}, nil)
+	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.MatchedBy(func(request activities.ExecuteToolRequest) bool {
+		return request.WorkItemID == "wi-config" &&
+			request.ToolChoice.Metadata["execution_cycle"] == "1"
+	})).Return(activities.ExecuteToolResult{
+		Cycle:           1,
+		WorkItemID:      "wi-config",
+		Tool:            domain.ToolTypeShell,
+		Status:          domain.ExecutionStatusSucceeded,
+		RequestedAction: "inspect config",
+		Observation:     "config file is missing",
+	}, nil)
+	env.OnActivity("Activities.SelectTool", mock.Anything, mock.MatchedBy(func(request activities.ToolSelectionRequest) bool {
+		feedback := request.Feedback
+		return request.ExecutionCycle == 2 &&
+			request.CurrentWorkItemID == "wi-config" &&
+			feedback != nil &&
+			feedback.WorkItemID == "wi-config" &&
+			feedback.Status == string(domain.ExecutionStatusSucceeded) &&
+			feedback.Observation == "config file is missing"
+	})).Return(activities.ToolSelectionResult{
+		Action:         agent.AgentLoopActionContinue,
+		WorkItemID:     "wi-config",
+		WorkItemStatus: domain.WorkItemStatusReady,
+		ToolChoice:     &addTool,
+	}, nil)
+	env.OnActivity("Activities.EvaluatePolicy", mock.Anything, event, mock.MatchedBy(func(choice agent.ToolChoice) bool {
+		return choice.Metadata["execution_cycle"] == "2" &&
+			choice.Metadata["work_item_id"] == "wi-config" &&
+			choice.Intent == "add missing config"
+	})).Return(policy.Result{Allowed: true}, nil)
+	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.MatchedBy(func(request activities.ExecuteToolRequest) bool {
+		return request.WorkItemID == "wi-config" &&
+			request.ToolChoice.Metadata["execution_cycle"] == "2"
+	})).Return(activities.ExecuteToolResult{
+		Cycle:           2,
+		WorkItemID:      "wi-config",
+		Tool:            domain.ToolTypeShell,
+		Status:          domain.ExecutionStatusSucceeded,
+		RequestedAction: "add missing config",
+		Observation:     finalMessage,
+	}, nil)
+	env.OnActivity("Activities.SelectTool", mock.Anything, mock.MatchedBy(func(request activities.ToolSelectionRequest) bool {
+		feedback := request.Feedback
+		return request.ExecutionCycle == 3 &&
+			request.CurrentWorkItemID == "wi-config" &&
+			feedback != nil &&
+			feedback.WorkItemID == "wi-config" &&
+			feedback.Status == string(domain.ExecutionStatusSucceeded) &&
+			feedback.Observation == finalMessage
+	})).Return(activities.ToolSelectionResult{
+		Action:          agent.AgentLoopActionComplete,
+		WorkItemID:      "wi-config",
+		WorkItemStatus:  domain.WorkItemStatusCompleted,
+		ResponseMessage: finalMessage,
+	}, nil)
+	env.OnActivity("Activities.PersistConversationMemory", mock.Anything, event, finalMessage).Return(nil)
+	env.OnActivity("Activities.WriteADR", mock.Anything, "project-1", "Execution Summary", finalMessage, []string{"Inspect config, add what is missing, and verify."}).Return(domain.ADR{}, nil)
+	env.OnActivity("Activities.ReportResult", mock.Anything, event, finalMessage).Return(nil)
+
+	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{
+		ProjectID: "project-1",
+		Event:     event,
+	})
+
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("task workflow failed: %v", err)
+	}
+
+	var result workflows.TaskWorkflowResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatalf("get result: %v", err)
+	}
+	if got := result.Decision.WorkItems[0].Status; got != domain.WorkItemStatusCompleted {
+		t.Fatalf("expected work item to complete after second action, got %q", got)
 	}
 }
 
@@ -785,7 +1094,7 @@ func TestTaskWorkflowCanAskForClarificationAfterInspectionCycle(t *testing.T) {
 		CurrentWorkItemID: "wi-1",
 		ExecutionCycle:    1,
 	}).Return(activities.ToolSelectionResult{ToolChoice: &clarifyToolChoice}, nil)
-	env.OnActivity("Activities.PersistDecision", mock.Anything, mock.Anything).Return(nil).Times(3)
+	env.OnActivity("Activities.PersistDecision", mock.Anything, mock.Anything).Return(nil).Times(2)
 	env.OnActivity("Activities.EvaluatePolicy", mock.Anything, event, mock.MatchedBy(func(choice agent.ToolChoice) bool {
 		return choice.Metadata["execution_cycle"] == "1" && choice.Metadata["work_item_id"] == "wi-1"
 	})).Return(policy.Result{Allowed: true}, nil)
@@ -811,7 +1120,12 @@ func TestTaskWorkflowCanAskForClarificationAfterInspectionCycle(t *testing.T) {
 			feedback.WorkItemID == "wi-1" &&
 			feedback.Status == string(domain.ExecutionStatusSucceeded) &&
 			feedback.Observation == "folder something exists but no frontend entry point was found"
-	})).Return(activities.ToolSelectionResult{ResponseMessage: question}, nil)
+	})).Return(activities.ToolSelectionResult{
+		Action:          agent.AgentLoopActionClarify,
+		WorkItemID:      "wi-1",
+		WorkItemStatus:  domain.WorkItemStatusBlocked,
+		ResponseMessage: question,
+	}, nil)
 	env.OnActivity("Activities.PersistConversationMemory", mock.Anything, event, question).Return(nil)
 	env.OnActivity("Activities.WriteADR", mock.Anything, "project-1", "Execution Summary", question, []string{"Inspect the repo, then create the landing page."}).Return(domain.ADR{}, nil)
 	env.OnActivity("Activities.ReportResult", mock.Anything, event, question).Return(nil)

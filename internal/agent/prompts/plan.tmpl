@@ -15,19 +15,6 @@ Autonomy Threshold: {{ .AutonomyThreshold }} (actions at or below this tier run 
 
 ---
 
-## Request
-
-Author: {{ .AuthorName }}
-Original message: {{ .OriginalMessage }}
-{{- if .ClarificationSummary }}
-Clarification summary: {{ .ClarificationSummary }}
-{{- end }}
-{{- if .ResolvedAnswers }}
-Resolved answers: {{ .ResolvedAnswers }}
-{{- end }}
-
----
-
 ## Output Schema
 
 Return strict JSON only. No markdown. No preamble.
@@ -206,4 +193,4 @@ Known: Next.js frontend, Supabase Auth configured, deployed on Vercel
 
 ---
 
-Now produce a plan for the request above. Return JSON only.
+The request is provided as the user message. Return JSON only.

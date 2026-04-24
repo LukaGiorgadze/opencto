@@ -77,8 +77,12 @@ type ToolSelectionRequest struct {
 }
 
 type ToolSelectionResult struct {
-	ToolChoice      *agent.ToolChoice `json:"tool_choice,omitempty"`
-	ResponseMessage string            `json:"response_message,omitempty"`
+	Action             agent.AgentLoopAction `json:"action,omitempty"`
+	WorkItemID         string                `json:"work_item_id,omitempty"`
+	WorkItemStatus     domain.WorkItemStatus `json:"work_item_status,omitempty"`
+	ObservationSummary string                `json:"observation_summary,omitempty"`
+	ToolChoice         *agent.ToolChoice     `json:"tool_choice,omitempty"`
+	ResponseMessage    string                `json:"response_message,omitempty"`
 }
 
 type ExecuteToolRequest struct {
@@ -723,7 +727,7 @@ func (a *Activities) SelectTool(ctx context.Context, request ToolSelectionReques
 	if projectID == "" {
 		projectID = input.ProjectID
 	}
-	toolChoice, err := a.Engine.SelectTool(ctx, agent.ToolSelectionInput{
+	decision, err := a.Engine.DecideNextAction(ctx, agent.ToolSelectionInput{
 		ProjectID:          projectID,
 		Context:            input.Context,
 		Classification:     request.Decision.Classification,
@@ -738,10 +742,18 @@ func (a *Activities) SelectTool(ctx context.Context, request ToolSelectionReques
 	if err != nil {
 		return ToolSelectionResult{}, err
 	}
-	if message := strings.TrimSpace(toolChoice.ResponseMessage); message != "" {
-		return ToolSelectionResult{ResponseMessage: message}, nil
+	if message := strings.TrimSpace(decision.ResponseMessage); message != "" {
+		decision.ResponseMessage = message
+		decision.ToolChoice = nil
 	}
-	return ToolSelectionResult{ToolChoice: &toolChoice}, nil
+	return ToolSelectionResult{
+		Action:             decision.Action,
+		WorkItemID:         decision.WorkItemID,
+		WorkItemStatus:     decision.WorkItemStatus,
+		ObservationSummary: decision.ObservationSummary,
+		ToolChoice:         decision.ToolChoice,
+		ResponseMessage:    decision.ResponseMessage,
+	}, nil
 }
 
 func (a *Activities) PersistDecision(ctx context.Context, decision agent.DecisionOutput) error {

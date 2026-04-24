@@ -22,15 +22,6 @@ Recent conversation: {{ if .RelevantConversation }}{{ .RelevantConversation }}{{
 
 ---
 
-## Inbound Request
-
-Author: {{ .AuthorName }}
-Channel: {{ .ChannelHint }}
-{{- if .ThreadContext }}
-Thread context: {{ .ThreadContext }}
-{{- end }}
-Message: {{ .OriginalMessage }}
-
 Classifier intent: {{ .ClassifierIntent }}
 Classifier route: {{ .ClassifierRoute }}
 Classifier tier: {{ .ClassifierTier }}
@@ -113,4 +104,4 @@ Input signal: enough context except one scoped detail
 Output:
 {"known_summary":"The request is to update the landing page in the existing project.","blocking_gaps":["the section to change is not specified"],"assumptions":["use the current design system"],"questions":["Which section needs updating: hero, pricing, or the full page?"],"message":"I’m updating the landing page. Which section needs changing: hero, pricing, or the full page?","confidence_after":0.92}
 
-Now process the inbound request above and return JSON only.
+The inbound request is provided as the user message. Return JSON only.

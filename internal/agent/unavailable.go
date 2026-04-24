@@ -30,6 +30,10 @@ func (e *UnavailableEngine) SelectTool(_ context.Context, _ ToolSelectionInput) 
 	return ToolChoice{}, e.err("select tool")
 }
 
+func (e *UnavailableEngine) DecideNextAction(_ context.Context, _ ToolSelectionInput) (AgentLoopDecision, error) {
+	return AgentLoopDecision{}, e.err("decide next action")
+}
+
 func (e *UnavailableEngine) err(operation string) error {
 	if e.reason == "" {
 		return fmt.Errorf("%w: cannot %s", ErrDecisionEngineUnavailable, operation)

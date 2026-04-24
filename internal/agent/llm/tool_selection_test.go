@@ -335,6 +335,120 @@ func TestToolChoiceFromContentRejectsEmptyMessage(t *testing.T) {
 	}
 }
 
+func TestNormalizeAgentLoopDecisionContinuesSameWorkItem(t *testing.T) {
+	t.Parallel()
+
+	input := agent.ToolSelectionInput{
+		ProjectID:         "project-1",
+		CurrentWorkItemID: "wi-1",
+		Context: agent.Context{
+			Event: domain.Event{Body: "add the config"},
+		},
+		Runtime: agent.RuntimeContext{
+			WorkspaceRoot: "/tmp/opencto",
+		},
+		LastObservation: &agent.ExecutionFeedback{
+			Cycle:       1,
+			WorkItemID:  "wi-1",
+			Status:      string(domain.ExecutionStatusSucceeded),
+			Observation: "config file is missing",
+		},
+	}
+
+	decision, err := normalizeAgentLoopDecision(agentLoopLLMOutput{
+		Action:             "continue",
+		WorkItemID:         "wi-1",
+		WorkItemStatus:     "ready",
+		ObservationSummary: "The inspection succeeded but proved the config is still missing.",
+		ToolChoice: &agentLoopToolChoice{
+			Type:         "shell",
+			Intent:       "create the missing config",
+			Command:      "touch",
+			Args:         []string{"config.toml"},
+			WorkingDir:   "",
+			TimeoutMs:    120000,
+			InputSummary: "create config.toml",
+			Destructive:  false,
+		},
+	}, input)
+	if err != nil {
+		t.Fatalf("normalizeAgentLoopDecision: %v", err)
+	}
+
+	if decision.Action != agent.AgentLoopActionContinue {
+		t.Fatalf("unexpected action: %q", decision.Action)
+	}
+	if decision.WorkItemStatus != domain.WorkItemStatusReady {
+		t.Fatalf("expected work item to remain ready, got %q", decision.WorkItemStatus)
+	}
+	if decision.ToolChoice == nil || decision.ToolChoice.Command != "touch" {
+		t.Fatalf("expected shell tool choice, got %#v", decision.ToolChoice)
+	}
+	if decision.ToolChoice.WorkingDir != "/tmp/opencto" {
+		t.Fatalf("expected workspace default working dir, got %q", decision.ToolChoice.WorkingDir)
+	}
+}
+
+func TestNormalizeAgentLoopDecisionDefaultsTerminalStatus(t *testing.T) {
+	t.Parallel()
+
+	input := agent.ToolSelectionInput{
+		CurrentWorkItemID: "wi-1",
+		LastObservation: &agent.ExecutionFeedback{
+			WorkItemID: "wi-1",
+			Status:     string(domain.ExecutionStatusSucceeded),
+		},
+	}
+
+	decision, err := normalizeAgentLoopDecision(agentLoopLLMOutput{
+		Action:          "complete",
+		ResponseMessage: "done",
+	}, input)
+	if err != nil {
+		t.Fatalf("normalizeAgentLoopDecision: %v", err)
+	}
+
+	if decision.WorkItemID != "wi-1" {
+		t.Fatalf("expected current work item id, got %q", decision.WorkItemID)
+	}
+	if decision.WorkItemStatus != domain.WorkItemStatusCompleted {
+		t.Fatalf("expected completed default, got %q", decision.WorkItemStatus)
+	}
+	if decision.ResponseMessage != "done" {
+		t.Fatalf("unexpected response: %q", decision.ResponseMessage)
+	}
+}
+
+func TestDecodeJSONOutputAcceptsRepeatedIdenticalObject(t *testing.T) {
+	t.Parallel()
+
+	raw := `{"action":"continue","work_item_id":"wi-1","tool_choice":{"type":"shell"}}` + "\n" +
+		`{"tool_choice":{"type":"shell"},"work_item_id":"wi-1","action":"continue"}`
+
+	output, err := decodeJSONOutput[agentLoopLLMOutput](raw)
+	if err != nil {
+		t.Fatalf("decodeJSONOutput: %v", err)
+	}
+	if output.Action != "continue" || output.WorkItemID != "wi-1" {
+		t.Fatalf("unexpected decoded output: %#v", output)
+	}
+}
+
+func TestDecodeJSONOutputRejectsConflictingObjects(t *testing.T) {
+	t.Parallel()
+
+	raw := `{"action":"continue","work_item_id":"wi-1"}` + "\n" +
+		`{"action":"block","work_item_id":"wi-1"}`
+
+	_, err := decodeJSONOutput[agentLoopLLMOutput](raw)
+	if err == nil {
+		t.Fatalf("expected conflicting JSON values to fail")
+	}
+	if !strings.Contains(err.Error(), "multiple conflicting JSON values") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestOpenCTOToolDefinitionsUseStrictCompatibleRequiredLists(t *testing.T) {
 	t.Parallel()
 

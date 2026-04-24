@@ -14,3 +14,7 @@ The React Compiler is not enabled on this template because of its impact on dev 
 ## Expanding the ESLint configuration
 
 If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+
+
+## About OpenCTO
+OpenCTO is a lightweight way to organize technical decision-making, keep work visible, and move from idea to execution with clarity. It helps teams document what they are building, why it matters, and how to keep changes small and reviewable.
