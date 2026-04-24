@@ -9,7 +9,7 @@ model_list:
       api_key: os.environ/OPENAI_API_KEY
   - model_name: text-embedding-3-small
     litellm_params:
-      model: text-embedding-3-small
+      model: openai/text-embedding-3-small
       api_key: os.environ/OPENAI_API_KEY
 
 general_settings:
