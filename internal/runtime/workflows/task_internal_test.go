@@ -3,6 +3,7 @@ package workflows
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
@@ -147,5 +148,46 @@ func TestPersistenceSnapshotKeepsOnlyPersistedPlanState(t *testing.T) {
 	}
 	if _, ok := snapshot.Plan.Metadata["execution_order_json"]; !ok {
 		t.Fatalf("expected structural plan metadata to be preserved")
+	}
+}
+
+func TestReportActivityOptionsAreBoundedAndNonRetrying(t *testing.T) {
+	t.Parallel()
+
+	options := reportActivityOptions()
+
+	if options.StartToCloseTimeout != 15*time.Second {
+		t.Fatalf("unexpected report start-to-close timeout: %s", options.StartToCloseTimeout)
+	}
+	if options.ScheduleToCloseTimeout != 30*time.Second {
+		t.Fatalf("unexpected report schedule-to-close timeout: %s", options.ScheduleToCloseTimeout)
+	}
+	if options.RetryPolicy == nil {
+		t.Fatalf("expected report retry policy")
+	}
+	if options.RetryPolicy.MaximumAttempts != 1 {
+		t.Fatalf("expected report activity to be non-retrying, got %d attempts", options.RetryPolicy.MaximumAttempts)
+	}
+}
+
+func TestToolSelectionActivityOptionsAreBounded(t *testing.T) {
+	t.Parallel()
+
+	options := toolSelectionActivityOptions()
+
+	if options.StartToCloseTimeout != 3*time.Minute {
+		t.Fatalf("unexpected tool selection start-to-close timeout: %s", options.StartToCloseTimeout)
+	}
+	if options.ScheduleToCloseTimeout != 7*time.Minute {
+		t.Fatalf("unexpected tool selection schedule-to-close timeout: %s", options.ScheduleToCloseTimeout)
+	}
+	if options.RetryPolicy == nil {
+		t.Fatalf("expected tool selection retry policy")
+	}
+	if options.RetryPolicy.MaximumAttempts != 2 {
+		t.Fatalf("unexpected tool selection attempts: %d", options.RetryPolicy.MaximumAttempts)
+	}
+	if options.RetryPolicy.MaximumInterval != 30*time.Second {
+		t.Fatalf("unexpected tool selection maximum retry interval: %s", options.RetryPolicy.MaximumInterval)
 	}
 }

@@ -108,7 +108,7 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 			if err := workflow.ExecuteChildWorkflow(ctx, ApprovalWorkflowName, signal).Get(ctx, &approval); err != nil {
 				if ok {
 					message := fmt.Sprintf("I couldn't record approval `%s`: %s", signal.ApprovalID, rootCauseErrorMessage(err))
-					_ = workflow.ExecuteActivity(ctx, "Activities.ReportResult", paused.Event, message).Get(ctx, nil)
+					reportResult(ctx, paused.Event, message)
 				}
 				return
 			}
@@ -118,7 +118,7 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 					if signal.Comment != "" {
 						message += " Comment: " + signal.Comment
 					}
-					_ = workflow.ExecuteActivity(ctx, "Activities.ReportResult", paused.Event, message).Get(ctx, nil)
+					reportResult(ctx, paused.Event, message)
 				}
 				delete(state.PausedByApproval, signal.ApprovalID)
 				return
@@ -128,7 +128,7 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 			}
 			delete(state.PausedByApproval, signal.ApprovalID)
 			paused.ApprovalRequest = &approval
-			_ = workflow.ExecuteActivity(ctx, "Activities.ReportResult", paused.Event, fmt.Sprintf("Approval `%s` was accepted by %s. Resuming task.", signal.ApprovalID, signal.ActorName)).Get(ctx, nil)
+			reportResult(ctx, paused.Event, fmt.Sprintf("Approval `%s` was accepted by %s. Resuming task.", signal.ApprovalID, signal.ActorName))
 			state.ResumeQueue = append(state.ResumeQueue, paused)
 		})
 		selector.AddReceive(contradictionSignal, func(c workflow.ReceiveChannel, more bool) {
@@ -147,7 +147,7 @@ func reportTaskWorkflowFailure(ctx workflow.Context, event domain.Event, err err
 	}
 	message := fmt.Sprintf("I couldn't complete this request because the agent failed: %s", rootCauseErrorMessage(err))
 	_ = workflow.ExecuteActivity(ctx, "Activities.PersistConversationMemory", event, message).Get(ctx, nil)
-	_ = workflow.ExecuteActivity(ctx, "Activities.ReportResult", event, message).Get(ctx, nil)
+	reportResult(ctx, event, message)
 }
 
 func rootCauseErrorMessage(err error) string {

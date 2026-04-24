@@ -62,14 +62,14 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			if err := workflow.ExecuteActivity(ctx, "Activities.PrepareReadyDecision", input.Event, classification).Get(ctx, &decision); err != nil {
 				return TaskWorkflowResult{}, err
 			}
-			var selection activities.ToolSelectionResult
-			if err := workflow.ExecuteActivity(ctx, "Activities.SelectTool", activities.ToolSelectionRequest{
+			selection, err := selectTool(ctx, activities.ToolSelectionRequest{
 				ProjectID:         input.ProjectID,
 				Event:             input.Event,
 				Decision:          selectionSnapshot(decision),
 				CurrentWorkItemID: currentSelectionWorkItemID(decision),
 				ExecutionCycle:    1,
-			}).Get(ctx, &selection); err != nil {
+			})
+			if err != nil {
 				return TaskWorkflowResult{}, err
 			}
 			if err := applyToolSelection(&decision, selection); err != nil {
@@ -79,14 +79,14 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			if err := workflow.ExecuteActivity(ctx, "Activities.Plan", input.Event, classification).Get(ctx, &decision); err != nil {
 				return TaskWorkflowResult{}, err
 			}
-			var selection activities.ToolSelectionResult
-			if err := workflow.ExecuteActivity(ctx, "Activities.SelectTool", activities.ToolSelectionRequest{
+			selection, err := selectTool(ctx, activities.ToolSelectionRequest{
 				ProjectID:         input.ProjectID,
 				Event:             input.Event,
 				Decision:          selectionSnapshot(decision),
 				CurrentWorkItemID: currentSelectionWorkItemID(decision),
 				ExecutionCycle:    1,
-			}).Get(ctx, &selection); err != nil {
+			})
+			if err != nil {
 				return TaskWorkflowResult{}, err
 			}
 			if err := applyToolSelection(&decision, selection); err != nil {
@@ -103,7 +103,7 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 				message = clarificationMessage(decision.Clarification)
 			}
 			_ = workflow.ExecuteActivity(ctx, "Activities.PersistConversationMemory", input.Event, message).Get(ctx, nil)
-			_ = workflow.ExecuteActivity(ctx, "Activities.ReportResult", input.Event, message).Get(ctx, nil)
+			reportResult(ctx, input.Event, message)
 			return TaskWorkflowResult{Completed: true, Decision: decision}, nil
 		}
 		if message := directReplyMessage(decision); message != "" {
@@ -112,7 +112,7 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 				return TaskWorkflowResult{}, err
 			}
 			_ = workflow.ExecuteActivity(ctx, "Activities.PersistConversationMemory", input.Event, message).Get(ctx, nil)
-			_ = workflow.ExecuteActivity(ctx, "Activities.ReportResult", input.Event, message).Get(ctx, nil)
+			reportResult(ctx, input.Event, message)
 			return TaskWorkflowResult{Completed: true, Decision: decision}, nil
 		}
 
@@ -153,7 +153,7 @@ func executeDecision(ctx workflow.Context, event domain.Event, projectID string,
 				return TaskWorkflowResult{}, err
 			}
 			_ = workflow.ExecuteActivity(ctx, "Activities.PersistConversationMemory", event, message).Get(ctx, nil)
-			_ = workflow.ExecuteActivity(ctx, "Activities.ReportResult", event, message).Get(ctx, nil)
+			reportResult(ctx, event, message)
 			return TaskWorkflowResult{Completed: true, Decision: currentDecision}, nil
 		}
 		if policyResult.RequiresApproval {
@@ -173,7 +173,7 @@ func executeDecision(ctx workflow.Context, event domain.Event, projectID string,
 				if err := workflow.ExecuteActivity(ctx, "Activities.CreateApprovalRequest", currentDecision, policyResult).Get(ctx, &approval); err != nil {
 					return TaskWorkflowResult{}, err
 				}
-				_ = workflow.ExecuteActivity(ctx, "Activities.ReportResult", event, approvalMessage(approval, currentDecision, policyResult)).Get(ctx, nil)
+				reportResult(ctx, event, approvalMessage(approval, currentDecision, policyResult))
 				return TaskWorkflowResult{
 					AwaitingApproval: true,
 					ApprovalRequest:  &approval,
@@ -212,7 +212,7 @@ func executeDecision(ctx workflow.Context, event domain.Event, projectID string,
 			currentDecision.ResponseMessage = summary
 			_ = workflow.ExecuteActivity(ctx, "Activities.PersistConversationMemory", event, summary).Get(ctx, nil)
 			_ = workflow.ExecuteActivity(ctx, "Activities.WriteADR", currentDecision.Plan.ProjectID, "Execution Summary", summary, []string{currentDecision.Plan.Summary}).Get(ctx, nil)
-			_ = workflow.ExecuteActivity(ctx, "Activities.ReportResult", event, summary).Get(ctx, nil)
+			reportResult(ctx, event, summary)
 			return TaskWorkflowResult{Completed: true, Decision: currentDecision}, nil
 		}
 
@@ -222,15 +222,14 @@ func executeDecision(ctx workflow.Context, event domain.Event, projectID string,
 			_ = workflow.ExecuteActivity(ctx, "Activities.PersistDecision", persistenceSnapshot(currentDecision)).Get(ctx, nil)
 			_ = workflow.ExecuteActivity(ctx, "Activities.PersistConversationMemory", event, summary).Get(ctx, nil)
 			_ = workflow.ExecuteActivity(ctx, "Activities.WriteADR", currentDecision.Plan.ProjectID, "Execution Summary", summary, []string{currentDecision.Plan.Summary}).Get(ctx, nil)
-			_ = workflow.ExecuteActivity(ctx, "Activities.ReportResult", event, summary).Get(ctx, nil)
+			reportResult(ctx, event, summary)
 			return TaskWorkflowResult{Completed: true, Decision: currentDecision}, nil
 		}
 
 		feedback := executionFeedback(executionResult)
 		observationHistory = append(observationHistory, *feedback)
 
-		var selection activities.ToolSelectionResult
-		if err := workflow.ExecuteActivity(ctx, "Activities.SelectTool", activities.ToolSelectionRequest{
+		selection, err := selectTool(ctx, activities.ToolSelectionRequest{
 			ProjectID:          projectID,
 			Event:              event,
 			Decision:           selectionSnapshot(currentDecision),
@@ -238,7 +237,8 @@ func executeDecision(ctx workflow.Context, event domain.Event, projectID string,
 			Feedback:           feedback,
 			ExecutionCycle:     cycle + 1,
 			ObservationHistory: observationHistory,
-		}).Get(ctx, &selection); err != nil {
+		})
+		if err != nil {
 			return TaskWorkflowResult{}, err
 		}
 		if err := applyToolSelection(&currentDecision, selection); err != nil {
@@ -252,7 +252,7 @@ func executeDecision(ctx workflow.Context, event domain.Event, projectID string,
 			}
 			_ = workflow.ExecuteActivity(ctx, "Activities.PersistConversationMemory", event, message).Get(ctx, nil)
 			_ = workflow.ExecuteActivity(ctx, "Activities.WriteADR", currentDecision.Plan.ProjectID, "Execution Summary", message, []string{currentDecision.Plan.Summary}).Get(ctx, nil)
-			_ = workflow.ExecuteActivity(ctx, "Activities.ReportResult", event, message).Get(ctx, nil)
+			reportResult(ctx, event, message)
 			return TaskWorkflowResult{Completed: true, Decision: currentDecision}, nil
 		}
 
