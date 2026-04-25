@@ -847,29 +847,6 @@ func formatOpenContradictions(items []domain.PendingContradiction) string {
 	return strings.Join(parts, "; ")
 }
 
-func formatRecentDecisions(items []domain.ADR) string {
-	if len(items) == 0 {
-		return ""
-	}
-	if len(items) > 3 {
-		items = items[:3]
-	}
-	parts := make([]string, 0, len(items))
-	for _, item := range items {
-		title := strings.TrimSpace(item.Title)
-		summary := strings.TrimSpace(item.Summary)
-		switch {
-		case title != "" && summary != "":
-			parts = append(parts, title+": "+summary)
-		case title != "":
-			parts = append(parts, title)
-		case summary != "":
-			parts = append(parts, summary)
-		}
-	}
-	return strings.Join(parts, "; ")
-}
-
 func formatConversationMemory(items []domain.MemoryFact) string {
 	if len(items) == 0 {
 		return ""
@@ -922,25 +899,6 @@ func formatKnownFacts(items []domain.MemoryFact) string {
 		case key != "":
 			parts = append(parts, key)
 		}
-	}
-	return strings.Join(parts, "; ")
-}
-
-func formatKnownIntegrations(items []domain.Integration) string {
-	if len(items) == 0 {
-		return ""
-	}
-	parts := make([]string, 0, len(items))
-	for _, item := range items {
-		kind := strings.TrimSpace(item.Kind)
-		if kind == "" {
-			kind = "unknown"
-		}
-		entry := kind + " [" + string(item.Status) + "]"
-		if ref := strings.TrimSpace(item.ExternalRef); ref != "" {
-			entry += ": " + ref
-		}
-		parts = append(parts, entry)
 	}
 	return strings.Join(parts, "; ")
 }
@@ -1148,31 +1106,6 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func normalizeToolChoice(output agent.ToolChoice, input agent.ToolSelectionInput) (agent.ToolChoice, error) {
-	output.Intent = strings.TrimSpace(output.Intent)
-	output.Command = strings.TrimSpace(output.Command)
-	output.WorkingDir = strings.TrimSpace(output.WorkingDir)
-	output.InputSummary = strings.TrimSpace(output.InputSummary)
-
-	if output.Type != domain.ToolTypeShell {
-		return agent.ToolChoice{}, fmt.Errorf("%w: shell execution requires the %s tool, got %q", agent.ErrInvalidToolChoice, toolregistry.SelectorToolShellName, output.Type)
-	}
-	if output.Command == "" {
-		return agent.ToolChoice{}, fmt.Errorf("%w: shell tool response is missing a command", agent.ErrInvalidToolChoice)
-	}
-	if output.Intent == "" {
-		return agent.ToolChoice{}, fmt.Errorf("%w: shell tool response is missing an intent", agent.ErrInvalidToolChoice)
-	}
-	if output.InputSummary == "" {
-		output.InputSummary = strings.TrimSpace(input.Context.Event.Body)
-	}
-	if output.WorkingDir == "" && strings.TrimSpace(input.Runtime.WorkspaceRoot) != "" {
-		output.WorkingDir = input.Runtime.WorkspaceRoot
-	}
-	output.TimeoutMs = clampToolTimeoutMs(output.TimeoutMs)
-	return output, nil
 }
 
 func trimStringList(values []string, max int) []string {
