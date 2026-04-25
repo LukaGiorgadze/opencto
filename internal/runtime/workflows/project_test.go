@@ -786,6 +786,131 @@ func TestTaskWorkflowContinuesAcrossExecutionCycles(t *testing.T) {
 	}
 }
 
+func TestTaskWorkflowExecutesQueuedToolChoicesBeforeSelectingAgain(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.TaskWorkflow)
+	env.RegisterActivityWithOptions(&activities.Activities{}, activity.RegisterOptions{Name: "Activities."})
+
+	event := domain.Event{
+		ID:        "event-queued-tools",
+		ProjectID: "project-1",
+		Body:      "inspect the workspace",
+	}
+	classification := agent.Classification{
+		Intent:   agent.ClassificationIntentActionRequest,
+		RoutedTo: agent.ClassificationRoutePlan,
+		Summary:  "Inspect the workspace.",
+	}
+	plannedDecision := agent.DecisionOutput{
+		Classification: classification,
+		Plan: domain.Plan{
+			ID:        "plan-queued-tools",
+			ProjectID: "project-1",
+			EventID:   event.ID,
+			Summary:   "Inspect the workspace with multiple commands.",
+		},
+		WorkItems: []domain.WorkItem{
+			{ID: "wi-1", ProjectID: "project-1", Title: "Inspect workspace", Status: domain.WorkItemStatusReady},
+		},
+	}
+	firstToolChoice := agent.ToolChoice{
+		Type:    domain.ToolTypeShell,
+		Intent:  "print working directory",
+		Command: "pwd",
+	}
+	queuedToolChoice := agent.ToolChoice{
+		Type:    domain.ToolTypeShell,
+		Intent:  "list workspace files",
+		Command: "ls",
+		Args:    []string{"-la"},
+	}
+	finalMessage := "workspace inspected"
+
+	env.OnActivity("Activities.PersistEvent", mock.Anything, event).Return(nil)
+	env.OnActivity("Activities.Classify", mock.Anything, event).Return(classification, nil)
+	env.OnActivity("Activities.Plan", mock.Anything, event, classification).Return(plannedDecision, nil)
+	env.OnActivity("Activities.SelectTool", mock.Anything, activities.ToolSelectionRequest{
+		ProjectID:         "project-1",
+		Event:             event,
+		Decision:          plannedDecision,
+		CurrentWorkItemID: "wi-1",
+		ExecutionCycle:    1,
+	}).Return(activities.ToolSelectionResult{
+		Action:      agent.AgentLoopActionContinue,
+		WorkItemID:  "wi-1",
+		ToolChoice:  &firstToolChoice,
+		ToolChoices: []agent.ToolChoice{queuedToolChoice},
+	}, nil)
+	env.OnActivity("Activities.PersistDecision", mock.Anything, mock.Anything).Return(nil).Times(3)
+	env.OnActivity("Activities.EvaluatePolicy", mock.Anything, event, mock.MatchedBy(func(choice agent.ToolChoice) bool {
+		return choice.Intent == "print working directory" &&
+			choice.Metadata["execution_cycle"] == "1" &&
+			choice.Metadata["work_item_id"] == "wi-1"
+	})).Return(policy.Result{Allowed: true}, nil)
+	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.MatchedBy(func(request activities.ExecuteToolRequest) bool {
+		return request.ToolChoice.Intent == "print working directory" &&
+			request.ToolChoice.Metadata["execution_cycle"] == "1" &&
+			request.ToolChoice.Metadata["work_item_id"] == "wi-1" &&
+			request.WorkItemID == "wi-1"
+	})).Return(activities.ExecuteToolResult{
+		Cycle:           1,
+		WorkItemID:      "wi-1",
+		Tool:            domain.ToolTypeShell,
+		Status:          domain.ExecutionStatusSucceeded,
+		RequestedAction: "print working directory",
+		Observation:     "/tmp/opencto",
+	}, nil)
+	env.OnActivity("Activities.EvaluatePolicy", mock.Anything, event, mock.MatchedBy(func(choice agent.ToolChoice) bool {
+		return choice.Intent == "list workspace files" &&
+			choice.Metadata["execution_cycle"] == "2" &&
+			choice.Metadata["work_item_id"] == "wi-1"
+	})).Return(policy.Result{Allowed: true}, nil)
+	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.MatchedBy(func(request activities.ExecuteToolRequest) bool {
+		return request.ToolChoice.Intent == "list workspace files" &&
+			request.ToolChoice.Metadata["execution_cycle"] == "2" &&
+			request.ToolChoice.Metadata["work_item_id"] == "wi-1" &&
+			request.WorkItemID == "wi-1"
+	})).Return(activities.ExecuteToolResult{
+		Cycle:           2,
+		WorkItemID:      "wi-1",
+		Tool:            domain.ToolTypeShell,
+		Status:          domain.ExecutionStatusSucceeded,
+		RequestedAction: "list workspace files",
+		Observation:     "README.md",
+	}, nil)
+	env.OnActivity("Activities.SelectTool", mock.Anything, mock.MatchedBy(func(request activities.ToolSelectionRequest) bool {
+		feedback := request.Feedback
+		return request.ProjectID == "project-1" &&
+			request.ExecutionCycle == 3 &&
+			request.CurrentWorkItemID == "wi-1" &&
+			feedback != nil &&
+			feedback.Cycle == 2 &&
+			feedback.WorkItemID == "wi-1" &&
+			feedback.Status == string(domain.ExecutionStatusSucceeded) &&
+			feedback.Observation == "README.md"
+	})).Return(activities.ToolSelectionResult{
+		Action:          agent.AgentLoopActionComplete,
+		WorkItemID:      "wi-1",
+		WorkItemStatus:  domain.WorkItemStatusCompleted,
+		ResponseMessage: finalMessage,
+	}, nil)
+	env.OnActivity("Activities.PersistConversationMemory", mock.Anything, event, finalMessage).Return(nil)
+	env.OnActivity("Activities.WriteADR", mock.Anything, "project-1", "Execution Summary", finalMessage, []string{"Inspect the workspace with multiple commands."}).Return(domain.ADR{}, nil)
+	env.OnActivity("Activities.ReportResult", mock.Anything, event, finalMessage).Return(nil)
+
+	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{
+		ProjectID: "project-1",
+		Event:     event,
+	})
+
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("task workflow failed: %v", err)
+	}
+}
+
 func TestTaskWorkflowRepairsAfterFailedToolObservation(t *testing.T) {
 	t.Parallel()
 

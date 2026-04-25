@@ -82,6 +82,7 @@ type ToolSelectionResult struct {
 	WorkItemStatus     domain.WorkItemStatus `json:"work_item_status,omitempty"`
 	ObservationSummary string                `json:"observation_summary,omitempty"`
 	ToolChoice         *agent.ToolChoice     `json:"tool_choice,omitempty"`
+	ToolChoices        []agent.ToolChoice    `json:"tool_choices,omitempty"`
 	ResponseMessage    string                `json:"response_message,omitempty"`
 }
 
@@ -745,6 +746,7 @@ func (a *Activities) SelectTool(ctx context.Context, request ToolSelectionReques
 	if message := strings.TrimSpace(decision.ResponseMessage); message != "" {
 		decision.ResponseMessage = message
 		decision.ToolChoice = nil
+		decision.ToolChoices = nil
 	}
 	return ToolSelectionResult{
 		Action:             decision.Action,
@@ -752,6 +754,7 @@ func (a *Activities) SelectTool(ctx context.Context, request ToolSelectionReques
 		WorkItemStatus:     decision.WorkItemStatus,
 		ObservationSummary: decision.ObservationSummary,
 		ToolChoice:         decision.ToolChoice,
+		ToolChoices:        decision.ToolChoices,
 		ResponseMessage:    decision.ResponseMessage,
 	}, nil
 }

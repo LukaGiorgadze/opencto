@@ -125,12 +125,13 @@ func TestSelectionSnapshotStripsPromptNoise(t *testing.T) {
 			},
 		}},
 		ToolChoice:      agent.ToolChoice{Type: domain.ToolTypeShell, Intent: "old tool"},
+		ToolChoices:     []agent.ToolChoice{{Type: domain.ToolTypeShell, Intent: "queued tool"}},
 		ResponseMessage: "old response",
 	}
 
 	snapshot := selectionSnapshot(decision)
 
-	if !snapshot.ToolChoice.IsZero() || snapshot.ResponseMessage != "" {
+	if !snapshot.ToolChoice.IsZero() || len(snapshot.ToolChoices) != 0 || snapshot.ResponseMessage != "" {
 		t.Fatalf("expected tool and response to be stripped: %#v", snapshot)
 	}
 	if len(snapshot.Plan.Steps) != 0 || len(snapshot.Plan.WorkItemIDs) != 0 {
@@ -168,13 +169,14 @@ func TestPersistenceSnapshotKeepsOnlyPersistedPlanState(t *testing.T) {
 		},
 		WorkItems:       []domain.WorkItem{{ID: "wi-1", ProjectID: "project-1"}},
 		ToolChoice:      agent.ToolChoice{Type: domain.ToolTypeShell, Intent: "run command"},
+		ToolChoices:     []agent.ToolChoice{{Type: domain.ToolTypeShell, Intent: "queued command"}},
 		ResponseMessage: "done",
 		DependencyAudit: &agent.DependencyAudit{Dependency: "example"},
 	}
 
 	snapshot := persistenceSnapshot(decision)
 
-	if !snapshot.Classification.IsZero() || !snapshot.ToolChoice.IsZero() || snapshot.ResponseMessage != "" || snapshot.DependencyAudit != nil {
+	if !snapshot.Classification.IsZero() || !snapshot.ToolChoice.IsZero() || len(snapshot.ToolChoices) != 0 || snapshot.ResponseMessage != "" || snapshot.DependencyAudit != nil {
 		t.Fatalf("expected non-persisted decision fields to be stripped: %#v", snapshot)
 	}
 	if snapshot.Plan.ID != "plan-1" || len(snapshot.WorkItems) != 1 || snapshot.WorkItems[0].ID != "wi-1" {
@@ -185,6 +187,75 @@ func TestPersistenceSnapshotKeepsOnlyPersistedPlanState(t *testing.T) {
 	}
 	if _, ok := snapshot.Plan.Metadata["execution_order_json"]; !ok {
 		t.Fatalf("expected structural plan metadata to be preserved")
+	}
+}
+
+func TestDequeueNextToolChoiceKeepsBatchOnSameWorkItem(t *testing.T) {
+	t.Parallel()
+
+	decision := agent.DecisionOutput{
+		ToolChoice: agent.ToolChoice{
+			Type:    domain.ToolTypeShell,
+			Intent:  "inspect package",
+			Command: "pwd",
+		},
+		ToolChoices: []agent.ToolChoice{{
+			Type:    domain.ToolTypeShell,
+			Intent:  "list package files",
+			Command: "ls",
+			Args:    []string{"-la"},
+		}},
+	}
+
+	dequeued := dequeueNextToolChoice(&decision, agent.ExecutionFeedback{
+		WorkItemID: "wi-1",
+		Status:     string(domain.ExecutionStatusSucceeded),
+	})
+
+	if !dequeued {
+		t.Fatalf("expected queued tool to be dequeued")
+	}
+	if decision.ToolChoice.Command != "ls" {
+		t.Fatalf("expected queued tool to become active, got %#v", decision.ToolChoice)
+	}
+	if decision.ToolChoice.Metadata["work_item_id"] != "wi-1" {
+		t.Fatalf("expected queued tool to inherit work item id, got %#v", decision.ToolChoice.Metadata)
+	}
+	if len(decision.ToolChoices) != 0 {
+		t.Fatalf("expected queue to be drained, got %#v", decision.ToolChoices)
+	}
+}
+
+func TestDequeueNextToolChoiceDropsQueueOnFailure(t *testing.T) {
+	t.Parallel()
+
+	decision := agent.DecisionOutput{
+		ToolChoice: agent.ToolChoice{
+			Type:    domain.ToolTypeShell,
+			Intent:  "inspect package",
+			Command: "pwd",
+		},
+		ToolChoices: []agent.ToolChoice{{
+			Type:    domain.ToolTypeShell,
+			Intent:  "list package files",
+			Command: "ls",
+		}},
+	}
+
+	dequeued := dequeueNextToolChoice(&decision, agent.ExecutionFeedback{
+		WorkItemID: "wi-1",
+		Status:     string(domain.ExecutionStatusFailed),
+		Error:      "exit status 1",
+	})
+
+	if dequeued {
+		t.Fatalf("expected failed feedback not to dequeue")
+	}
+	if len(decision.ToolChoices) != 0 {
+		t.Fatalf("expected failed feedback to discard queued tools, got %#v", decision.ToolChoices)
+	}
+	if decision.ToolChoice.Command != "pwd" {
+		t.Fatalf("expected active tool to remain unchanged, got %#v", decision.ToolChoice)
 	}
 }
 

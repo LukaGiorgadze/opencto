@@ -151,6 +151,7 @@ type AgentLoopDecision struct {
 	WorkItemStatus     domain.WorkItemStatus `json:"work_item_status,omitempty"`
 	ObservationSummary string                `json:"observation_summary,omitempty"`
 	ToolChoice         *ToolChoice           `json:"tool_choice,omitempty"`
+	ToolChoices        []ToolChoice          `json:"tool_choices,omitempty"`
 	ResponseMessage    string                `json:"response_message,omitempty"`
 }
 
@@ -160,6 +161,7 @@ type DecisionOutput struct {
 	Plan            domain.Plan           `json:"plan,omitzero"`
 	WorkItems       []domain.WorkItem     `json:"work_items,omitempty"`
 	ToolChoice      ToolChoice            `json:"tool_choice,omitempty,omitzero"`
+	ToolChoices     []ToolChoice          `json:"tool_choices,omitempty"`
 	ResponseMessage string                `json:"response_message,omitempty"`
 	DependencyAudit *DependencyAudit      `json:"dependency_audit,omitempty"`
 }

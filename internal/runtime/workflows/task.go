@@ -208,6 +208,9 @@ func executeDecision(ctx workflow.Context, event domain.Event, projectID string,
 
 		feedback := executionFeedback(executionResult)
 		observationHistory = append(observationHistory, *feedback)
+		if dequeueNextToolChoice(&currentDecision, *feedback) {
+			continue
+		}
 		advanceCompletedObservationForSelection(&currentDecision, *feedback, workflow.Now(ctx))
 
 		selection, err := selectTool(ctx, activities.ToolSelectionRequest{
@@ -434,6 +437,7 @@ func applyToolSelection(decision *agent.DecisionOutput, selection activities.Too
 	if message := strings.TrimSpace(selection.ResponseMessage); message != "" {
 		decision.ResponseMessage = message
 		decision.ToolChoice = agent.ToolChoice{}
+		decision.ToolChoices = nil
 		return nil
 	}
 	if selection.ToolChoice == nil {
@@ -441,6 +445,7 @@ func applyToolSelection(decision *agent.DecisionOutput, selection activities.Too
 	}
 	decision.ResponseMessage = ""
 	decision.ToolChoice = *selection.ToolChoice
+	decision.ToolChoices = append([]agent.ToolChoice(nil), selection.ToolChoices...)
 	return nil
 }
 
@@ -528,6 +533,7 @@ func setWorkItemStatus(decision *agent.DecisionOutput, workItemID string, status
 func selectionSnapshot(decision agent.DecisionOutput) agent.DecisionOutput {
 	snapshot := decision
 	snapshot.ToolChoice = agent.ToolChoice{}
+	snapshot.ToolChoices = nil
 	snapshot.ResponseMessage = ""
 	snapshot.Plan.Steps = nil
 	snapshot.Plan.WorkItemIDs = nil
@@ -542,6 +548,7 @@ func persistenceSnapshot(decision agent.DecisionOutput) agent.DecisionOutput {
 	snapshot := decision
 	snapshot.Classification = agent.Classification{}
 	snapshot.ToolChoice = agent.ToolChoice{}
+	snapshot.ToolChoices = nil
 	snapshot.ResponseMessage = ""
 	snapshot.DependencyAudit = nil
 	snapshot.Plan.Metadata = dropPlanMetadata(snapshot.Plan.Metadata, "discord_message")
@@ -593,7 +600,10 @@ func prepareDecisionForExecution(decision *agent.DecisionOutput, cycle int, now 
 		return fmt.Errorf("no tool selected for execution")
 	}
 
-	index := firstIncompleteWorkItemIndex(decision.WorkItems)
+	index, err := executionWorkItemIndex(*decision)
+	if err != nil {
+		return err
+	}
 	if index < 0 {
 		return fmt.Errorf("no incomplete work item available for execution")
 	}
@@ -607,6 +617,19 @@ func prepareDecisionForExecution(decision *agent.DecisionOutput, cycle int, now 
 	decision.WorkItems[index].UpdatedAt = now
 	syncPlanStatus(decision, now)
 	return nil
+}
+
+func executionWorkItemIndex(decision agent.DecisionOutput) (int, error) {
+	requestedID := strings.TrimSpace(decision.ToolChoice.Metadata["work_item_id"])
+	if requestedID != "" {
+		for index, item := range decision.WorkItems {
+			if item.ID == requestedID {
+				return index, nil
+			}
+		}
+		return -1, fmt.Errorf("work item %q not found for tool execution", requestedID)
+	}
+	return firstIncompleteWorkItemIndex(decision.WorkItems), nil
 }
 
 func currentExecutionWorkItem(decision agent.DecisionOutput) (domain.WorkItem, error) {
@@ -625,6 +648,30 @@ func currentExecutionWorkItem(decision agent.DecisionOutput) (domain.WorkItem, e
 		return domain.WorkItem{}, fmt.Errorf("no incomplete work item available for execution")
 	}
 	return decision.WorkItems[index], nil
+}
+
+func dequeueNextToolChoice(decision *agent.DecisionOutput, feedback agent.ExecutionFeedback) bool {
+	if decision == nil {
+		return false
+	}
+	if feedback.Status != string(domain.ExecutionStatusSucceeded) || strings.TrimSpace(feedback.Error) != "" {
+		decision.ToolChoices = nil
+		return false
+	}
+	if len(decision.ToolChoices) == 0 {
+		return false
+	}
+	next := decision.ToolChoices[0]
+	decision.ToolChoices = append([]agent.ToolChoice(nil), decision.ToolChoices[1:]...)
+	if next.Metadata == nil {
+		next.Metadata = map[string]string{}
+	}
+	if workItemID := strings.TrimSpace(feedback.WorkItemID); workItemID != "" {
+		next.Metadata["work_item_id"] = workItemID
+	}
+	decision.ToolChoice = next
+	decision.ResponseMessage = ""
+	return true
 }
 
 func currentSelectionWorkItemID(decision agent.DecisionOutput) string {
