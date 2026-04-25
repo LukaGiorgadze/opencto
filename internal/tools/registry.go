@@ -14,19 +14,17 @@ const (
 )
 
 type SelectorDefinition struct {
-	Name          string
-	Type          domain.ToolType
-	Description   string
-	PromptSummary string
-	Parameters    json.RawMessage
+	Name        string
+	Type        domain.ToolType
+	Description string
+	Parameters  json.RawMessage
 }
 
 var selectorDefinitions = []SelectorDefinition{
 	{
-		Name:          SelectorToolShellName,
-		Type:          domain.ToolTypeShell,
-		Description:   "Execute any shell command in the project workspace. Use this for any concrete terminal action OpenCTO can perform safely.",
-		PromptSummary: "- `" + SelectorToolShellName + "` is the only execution tool wired to the host today.",
+		Name:        SelectorToolShellName,
+		Type:        domain.ToolTypeShell,
+		Description: "Execute any shell command in the project workspace. Use this for any concrete terminal action OpenCTO can perform safely.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
 			"required": ["command", "args", "working_dir", "timeout_ms", "description", "destructive"],
@@ -93,14 +91,6 @@ func SelectorDefinitionByName(name string) (SelectorDefinition, bool) {
 		}
 	}
 	return SelectorDefinition{}, false
-}
-
-func SelectorPromptSummaries() []string {
-	lines := make([]string, 0, len(selectorDefinitions))
-	for _, definition := range selectorDefinitions {
-		lines = append(lines, definition.PromptSummary)
-	}
-	return lines
 }
 
 func ParseToolType(value string) (domain.ToolType, bool) {

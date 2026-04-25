@@ -23,7 +23,6 @@ type OpenAIEngine struct {
 	reasoningModelID string
 	fastModel        llms.Model
 	fastModelID      string
-	toolModel        llms.Model
 }
 
 func NewOpenAIEngine(apiKey, baseURL, reasoningModelID, fastModelID string) (*OpenAIEngine, error) {
@@ -47,21 +46,11 @@ func NewOpenAIEngine(apiKey, baseURL, reasoningModelID, fastModelID string) (*Op
 		return nil, err
 	}
 
-	toolModel, err := openai.New(
-		openai.WithToken(apiKey),
-		openai.WithBaseURL(baseURL),
-		openai.WithModel(reasoningModelID),
-	)
-	if err != nil {
-		return nil, err
-	}
-
 	return &OpenAIEngine{
 		reasoningModel:   reasoningModel,
 		reasoningModelID: reasoningModelID,
 		fastModel:        fastModel,
 		fastModelID:      fastModelID,
-		toolModel:        toolModel,
 	}, nil
 }
 
@@ -108,27 +97,6 @@ func (e *OpenAIEngine) Plan(ctx context.Context, input agent.PlanningInput) (age
 	return normalizePlanningOutput(input, output)
 }
 
-func (e *OpenAIEngine) SelectTool(ctx context.Context, input agent.ToolSelectionInput) (agent.ToolChoice, error) {
-	decision, err := e.DecideNextAction(ctx, input)
-	if err != nil {
-		return agent.ToolChoice{}, err
-	}
-	if decision.ToolChoice != nil {
-		return *decision.ToolChoice, nil
-	}
-	if strings.TrimSpace(decision.ResponseMessage) != "" {
-		return agent.ToolChoice{
-			Intent:          decision.ResponseMessage,
-			InputSummary:    strings.TrimSpace(input.Context.Event.Body),
-			ResponseMessage: decision.ResponseMessage,
-			Metadata: map[string]string{
-				"agent_loop_action": string(decision.Action),
-			},
-		}, nil
-	}
-	return agent.ToolChoice{}, fmt.Errorf("%w: decision did not include a tool or response", agent.ErrInvalidAgentLoopDecision)
-}
-
 func (e *OpenAIEngine) DecideNextAction(ctx context.Context, input agent.ToolSelectionInput) (agent.AgentLoopDecision, error) {
 	output, err := e.decideNextActionWithJSON(ctx, input)
 	if err != nil {
@@ -170,7 +138,9 @@ func decodeJSONOutput[T any](raw string) (T, error) {
 	}
 
 	var output T
-	if err := json.Unmarshal(first, &output); err != nil {
+	strictDecoder := json.NewDecoder(strings.NewReader(string(first)))
+	strictDecoder.DisallowUnknownFields()
+	if err := strictDecoder.Decode(&output); err != nil {
 		return zero, err
 	}
 	return output, nil

@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -12,6 +13,22 @@ import (
 	"github.com/opencto/opencto/internal/domain"
 	toolregistry "github.com/opencto/opencto/internal/tools"
 )
+
+type recordingToolModel struct {
+	response *llms.ContentResponse
+	options  llms.CallOptions
+}
+
+func (m *recordingToolModel) GenerateContent(_ context.Context, _ []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	for _, option := range options {
+		option(&m.options)
+	}
+	return m.response, nil
+}
+
+func (m *recordingToolModel) Call(_ context.Context, _ string, _ ...llms.CallOption) (string, error) {
+	return "", nil
+}
 
 func TestBuildToolSelectionMessagesSeparatesConversationRoles(t *testing.T) {
 	t.Parallel()
@@ -152,6 +169,16 @@ func TestBuildToolSelectionMessagesSeparatesConversationRoles(t *testing.T) {
 	if strings.Contains(prompt, "Reply") {
 		t.Fatalf("prompt should not mention Reply as a tool:\n%s", prompt)
 	}
+	for _, removedToolSchema := range []string{
+		"`Shell` is the only execution tool",
+		`"tool_choice"`,
+		`"command": "executable"`,
+		`"args": ["arg1"]`,
+	} {
+		if strings.Contains(prompt, removedToolSchema) {
+			t.Fatalf("system prompt should not include tool schema %q\n%s", removedToolSchema, prompt)
+		}
+	}
 	for _, removed := range []string{
 		"Inbound request: deploy the app",
 		"Work item: wi-1",
@@ -185,6 +212,70 @@ func TestBuildToolSelectionMessagesSeparatesConversationRoles(t *testing.T) {
 	}
 }
 
+func TestDecideNextActionUsesRegisteredTools(t *testing.T) {
+	t.Parallel()
+
+	model := &recordingToolModel{
+		response: &llms.ContentResponse{
+			Choices: []*llms.ContentChoice{{
+				Content: `{
+					"action": "continue",
+					"work_item_id": "wi-1",
+					"work_item_status": "ready",
+					"observation_summary": "Need to inspect the workspace.",
+					"response_message": ""
+				}`,
+				ToolCalls: []llms.ToolCall{{
+					ID:   "call-1",
+					Type: "function",
+					FunctionCall: &llms.FunctionCall{
+						Name: toolregistry.SelectorToolShellName,
+						Arguments: `{
+							"command":"pwd",
+							"args":[],
+							"working_dir":null,
+							"timeout_ms":120000,
+							"description":"inspect workspace",
+							"destructive":false
+						}`,
+					},
+				}},
+			}},
+		},
+	}
+
+	engine := &OpenAIEngine{reasoningModel: model}
+	decision, err := engine.DecideNextAction(context.Background(), agent.ToolSelectionInput{
+		ProjectID:         "project-1",
+		CurrentWorkItemID: "wi-1",
+		Context: agent.Context{
+			Event: domain.Event{Body: "inspect workspace"},
+		},
+		Runtime: agent.RuntimeContext{
+			WorkspaceRoot: "/tmp/opencto",
+		},
+	})
+	if err != nil {
+		t.Fatalf("DecideNextAction: %v", err)
+	}
+
+	if len(model.options.Tools) != 1 {
+		t.Fatalf("expected registered tools to be passed with WithTools, got %#v", model.options.Tools)
+	}
+	if model.options.Tools[0].Function == nil || model.options.Tools[0].Function.Name != toolregistry.SelectorToolShellName {
+		t.Fatalf("unexpected tool definition: %#v", model.options.Tools[0])
+	}
+	if decision.Action != agent.AgentLoopActionContinue {
+		t.Fatalf("unexpected action: %q", decision.Action)
+	}
+	if decision.ToolChoice == nil || decision.ToolChoice.Command != "pwd" {
+		t.Fatalf("expected shell tool choice from tool call, got %#v", decision.ToolChoice)
+	}
+	if decision.ToolChoice.Metadata["agent_loop_action"] != string(agent.AgentLoopActionContinue) {
+		t.Fatalf("expected agent loop metadata, got %#v", decision.ToolChoice.Metadata)
+	}
+}
+
 func TestToolChoiceFromShellToolCallWrapsCommand(t *testing.T) {
 	t.Parallel()
 
@@ -213,7 +304,7 @@ func TestToolChoiceFromShellToolCallWrapsCommand(t *testing.T) {
 				"destructive":false
 			}`,
 		},
-	}, input, false)
+	}, input)
 	if err != nil {
 		t.Fatalf("toolChoiceFromToolCall: %v", err)
 	}
@@ -268,7 +359,7 @@ func TestToolChoiceFromShellToolCallWrapsCompoundCommand(t *testing.T) {
 				"destructive":false
 			}`,
 		},
-	}, input, false)
+	}, input)
 	if err != nil {
 		t.Fatalf("toolChoiceFromToolCall: %v", err)
 	}
@@ -281,52 +372,6 @@ func TestToolChoiceFromShellToolCallWrapsCompoundCommand(t *testing.T) {
 	}
 	if choice.Metadata["wrapped_shell_command"] != "true" {
 		t.Fatalf("expected wrapped shell metadata, got %#v", choice.Metadata)
-	}
-}
-
-func TestToolChoiceFromContentReturnsDirectReply(t *testing.T) {
-	t.Parallel()
-
-	input := agent.ToolSelectionInput{
-		Context: agent.Context{
-			Event: domain.Event{Body: "what failed?"},
-		},
-	}
-
-	choice, err := toolChoiceFromContentResponse(&llms.ContentResponse{
-		Choices: []*llms.ContentChoice{{
-			Content: "The deployment is blocked on missing credentials.",
-		}},
-	}, input)
-	if err != nil {
-		t.Fatalf("toolChoiceFromContentResponse: %v", err)
-	}
-
-	if choice.ResponseMessage != "The deployment is blocked on missing credentials." {
-		t.Fatalf("unexpected response message: %q", choice.ResponseMessage)
-	}
-	if choice.Type != "" {
-		t.Fatalf("expected direct reply to have no tool type, got %q", choice.Type)
-	}
-	if choice.Metadata["model_tool"] != "content_fallback" {
-		t.Fatalf("unexpected metadata: %#v", choice.Metadata)
-	}
-}
-
-func TestToolChoiceFromContentRejectsEmptyMessage(t *testing.T) {
-	t.Parallel()
-
-	input := agent.ToolSelectionInput{
-		Context: agent.Context{
-			Event: domain.Event{Body: "what failed?"},
-		},
-	}
-
-	_, err := toolChoiceFromContentResponse(&llms.ContentResponse{
-		Choices: []*llms.ContentChoice{{Content: "   "}},
-	}, input)
-	if err == nil {
-		t.Fatalf("expected validation error for empty reply message")
 	}
 }
 
@@ -350,22 +395,23 @@ func TestNormalizeAgentLoopDecisionContinuesSameWorkItem(t *testing.T) {
 		},
 	}
 
+	toolChoice := &agent.ToolChoice{
+		Type:         domain.ToolTypeShell,
+		Intent:       "create the missing config",
+		Command:      "touch",
+		Args:         []string{"config.toml"},
+		WorkingDir:   "/tmp/opencto",
+		TimeoutMs:    120000,
+		InputSummary: "create config.toml",
+		Destructive:  false,
+		Metadata:     map[string]string{},
+	}
 	decision, err := normalizeAgentLoopDecision(agentLoopLLMOutput{
 		Action:             "continue",
 		WorkItemID:         "wi-1",
 		WorkItemStatus:     "ready",
 		ObservationSummary: "The inspection succeeded but proved the config is still missing.",
-		ToolChoice: &agentLoopToolChoice{
-			Type:         "shell",
-			Intent:       "create the missing config",
-			Command:      "touch",
-			Args:         []string{"config.toml"},
-			WorkingDir:   "",
-			TimeoutMs:    120000,
-			InputSummary: "create config.toml",
-			Destructive:  false,
-		},
-	}, input)
+	}, input, toolChoice)
 	if err != nil {
 		t.Fatalf("normalizeAgentLoopDecision: %v", err)
 	}
@@ -398,7 +444,7 @@ func TestNormalizeAgentLoopDecisionDefaultsTerminalStatus(t *testing.T) {
 	decision, err := normalizeAgentLoopDecision(agentLoopLLMOutput{
 		Action:          "complete",
 		ResponseMessage: "done",
-	}, input)
+	}, input, nil)
 	if err != nil {
 		t.Fatalf("normalizeAgentLoopDecision: %v", err)
 	}
@@ -429,7 +475,7 @@ func TestDecodeJSONOutputRejectsRepeatedObject(t *testing.T) {
 	}
 }
 
-func TestDecodeJSONOutputRejectsMalformedToolChoiceArgs(t *testing.T) {
+func TestDecodeJSONOutputRejectsToolChoiceInAgentLoopJSON(t *testing.T) {
 	t.Parallel()
 
 	raw := `{
@@ -449,9 +495,9 @@ func TestDecodeJSONOutputRejectsMalformedToolChoiceArgs(t *testing.T) {
 
 	_, err := decodeJSONOutput[agentLoopLLMOutput](raw)
 	if err == nil {
-		t.Fatalf("expected malformed tool_choice args to fail")
+		t.Fatalf("expected tool_choice in agent loop JSON to fail")
 	}
-	if !strings.Contains(err.Error(), "cannot unmarshal number into Go struct field") {
+	if !strings.Contains(err.Error(), `unknown field "tool_choice"`) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

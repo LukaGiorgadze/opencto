@@ -208,6 +208,5 @@ type Engine interface {
 	Classify(context.Context, DecisionInput) (Classification, error)
 	Clarify(context.Context, ClarificationInput) (*ClarificationRequest, error)
 	Plan(context.Context, PlanningInput) (PlanningOutput, error)
-	SelectTool(context.Context, ToolSelectionInput) (ToolChoice, error)
 	DecideNextAction(context.Context, ToolSelectionInput) (AgentLoopDecision, error)
 }

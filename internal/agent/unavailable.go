@@ -26,10 +26,6 @@ func (e *UnavailableEngine) Plan(_ context.Context, _ PlanningInput) (PlanningOu
 	return PlanningOutput{}, e.err("plan")
 }
 
-func (e *UnavailableEngine) SelectTool(_ context.Context, _ ToolSelectionInput) (ToolChoice, error) {
-	return ToolChoice{}, e.err("select tool")
-}
-
 func (e *UnavailableEngine) DecideNextAction(_ context.Context, _ ToolSelectionInput) (AgentLoopDecision, error) {
 	return AgentLoopDecision{}, e.err("decide next action")
 }
