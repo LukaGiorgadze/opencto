@@ -414,32 +414,44 @@ func TestNormalizeAgentLoopDecisionDefaultsTerminalStatus(t *testing.T) {
 	}
 }
 
-func TestDecodeJSONOutputAcceptsRepeatedIdenticalObject(t *testing.T) {
+func TestDecodeJSONOutputRejectsRepeatedObject(t *testing.T) {
 	t.Parallel()
 
 	raw := `{"action":"continue","work_item_id":"wi-1","tool_choice":{"type":"shell"}}` + "\n" +
 		`{"tool_choice":{"type":"shell"},"work_item_id":"wi-1","action":"continue"}`
 
-	output, err := decodeJSONOutput[agentLoopLLMOutput](raw)
-	if err != nil {
-		t.Fatalf("decodeJSONOutput: %v", err)
+	_, err := decodeJSONOutput[agentLoopLLMOutput](raw)
+	if err == nil {
+		t.Fatalf("expected repeated JSON values to fail")
 	}
-	if output.Action != "continue" || output.WorkItemID != "wi-1" {
-		t.Fatalf("unexpected decoded output: %#v", output)
+	if !strings.Contains(err.Error(), "multiple JSON values") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestDecodeJSONOutputRejectsConflictingObjects(t *testing.T) {
+func TestDecodeJSONOutputRejectsMalformedToolChoiceArgs(t *testing.T) {
 	t.Parallel()
 
-	raw := `{"action":"continue","work_item_id":"wi-1"}` + "\n" +
-		`{"action":"block","work_item_id":"wi-1"}`
+	raw := `{
+		"action": "continue",
+		"work_item_id": "wi-1",
+		"tool_choice": {
+			"type": "shell",
+			"intent": "Create app",
+			"command": "sh",
+			"args": ["-lc", "echo ok", "timeout_ms", 120000],
+			"working_dir": ".",
+			"timeout_ms": 120000,
+			"input_summary": "Create app",
+			"destructive": false
+		}
+	}`
 
 	_, err := decodeJSONOutput[agentLoopLLMOutput](raw)
 	if err == nil {
-		t.Fatalf("expected conflicting JSON values to fail")
+		t.Fatalf("expected malformed tool_choice args to fail")
 	}
-	if !strings.Contains(err.Error(), "multiple conflicting JSON values") {
+	if !strings.Contains(err.Error(), "cannot unmarshal number into Go struct field") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

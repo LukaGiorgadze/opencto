@@ -77,10 +77,19 @@ func (e *OpenAIEngine) decideNextActionWithJSON(ctx context.Context, input agent
 		return agent.AgentLoopDecision{}, err
 	}
 
-	output, err := invokeJSONMessages[agentLoopLLMOutput](ctx, e.reasoningModel, messages)
+	response, err := e.reasoningModel.GenerateContent(ctx, messages)
 	if err != nil {
 		return agent.AgentLoopDecision{}, err
 	}
+	if response == nil || len(response.Choices) == 0 {
+		return agent.AgentLoopDecision{}, fmt.Errorf("model returned no choices")
+	}
+
+	output, err := decodeJSONOutput[agentLoopLLMOutput](response.Choices[0].Content)
+	if err != nil {
+		return agent.AgentLoopDecision{}, err
+	}
+
 	return normalizeAgentLoopDecision(output, input)
 }
 

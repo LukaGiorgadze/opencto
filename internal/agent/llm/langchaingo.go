@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -161,18 +160,12 @@ func decodeJSONOutput[T any](raw string) (T, error) {
 		return zero, err
 	}
 
-	for {
-		var extra json.RawMessage
-		err := decoder.Decode(&extra)
-		if err == nil {
-			if !sameJSONValue(first, extra) {
-				return zero, fmt.Errorf("model returned multiple conflicting JSON values")
-			}
-			continue
-		}
-		if err == io.EOF {
-			break
-		}
+	var extra json.RawMessage
+	switch err := decoder.Decode(&extra); err {
+	case nil:
+		return zero, fmt.Errorf("model returned multiple JSON values")
+	case io.EOF:
+	default:
 		return zero, err
 	}
 
@@ -181,18 +174,6 @@ func decodeJSONOutput[T any](raw string) (T, error) {
 		return zero, err
 	}
 	return output, nil
-}
-
-func sameJSONValue(left, right json.RawMessage) bool {
-	var leftValue any
-	if err := json.Unmarshal(left, &leftValue); err != nil {
-		return false
-	}
-	var rightValue any
-	if err := json.Unmarshal(right, &rightValue); err != nil {
-		return false
-	}
-	return reflect.DeepEqual(leftValue, rightValue)
 }
 
 type classificationPromptData struct {
