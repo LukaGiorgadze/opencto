@@ -264,10 +264,10 @@ func TestReportActivityOptionsAreBoundedAndNonRetrying(t *testing.T) {
 
 	options := reportActivityOptions()
 
-	if options.StartToCloseTimeout != 15*time.Second {
+	if options.StartToCloseTimeout != 30*time.Second {
 		t.Fatalf("unexpected report start-to-close timeout: %s", options.StartToCloseTimeout)
 	}
-	if options.ScheduleToCloseTimeout != 30*time.Second {
+	if options.ScheduleToCloseTimeout != 2*time.Minute {
 		t.Fatalf("unexpected report schedule-to-close timeout: %s", options.ScheduleToCloseTimeout)
 	}
 	if options.RetryPolicy == nil {
@@ -283,19 +283,19 @@ func TestToolSelectionActivityOptionsAreBounded(t *testing.T) {
 
 	options := toolSelectionActivityOptions()
 
-	if options.StartToCloseTimeout != 3*time.Minute {
+	if options.StartToCloseTimeout != 5*time.Minute {
 		t.Fatalf("unexpected tool selection start-to-close timeout: %s", options.StartToCloseTimeout)
 	}
-	if options.ScheduleToCloseTimeout != 7*time.Minute {
+	if options.ScheduleToCloseTimeout != 10*time.Minute {
 		t.Fatalf("unexpected tool selection schedule-to-close timeout: %s", options.ScheduleToCloseTimeout)
 	}
 	if options.RetryPolicy == nil {
 		t.Fatalf("expected tool selection retry policy")
 	}
-	if options.RetryPolicy.MaximumAttempts != 2 {
+	if options.RetryPolicy.MaximumAttempts != 10 {
 		t.Fatalf("unexpected tool selection attempts: %d", options.RetryPolicy.MaximumAttempts)
 	}
-	if options.RetryPolicy.MaximumInterval != 30*time.Second {
+	if options.RetryPolicy.MaximumInterval != 2*time.Second {
 		t.Fatalf("unexpected tool selection maximum retry interval: %s", options.RetryPolicy.MaximumInterval)
 	}
 }

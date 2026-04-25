@@ -98,16 +98,15 @@ type DependencyAudit struct {
 }
 
 type ToolChoice struct {
-	Type            domain.ToolType   `json:"type"`
-	Intent          string            `json:"intent"`
-	Command         string            `json:"command,omitempty"`
-	Args            []string          `json:"args,omitempty"`
-	WorkingDir      string            `json:"working_dir,omitempty"`
-	TimeoutMs       int               `json:"timeout_ms,omitempty"`
-	InputSummary    string            `json:"input_summary,omitempty"`
-	ResponseMessage string            `json:"response_message,omitempty"`
-	Destructive     bool              `json:"destructive,omitempty"`
-	Metadata        map[string]string `json:"metadata,omitempty"`
+	Type         domain.ToolType   `json:"type"`
+	Intent       string            `json:"intent"`
+	Command      string            `json:"command,omitempty"`
+	Args         []string          `json:"args,omitempty"`
+	WorkingDir   string            `json:"working_dir,omitempty"`
+	TimeoutMs    int               `json:"timeout_ms,omitempty"`
+	InputSummary string            `json:"input_summary,omitempty"`
+	Destructive  bool              `json:"destructive,omitempty"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
 }
 
 func (c ToolChoice) IsZero() bool {
@@ -118,7 +117,6 @@ func (c ToolChoice) IsZero() bool {
 		c.WorkingDir == "" &&
 		c.TimeoutMs == 0 &&
 		c.InputSummary == "" &&
-		c.ResponseMessage == "" &&
 		!c.Destructive &&
 		len(c.Metadata) == 0
 }
@@ -136,23 +134,9 @@ type ExecutionFeedback struct {
 	Metadata        map[string]string `json:"metadata,omitempty"`
 }
 
-type AgentLoopAction string
-
-const (
-	AgentLoopActionContinue AgentLoopAction = "continue"
-	AgentLoopActionComplete AgentLoopAction = "complete"
-	AgentLoopActionClarify  AgentLoopAction = "clarify"
-	AgentLoopActionBlock    AgentLoopAction = "block"
-)
-
-type AgentLoopDecision struct {
-	Action             AgentLoopAction       `json:"action"`
-	WorkItemID         string                `json:"work_item_id,omitempty"`
-	WorkItemStatus     domain.WorkItemStatus `json:"work_item_status,omitempty"`
-	ObservationSummary string                `json:"observation_summary,omitempty"`
-	ToolChoice         *ToolChoice           `json:"tool_choice,omitempty"`
-	ToolChoices        []ToolChoice          `json:"tool_choices,omitempty"`
-	ResponseMessage    string                `json:"response_message,omitempty"`
+type ToolSelection struct {
+	ToolChoice  *ToolChoice  `json:"tool_choice,omitempty"`
+	ToolChoices []ToolChoice `json:"tool_choices,omitempty"`
 }
 
 type DecisionOutput struct {
@@ -210,5 +194,5 @@ type Engine interface {
 	Classify(context.Context, DecisionInput) (Classification, error)
 	Clarify(context.Context, ClarificationInput) (*ClarificationRequest, error)
 	Plan(context.Context, PlanningInput) (PlanningOutput, error)
-	DecideNextAction(context.Context, ToolSelectionInput) (AgentLoopDecision, error)
+	SelectTool(context.Context, ToolSelectionInput) (ToolSelection, error)
 }

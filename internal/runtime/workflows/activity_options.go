@@ -11,10 +11,10 @@ import (
 )
 
 const (
-	reportActivityStartToClose           = 15 * time.Second
-	reportActivityScheduleToClose        = 30 * time.Second
-	toolSelectionActivityStartToClose    = 3 * time.Minute
-	toolSelectionActivityScheduleToClose = 7 * time.Minute
+	reportActivityStartToClose           = 30 * time.Second
+	reportActivityScheduleToClose        = 2 * time.Minute
+	toolSelectionActivityStartToClose    = 5 * time.Minute
+	toolSelectionActivityScheduleToClose = 10 * time.Minute
 )
 
 func reportResult(ctx workflow.Context, event domain.Event, message string) {
@@ -45,10 +45,10 @@ func toolSelectionActivityOptions() workflow.ActivityOptions {
 		StartToCloseTimeout:    toolSelectionActivityStartToClose,
 		ScheduleToCloseTimeout: toolSelectionActivityScheduleToClose,
 		RetryPolicy: &temporal.RetryPolicy{
-			InitialInterval:    5 * time.Second,
+			InitialInterval:    2 * time.Second,
 			BackoffCoefficient: 2.0,
-			MaximumInterval:    30 * time.Second,
-			MaximumAttempts:    2,
+			MaximumInterval:    2 * time.Second,
+			MaximumAttempts:    10,
 		},
 	}
 }

@@ -97,10 +97,10 @@ func (e *OpenAIEngine) Plan(ctx context.Context, input agent.PlanningInput) (age
 	return normalizePlanningOutput(input, output)
 }
 
-func (e *OpenAIEngine) DecideNextAction(ctx context.Context, input agent.ToolSelectionInput) (agent.AgentLoopDecision, error) {
-	output, err := e.decideNextActionWithJSON(ctx, input)
+func (e *OpenAIEngine) SelectTool(ctx context.Context, input agent.ToolSelectionInput) (agent.ToolSelection, error) {
+	output, err := e.selectToolWithModel(ctx, input)
 	if err != nil {
-		return agent.AgentLoopDecision{}, err
+		return agent.ToolSelection{}, err
 	}
 	return output, nil
 }
@@ -139,7 +139,6 @@ func decodeJSONOutput[T any](raw string) (T, error) {
 
 	var output T
 	strictDecoder := json.NewDecoder(strings.NewReader(string(first)))
-	strictDecoder.DisallowUnknownFields()
 	if err := strictDecoder.Decode(&output); err != nil {
 		return zero, err
 	}
@@ -1156,22 +1155,6 @@ func normalizeToolChoice(output agent.ToolChoice, input agent.ToolSelectionInput
 	output.Command = strings.TrimSpace(output.Command)
 	output.WorkingDir = strings.TrimSpace(output.WorkingDir)
 	output.InputSummary = strings.TrimSpace(output.InputSummary)
-	output.ResponseMessage = strings.TrimSpace(output.ResponseMessage)
-
-	if output.ResponseMessage != "" {
-		if output.InputSummary == "" {
-			output.InputSummary = strings.TrimSpace(input.Context.Event.Body)
-		}
-		if output.Intent == "" {
-			output.Intent = output.ResponseMessage
-		}
-		output.Type = ""
-		output.Command = ""
-		output.Args = nil
-		output.TimeoutMs = 0
-		output.Destructive = false
-		return output, nil
-	}
 
 	if output.Type != domain.ToolTypeShell {
 		return agent.ToolChoice{}, fmt.Errorf("%w: shell execution requires the %s tool, got %q", agent.ErrInvalidToolChoice, toolregistry.SelectorToolShellName, output.Type)

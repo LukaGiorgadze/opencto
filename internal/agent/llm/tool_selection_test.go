@@ -212,19 +212,13 @@ func TestBuildToolSelectionMessagesSeparatesConversationRoles(t *testing.T) {
 	}
 }
 
-func TestDecideNextActionUsesRegisteredTools(t *testing.T) {
+func TestSelectToolUsesRegisteredTools(t *testing.T) {
 	t.Parallel()
 
 	model := &recordingToolModel{
 		response: &llms.ContentResponse{
 			Choices: []*llms.ContentChoice{{
-				Content: `{
-					"action": "continue",
-					"work_item_id": "wi-1",
-					"work_item_status": "ready",
-					"observation_summary": "Need to inspect the workspace.",
-					"response_message": ""
-				}`,
+				Content: "",
 				ToolCalls: []llms.ToolCall{{
 					ID:   "call-1",
 					Type: "function",
@@ -245,7 +239,7 @@ func TestDecideNextActionUsesRegisteredTools(t *testing.T) {
 	}
 
 	engine := &OpenAIEngine{reasoningModel: model}
-	decision, err := engine.DecideNextAction(context.Background(), agent.ToolSelectionInput{
+	selection, err := engine.SelectTool(context.Background(), agent.ToolSelectionInput{
 		ProjectID:         "project-1",
 		CurrentWorkItemID: "wi-1",
 		Context: agent.Context{
@@ -256,7 +250,7 @@ func TestDecideNextActionUsesRegisteredTools(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("DecideNextAction: %v", err)
+		t.Fatalf("SelectTool: %v", err)
 	}
 
 	if len(model.options.Tools) != 1 {
@@ -265,18 +259,12 @@ func TestDecideNextActionUsesRegisteredTools(t *testing.T) {
 	if model.options.Tools[0].Function == nil || model.options.Tools[0].Function.Name != toolregistry.SelectorToolShellName {
 		t.Fatalf("unexpected tool definition: %#v", model.options.Tools[0])
 	}
-	if decision.Action != agent.AgentLoopActionContinue {
-		t.Fatalf("unexpected action: %q", decision.Action)
-	}
-	if decision.ToolChoice == nil || decision.ToolChoice.Command != "pwd" {
-		t.Fatalf("expected shell tool choice from tool call, got %#v", decision.ToolChoice)
-	}
-	if decision.ToolChoice.Metadata["agent_loop_action"] != string(agent.AgentLoopActionContinue) {
-		t.Fatalf("expected agent loop metadata, got %#v", decision.ToolChoice.Metadata)
+	if selection.ToolChoice == nil || selection.ToolChoice.Command != "pwd" {
+		t.Fatalf("expected shell tool choice from tool call, got %#v", selection.ToolChoice)
 	}
 }
 
-func TestDecideNextActionAcceptsToolCallOnlyContinue(t *testing.T) {
+func TestSelectToolAcceptsToolCallOnly(t *testing.T) {
 	t.Parallel()
 
 	model := &recordingToolModel{
@@ -303,7 +291,7 @@ func TestDecideNextActionAcceptsToolCallOnlyContinue(t *testing.T) {
 	}
 
 	engine := &OpenAIEngine{reasoningModel: model}
-	decision, err := engine.DecideNextAction(context.Background(), agent.ToolSelectionInput{
+	selection, err := engine.SelectTool(context.Background(), agent.ToolSelectionInput{
 		ProjectID:         "project-1",
 		CurrentWorkItemID: "wi-1",
 		Context: agent.Context{
@@ -314,33 +302,23 @@ func TestDecideNextActionAcceptsToolCallOnlyContinue(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("DecideNextAction: %v", err)
+		t.Fatalf("SelectTool: %v", err)
 	}
-
-	if decision.Action != agent.AgentLoopActionContinue {
-		t.Fatalf("unexpected action: %q", decision.Action)
-	}
-	if decision.WorkItemID != "wi-1" {
-		t.Fatalf("unexpected work item id: %q", decision.WorkItemID)
-	}
-	if decision.WorkItemStatus != domain.WorkItemStatusReady {
-		t.Fatalf("unexpected work item status: %q", decision.WorkItemStatus)
-	}
-	if decision.ToolChoice == nil {
+	if selection.ToolChoice == nil {
 		t.Fatalf("expected tool choice")
 	}
-	if decision.ToolChoice.Command != "mkdir" {
-		t.Fatalf("unexpected command: %q", decision.ToolChoice.Command)
+	if selection.ToolChoice.Command != "mkdir" {
+		t.Fatalf("unexpected command: %q", selection.ToolChoice.Command)
 	}
-	if len(decision.ToolChoice.Args) != 2 || decision.ToolChoice.Args[0] != "-p" || decision.ToolChoice.Args[1] != "helloworld" {
-		t.Fatalf("unexpected args: %#v", decision.ToolChoice.Args)
+	if len(selection.ToolChoice.Args) != 2 || selection.ToolChoice.Args[0] != "-p" || selection.ToolChoice.Args[1] != "helloworld" {
+		t.Fatalf("unexpected args: %#v", selection.ToolChoice.Args)
 	}
-	if decision.ToolChoice.WorkingDir != "/tmp/opencto" {
-		t.Fatalf("unexpected working dir: %q", decision.ToolChoice.WorkingDir)
+	if selection.ToolChoice.WorkingDir != "/tmp/opencto" {
+		t.Fatalf("unexpected working dir: %q", selection.ToolChoice.WorkingDir)
 	}
 }
 
-func TestDecideNextActionAcceptsMultipleToolCalls(t *testing.T) {
+func TestSelectToolAcceptsMultipleToolCalls(t *testing.T) {
 	t.Parallel()
 
 	model := &recordingToolModel{
@@ -384,7 +362,7 @@ func TestDecideNextActionAcceptsMultipleToolCalls(t *testing.T) {
 	}
 
 	engine := &OpenAIEngine{reasoningModel: model}
-	decision, err := engine.DecideNextAction(context.Background(), agent.ToolSelectionInput{
+	selection, err := engine.SelectTool(context.Background(), agent.ToolSelectionInput{
 		ProjectID:         "project-1",
 		CurrentWorkItemID: "wi-1",
 		Context: agent.Context{
@@ -395,20 +373,20 @@ func TestDecideNextActionAcceptsMultipleToolCalls(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("DecideNextAction: %v", err)
+		t.Fatalf("SelectTool: %v", err)
 	}
 
-	if decision.ToolChoice == nil || decision.ToolChoice.Command != "pwd" {
-		t.Fatalf("expected first call as active tool choice, got %#v", decision.ToolChoice)
+	if selection.ToolChoice == nil || selection.ToolChoice.Command != "pwd" {
+		t.Fatalf("expected first call as active tool choice, got %#v", selection.ToolChoice)
 	}
-	if len(decision.ToolChoices) != 1 || decision.ToolChoices[0].Command != "ls" {
-		t.Fatalf("expected queued second tool choice, got %#v", decision.ToolChoices)
+	if len(selection.ToolChoices) != 1 || selection.ToolChoices[0].Command != "ls" {
+		t.Fatalf("expected queued second tool choice, got %#v", selection.ToolChoices)
 	}
-	if decision.ToolChoice.Metadata["work_item_id"] != "wi-1" || decision.ToolChoices[0].Metadata["work_item_id"] != "wi-1" {
-		t.Fatalf("expected work item metadata on all choices: active=%#v queued=%#v", decision.ToolChoice.Metadata, decision.ToolChoices[0].Metadata)
+	if selection.ToolChoice.Metadata["work_item_id"] != "wi-1" || selection.ToolChoices[0].Metadata["work_item_id"] != "wi-1" {
+		t.Fatalf("expected work item metadata on all choices: active=%#v queued=%#v", selection.ToolChoice.Metadata, selection.ToolChoices[0].Metadata)
 	}
-	if decision.ToolChoice.Metadata["tool_call_index"] != "0" || decision.ToolChoices[0].Metadata["tool_call_index"] != "1" {
-		t.Fatalf("expected tool call indexes: active=%#v queued=%#v", decision.ToolChoice.Metadata, decision.ToolChoices[0].Metadata)
+	if selection.ToolChoice.Metadata["tool_call_index"] != "0" || selection.ToolChoices[0].Metadata["tool_call_index"] != "1" {
+		t.Fatalf("expected tool call indexes: active=%#v queued=%#v", selection.ToolChoice.Metadata, selection.ToolChoices[0].Metadata)
 	}
 }
 
@@ -511,88 +489,19 @@ func TestToolChoiceFromShellToolCallWrapsCompoundCommand(t *testing.T) {
 	}
 }
 
-func TestNormalizeAgentLoopDecisionContinuesSameWorkItem(t *testing.T) {
-	t.Parallel()
-
-	input := agent.ToolSelectionInput{
-		ProjectID:         "project-1",
-		CurrentWorkItemID: "wi-1",
-		Context: agent.Context{
-			Event: domain.Event{Body: "add the config"},
-		},
-		Runtime: agent.RuntimeContext{
-			WorkspaceRoot: "/tmp/opencto",
-		},
-		LastObservation: &agent.ExecutionFeedback{
-			Cycle:       1,
-			WorkItemID:  "wi-1",
-			Status:      string(domain.ExecutionStatusSucceeded),
-			Observation: "config file is missing",
-		},
-	}
-
-	toolChoice := agent.ToolChoice{
-		Type:         domain.ToolTypeShell,
-		Intent:       "create the missing config",
-		Command:      "touch",
-		Args:         []string{"config.toml"},
-		WorkingDir:   "/tmp/opencto",
-		TimeoutMs:    120000,
-		InputSummary: "create config.toml",
-		Destructive:  false,
-		Metadata:     map[string]string{},
-	}
-	decision, err := normalizeAgentLoopDecision(agentLoopLLMOutput{
-		Action:             "continue",
-		WorkItemID:         "wi-1",
-		WorkItemStatus:     "ready",
-		ObservationSummary: "The inspection succeeded but proved the config is still missing.",
-	}, input, []agent.ToolChoice{toolChoice})
-	if err != nil {
-		t.Fatalf("normalizeAgentLoopDecision: %v", err)
-	}
-
-	if decision.Action != agent.AgentLoopActionContinue {
-		t.Fatalf("unexpected action: %q", decision.Action)
-	}
-	if decision.WorkItemStatus != domain.WorkItemStatusReady {
-		t.Fatalf("expected work item to remain ready, got %q", decision.WorkItemStatus)
-	}
-	if decision.ToolChoice == nil || decision.ToolChoice.Command != "touch" {
-		t.Fatalf("expected shell tool choice, got %#v", decision.ToolChoice)
-	}
-	if decision.ToolChoice.WorkingDir != "/tmp/opencto" {
-		t.Fatalf("expected workspace default working dir, got %q", decision.ToolChoice.WorkingDir)
-	}
-}
-
-func TestNormalizeAgentLoopDecisionDefaultsTerminalStatus(t *testing.T) {
+func TestToolSelectionFromContentResponseRejectsContentOnly(t *testing.T) {
 	t.Parallel()
 
 	input := agent.ToolSelectionInput{
 		CurrentWorkItemID: "wi-1",
-		LastObservation: &agent.ExecutionFeedback{
-			WorkItemID: "wi-1",
-			Status:     string(domain.ExecutionStatusSucceeded),
+	}
+	_, err := toolSelectionFromContentResponse(&llms.ContentResponse{
+		Choices: []*llms.ContentChoice{
+			{Content: `{"response_message":"done"}`},
 		},
-	}
-
-	decision, err := normalizeAgentLoopDecision(agentLoopLLMOutput{
-		Action:          "complete",
-		ResponseMessage: "done",
-	}, input, nil)
-	if err != nil {
-		t.Fatalf("normalizeAgentLoopDecision: %v", err)
-	}
-
-	if decision.WorkItemID != "wi-1" {
-		t.Fatalf("expected current work item id, got %q", decision.WorkItemID)
-	}
-	if decision.WorkItemStatus != domain.WorkItemStatusCompleted {
-		t.Fatalf("expected completed default, got %q", decision.WorkItemStatus)
-	}
-	if decision.ResponseMessage != "done" {
-		t.Fatalf("unexpected response: %q", decision.ResponseMessage)
+	}, input)
+	if err == nil {
+		t.Fatalf("expected content-only response to fail")
 	}
 }
 
@@ -602,38 +511,11 @@ func TestDecodeJSONOutputRejectsRepeatedObject(t *testing.T) {
 	raw := `{"action":"continue","work_item_id":"wi-1","tool_choice":{"type":"shell"}}` + "\n" +
 		`{"tool_choice":{"type":"shell"},"work_item_id":"wi-1","action":"continue"}`
 
-	_, err := decodeJSONOutput[agentLoopLLMOutput](raw)
+	_, err := decodeJSONOutput[map[string]any](raw)
 	if err == nil {
 		t.Fatalf("expected repeated JSON values to fail")
 	}
 	if !strings.Contains(err.Error(), "multiple JSON values") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestDecodeJSONOutputRejectsToolChoiceInAgentLoopJSON(t *testing.T) {
-	t.Parallel()
-
-	raw := `{
-		"action": "continue",
-		"work_item_id": "wi-1",
-		"tool_choice": {
-			"type": "shell",
-			"intent": "Create app",
-			"command": "sh",
-			"args": ["-lc", "echo ok", "timeout_ms", 120000],
-			"working_dir": ".",
-			"timeout_ms": 120000,
-			"input_summary": "Create app",
-			"destructive": false
-		}
-	}`
-
-	_, err := decodeJSONOutput[agentLoopLLMOutput](raw)
-	if err == nil {
-		t.Fatalf("expected tool_choice in agent loop JSON to fail")
-	}
-	if !strings.Contains(err.Error(), `unknown field "tool_choice"`) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

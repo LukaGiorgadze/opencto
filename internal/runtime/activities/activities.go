@@ -77,13 +77,8 @@ type ToolSelectionRequest struct {
 }
 
 type ToolSelectionResult struct {
-	Action             agent.AgentLoopAction `json:"action,omitempty"`
-	WorkItemID         string                `json:"work_item_id,omitempty"`
-	WorkItemStatus     domain.WorkItemStatus `json:"work_item_status,omitempty"`
-	ObservationSummary string                `json:"observation_summary,omitempty"`
-	ToolChoice         *agent.ToolChoice     `json:"tool_choice,omitempty"`
-	ToolChoices        []agent.ToolChoice    `json:"tool_choices,omitempty"`
-	ResponseMessage    string                `json:"response_message,omitempty"`
+	ToolChoice  *agent.ToolChoice  `json:"tool_choice,omitempty"`
+	ToolChoices []agent.ToolChoice `json:"tool_choices,omitempty"`
 }
 
 type ExecuteToolRequest struct {
@@ -728,7 +723,7 @@ func (a *Activities) SelectTool(ctx context.Context, request ToolSelectionReques
 	if projectID == "" {
 		projectID = input.ProjectID
 	}
-	decision, err := a.Engine.DecideNextAction(ctx, agent.ToolSelectionInput{
+	selection, err := a.Engine.SelectTool(ctx, agent.ToolSelectionInput{
 		ProjectID:          projectID,
 		Context:            input.Context,
 		Classification:     request.Decision.Classification,
@@ -743,19 +738,9 @@ func (a *Activities) SelectTool(ctx context.Context, request ToolSelectionReques
 	if err != nil {
 		return ToolSelectionResult{}, err
 	}
-	if message := strings.TrimSpace(decision.ResponseMessage); message != "" {
-		decision.ResponseMessage = message
-		decision.ToolChoice = nil
-		decision.ToolChoices = nil
-	}
 	return ToolSelectionResult{
-		Action:             decision.Action,
-		WorkItemID:         decision.WorkItemID,
-		WorkItemStatus:     decision.WorkItemStatus,
-		ObservationSummary: decision.ObservationSummary,
-		ToolChoice:         decision.ToolChoice,
-		ToolChoices:        decision.ToolChoices,
-		ResponseMessage:    decision.ResponseMessage,
+		ToolChoice:  selection.ToolChoice,
+		ToolChoices: selection.ToolChoices,
 	}, nil
 }
 

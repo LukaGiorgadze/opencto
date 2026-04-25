@@ -46,22 +46,14 @@ type shellToolInput struct {
 	Destructive bool     `json:"destructive,omitempty"`
 }
 
-type agentLoopLLMOutput struct {
-	Action             string `json:"action"`
-	WorkItemID         string `json:"work_item_id,omitempty"`
-	WorkItemStatus     string `json:"work_item_status,omitempty"`
-	ObservationSummary string `json:"observation_summary,omitempty"`
-	ResponseMessage    string `json:"response_message,omitempty"`
-}
-
-func (e *OpenAIEngine) decideNextActionWithJSON(ctx context.Context, input agent.ToolSelectionInput) (agent.AgentLoopDecision, error) {
+func (e *OpenAIEngine) selectToolWithModel(ctx context.Context, input agent.ToolSelectionInput) (agent.ToolSelection, error) {
 	if e.reasoningModel == nil {
-		return agent.AgentLoopDecision{}, fmt.Errorf("agent loop model is not configured")
+		return agent.ToolSelection{}, fmt.Errorf("tool selection model is not configured")
 	}
 
 	messages, err := buildToolSelectionMessages(input)
 	if err != nil {
-		return agent.AgentLoopDecision{}, err
+		return agent.ToolSelection{}, err
 	}
 
 	response, err := e.reasoningModel.GenerateContent(
@@ -70,13 +62,13 @@ func (e *OpenAIEngine) decideNextActionWithJSON(ctx context.Context, input agent
 		llms.WithTools(toolregistry.SelectorLLMDefinitions()),
 	)
 	if err != nil {
-		return agent.AgentLoopDecision{}, err
+		return agent.ToolSelection{}, err
 	}
 	if response == nil || len(response.Choices) == 0 {
-		return agent.AgentLoopDecision{}, fmt.Errorf("model returned no choices")
+		return agent.ToolSelection{}, fmt.Errorf("model returned no choices")
 	}
 
-	return agentLoopDecisionFromContentResponse(response, input)
+	return toolSelectionFromContentResponse(response, input)
 }
 
 func buildToolSelectionMessages(input agent.ToolSelectionInput) ([]llms.MessageContent, error) {
@@ -131,113 +123,35 @@ func renderToolSelectionPrompt(input agent.ToolSelectionInput) (string, error) {
 	return prompts.Render("tool_choice.tmpl", data)
 }
 
-func agentLoopDecisionFromContentResponse(response *llms.ContentResponse, input agent.ToolSelectionInput) (agent.AgentLoopDecision, error) {
+func toolSelectionFromContentResponse(response *llms.ContentResponse, input agent.ToolSelectionInput) (agent.ToolSelection, error) {
 	if response == nil || len(response.Choices) == 0 {
-		return agent.AgentLoopDecision{}, fmt.Errorf("agent loop returned no choices")
+		return agent.ToolSelection{}, fmt.Errorf("tool selection returned no choices")
 	}
 
 	choice := response.Choices[0]
 	toolChoices, err := toolChoicesFromToolCalls(choice.ToolCalls, input)
 	if err != nil {
-		return agent.AgentLoopDecision{}, err
+		return agent.ToolSelection{}, err
+	}
+	if len(toolChoices) == 0 {
+		return agent.ToolSelection{}, fmt.Errorf("%w: tool selection requires at least one tool call", agent.ErrInvalidToolChoice)
 	}
 
-	content := strings.TrimSpace(choice.Content)
-	if content == "" {
-		if len(toolChoices) == 0 {
-			return agent.AgentLoopDecision{}, fmt.Errorf("agent loop returned neither JSON content nor tool call")
+	workItemID := strings.TrimSpace(input.CurrentWorkItemID)
+	for index := range toolChoices {
+		if toolChoices[index].Metadata == nil {
+			toolChoices[index].Metadata = map[string]string{}
 		}
-		return normalizeAgentLoopDecision(agentLoopOutputFromToolChoices(toolChoices, input), input, toolChoices)
+		if workItemID != "" {
+			toolChoices[index].Metadata["work_item_id"] = workItemID
+		}
 	}
 
-	output, err := decodeJSONOutput[agentLoopLLMOutput](content)
-	if err != nil {
-		return agent.AgentLoopDecision{}, err
+	selection := agent.ToolSelection{ToolChoice: &toolChoices[0]}
+	if len(toolChoices) > 1 {
+		selection.ToolChoices = append([]agent.ToolChoice(nil), toolChoices[1:]...)
 	}
-	return normalizeAgentLoopDecision(output, input, toolChoices)
-}
-
-func agentLoopOutputFromToolChoices(choices []agent.ToolChoice, input agent.ToolSelectionInput) agentLoopLLMOutput {
-	summary := "Selected next tool call."
-	if len(choices) == 1 {
-		summary = firstNonEmpty(choices[0].InputSummary, choices[0].Intent, summary)
-	} else if len(choices) > 1 {
-		summary = fmt.Sprintf("Selected %d tool calls for sequential execution.", len(choices))
-	}
-	return agentLoopLLMOutput{
-		Action:             string(agent.AgentLoopActionContinue),
-		WorkItemID:         input.CurrentWorkItemID,
-		WorkItemStatus:     string(domain.WorkItemStatusReady),
-		ObservationSummary: summary,
-		ResponseMessage:    "",
-	}
-}
-
-func normalizeAgentLoopDecision(output agentLoopLLMOutput, input agent.ToolSelectionInput, toolChoices []agent.ToolChoice) (agent.AgentLoopDecision, error) {
-	action := normalizeAgentLoopAction(output.Action, len(toolChoices) > 0, output.ResponseMessage)
-	if action == "" {
-		return agent.AgentLoopDecision{}, fmt.Errorf("%w: action must be one of continue, complete, clarify, or block", agent.ErrInvalidAgentLoopDecision)
-	}
-
-	resolvedWorkItemID := firstNonEmpty(output.WorkItemID, input.CurrentWorkItemID)
-	workItemStatus, err := normalizeAgentLoopWorkItemStatus(output.WorkItemStatus, action, input.LastObservation != nil)
-	if err != nil {
-		return agent.AgentLoopDecision{}, err
-	}
-
-	decision := agent.AgentLoopDecision{
-		Action:             action,
-		WorkItemID:         resolvedWorkItemID,
-		WorkItemStatus:     workItemStatus,
-		ObservationSummary: strings.TrimSpace(output.ObservationSummary),
-		ResponseMessage:    strings.TrimSpace(output.ResponseMessage),
-	}
-
-	switch action {
-	case agent.AgentLoopActionContinue:
-		if len(toolChoices) == 0 {
-			return agent.AgentLoopDecision{}, fmt.Errorf("%w: continue action requires at least one tool call", agent.ErrInvalidAgentLoopDecision)
-		}
-		for index := range toolChoices {
-			if toolChoices[index].Metadata == nil {
-				toolChoices[index].Metadata = map[string]string{}
-			}
-			toolChoices[index].Metadata["agent_loop_action"] = string(action)
-			if workItemID := strings.TrimSpace(resolvedWorkItemID); workItemID != "" {
-				toolChoices[index].Metadata["work_item_id"] = workItemID
-			}
-		}
-		decision.ToolChoice = &toolChoices[0]
-		if len(toolChoices) > 1 {
-			decision.ToolChoices = append([]agent.ToolChoice(nil), toolChoices[1:]...)
-		}
-		decision.ResponseMessage = ""
-	case agent.AgentLoopActionComplete:
-		if len(toolChoices) > 0 {
-			return agent.AgentLoopDecision{}, fmt.Errorf("%w: complete action cannot include a tool call", agent.ErrInvalidAgentLoopDecision)
-		}
-		if decision.ResponseMessage == "" {
-			decision.ResponseMessage = firstNonEmpty(decision.ObservationSummary, "Execution completed.")
-		}
-	case agent.AgentLoopActionClarify:
-		if len(toolChoices) > 0 {
-			return agent.AgentLoopDecision{}, fmt.Errorf("%w: clarify action cannot include a tool call", agent.ErrInvalidAgentLoopDecision)
-		}
-		if decision.ResponseMessage == "" {
-			return agent.AgentLoopDecision{}, fmt.Errorf("%w: clarify action requires response_message", agent.ErrInvalidAgentLoopDecision)
-		}
-	case agent.AgentLoopActionBlock:
-		if len(toolChoices) > 0 {
-			return agent.AgentLoopDecision{}, fmt.Errorf("%w: block action cannot include a tool call", agent.ErrInvalidAgentLoopDecision)
-		}
-		if decision.ResponseMessage == "" {
-			decision.ResponseMessage = firstNonEmpty(decision.ObservationSummary, "Execution is blocked.")
-		}
-	default:
-		return agent.AgentLoopDecision{}, fmt.Errorf("%w: unsupported action %q", agent.ErrInvalidAgentLoopDecision, action)
-	}
-
-	return decision, nil
+	return selection, nil
 }
 
 func toolChoicesFromToolCalls(calls []llms.ToolCall, input agent.ToolSelectionInput) ([]agent.ToolChoice, error) {
@@ -257,55 +171,6 @@ func toolChoicesFromToolCalls(calls []llms.ToolCall, input agent.ToolSelectionIn
 		choices = append(choices, choice)
 	}
 	return choices, nil
-}
-
-func normalizeAgentLoopAction(value string, hasTool bool, responseMessage string) agent.AgentLoopAction {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case string(agent.AgentLoopActionContinue), "act", "tool":
-		return agent.AgentLoopActionContinue
-	case string(agent.AgentLoopActionComplete), "done", "finish", "final":
-		return agent.AgentLoopActionComplete
-	case string(agent.AgentLoopActionClarify), "ask":
-		return agent.AgentLoopActionClarify
-	case string(agent.AgentLoopActionBlock), "blocked", "fail", "failed":
-		return agent.AgentLoopActionBlock
-	}
-	if hasTool {
-		return agent.AgentLoopActionContinue
-	}
-	if strings.TrimSpace(responseMessage) != "" {
-		return agent.AgentLoopActionComplete
-	}
-	return ""
-}
-
-func normalizeAgentLoopWorkItemStatus(value string, action agent.AgentLoopAction, hasObservation bool) (domain.WorkItemStatus, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "":
-		if !hasObservation {
-			return "", nil
-		}
-		switch action {
-		case agent.AgentLoopActionComplete:
-			return domain.WorkItemStatusCompleted, nil
-		case agent.AgentLoopActionClarify, agent.AgentLoopActionBlock:
-			return domain.WorkItemStatusBlocked, nil
-		case agent.AgentLoopActionContinue:
-			return domain.WorkItemStatusReady, nil
-		default:
-			return "", nil
-		}
-	case string(domain.WorkItemStatusReady):
-		return domain.WorkItemStatusReady, nil
-	case string(domain.WorkItemStatusCompleted):
-		return domain.WorkItemStatusCompleted, nil
-	case string(domain.WorkItemStatusFailed):
-		return domain.WorkItemStatusFailed, nil
-	case string(domain.WorkItemStatusBlocked):
-		return domain.WorkItemStatusBlocked, nil
-	default:
-		return "", fmt.Errorf("%w: unsupported work item status %q", agent.ErrInvalidAgentLoopDecision, value)
-	}
 }
 
 func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) (agent.ToolChoice, error) {

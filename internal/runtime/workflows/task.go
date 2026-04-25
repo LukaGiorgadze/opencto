@@ -79,18 +79,20 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			if err := workflow.ExecuteActivity(ctx, "Activities.Plan", input.Event, classification).Get(ctx, &decision); err != nil {
 				return TaskWorkflowResult{}, err
 			}
-			selection, err := selectTool(ctx, activities.ToolSelectionRequest{
-				ProjectID:         input.ProjectID,
-				Event:             input.Event,
-				Decision:          selectionSnapshot(decision),
-				CurrentWorkItemID: currentSelectionWorkItemID(decision),
-				ExecutionCycle:    1,
-			})
-			if err != nil {
-				return TaskWorkflowResult{}, err
-			}
-			if err := applyToolSelection(&decision, selection); err != nil {
-				return TaskWorkflowResult{}, err
+			if directReplyMessage(decision) == "" {
+				selection, err := selectTool(ctx, activities.ToolSelectionRequest{
+					ProjectID:         input.ProjectID,
+					Event:             input.Event,
+					Decision:          selectionSnapshot(decision),
+					CurrentWorkItemID: currentSelectionWorkItemID(decision),
+					ExecutionCycle:    1,
+				})
+				if err != nil {
+					return TaskWorkflowResult{}, err
+				}
+				if err := applyToolSelection(&decision, selection); err != nil {
+					return TaskWorkflowResult{}, err
+				}
 			}
 		}
 
@@ -212,6 +214,20 @@ func executeDecision(ctx workflow.Context, event domain.Event, projectID string,
 			continue
 		}
 		advanceCompletedObservationForSelection(&currentDecision, *feedback, workflow.Now(ctx))
+		if shouldCompleteAfterObservation(currentDecision, *feedback) {
+			summary := executionSummary(executionResult, cycle)
+			if err := setWorkItemStatus(&currentDecision, feedback.WorkItemID, domain.WorkItemStatusCompleted, workflow.Now(ctx)); err != nil {
+				return TaskWorkflowResult{}, err
+			}
+			currentDecision.ResponseMessage = summary
+			if err := workflow.ExecuteActivity(ctx, "Activities.PersistDecision", persistenceSnapshot(currentDecision)).Get(ctx, nil); err != nil {
+				return TaskWorkflowResult{}, err
+			}
+			_ = workflow.ExecuteActivity(ctx, "Activities.PersistConversationMemory", event, summary).Get(ctx, nil)
+			_ = workflow.ExecuteActivity(ctx, "Activities.WriteADR", currentDecision.Plan.ProjectID, "Execution Summary", summary, []string{currentDecision.Plan.Summary}).Get(ctx, nil)
+			reportResult(ctx, event, summary)
+			return TaskWorkflowResult{Completed: true, Decision: currentDecision}, nil
+		}
 
 		selection, err := selectTool(ctx, activities.ToolSelectionRequest{
 			ProjectID:          projectID,
@@ -225,19 +241,8 @@ func executeDecision(ctx workflow.Context, event domain.Event, projectID string,
 		if err != nil {
 			return TaskWorkflowResult{}, err
 		}
-		if err := applyAgentLoopSelection(&currentDecision, selection, feedback, workflow.Now(ctx)); err != nil {
+		if err := applyNextToolSelection(&currentDecision, selection); err != nil {
 			return TaskWorkflowResult{}, err
-		}
-
-		if message := directReplyMessage(currentDecision); message != "" {
-			applyTerminalResponseOutcome(&currentDecision, selection, feedback, workflow.Now(ctx))
-			if err := workflow.ExecuteActivity(ctx, "Activities.PersistDecision", persistenceSnapshot(currentDecision)).Get(ctx, nil); err != nil {
-				return TaskWorkflowResult{}, err
-			}
-			_ = workflow.ExecuteActivity(ctx, "Activities.PersistConversationMemory", event, message).Get(ctx, nil)
-			_ = workflow.ExecuteActivity(ctx, "Activities.WriteADR", currentDecision.Plan.ProjectID, "Execution Summary", message, []string{currentDecision.Plan.Summary}).Get(ctx, nil)
-			reportResult(ctx, event, message)
-			return TaskWorkflowResult{Completed: true, Decision: currentDecision}, nil
 		}
 
 		if allWorkItemsCompleted(currentDecision.WorkItems) {
@@ -424,9 +429,6 @@ func directReplyMessage(decision agent.DecisionOutput) string {
 	if message := strings.TrimSpace(decision.ResponseMessage); message != "" {
 		return message
 	}
-	if message := strings.TrimSpace(decision.ToolChoice.ResponseMessage); message != "" {
-		return message
-	}
 	return ""
 }
 
@@ -434,14 +436,8 @@ func applyToolSelection(decision *agent.DecisionOutput, selection activities.Too
 	if decision == nil {
 		return fmt.Errorf("decision is required")
 	}
-	if message := strings.TrimSpace(selection.ResponseMessage); message != "" {
-		decision.ResponseMessage = message
-		decision.ToolChoice = agent.ToolChoice{}
-		decision.ToolChoices = nil
-		return nil
-	}
 	if selection.ToolChoice == nil {
-		return fmt.Errorf("tool selection returned no action")
+		return fmt.Errorf("tool selection returned no tool")
 	}
 	decision.ResponseMessage = ""
 	decision.ToolChoice = *selection.ToolChoice
@@ -449,66 +445,11 @@ func applyToolSelection(decision *agent.DecisionOutput, selection activities.Too
 	return nil
 }
 
-func applyAgentLoopSelection(decision *agent.DecisionOutput, selection activities.ToolSelectionResult, feedback *agent.ExecutionFeedback, now time.Time) error {
+func applyNextToolSelection(decision *agent.DecisionOutput, selection activities.ToolSelectionResult) error {
 	if decision == nil {
 		return fmt.Errorf("decision is required")
 	}
-	if feedback != nil {
-		status := selection.WorkItemStatus
-		if status == "" {
-			status = defaultObservedWorkItemStatus(selection, *feedback)
-		}
-		if status != "" {
-			workItemID := firstNonEmpty(selection.WorkItemID, feedback.WorkItemID)
-			if err := setWorkItemStatus(decision, workItemID, status, now); err != nil {
-				return err
-			}
-		}
-	}
 	return applyToolSelection(decision, selection)
-}
-
-func defaultObservedWorkItemStatus(selection activities.ToolSelectionResult, feedback agent.ExecutionFeedback) domain.WorkItemStatus {
-	switch selection.Action {
-	case agent.AgentLoopActionComplete:
-		return domain.WorkItemStatusCompleted
-	case agent.AgentLoopActionClarify, agent.AgentLoopActionBlock:
-		return domain.WorkItemStatusBlocked
-	case agent.AgentLoopActionContinue:
-		return domain.WorkItemStatusReady
-	}
-	if selection.ResponseMessage != "" {
-		if looksLikeClarificationMessage(selection.ResponseMessage) {
-			return domain.WorkItemStatusBlocked
-		}
-		return domain.WorkItemStatusCompleted
-	}
-	if selection.ToolChoice != nil {
-		if feedback.Status == string(domain.ExecutionStatusFailed) || feedback.Error != "" {
-			return domain.WorkItemStatusReady
-		}
-		return domain.WorkItemStatusCompleted
-	}
-	if feedback.Status == string(domain.ExecutionStatusFailed) || feedback.Error != "" {
-		return domain.WorkItemStatusFailed
-	}
-	return domain.WorkItemStatusCompleted
-}
-
-func applyTerminalResponseOutcome(decision *agent.DecisionOutput, selection activities.ToolSelectionResult, feedback *agent.ExecutionFeedback, now time.Time) {
-	switch selection.Action {
-	case agent.AgentLoopActionComplete:
-		applyResponseOutcome(decision, now)
-		return
-	case agent.AgentLoopActionClarify, agent.AgentLoopActionBlock:
-		syncPlanStatus(decision, now)
-		return
-	}
-	if selection.WorkItemStatus != "" || feedback == nil {
-		syncPlanStatus(decision, now)
-		return
-	}
-	applyResponseOutcome(decision, now)
 }
 
 func setWorkItemStatus(decision *agent.DecisionOutput, workItemID string, status domain.WorkItemStatus, now time.Time) error {
@@ -710,6 +651,23 @@ func advanceCompletedObservationForSelection(decision *agent.DecisionOutput, fee
 	decision.WorkItems[index].Status = domain.WorkItemStatusCompleted
 	decision.WorkItems[index].UpdatedAt = now
 	syncPlanStatus(decision, now)
+}
+
+func shouldCompleteAfterObservation(decision agent.DecisionOutput, feedback agent.ExecutionFeedback) bool {
+	if feedback.Status != string(domain.ExecutionStatusSucceeded) || strings.TrimSpace(feedback.Error) != "" {
+		return false
+	}
+	if len(decision.WorkItems) == 0 {
+		return false
+	}
+	index := workItemIndexByID(decision.WorkItems, feedback.WorkItemID)
+	if index < 0 {
+		index = firstIncompleteWorkItemIndex(decision.WorkItems)
+	}
+	if index < 0 {
+		return true
+	}
+	return nextIncompleteWorkItemIndexAfter(decision.WorkItems, index) < 0
 }
 
 func applyResponseOutcome(decision *agent.DecisionOutput, now time.Time) {
