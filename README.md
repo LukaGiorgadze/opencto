@@ -151,7 +151,7 @@ To prevent Temporal History Size crashes (which occur when workflow history grow
 
 #### 5.5.1 NextAction Decision Activity
 
-Tool selection, tool-result observation, event persistence, memory updates, final reporting, and ADR writing are owned by one non-deterministic Temporal activity: `Activities.NextAction`. The Task Workflow does not schedule separate triage, question, observer, persistence, or reporting activities.
+Tool selection, tool-result observation, event persistence, memory updates, and final reporting are owned by one non-deterministic Temporal activity: `Activities.NextAction`. The Task Workflow does not schedule separate triage, question, observer, persistence, or reporting activities.
 
 `Activities.NextAction` receives the original event, current decision state, prior observations, and the last `Activities.ExecuteTool` result. It returns exactly one of:
 
@@ -267,7 +267,6 @@ opencto/
 │   │   ├── shell/              # OS Shell executor (os/exec wrapper)
 │   │   ├── browser/            # Browser automation (e.g., Playwright/Rod)
 │   │   ├── mcp/                # MCP Client implementation
-│   │   └── git/                # Git ADR / Decision committer
 │   ├── memory/                 # Memory Layer
 │   │   ├── sqlite/             # SQLite + sqlite-vec implementation
 │   │   └── vault/              # Secure credential storage

@@ -52,7 +52,6 @@ type ProjectConfig struct {
 	ID            string `toml:"id"`
 	Name          string `toml:"name"`
 	WorkspaceRoot string `toml:"workspace_root"`
-	ADRDir        string `toml:"adr_dir"`
 }
 
 type MemoryConfig struct {
@@ -157,9 +156,6 @@ func (c *Config) applyDefaults() error {
 	}
 	if c.Project.WorkspaceRoot == "" {
 		c.Project.WorkspaceRoot = "."
-	}
-	if c.Project.ADRDir == "" {
-		c.Project.ADRDir = filepath.Join("docs", "adr")
 	}
 	if c.Memory.Path == "" {
 		c.Memory.Path = filepath.Join("data", "memory.db")

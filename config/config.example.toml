@@ -2,7 +2,6 @@
 id = "default"
 name = "OpenCTO"
 workspace_root = "."
-adr_dir = "docs/adr"
 
 [memory]
 path = "data/memory.db"

@@ -14,7 +14,6 @@ import (
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
 	toolregistry "github.com/opencto/opencto/internal/tools"
-	"github.com/opencto/opencto/internal/tools/git"
 	"github.com/opencto/opencto/internal/tools/shell"
 )
 
@@ -26,7 +25,6 @@ type ProjectStore interface {
 	GetWorkItem(context.Context, string, string) (domain.WorkItem, error)
 	UpsertExecutionAttempt(context.Context, domain.ExecutionAttempt) error
 	UpsertToolInvocation(context.Context, domain.ToolInvocation) error
-	AppendADR(context.Context, domain.ADR) error
 }
 
 type Reporter interface {
@@ -42,7 +40,6 @@ type Activities struct {
 	Store           ProjectStore
 	Engine          agent.Engine
 	Shell           shell.Executor
-	ADRWriter       *git.ADRWriter
 	Reporter        Reporter
 	Project         domain.Project
 	WorkspaceRoot   string
@@ -106,8 +103,6 @@ const (
 func (r NextActionResult) IsTerminal() bool {
 	return r.Status != NextActionStatusTool
 }
-
-const maxObservationSummaryLength = 1500
 
 type toolExecutionContext struct {
 	ProjectID          string
@@ -211,7 +206,7 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 
 	if request.ForceFinal && engineOutput.Status == NextActionStatusTool {
 		engineOutput.Status = NextActionStatusBlocked
-		engineOutput.FinalAnswer = cycleLimitFinalAnswer(history, maxObservationSummaryLength)
+		engineOutput.FinalAnswer = cycleLimitFinalAnswer(history)
 		engineOutput.ToolChoice = nil
 	}
 
@@ -287,9 +282,6 @@ func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, d
 		return NextActionResult{}, err
 	}
 	if output.Status != NextActionStatusIgnored {
-		if a.ADRWriter != nil && len(decision.WorkItems) > 0 {
-			_, _ = a.writeADR(ctx, event.ProjectID, "Execution Summary", message, workItemSummaries(decision.WorkItems))
-		}
 		if a.Reporter != nil {
 			if err := a.Reporter.Report(ctx, event, message); err != nil {
 				return NextActionResult{}, err
@@ -408,13 +400,13 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 	var errorMessage string
 	if err != nil {
 		attempt.Status = domain.ExecutionStatusFailed
-		attempt.OutputSummary = summarizeObservation(result.Stdout, result.Stderr, err)
+		attempt.OutputSummary = fullObservation(result.Stdout, result.Stderr, err)
 		invocation.ErrorDetails = err.Error()
 		invocation.OutputSummary = attempt.OutputSummary
 		errorMessage = err.Error()
 	} else {
 		attempt.Status = domain.ExecutionStatusSucceeded
-		attempt.OutputSummary = summarizeObservation(result.Stdout, result.Stderr, nil)
+		attempt.OutputSummary = fullObservation(result.Stdout, result.Stderr, nil)
 		invocation.OutputSummary = attempt.OutputSummary
 	}
 
@@ -666,16 +658,41 @@ func terminalWorkItemStatus(status string) domain.WorkItemStatus {
 	}
 }
 
-func cycleLimitFinalAnswer(history []agent.ExecutionFeedback, limit int) string {
+func cycleLimitFinalAnswer(history []agent.ExecutionFeedback) string {
 	if len(history) == 0 {
 		return "Stopped after reaching the execution cycle limit before a final answer was produced."
 	}
-	last := history[len(history)-1]
-	summary := strings.TrimSpace(last.Observation)
-	if summary == "" {
-		summary = strings.TrimSpace(last.Error)
+
+	var builder strings.Builder
+	builder.WriteString("Stopped after reaching the execution cycle limit. Full execution history:")
+	for _, feedback := range history {
+		builder.WriteString("\n\n")
+		builder.WriteString(fmt.Sprintf("cycle: %d", feedback.Cycle))
+		if feedback.Tool != "" {
+			builder.WriteString(fmt.Sprintf("\ntool: %s", feedback.Tool))
+		}
+		if feedback.Status != "" {
+			builder.WriteString(fmt.Sprintf("\nstatus: %s", feedback.Status))
+		}
+		if feedback.RequestedAction != "" {
+			builder.WriteString(fmt.Sprintf("\nrequested_action: %s", feedback.RequestedAction))
+		}
+		if feedback.Command != "" {
+			builder.WriteString(fmt.Sprintf("\ncommand: %s", feedback.Command))
+		}
+		if len(feedback.Args) > 0 {
+			builder.WriteString(fmt.Sprintf("\nargs: %s", strings.Join(feedback.Args, " ")))
+		}
+		if text := strings.TrimSpace(feedback.Observation); text != "" {
+			builder.WriteString("\nobservation:\n")
+			builder.WriteString(text)
+		}
+		if text := strings.TrimSpace(feedback.Error); text != "" {
+			builder.WriteString("\nerror:\n")
+			builder.WriteString(text)
+		}
 	}
-	return compactObservation(fmt.Sprintf("Stopped after reaching the execution cycle limit. Last result: %s", summary), limit)
+	return builder.String()
 }
 
 func applyObservationToDecision(decision *agent.DecisionOutput, observation agent.ExecutionFeedback, now time.Time) error {
@@ -744,37 +761,23 @@ func executionCycle(metadata map[string]string) int {
 	return parsed
 }
 
-func summarizeObservation(stdout, stderr string, err error) string {
-	if text := strings.TrimSpace(stdout); text != "" {
-		return compactObservation(text, maxObservationSummaryLength)
+func fullObservation(stdout, stderr string, err error) string {
+	stdout = strings.TrimSpace(stdout)
+	stderr = strings.TrimSpace(stderr)
+	var parts []string
+	if stdout != "" {
+		parts = append(parts, "stdout:\n"+stdout)
 	}
-	if text := strings.TrimSpace(stderr); text != "" {
-		return compactObservation(text, maxObservationSummaryLength)
+	if stderr != "" {
+		parts = append(parts, "stderr:\n"+stderr)
 	}
 	if err != nil {
-		return err.Error()
+		parts = append(parts, "error:\n"+err.Error())
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, "\n\n")
 	}
 	return "Execution completed."
-}
-
-func compactObservation(text string, limit int) string {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return ""
-	}
-	if limit <= 0 || len(text) <= limit {
-		return text
-	}
-
-	cut := limit
-	for cut > 0 && text[cut-1] != '\n' && text[cut-1] != ' ' && text[cut-1] != '\t' {
-		cut--
-	}
-	if cut < limit/2 {
-		cut = limit
-	}
-
-	return strings.TrimSpace(text[:cut]) + "\n...[output truncated]"
 }
 
 func toolChoiceTimeout(choice agent.ToolChoice) time.Duration {
@@ -819,15 +822,4 @@ func stableActivityID(parts ...string) string {
 	b[6] = (b[6] & 0x0f) | 0x50
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
-}
-
-func (a *Activities) writeADR(ctx context.Context, projectID, title, summary string, details []string) (domain.ADR, error) {
-	if a.ADRWriter == nil {
-		return domain.ADR{}, nil
-	}
-	adr, err := a.ADRWriter.WriteSummary(ctx, projectID, title, summary, details)
-	if err != nil {
-		return domain.ADR{}, err
-	}
-	return adr, a.Store.AppendADR(ctx, adr)
 }

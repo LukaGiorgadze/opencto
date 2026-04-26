@@ -23,7 +23,6 @@ import (
 	"github.com/opencto/opencto/internal/observability"
 	"github.com/opencto/opencto/internal/runtime"
 	"github.com/opencto/opencto/internal/runtime/activities"
-	"github.com/opencto/opencto/internal/tools/git"
 	"github.com/opencto/opencto/internal/tools/shell"
 )
 
@@ -106,11 +105,10 @@ func main() {
 		}
 
 		activitySet := &activities.Activities{
-			Store:     store,
-			Engine:    openAI.Engine,
-			Shell:     shell.NewSafeExecutor(logger),
-			ADRWriter: git.NewADRWriter(cfg.Project.ADRDir),
-			Reporter:  reporter,
+			Store:    store,
+			Engine:   openAI.Engine,
+			Shell:    shell.NewSafeExecutor(logger),
+			Reporter: reporter,
 			Project: domain.Project{
 				ID:   cfg.Project.ID,
 				Name: cfg.Project.Name,

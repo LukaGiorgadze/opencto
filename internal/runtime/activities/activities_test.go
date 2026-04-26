@@ -2,6 +2,7 @@ package activities
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,22 +12,20 @@ import (
 	"github.com/opencto/opencto/internal/memory/sqlite"
 )
 
-func TestSummarizeObservationTruncatesLongStdout(t *testing.T) {
+func TestFullObservationKeepsLongStdout(t *testing.T) {
 	stdout := strings.Repeat("file.go\n", 900)
 
-	summary := summarizeObservation(stdout, "", nil)
-	if summary == strings.TrimSpace(stdout) {
-		t.Fatalf("expected long stdout to be summarized, got original output")
-	}
-	if !strings.Contains(summary, "output truncated") {
-		t.Fatalf("expected truncation notice, got %q", summary)
+	observation := fullObservation(stdout, "", nil)
+	if observation != "stdout:\n"+strings.TrimSpace(stdout) {
+		t.Fatalf("expected full stdout, got %q", observation)
 	}
 }
 
-func TestSummarizeObservationUsesStderrWhenStdoutEmpty(t *testing.T) {
-	summary := summarizeObservation("", "command failed\nwith stderr", nil)
-	if summary != "command failed\nwith stderr" {
-		t.Fatalf("unexpected stderr summary: %q", summary)
+func TestFullObservationIncludesAllStreamsAndError(t *testing.T) {
+	observation := fullObservation("command output", "command failed\nwith stderr", errors.New("exit status 1"))
+	expected := "stdout:\ncommand output\n\nstderr:\ncommand failed\nwith stderr\n\nerror:\nexit status 1"
+	if observation != expected {
+		t.Fatalf("unexpected observation: %q", observation)
 	}
 }
 
