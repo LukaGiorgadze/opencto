@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/tmc/langchaingo/llms"
 	openai "github.com/tmc/langchaingo/llms/openai"
@@ -18,9 +20,10 @@ type OpenAIEngine struct {
 	reasoningModelID string
 	fastModel        llms.Model
 	fastModelID      string
+	audioTranscriber audioTranscriber
 }
 
-func NewOpenAIEngine(apiKey, baseURL, reasoningModelID, fastModelID string) (*OpenAIEngine, error) {
+func NewOpenAIEngine(apiKey, baseURL, reasoningModelID, fastModelID, transcriptionModel string) (*OpenAIEngine, error) {
 	reasoningModel, err := openai.New(
 		openai.WithToken(apiKey),
 		openai.WithBaseURL(baseURL),
@@ -46,6 +49,7 @@ func NewOpenAIEngine(apiKey, baseURL, reasoningModelID, fastModelID string) (*Op
 		reasoningModelID: reasoningModelID,
 		fastModel:        fastModel,
 		fastModelID:      fastModelID,
+		audioTranscriber: newOpenAICompatibleAudioTranscriber(apiKey, baseURL, transcriptionModel, &http.Client{Timeout: 2 * time.Minute}),
 	}, nil
 }
 

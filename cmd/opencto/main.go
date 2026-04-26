@@ -210,7 +210,7 @@ func buildDecisionEngine(cfg config.Config, logger *slog.Logger) agent.Engine {
 		logger.Warn("openai api key is loaded directly from config; prefer environment variables or vault-backed secrets for local and production safety")
 	}
 
-	engine, err := agentllm.NewOpenAIEngine(apiKey, cfg.LLM.BaseURL, cfg.LLM.ModelReasoning, cfg.LLM.ModelFast)
+	engine, err := agentllm.NewOpenAIEngine(apiKey, cfg.LLM.BaseURL, cfg.LLM.ModelReasoning, cfg.LLM.ModelFast, cfg.LLM.TranscriptionModel)
 	if err != nil {
 		logger.Warn("failed to initialize openai decision engine", slog.String("error", err.Error()))
 		return unavailable(err.Error())
@@ -219,6 +219,7 @@ func buildDecisionEngine(cfg config.Config, logger *slog.Logger) agent.Engine {
 		slog.String("base_url", cfg.LLM.BaseURL),
 		slog.String("model_reasoning", cfg.LLM.ModelReasoning),
 		slog.String("model_fast", cfg.LLM.ModelFast),
+		slog.String("transcription_model", cfg.LLM.TranscriptionModel),
 		slog.String("api_key_source", string(source)),
 	)
 	return engine

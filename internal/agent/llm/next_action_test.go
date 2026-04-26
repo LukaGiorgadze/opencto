@@ -31,6 +31,14 @@ func (m *recordingToolModel) Call(_ context.Context, _ string, _ ...llms.CallOpt
 	return "", nil
 }
 
+type fakeAudioTranscriber struct {
+	transcripts map[string]string
+}
+
+func (t fakeAudioTranscriber) TranscribeAudio(_ context.Context, attachment domain.EventAttachment) (string, error) {
+	return t.transcripts[attachment.LocalPath], nil
+}
+
 func messageText(message llms.MessageContent) string {
 	parts := make([]string, 0, len(message.Parts))
 	for _, part := range message.Parts {
@@ -279,6 +287,64 @@ func TestNextActionReturnsSingleToolChoice(t *testing.T) {
 	}
 	if len(model.options.Tools) != 1 {
 		t.Fatalf("expected Bash tool schema, got %#v", model.options.Tools)
+	}
+}
+
+func TestNextActionTranscribesAudioAttachmentsBeforePlanning(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	audioPath := dir + "/voice-message.ogg"
+	if err := os.WriteFile(audioPath, []byte("ogg data"), 0o600); err != nil {
+		t.Fatalf("write audio attachment: %v", err)
+	}
+	model := &recordingToolModel{
+		response: &llms.ContentResponse{
+			Choices: []*llms.ContentChoice{{
+				Content: `{"status":"completed","final_answer":"I heard: run tests."}`,
+			}},
+		},
+	}
+	engine := &OpenAIEngine{
+		reasoningModel: model,
+		audioTranscriber: fakeAudioTranscriber{transcripts: map[string]string{
+			audioPath: "run tests",
+		}},
+	}
+
+	_, err := engine.NextAction(context.Background(), agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event: domain.Event{
+				ID:        "event-1",
+				ProjectID: "project-1",
+				Body:      "Uploaded attachment(s): voice-message.ogg (audio/ogg)",
+				Payload: map[string]any{
+					eventPayloadAttachmentsKey: []domain.EventAttachment{{
+						ID:          "attachment-1",
+						ProjectID:   "project-1",
+						EventID:     "event-1",
+						Filename:    "voice-message.ogg",
+						ContentType: "audio/ogg",
+						SizeBytes:   8,
+						LocalPath:   audioPath,
+					}},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NextAction: %v", err)
+	}
+	if len(model.messages) != 2 {
+		t.Fatalf("expected system and user messages, got %d", len(model.messages))
+	}
+	for _, message := range model.messages[:2] {
+		text := messageText(message)
+		if !strings.Contains(text, "Voice message transcript (voice-message.ogg): run tests") {
+			t.Fatalf("message missing transcript: %s", text)
+		}
 	}
 }
 

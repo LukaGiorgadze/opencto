@@ -41,6 +41,11 @@ func (e *OpenAIEngine) NextAction(ctx context.Context, input agent.NextActionInp
 		return agent.NextActionOutput{}, fmt.Errorf("next action model is not configured")
 	}
 
+	input, err := e.enrichInputWithAttachmentTranscripts(ctx, input)
+	if err != nil {
+		return agent.NextActionOutput{}, err
+	}
+
 	messages, err := buildNextActionMessages(input)
 	if err != nil {
 		return agent.NextActionOutput{}, err

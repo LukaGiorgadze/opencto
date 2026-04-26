@@ -34,6 +34,9 @@ workspace_root = "."
 	if cfg.LLM.EmbeddingModel != "text-embedding-3-small" {
 		t.Fatalf("unexpected embedding model: %s", cfg.LLM.EmbeddingModel)
 	}
+	if cfg.LLM.TranscriptionModel != "gpt-4o-mini-transcribe" {
+		t.Fatalf("unexpected transcription model: %s", cfg.LLM.TranscriptionModel)
+	}
 	if cfg.LLM.BaseURL != "http://127.0.0.1:4000" {
 		t.Fatalf("unexpected llm base url: %s", cfg.LLM.BaseURL)
 	}
@@ -83,6 +86,7 @@ workspace_root = "."
 [llm]
 api_key = "test-key"
 base_url = "http://127.0.0.1:4000"
+transcription_model = "gpt-4o-mini-transcribe"
 embedding_model = "text-embedding-3-large"
 embedding_dimensions = 1024
 `)
@@ -100,6 +104,9 @@ embedding_dimensions = 1024
 	}
 	if cfg.LLM.BaseURL != "http://127.0.0.1:4000" {
 		t.Fatalf("unexpected llm base url: %s", cfg.LLM.BaseURL)
+	}
+	if cfg.LLM.TranscriptionModel != "gpt-4o-mini-transcribe" {
+		t.Fatalf("unexpected transcription model: %s", cfg.LLM.TranscriptionModel)
 	}
 	if cfg.LLM.EmbeddingModel != "text-embedding-3-large" {
 		t.Fatalf("unexpected embedding model: %s", cfg.LLM.EmbeddingModel)

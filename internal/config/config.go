@@ -42,6 +42,7 @@ type llmFileConfig struct {
 	BaseURL             string `toml:"base_url"`
 	ModelReasoning      string `toml:"model_reasoning"`
 	ModelFast           string `toml:"model_fast"`
+	TranscriptionModel  string `toml:"transcription_model"`
 	EmbeddingModel      string `toml:"embedding_model"`
 	EmbeddingDimensions int    `toml:"embedding_dimensions"`
 	APIKeyEnv           string `toml:"api_key_env"`
@@ -66,6 +67,7 @@ type LLMConfig struct {
 	BaseURL             string `toml:"base_url"`
 	ModelReasoning      string `toml:"model_reasoning"`
 	ModelFast           string `toml:"model_fast"`
+	TranscriptionModel  string `toml:"transcription_model"`
 	EmbeddingModel      string `toml:"embedding_model"`
 	EmbeddingDimensions int    `toml:"embedding_dimensions"`
 	APIKeyEnv           string `toml:"api_key_env"`
@@ -122,6 +124,7 @@ func Load(path string) (Config, error) {
 			BaseURL:             raw.LLM.BaseURL,
 			ModelReasoning:      raw.LLM.ModelReasoning,
 			ModelFast:           raw.LLM.ModelFast,
+			TranscriptionModel:  raw.LLM.TranscriptionModel,
 			EmbeddingModel:      raw.LLM.EmbeddingModel,
 			EmbeddingDimensions: raw.LLM.EmbeddingDimensions,
 			APIKeyEnv:           raw.LLM.APIKeyEnv,
@@ -174,6 +177,9 @@ func (c *Config) applyDefaults() error {
 	}
 	if c.LLM.ModelFast == "" {
 		c.LLM.ModelFast = "gpt-5.4-mini"
+	}
+	if c.LLM.TranscriptionModel == "" {
+		c.LLM.TranscriptionModel = "gpt-4o-mini-transcribe"
 	}
 	if c.LLM.EmbeddingModel == "" {
 		c.LLM.EmbeddingModel = "text-embedding-3-small"
