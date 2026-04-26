@@ -108,6 +108,21 @@ type Event struct {
 	CreatedAt   time.Time         `json:"created_at"`
 }
 
+type EventAttachment struct {
+	ID          string            `json:"id"`
+	ProjectID   string            `json:"project_id"`
+	EventID     string            `json:"event_id"`
+	Source      string            `json:"source"`
+	SourceID    string            `json:"source_id,omitempty"`
+	Filename    string            `json:"filename"`
+	ContentType string            `json:"content_type,omitempty"`
+	SizeBytes   int64             `json:"size_bytes,omitempty"`
+	URL         string            `json:"url,omitempty"`
+	LocalPath   string            `json:"local_path,omitempty"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
+	CreatedAt   time.Time         `json:"created_at"`
+}
+
 type WorkItem struct {
 	ID          string            `json:"id"`
 	ProjectID   string            `json:"project_id"`

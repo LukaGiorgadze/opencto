@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -148,6 +149,84 @@ func TestBuildNextActionMessagesUsesOpenAIToolTranscript(t *testing.T) {
 		!strings.Contains(toolResult.Content, "output:\nstaging target not found") ||
 		!strings.Contains(toolResult.Content, "error:\nexit status 1") {
 		t.Fatalf("tool result should include failure status and exit code: %q", toolResult.Content)
+	}
+}
+
+func TestBuildNextActionMessagesIncludesEventAttachments(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	imagePath := dir + "/photo.png"
+	audioPath := dir + "/voice.wav"
+	if err := os.WriteFile(imagePath, []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}, 0o600); err != nil {
+		t.Fatalf("write image attachment: %v", err)
+	}
+	if err := os.WriteFile(audioPath, []byte{0, 1, 2, 3}, 0o600); err != nil {
+		t.Fatalf("write audio attachment: %v", err)
+	}
+
+	messages, err := buildNextActionMessages(agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event: domain.Event{
+				ID:        "event-1",
+				ProjectID: "project-1",
+				Body:      "read these files",
+				Payload: map[string]any{
+					eventPayloadAttachmentsKey: []domain.EventAttachment{
+						{
+							ID:          "attachment-1",
+							ProjectID:   "project-1",
+							EventID:     "event-1",
+							Filename:    "photo.png",
+							ContentType: "image/png",
+							SizeBytes:   8,
+							LocalPath:   imagePath,
+						},
+						{
+							ID:          "attachment-2",
+							ProjectID:   "project-1",
+							EventID:     "event-1",
+							Filename:    "voice.wav",
+							ContentType: "audio/wav",
+							SizeBytes:   4,
+							LocalPath:   audioPath,
+						},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected system and user messages, got %d", len(messages))
+	}
+	user := messages[1]
+	if user.Role != llms.ChatMessageTypeHuman {
+		t.Fatalf("expected human message, got %q", user.Role)
+	}
+
+	var hasImage, hasAudioReference bool
+	for _, part := range user.Parts {
+		switch value := part.(type) {
+		case llms.TextContent:
+			hasAudioReference = strings.Contains(value.Text, "voice.wav") &&
+				strings.Contains(value.Text, "audio/wav") &&
+				strings.Contains(value.Text, audioPath)
+		case llms.ImageURLContent:
+			hasImage = strings.HasPrefix(value.URL, "data:image/png;base64,")
+		case llms.BinaryContent:
+			t.Fatalf("OpenAI chat messages must not include raw binary parts: %#v", value)
+		}
+	}
+	if !hasImage {
+		t.Fatalf("expected image attachment to be included as image content: %#v", user.Parts)
+	}
+	if !hasAudioReference {
+		t.Fatalf("expected audio attachment to be included as a local file reference: %#v", user.Parts)
 	}
 }
 

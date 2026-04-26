@@ -74,9 +74,14 @@ func buildNextActionMessages(input agent.NextActionInput) ([]llms.MessageContent
 		return nil, err
 	}
 
+	userMessage, err := openAIUserMessageFromEvent(input.Context.Event)
+	if err != nil {
+		return nil, err
+	}
+
 	messages := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, prompt),
-		llms.TextParts(llms.ChatMessageTypeHuman, strings.TrimSpace(input.Context.Event.Body)),
+		userMessage,
 	}
 	for _, feedback := range input.ObservationHistory {
 		assistantMessage, toolResultMessage, err := nextActionTranscriptMessages(feedback)

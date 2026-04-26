@@ -1,9 +1,17 @@
 package discord
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/bwmarrin/discordgo"
+
+	"github.com/opencto/opencto/internal/domain"
 )
 
 func TestSplitDiscordMessageByLines(t *testing.T) {
@@ -41,5 +49,61 @@ func TestSplitDiscordMessageFallsBackToHardSplit(t *testing.T) {
 	}
 	if strings.Join(chunks, "") != message {
 		t.Fatalf("split/join did not preserve content")
+	}
+}
+
+func TestNormalizeMessageDownloadsAttachments(t *testing.T) {
+	t.Parallel()
+
+	data := []byte{0, 1, 2, 3}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "audio/wav")
+		_, _ = w.Write(data)
+	}))
+	t.Cleanup(server.Close)
+
+	adapter := &Adapter{
+		projectID:     "project-1",
+		attachmentDir: t.TempDir(),
+		httpClient:    server.Client(),
+	}
+	event, err := adapter.NormalizeMessage(context.Background(), &discordgo.MessageCreate{
+		Message: &discordgo.Message{
+			ID:        "message-1",
+			ChannelID: "channel-1",
+			Author: &discordgo.User{
+				ID:       "user-1",
+				Username: "luka",
+			},
+			Attachments: []*discordgo.MessageAttachment{{
+				ID:          "attachment-1",
+				URL:         server.URL + "/voice.wav",
+				Filename:    "voice.wav",
+				ContentType: "audio/wav",
+				Size:        len(data),
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("normalize message: %v", err)
+	}
+	if !strings.Contains(event.Body, "voice.wav") {
+		t.Fatalf("expected attachment fallback body, got %q", event.Body)
+	}
+
+	attachments, ok := event.Payload[discordAttachmentPayloadKey].([]domain.EventAttachment)
+	if !ok || len(attachments) != 1 {
+		t.Fatalf("expected one typed attachment in payload, got %#v", event.Payload[discordAttachmentPayloadKey])
+	}
+	attachment := attachments[0]
+	if attachment.ProjectID != "project-1" || attachment.EventID != event.ID || attachment.ContentType != "audio/wav" {
+		t.Fatalf("unexpected attachment metadata: %#v", attachment)
+	}
+	got, err := os.ReadFile(attachment.LocalPath)
+	if err != nil {
+		t.Fatalf("read downloaded attachment: %v", err)
+	}
+	if string(got) != string(data) {
+		t.Fatalf("downloaded attachment data mismatch: %v", got)
 	}
 }
