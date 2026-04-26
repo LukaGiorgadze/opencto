@@ -1,18 +1,40 @@
 model_list:
-  - model_name: gpt-5.4-mini
-    litellm_params:
-      model: openai/gpt-5.4-mini
-      api_key: os.environ/OPENAI_API_KEY
-  - model_name: gpt-5.4-nano
-    litellm_params:
-      model: openai/gpt-5.4-nano
-      api_key: os.environ/OPENAI_API_KEY
-  - model_name: text-embedding-3-small
-    litellm_params:
-      model: openai/text-embedding-3-small
-      api_key: os.environ/OPENAI_API_KEY
+    - model_name: gpt-5.4
+      litellm_params:
+          model: openai/gpt-5.4
+          api_key: os.environ/OPENAI_API_KEY
+
+    - model_name: gpt-5.4-mini
+      litellm_params:
+          model: openai/gpt-5.4-mini
+          api_key: os.environ/OPENAI_API_KEY
+
+    - model_name: gpt-5.4-nano
+      litellm_params:
+          model: openai/gpt-5.4-nano
+          api_key: os.environ/OPENAI_API_KEY
+
+    - model_name: text-embedding-3-small
+      litellm_params:
+          model: openai/text-embedding-3-small
+          api_key: os.environ/OPENAI_API_KEY
+
+    - model_name: claude-haiku-4-5-20251001
+      litellm_params:
+          model: anthropic/claude-haiku-4-5
+          api_key: os.environ/ANTHROPIC_API_KEY
+
+    - model_name: claude-sonnet-4-5-20250929
+      litellm_params:
+          model: anthropic/claude-sonnet-4-5
+          api_key: os.environ/ANTHROPIC_API_KEY
+
+    - model_name: claude-opus-4-5-20251101
+      litellm_params:
+          model: anthropic/claude-opus-4-5
+          api_key: os.environ/ANTHROPIC_API_KEY
 
 general_settings:
-  master_key: sk-admin
-  store_model_in_db: true
-  store_prompts_in_spend_logs: true
+    master_key: sk-admin
+    store_model_in_db: true
+    store_prompts_in_spend_logs: true

@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(go build *)",
-      "Bash(go test *)",
-      "Bash(grep -n \"WorkItemStatus\" /Users/luka/projects/opencto/internal/domain/*.go)"
-    ]
-  }
-}

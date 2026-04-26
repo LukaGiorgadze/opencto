@@ -16,11 +16,10 @@ type Worker struct {
 
 func NewWorker(client client.Client, taskQueue string, activities *activities.Activities) *Worker {
 	w := worker.New(client, taskQueue, worker.Options{})
-	w.RegisterActivityWithOptions(activities, activity.RegisterOptions{Name: "Activities."})
+	w.RegisterActivityWithOptions(activities.NextAction, activity.RegisterOptions{Name: "Activities.NextAction"})
+	w.RegisterActivityWithOptions(activities.ExecuteTool, activity.RegisterOptions{Name: "Activities.ExecuteTool"})
 	w.RegisterWorkflowWithOptions(workflows.ProjectWorkflow, workflow.RegisterOptions{Name: workflows.ProjectWorkflowName})
 	w.RegisterWorkflowWithOptions(workflows.TaskWorkflow, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
-	w.RegisterWorkflowWithOptions(workflows.ApprovalWorkflow, workflow.RegisterOptions{Name: workflows.ApprovalWorkflowName})
-	w.RegisterWorkflowWithOptions(workflows.ContradictionWorkflow, workflow.RegisterOptions{Name: workflows.ContradictionWorkflowName})
 	return &Worker{temporal: w}
 }
 

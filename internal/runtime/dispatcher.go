@@ -59,17 +59,3 @@ func (d *Dispatcher) EnqueueEvent(ctx context.Context, event domain.Event) error
 		Event: event,
 	})
 }
-
-func (d *Dispatcher) SubmitApprovalDecision(ctx context.Context, signal signals.ApprovalDecisionSignal) error {
-	if err := d.EnsureProjectWorkflow(ctx, signal.ProjectID); err != nil {
-		return err
-	}
-	return d.client.SignalWorkflow(ctx, WorkflowID(signal.ProjectID), "", workflows.SignalApprovalDecision, signal)
-}
-
-func (d *Dispatcher) SubmitContradictionResolution(ctx context.Context, signal signals.ContradictionResolutionSignal) error {
-	if err := d.EnsureProjectWorkflow(ctx, signal.ProjectID); err != nil {
-		return err
-	}
-	return d.client.SignalWorkflow(ctx, WorkflowID(signal.ProjectID), "", workflows.SignalContradictionResolved, signal)
-}

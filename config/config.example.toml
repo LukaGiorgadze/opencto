@@ -19,12 +19,6 @@ embedding_model = "text-embedding-3-small"
 embedding_dimensions = 1536
 api_key_env = "LITELLM_PROXY_KEY"
 
-[policy]
-autonomy_threshold = 1
-require_owner_for_tier3 = true
-workspace_root = "."
-denied_commands = ["sudo", "rm", "dd"]
-
 [temporal]
 host_port = "127.0.0.1:7233"
 namespace = "default"

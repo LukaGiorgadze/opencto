@@ -23,7 +23,7 @@ func TestStoreSearchByCategoryScopesToProject(t *testing.T) {
 	factA := domain.MemoryFact{
 		ID:        "fact-a",
 		ProjectID: "project-a",
-		Category:  domain.MemoryCategoryProjectFact,
+		Category:  domain.MemoryCategoryConversation,
 		Key:       "stack",
 		Value:     "Go and Temporal",
 		Provenance: domain.Provenance{
@@ -44,7 +44,7 @@ func TestStoreSearchByCategoryScopesToProject(t *testing.T) {
 		t.Fatalf("insert factB: %v", err)
 	}
 
-	found, err := store.SearchByCategory(context.Background(), "project-a", domain.MemoryCategoryProjectFact, "go", 10)
+	found, err := store.SearchByCategory(context.Background(), "project-a", domain.MemoryCategoryConversation, "go", 10)
 	if err != nil {
 		t.Fatalf("search facts: %v", err)
 	}

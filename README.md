@@ -6,7 +6,7 @@
 
 ## 1. What OpenCTO Is
 
-OpenCTO is a long-running AI agent that behaves like a senior technical co-founder, like a human, inspired by OpenClaw. Its defining trait is not capability — it's *judgment*: knowing when to ask, when to act, and when to push back. It lives in Discord, ingests everything you share with it, and executes the full software delivery lifecycle from planning through production monitoring.
+OpenCTO is a long-running AI agent that behaves like a senior technical co-founder, like a human, inspired by OpenClaw. Its defining trait is not capability — it's *judgment*: knowing when to ask, when to act, and when to push back. It lives in Discord, ingests everything you share with it, and executes the full software delivery lifecycle from implementation through production monitoring.
 
 It is a **general AI agent** (similar to OpenHands or Devine, but acting at the CTO level). It is designed to be **self-hosted by anyone** — you run it on your own machine, it owns your system natively, and it talks to your team through Discord. There is no SaaS layer.
 
@@ -14,7 +14,7 @@ It is a **general AI agent** (similar to OpenHands or Devine, but acting at the 
 
 ## 2. Core Design Principles
 
-**Clarify before acting — always.** No action begins until OpenCTO has enough context to make the decision a senior engineer would be confident making.
+**Block before guessing.** No action begins when OpenCTO lacks enough context to make the decision a senior engineer would be confident making.
 
 **Agent decides, not config.** OpenCTO is not a configured automation tool. It reasons about what tools to use, how to authenticate, how to test its work, and how to execute code. The system prompt provides absolute freedom. 
 
@@ -24,7 +24,7 @@ It is a **general AI agent** (similar to OpenHands or Devine, but acting at the 
 
 **Use existing tools first (MCP → API → Shell etc).** Before writing custom code, OpenCTO looks for an existing SDK. library, MCP whatever. If none exists, it looks for an API or CLI to acomplish the task. The fallback is browser automation. The agent autonomously determines which path provides the highest reliability.
 
-**Risk-tiered autonomy.** Every action the agent takes is classified into a risk tier at planning time. Any risk taken is the ultimate responsibility of the human user (CEO). The agent executes within user-configured bounds. Actions involving financial cost are strictly ring-fenced.
+**Risk-tiered autonomy.** Every tool action carries a risk tier. Any risk taken is the ultimate responsibility of the human user (CEO). The agent executes within user-configured bounds. Actions involving financial cost are strictly ring-fenced.
 
 **Major choices via Skills, minor choices via Autonomy.** Major foundational choices (e.g., choosing AWS, Supabase, Go, Rust) are guided by "Skills"—guidance files teaching the agent established best practices. Minor choices (e.g., choosing a specific utility library) are evaluated dynamically by the agent based on project requirements.
 
@@ -75,8 +75,8 @@ type ChannelBinding struct {
 │                      AGENTIC RUNTIME  (Temporal)                     │
 │                                                                      │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐   │
-│  │  Classifier  │─▶│ Context Load │─▶│     Decision Engine      │   │
-│  │  Workflow    │  │  Activity    │  │     (LLM + prompt)       │   │
+│  │  Project     │─▶│ Task Workflow│─▶│  Activities.NextAction   │   │
+│  │  Workflow    │  │  ReAct Loop  │  │     (LLM + prompt)       │   │
 │  └──────────────┘  └──────────────┘  └────────────┬─────────────┘   │
 │         │                                          │                 │
 │         ▼ (Layer 2 Async Check)                    │                 │
@@ -88,8 +88,8 @@ type ChannelBinding struct {
 │           ┌──────────────┬─────────────────────────┘                 │
 │           ▼              ▼              ▼                            │
 │     ┌──────────┐  ┌──────────┐  ┌─────────────────────────────┐     │
-│     │ Clarify  │  │ Planning │  │     Execution Queue        │     │
-│     │ Workflow │  │ Workflow │  │   (Yielding Mutex)           │     │
+│     │ Terminal │  │ExecuteTool│ │     Execution Queue        │     │
+│     │ Answer   │  │ Activity │  │   (Yielding Mutex)           │     │
 │     └──────────┘  └──────────┘  └─────────────────────────────┘     │
 └──────────────────────────────────────────────────────────────────────┘
           │                    │                    │
@@ -149,32 +149,26 @@ type ToolKit interface {
 Temporal ensures long-running workflows survive restarts. 
 To prevent Temporal History Size crashes (which occur when workflow history grows too large over months of operation), the main project loop heavily utilizes **`ContinueAsNew`** and spawns discrete **Child Workflows** for isolated tasks.
 
-#### 5.5.1 Classifier Workflow & Contradiction Detection
+#### 5.5.1 NextAction Decision Activity
 
-**Layer 1 — Fast API Semantic Triage (Lightweight)**
-On every inbound event, a fast, cheap API model (`model_fast`) performs a rapid semantic check against the project's recent memory context using `sqlite-vec`. This avoids hardcoded keyword matching while remaining computationally cheap. 
+Tool selection, tool-result observation, event persistence, memory updates, final reporting, and ADR writing are owned by one non-deterministic Temporal activity: `Activities.NextAction`. The Task Workflow does not schedule separate triage, question, observer, persistence, or reporting activities.
 
-**Layer 2 — Async Semantic Contradiction Check (Temporal Activity)**
-If flagged, an async activity does a deep semantic LLM evaluation against specific facts. If a conflict exists, it creates a `PendingContradiction` in SQLite.
+`Activities.NextAction` receives the original event, current decision state, prior observations, and the last `Activities.ExecuteTool` result. It returns exactly one of:
 
-**Layer 3 — Hard Gate (Synchronous)**
-Before Planning begins, the Decision Engine checks for unresolved `PendingContradiction` records. It blocks and surfaces them to the human user to resolve before proceeding.
+- one `ToolChoice` for `Activities.ExecuteTool`
+- one terminal result: `completed`, `blocked`, `failed`, `awaiting_approval`, or `ignored`
 
-#### 5.5.2 Clarify & Planning Workflows
-
-At planning time, the agent breaks the task into `WorkItems`.
+When the agent needs more information or approval, it returns a blocked terminal answer with the exact question or blocker.
 * **Dependency Auditing:** Before the agent selects a third-party dependency or package, it must perform an audit step using available ecosystem tools (e.g., checking registry stats) to mitigate hallucinated packages.
 
-#### 5.5.3 Execution Workflow & Concurrency (Yielding Mutex)
+#### 5.5.2 Execution Workflow & Concurrency
 
 Multiple engineers might request conflicting tasks across different Discord channels.
 To prevent race conditions, OpenCTO enforces a **Project-Level Execution Mutex**.
 
 1. **Locking:** While a task is *actively executing*, it holds the Mutex. Any new `ACTION_REQUEST` enters a queue.
-2. **Yielding:** If a Tier 2 or Tier 3 task is generated and requires explicit human approval, the workflow **yields the Mutex** and pauses. This prevents "Deadlock by Ghosting" if an engineer goes offline for a week. Other queued tasks can now execute.
-3. **Iterative Reason / Act Loop:** A task is not "done" after one command. After every tool observation, the selector must decide whether to execute the next concrete step, ask the user a focused clarification question, explain a blocker, or conclude the task. Raw shell output is an observation, not the final response.
-4. **Re-Validation:** When the human finally approves the paused task, the agent regains the Mutex, reloads context, and must **re-check the project state** before resuming execution.
-5. **Circuit Breaker:** The execution loop is bounded. If the agent cannot converge within the allowed execution cycles, it halts and reports the blocker instead of spinning indefinitely.
+2. **Iterative ReAct Loop:** A task alternates as `Activities.NextAction -> Activities.ExecuteTool -> Activities.NextAction`. A successful command never completes the workflow by itself. Only `Activities.NextAction` observes the previous tool result and chooses the next single tool call or terminal answer.
+3. **Circuit Breaker:** The execution loop is bounded. If the agent cannot converge within the allowed execution cycles, it halts and reports the blocker instead of spinning indefinitely.
 
 ---
 
@@ -183,21 +177,20 @@ To prevent race conditions, OpenCTO enforces a **Project-Level Execution Mutex**
 ### 6.1 Tier System
 
 - **Tier 0:** Read / Observe (Autonomous)
-- **Tier 1:** Safe local change (Autonomous + Notify)
-- **Tier 2:** Consequential but reversible (Requires explicit approval)
-- **Tier 3:** Irreversible, production-facing, or **financially consequential** (Always requires explicit Owner approval). *Note: Any action that spins up paid cloud resources, charges a card, or scales infrastructure defaults to Tier 3.*
+- **Tier 1:** Safe local change
+- **Tier 2:** Consequential but reversible
+- **Tier 3:** Irreversible, production-facing, or **financially consequential**. *Note: Any action that spins up paid cloud resources, charges a card, or scales infrastructure defaults to Tier 3.*
 
 ---
 
-## 7. Clarification Rules
+## 7. Blocked Answer Rules
 
-1. **Memory before questions.** 
-2. **Batch, never chain.** Max 5 questions per message.
+1. **Memory before questions.**
+2. **Ask only when blocked.**
 3. **State what you know first.**
 4. **Explain each question briefly.**
 5. **Keep it short.**
-6. **Confidence threshold, not question count.**
-7. **Hard-gate on contradictions.** Resolve `PendingContradiction` before planning.
+6. **Hard-gate on contradictions.** Resolve `PendingContradiction` before continuing.
 
 ---
 
@@ -264,7 +257,7 @@ opencto/
 │   │   └── types.go            # Normalized Event types
 │   ├── bus/                    # Internal Event Bus (Pub/Sub via channels/goroutines)
 │   ├── runtime/                # Agentic Runtime (temporal)
-│   │   ├── workflows/          # Deterministic logic (Planning, Classifier, Execution Queue)
+│   │   ├── workflows/          # Deterministic orchestration (Project/Task loop)
 │   │   └── activities/         # Non-deterministic logic (LLM calls, Shell execution, DB reads)
 │   ├── agent/                  # Core Intelligence
 │   │   ├── prompts/            # Embedded markdown/text templates for system prompts
@@ -294,9 +287,8 @@ opencto/
 #### A. The "Actor Pattern" (Temporal implementation of the Yielding Mutex)
 **The Pattern:** Use a **Temporal Singleton Workflow** per `ProjectID`. 
 * The workflow loops indefinitely.
-* It listens to Temporal **Signals** (Inbound Events, Approvals, Rejections).
+* It listens to Temporal **Signals** (Inbound Events and contradiction resolutions).
 * It maintains an internal queue `[]WorkItem`.
-* When paused (Tier 2/3), it uses `workflow.Await()` to yield execution until an Approval signal is received, while safely queueing new inbound requests.
 
 #### B. Strategy Pattern (Tools & Channels)
 Tool layer needs to be extremely modular. The Agent will decide *how* to execute a task.
@@ -341,11 +333,11 @@ When instructing your AI to write the code, enforce these strict rules:
 
 #### 2. Managing the LLM Context & Prompts
 * **Rule:** Do not hardcode prompts in Go strings. Place them in `internal/agent/prompts/` as `.tmpl` files and use Go's `embed` package. This allows you to easily tweak prompts without hunting through logic.
-* **Rule:** Enforce **Structured Output** via tool-calling. OpenAI Responses API and compatible SDK layers support structured JSON outputs. The `Decision Engine` activity must unmarshal LLM outputs directly into Go structs (`WorkItem`, `ClarificationRequest`).
+* **Rule:** Enforce **Structured Output** via tool-calling. OpenAI Responses API and compatible SDK layers support structured JSON outputs. The `Decision Engine` activity must unmarshal LLM outputs directly into Go structs such as `ToolChoice` and terminal `NextAction` results.
 
 #### 3. OS-Native Security & Vaulting (Critical)
 * Because OpenCTO runs OS-natively, it has the power to run `rm -rf /`.
-* **Rule:** The `internal/tools/shell` executor must enforce an absolute working directory boundary. Even if it's "OS Native", restrict the execution context to the specific `ProjectID` workspace folder unless explicitly overridden by a user approval.
+* **Rule:** The `internal/tools/shell` executor must enforce an absolute working directory boundary. Even if it's "OS Native", restrict the execution context to the specific `ProjectID` workspace folder.
 * **Rule:** Credentials must be loaded into memory dynamically via `internal/memory/vault` (which could just be an encrypted local file or OS keychain). Do not allow the agent to write `.env` files with production secrets; inject them as environment variables during the `os/exec` command generation.
 
 #### 4. The "ContinueAsNew" Loop
@@ -355,7 +347,7 @@ When instructing your AI to write the code, enforce these strict rules:
 #### 5. Graceful Degradation of Tools
 * Ensure the system explicitly attempts the fallback logic:
   `MCP, API, Shell, etc.`. 
-* Code this as an explicit chain of responsibility in the Planning Workflow. If the MCP activity returns `ErrNotConfigured`, the Workflow catches it and tries the API activity. We shoudl have specific, one responsibility activities only.
+* Code this fallback choice inside `Activities.NextAction`. The Task Workflow still schedules only `Activities.NextAction` and `Activities.ExecuteTool`; it must not catch tool-specific fallback branches directly.
 
 ### 4. Next Step: How to prompt the AI
 

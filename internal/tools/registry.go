@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	SelectorToolShellName = "Shell"
+	SelectorToolShellName = "Bash"
 )
 
 type SelectorDefinition struct {
@@ -27,7 +27,7 @@ var selectorDefinitions = []SelectorDefinition{
 		Description: "Execute any shell command in the project workspace. Use this for any concrete terminal action OpenCTO can perform safely.",
 		Parameters: json.RawMessage(`{
 			"type": "object",
-			"required": ["command", "args", "working_dir", "timeout_ms", "description", "destructive"],
+			"required": ["command", "args", "working_dir", "timeout_ms", "description", "destructive", "work_item_id"],
 			"additionalProperties": false,
 			"properties": {
 				"command": {
@@ -55,6 +55,10 @@ var selectorDefinitions = []SelectorDefinition{
 				"destructive": {
 					"type": ["boolean", "null"],
 					"description": "Set true when the command mutates state in a risky or hard-to-reverse way. Use null when unknown."
+				},
+				"work_item_id": {
+					"type": ["string", "null"],
+					"description": "The work item this command advances. Use null only when no work item is available."
 				}
 			}
 		}`),

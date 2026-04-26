@@ -14,7 +14,6 @@ type Config struct {
 	Project       ProjectConfig       `toml:"project"`
 	Memory        MemoryConfig        `toml:"memory"`
 	LLM           LLMConfig           `toml:"llm"`
-	Policy        PolicyConfig        `toml:"policy"`
 	Temporal      TemporalConfig      `toml:"temporal"`
 	Channels      ChannelsConfig      `toml:"channels"`
 	Vault         VaultConfig         `toml:"vault"`
@@ -25,7 +24,6 @@ type fileConfig struct {
 	Project       ProjectConfig       `toml:"project"`
 	Memory        memoryFileConfig    `toml:"memory"`
 	LLM           llmFileConfig       `toml:"llm"`
-	Policy        PolicyConfig        `toml:"policy"`
 	Temporal      TemporalConfig      `toml:"temporal"`
 	Channels      ChannelsConfig      `toml:"channels"`
 	Vault         VaultConfig         `toml:"vault"`
@@ -73,13 +71,6 @@ type LLMConfig struct {
 	EmbeddingDimensions int    `toml:"embedding_dimensions"`
 	APIKeyEnv           string `toml:"api_key_env"`
 	APIKey              string `toml:"api_key"`
-}
-
-type PolicyConfig struct {
-	AutonomyThreshold    int      `toml:"autonomy_threshold"`
-	RequireOwnerForTier3 bool     `toml:"require_owner_for_tier3"`
-	WorkspaceRoot        string   `toml:"workspace_root"`
-	DeniedCommands       []string `toml:"denied_commands"`
 }
 
 type TemporalConfig struct {
@@ -137,7 +128,6 @@ func Load(path string) (Config, error) {
 			APIKeyEnv:           raw.LLM.APIKeyEnv,
 			APIKey:              raw.LLM.APIKey,
 		},
-		Policy:        raw.Policy,
 		Temporal:      raw.Temporal,
 		Channels:      raw.Channels,
 		Vault:         raw.Vault,
@@ -197,9 +187,6 @@ func (c *Config) applyDefaults() error {
 	}
 	if c.LLM.APIKeyEnv == "" {
 		c.LLM.APIKeyEnv = "LITELLM_PROXY_KEY"
-	}
-	if c.Policy.WorkspaceRoot == "" {
-		c.Policy.WorkspaceRoot = c.Project.WorkspaceRoot
 	}
 	if c.Temporal.TaskQueue == "" {
 		c.Temporal.TaskQueue = "opencto"

@@ -21,7 +21,6 @@ import (
 	"github.com/opencto/opencto/internal/memory/sqlite"
 	"github.com/opencto/opencto/internal/memory/vault"
 	"github.com/opencto/opencto/internal/observability"
-	"github.com/opencto/opencto/internal/policy"
 	"github.com/opencto/opencto/internal/runtime"
 	"github.com/opencto/opencto/internal/runtime/activities"
 	"github.com/opencto/opencto/internal/tools/git"
@@ -109,7 +108,6 @@ func main() {
 		activitySet := &activities.Activities{
 			Store:     store,
 			Engine:    openAI.Engine,
-			Policy:    policy.NewStaticEngine(cfg.Policy.AutonomyThreshold, cfg.Policy.RequireOwnerForTier3, cfg.Policy.DeniedCommands),
 			Shell:     shell.NewSafeExecutor(logger),
 			ADRWriter: git.NewADRWriter(cfg.Project.ADRDir),
 			Reporter:  reporter,
@@ -117,12 +115,11 @@ func main() {
 				ID:   cfg.Project.ID,
 				Name: cfg.Project.Name,
 			},
-			WorkspaceRoot:     cfg.Project.WorkspaceRoot,
-			AutonomyThreshold: cfg.Policy.AutonomyThreshold,
-			AvailableSkills:   availableSkills,
-			MemoryEmbedder:    openAI.Embedder,
-			EmbeddingModel:    cfg.LLM.EmbeddingModel,
-			Logger:            logger,
+			WorkspaceRoot:   cfg.Project.WorkspaceRoot,
+			AvailableSkills: availableSkills,
+			MemoryEmbedder:  openAI.Embedder,
+			EmbeddingModel:  cfg.LLM.EmbeddingModel,
+			Logger:          logger,
 		}
 
 		worker := runtime.NewWorker(temporalClient, cfg.Temporal.TaskQueue, activitySet)

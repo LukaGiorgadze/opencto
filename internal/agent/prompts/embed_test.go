@@ -2,10 +2,10 @@ package prompts
 
 import "testing"
 
-func TestLoadPlanPrompt(t *testing.T) {
+func TestLoadNextActionPrompt(t *testing.T) {
 	t.Parallel()
 
-	value, err := Load("plan.tmpl")
+	value, err := Load("next_action.tmpl")
 	if err != nil {
 		t.Fatalf("load prompt: %v", err)
 	}

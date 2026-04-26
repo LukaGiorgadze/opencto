@@ -12,7 +12,6 @@ import (
 
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/runtime"
-	"github.com/opencto/opencto/internal/runtime/signals"
 )
 
 const discordMessageMaxLength = 4000
@@ -49,19 +48,6 @@ func New(projectID, token, _ string, dispatcher *runtime.Dispatcher, logger *slo
 func (a *Adapter) Start(ctx context.Context) error {
 	a.session.AddHandler(func(session *discordgo.Session, message *discordgo.MessageCreate) {
 		if message.Author == nil || message.Author.Bot {
-			return
-		}
-		if signal, ok := a.parseApprovalDecision(message); ok {
-			if err := a.dispatcher.SubmitApprovalDecision(ctx, signal); err != nil {
-				a.logger.Error("submit approval decision", slog.String("error", err.Error()), slog.String("approval_id", signal.ApprovalID))
-				_, _ = session.ChannelMessageSend(message.ChannelID, "Failed to record the approval decision. Check the worker logs.")
-				return
-			}
-			verb := "approved"
-			if !signal.Approved {
-				verb = "rejected"
-			}
-			_, _ = session.ChannelMessageSend(message.ChannelID, fmt.Sprintf("Approval `%s` %s.", signal.ApprovalID, verb))
 			return
 		}
 		event, err := a.NormalizeMessage(message)
@@ -136,34 +122,6 @@ func (a *Adapter) Report(_ context.Context, event domain.Event, message string) 
 		}
 	}
 	return nil
-}
-
-func (a *Adapter) parseApprovalDecision(message *discordgo.MessageCreate) (signals.ApprovalDecisionSignal, bool) {
-	content := strings.TrimSpace(message.Content)
-	fields := strings.Fields(content)
-	if len(fields) < 2 {
-		return signals.ApprovalDecisionSignal{}, false
-	}
-
-	command := strings.ToLower(fields[0])
-	if command != "approve" && command != "reject" {
-		return signals.ApprovalDecisionSignal{}, false
-	}
-
-	comment := ""
-	if len(fields) > 2 {
-		comment = strings.TrimSpace(strings.Join(fields[2:], " "))
-	}
-
-	return signals.ApprovalDecisionSignal{
-		ProjectID:  a.projectID,
-		ApprovalID: strings.TrimSpace(fields[1]),
-		Approved:   command == "approve",
-		ActorID:    message.Author.ID,
-		ActorName:  message.Author.Username,
-		Comment:    comment,
-		DecidedAt:  time.Now().UTC(),
-	}, true
 }
 
 func splitDiscordMessage(message string, limit int) []string {

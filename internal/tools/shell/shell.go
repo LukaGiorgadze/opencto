@@ -32,7 +32,6 @@ type Request struct {
 	Timeout               time.Duration
 	Environment           map[string]string
 	AllowOutsideWorkspace bool
-	RiskTier              domain.RiskTier
 	FallbackCandidates    []domain.ToolType
 }
 

@@ -14,20 +14,8 @@ func NewUnavailableEngine(reason string) *UnavailableEngine {
 	return &UnavailableEngine{reason: strings.TrimSpace(reason)}
 }
 
-func (e *UnavailableEngine) Classify(_ context.Context, _ DecisionInput) (Classification, error) {
-	return Classification{}, e.err("classify")
-}
-
-func (e *UnavailableEngine) Clarify(_ context.Context, _ ClarificationInput) (*ClarificationRequest, error) {
-	return nil, e.err("clarify")
-}
-
-func (e *UnavailableEngine) Plan(_ context.Context, _ PlanningInput) (PlanningOutput, error) {
-	return PlanningOutput{}, e.err("plan")
-}
-
-func (e *UnavailableEngine) SelectTool(_ context.Context, _ ToolSelectionInput) (ToolSelection, error) {
-	return ToolSelection{}, e.err("select tool")
+func (e *UnavailableEngine) NextAction(_ context.Context, _ NextActionInput) (NextActionOutput, error) {
+	return NextActionOutput{}, e.err("choose next action")
 }
 
 func (e *UnavailableEngine) err(operation string) error {
