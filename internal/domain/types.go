@@ -47,26 +47,6 @@ const (
 	ExecutionStatusCanceled  ExecutionStatus = "canceled"
 )
 
-type MemoryCategory string
-
-const (
-	MemoryCategoryConversation MemoryCategory = "conversation"
-)
-
-type MemoryFact struct {
-	ID          string            `json:"id"`
-	ProjectID   string            `json:"project_id"`
-	Category    MemoryCategory    `json:"category"`
-	Key         string            `json:"key"`
-	Value       string            `json:"value"`
-	Status      string            `json:"status,omitempty"`
-	EmbeddingID string            `json:"embedding_id,omitempty"`
-	Provenance  Provenance        `json:"provenance"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
-}
-
 type ToolType string
 
 const (
@@ -165,17 +145,6 @@ type ToolInvocation struct {
 	Metadata           map[string]string `json:"metadata,omitempty"`
 	CreatedAt          time.Time         `json:"created_at"`
 	CompletedAt        *time.Time        `json:"completed_at,omitempty"`
-}
-
-type ADR struct {
-	ID        string            `json:"id"`
-	ProjectID string            `json:"project_id"`
-	Title     string            `json:"title"`
-	Summary   string            `json:"summary"`
-	Path      string            `json:"path"`
-	CommitSHA string            `json:"commit_sha,omitempty"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
 }
 
 type CredentialRef struct {

@@ -4,7 +4,6 @@ go 1.26
 
 require (
 	github.com/bwmarrin/discordgo v0.29.0
-	github.com/mattn/go-sqlite3 v1.14.42
 	github.com/pelletier/go-toml/v2 v2.3.0
 	github.com/stretchr/testify v1.11.1
 	github.com/tmc/langchaingo v0.1.14

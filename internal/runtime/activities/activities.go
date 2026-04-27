@@ -121,9 +121,13 @@ func (a *Activities) LoadContext(ctx context.Context, event domain.Event) (agent
 }
 
 func (a *Activities) loadContext(ctx context.Context, event domain.Event) (agent.Context, error) {
-	activeWorkItems, err := a.Store.ListPending(ctx, event.ProjectID)
-	if err != nil {
-		return agent.Context{}, err
+	var activeWorkItems []domain.WorkItem
+	if a.Store != nil {
+		var err error
+		activeWorkItems, err = a.Store.ListPending(ctx, event.ProjectID)
+		if err != nil {
+			return agent.Context{}, err
+		}
 	}
 
 	project := a.Project
@@ -141,9 +145,6 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 	if a.Engine == nil {
 		return NextActionResult{}, fmt.Errorf("decision engine is not configured")
 	}
-	if a.Store == nil {
-		return NextActionResult{}, fmt.Errorf("project store is not configured")
-	}
 
 	projectID := strings.TrimSpace(request.ProjectID)
 	event := request.Event
@@ -154,7 +155,7 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		return NextActionResult{}, fmt.Errorf("project_id is required")
 	}
 	event.ProjectID = projectID
-	if request.ExecutionCycle <= 1 && !request.ResumedFromPause {
+	if a.Store != nil && request.ExecutionCycle <= 1 && !request.ResumedFromPause {
 		if err := a.Store.Append(ctx, event); err != nil {
 			return NextActionResult{}, err
 		}
@@ -299,6 +300,9 @@ func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, d
 }
 
 func (a *Activities) persistDecision(ctx context.Context, decision agent.DecisionOutput) error {
+	if a.Store == nil {
+		return nil
+	}
 	for _, item := range decision.WorkItems {
 		if item.ID == "" {
 			continue
@@ -332,9 +336,6 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 	if err != nil {
 		return ExecuteToolResult{}, err
 	}
-	if a.Store == nil {
-		return ExecuteToolResult{}, fmt.Errorf("project store is not configured")
-	}
 	if a.Shell == nil {
 		return ExecuteToolResult{}, fmt.Errorf("shell executor is not configured")
 	}
@@ -353,8 +354,10 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 			"tool_call_id":    execution.ToolCallID,
 		},
 	}
-	if err := a.Store.UpsertExecutionAttempt(ctx, attempt); err != nil {
-		return ExecuteToolResult{}, err
+	if a.Store != nil {
+		if err := a.Store.UpsertExecutionAttempt(ctx, attempt); err != nil {
+			return ExecuteToolResult{}, err
+		}
 	}
 
 	result, err := a.Shell.Run(ctx, shell.Request{
@@ -410,11 +413,13 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 		invocation.OutputSummary = attempt.OutputSummary
 	}
 
-	if persistErr := a.Store.UpsertExecutionAttempt(ctx, attempt); persistErr != nil {
-		return ExecuteToolResult{}, persistErr
-	}
-	if persistErr := a.Store.UpsertToolInvocation(ctx, invocation); persistErr != nil {
-		return ExecuteToolResult{}, persistErr
+	if a.Store != nil {
+		if persistErr := a.Store.UpsertExecutionAttempt(ctx, attempt); persistErr != nil {
+			return ExecuteToolResult{}, persistErr
+		}
+		if persistErr := a.Store.UpsertToolInvocation(ctx, invocation); persistErr != nil {
+			return ExecuteToolResult{}, persistErr
+		}
 	}
 
 	return ExecuteToolResult{

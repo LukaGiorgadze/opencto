@@ -3,17 +3,12 @@ id = "default"
 name = "OpenCTO"
 workspace_root = "."
 
-[memory]
-path = "data/memory.db"
-sqlite_vec_path = ""
-sqlite_vec_required = false
-busy_timeout = "5s"
-
 [llm]
 provider = "openai"
 base_url = "http://127.0.0.1:4000"
 model_reasoning = "gpt-5.4-mini"
 model_fast = "gpt-5.4-nano"
+transcription_model = "gpt-4o-mini-transcribe"
 embedding_model = "text-embedding-3-small"
 embedding_dimensions = 1536
 

@@ -3,14 +3,44 @@ package activities
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/opencto/opencto/internal/domain"
-	"github.com/opencto/opencto/internal/memory/sqlite"
 )
+
+type stubProjectStore struct {
+	pending []domain.WorkItem
+}
+
+func (s stubProjectStore) Append(context.Context, domain.Event) error {
+	return nil
+}
+
+func (s stubProjectStore) ListByProject(context.Context, string, int) ([]domain.Event, error) {
+	return nil, nil
+}
+
+func (s stubProjectStore) ListPending(context.Context, string) ([]domain.WorkItem, error) {
+	return append([]domain.WorkItem(nil), s.pending...), nil
+}
+
+func (s stubProjectStore) UpsertWorkItem(context.Context, domain.WorkItem) error {
+	return nil
+}
+
+func (s stubProjectStore) GetWorkItem(context.Context, string, string) (domain.WorkItem, error) {
+	return domain.WorkItem{}, nil
+}
+
+func (s stubProjectStore) UpsertExecutionAttempt(context.Context, domain.ExecutionAttempt) error {
+	return nil
+}
+
+func (s stubProjectStore) UpsertToolInvocation(context.Context, domain.ToolInvocation) error {
+	return nil
+}
 
 func TestFullObservationKeepsLongStdout(t *testing.T) {
 	stdout := strings.Repeat("file.go\n", 900)
@@ -32,59 +62,16 @@ func TestFullObservationIncludesAllStreamsAndError(t *testing.T) {
 func TestLoadContextReturnsProjectAndActiveWorkItems(t *testing.T) {
 	t.Parallel()
 
-	store, err := sqlite.Open(filepath.Join(t.TempDir(), "memory.db"), "", time.Second)
-	if err != nil {
-		t.Fatalf("open sqlite store: %v", err)
-	}
-	defer store.Close()
-
 	base := time.Date(2026, 4, 23, 17, 31, 0, 0, time.UTC)
-	events := []domain.Event{
-		{
-			ID:          "event-source",
-			ProjectID:   "default",
-			Kind:        domain.EventKindMessage,
-			ChannelID:   "channel-1",
-			ChannelType: domain.ChannelTypeDiscord,
-			ActorName:   "luka",
-			Body:        "you should remove git and create it in hello-world",
-			CreatedAt:   base,
-		},
-		{
-			ID:          "event-path",
-			ProjectID:   "default",
-			Kind:        domain.EventKindMessage,
-			ChannelID:   "channel-1",
-			ChannelType: domain.ChannelTypeDiscord,
-			ActorName:   "luka",
-			Body:        "`/Users/luka/projects/opencto/hello-world`",
-			CreatedAt:   base.Add(10 * time.Second),
-		},
-		{
-			ID:          "event-yes",
-			ProjectID:   "default",
-			Kind:        domain.EventKindMessage,
-			ChannelID:   "channel-1",
-			ChannelType: domain.ChannelTypeDiscord,
-			ActorName:   "luka",
-			Body:        "yes",
-			CreatedAt:   base.Add(20 * time.Second),
-		},
-		{
-			ID:          "event-current",
-			ProjectID:   "default",
-			Kind:        domain.EventKindMessage,
-			ChannelID:   "channel-1",
-			ChannelType: domain.ChannelTypeDiscord,
-			ActorName:   "luka",
-			Body:        "do it",
-			CreatedAt:   base.Add(30 * time.Second),
-		},
-	}
-	for _, event := range events {
-		if err := store.Append(context.Background(), event); err != nil {
-			t.Fatalf("append event %s: %v", event.ID, err)
-		}
+	event := domain.Event{
+		ID:          "event-current",
+		ProjectID:   "default",
+		Kind:        domain.EventKindMessage,
+		ChannelID:   "channel-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		ActorName:   "luka",
+		Body:        "do it",
+		CreatedAt:   base.Add(30 * time.Second),
 	}
 
 	workItem := domain.WorkItem{
@@ -95,16 +82,13 @@ func TestLoadContextReturnsProjectAndActiveWorkItems(t *testing.T) {
 		CreatedAt: base,
 		UpdatedAt: base,
 	}
-	if err := store.UpsertWorkItem(context.Background(), workItem); err != nil {
-		t.Fatalf("upsert work item: %v", err)
-	}
 
 	activities := Activities{
-		Store:   store,
+		Store:   stubProjectStore{pending: []domain.WorkItem{workItem}},
 		Project: domain.Project{ID: "default", Name: "OpenCTO"},
 	}
 
-	loaded, err := activities.LoadContext(context.Background(), events[len(events)-1])
+	loaded, err := activities.LoadContext(context.Background(), event)
 	if err != nil {
 		t.Fatalf("load context: %v", err)
 	}

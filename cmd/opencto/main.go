@@ -18,7 +18,6 @@ import (
 	"github.com/opencto/opencto/internal/channels/local"
 	"github.com/opencto/opencto/internal/config"
 	"github.com/opencto/opencto/internal/domain"
-	"github.com/opencto/opencto/internal/memory/sqlite"
 	"github.com/opencto/opencto/internal/memory/vault"
 	"github.com/opencto/opencto/internal/observability"
 	"github.com/opencto/opencto/internal/runtime"
@@ -44,22 +43,6 @@ func main() {
 	logger := observability.NewLogger(cfg.Observability.LogLevel, cfg.Observability.JSONLogs, os.Stdout)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-
-	store, err := sqlite.Open(cfg.Memory.Path, cfg.Memory.SQLiteVecPath, cfg.Memory.BusyTimeout)
-	if err != nil {
-		logger.Error("open sqlite store", slog.String("error", err.Error()))
-		os.Exit(1)
-	}
-	defer store.Close()
-	if cfg.Memory.SQLiteVecRequired && !store.SQLiteVecLoaded() {
-		logger.Error("sqlite-vec is required but not loaded", slog.String("sqlite_vec_path", cfg.Memory.SQLiteVecPath))
-		os.Exit(1)
-	}
-	logger.Info("sqlite store ready",
-		slog.String("path", cfg.Memory.Path),
-		slog.String("sqlite_vec_path", cfg.Memory.SQLiteVecPath),
-		slog.Bool("sqlite_vec_loaded", store.SQLiteVecLoaded()),
-	)
 
 	_ = buildVault(cfg)
 
@@ -105,7 +88,6 @@ func main() {
 		}
 
 		activitySet := &activities.Activities{
-			Store:    store,
 			Engine:   openAI.Engine,
 			Shell:    shell.NewSafeExecutor(logger),
 			Reporter: reporter,

@@ -139,5 +139,4 @@ Keep docs updated and practical.
 
 - Go
 - temporal
-- sqlite
 - langchain

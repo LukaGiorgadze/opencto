@@ -46,17 +46,9 @@ approve <approval-id>
 reject <approval-id> optional comment
 ```
 
-## SQLite And sqlite-vec
+## Persistence
 
-SQLite is file-backed and stores data at `data/memory.db`.
-
-`sqlite-vec` is optional today:
-
-- leave `memory.sqlite_vec_path = ""` to run without the extension
-- set `memory.sqlite_vec_path` to the installed `vec0`/`sqlite-vec` shared library to load the extension at startup
-- set `memory.sqlite_vec_required = true` if startup should fail unless the extension loads
-
-Without `sqlite-vec`, OpenCTO still stores embeddings in SQLite and performs semantic ranking in-process. When the extension is installed and configured, the runtime logs that `sqlite_vec_loaded=true`.
+Persistence is not implemented right now. The runtime starts without a database backend until the next storage layer is introduced.
 
 ## Vault
 

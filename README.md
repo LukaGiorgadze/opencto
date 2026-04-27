@@ -205,12 +205,8 @@ provider         = "openai"
 base_url         = "http://127.0.0.1:4000"
 model_reasoning  = "gpt-5.4"
 model_fast       = "gpt-5.4-mini"
+transcription_model = "gpt-4o-mini-transcribe"
 embedding_model  = "text-embedding-3-small"
-
-[memory]
-backend = "sqlite"
-path    = "./data/memory.db"
-sqlite_vec_path = ""
 
 [mcp]
 registry_file = "./config/mcp-registry.json"
@@ -230,7 +226,6 @@ threshold                  = 2
 |-------|------------|
 | Language | Go |
 | Durable execution | Temporal (embedded via temporal, `ContinueAsNew` enabled) |
-| Memory / vector | SQLite + sqlite-vec |
 | MCP client | Connects to pre-defined registry of MCP servers |
 | Version Control | Git (agent tracks decisions, ADRs, and context and explanation of each decision) |
 | Execution | Native OS / Shell (Agent decides everything, openclaw like agent) |
@@ -267,11 +262,10 @@ opencto/
 │   │   ├── browser/            # Browser automation (e.g., Playwright/Rod)
 │   │   ├── mcp/                # MCP Client implementation
 │   ├── memory/                 # Memory Layer
-│   │   ├── sqlite/             # SQLite + sqlite-vec implementation
 │   │   └── vault/              # Secure credential storage
 │   └── config/                 # TOML parsing and Config Structs
 ├── pkg/                        # Exportable/Reusable packages (if any)
-├── data/                       # Local volume for SQLite and Logs (gitignored)
+├── data/                       # Local runtime artifacts and logs (gitignored)
 ├── skills/                     # Skill definition files (e.g., supabase.md, nextjs.md)
 ├── config/                     # Default config (e.g., config.toml, mcp-registry.json)
 ├── go.mod
@@ -308,7 +302,7 @@ Because OpenCTO operates on the local OS, an execution might partially succeed (
 * Temporal native compensation (Sagas) should be used. If an Activity fails X times (this should be configurable) (the Circuit Breaker mentioned), Temporal should automatically execute a "Compensating Activity" (e.g., `git reset --hard` or uninstalling the package).
 
 #### D. Repository Pattern (Memory Layer)
-Abstract `sqlite-vec` entirely. The LLM agent should only know about "Context".
+Abstract persistence entirely. The LLM agent should only know about "Context".
 ```go
 // internal/memory/repository.go
 type MemoryStore interface {
@@ -326,7 +320,7 @@ When instructing your AI to write the code, enforce these strict rules:
 
 #### 1. Temporal Strict Determinism
 * **Rule:** NEVER use `time.Now()`, `math/rand`, or make API/DB calls inside `internal/runtime/workflows/`. 
-* **Rule:** All LLM calls, Discord reads, file writing, and `sqlite` interactions MUST happen inside `internal/runtime/activities/`. 
+* **Rule:** All LLM calls, Discord reads, file writing, and persistence interactions MUST happen inside `internal/runtime/activities/`. 
 * **Rule:** Workflows must use `workflow.Now()`.
 
 #### 2. Managing the LLM Context & Prompts
@@ -351,6 +345,6 @@ When instructing your AI to write the code, enforce these strict rules:
 
 > **Prompt to start:**
 > *"Here is the OpenCTO Architecture Spec (v0.6). We are going to build this in Go using Temporal. Do not build the whole thing at once. 
-> **Phase 1:** Set up the Go project structure as defined. Then, implement the `internal/memory/` SQLite + sqlite-vec interfaces, and the `internal/tools/shell` interfaces. Provide mock implementations so we can test the boundaries. Do not write Temporal workflows yet."*
+> **Phase 1:** Set up the Go project structure as defined. Then, implement the `internal/tools/shell` and `internal/memory/vault` interfaces. Provide mock implementations so we can test the boundaries. Do not write Temporal workflows yet."*
 
-Build the side-effect layers (Tools, DB) first via Interfaces, the Temporal Workflows and LLM routing will be much cleaner to build in Phase 2.
+Build the side-effect layers first via interfaces, the Temporal Workflows and LLM routing will be much cleaner to build in Phase 2.

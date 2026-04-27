@@ -7,8 +7,6 @@
 - Temporal schema setup and namespace bootstrap jobs
 - Temporal UI
 
-SQLite is file-backed for OpenCTO memory, so there is no separate SQLite daemon container. The app should keep using `./data/memory.db`.
-
 ## Usage
 
 ```bash

@@ -2,17 +2,14 @@ package config
 
 import (
 	"errors"
-	"fmt"
 	"os"
-	"path/filepath"
-	"time"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 )
 
 type Config struct {
 	Project       ProjectConfig       `toml:"project"`
-	Memory        MemoryConfig        `toml:"memory"`
 	LLM           LLMConfig           `toml:"llm"`
 	Temporal      TemporalConfig      `toml:"temporal"`
 	Channels      ChannelsConfig      `toml:"channels"`
@@ -22,19 +19,11 @@ type Config struct {
 
 type fileConfig struct {
 	Project       ProjectConfig       `toml:"project"`
-	Memory        memoryFileConfig    `toml:"memory"`
 	LLM           llmFileConfig       `toml:"llm"`
 	Temporal      TemporalConfig      `toml:"temporal"`
 	Channels      ChannelsConfig      `toml:"channels"`
 	Vault         VaultConfig         `toml:"vault"`
 	Observability ObservabilityConfig `toml:"observability"`
-}
-
-type memoryFileConfig struct {
-	Path              string `toml:"path"`
-	SQLiteVecPath     string `toml:"sqlite_vec_path"`
-	SQLiteVecRequired bool   `toml:"sqlite_vec_required"`
-	BusyTimeout       string `toml:"busy_timeout"`
 }
 
 type llmFileConfig struct {
@@ -52,13 +41,6 @@ type ProjectConfig struct {
 	ID            string `toml:"id"`
 	Name          string `toml:"name"`
 	WorkspaceRoot string `toml:"workspace_root"`
-}
-
-type MemoryConfig struct {
-	Path              string        `toml:"path"`
-	SQLiteVecPath     string        `toml:"sqlite_vec_path"`
-	SQLiteVecRequired bool          `toml:"sqlite_vec_required"`
-	BusyTimeout       time.Duration `toml:"busy_timeout"`
 }
 
 type LLMConfig struct {
@@ -110,11 +92,6 @@ func Load(path string) (Config, error) {
 
 	cfg := Config{
 		Project: raw.Project,
-		Memory: MemoryConfig{
-			Path:              raw.Memory.Path,
-			SQLiteVecPath:     raw.Memory.SQLiteVecPath,
-			SQLiteVecRequired: raw.Memory.SQLiteVecRequired,
-		},
 		LLM: LLMConfig{
 			Provider:            raw.LLM.Provider,
 			BaseURL:             raw.LLM.BaseURL,
@@ -130,83 +107,49 @@ func Load(path string) (Config, error) {
 		Vault:         raw.Vault,
 		Observability: raw.Observability,
 	}
-	if raw.Memory.BusyTimeout != "" {
-		duration, err := time.ParseDuration(raw.Memory.BusyTimeout)
-		if err != nil {
-			return Config{}, fmt.Errorf("parse memory.busy_timeout: %w", err)
-		}
-		cfg.Memory.BusyTimeout = duration
-	}
 
-	if err := cfg.applyDefaults(); err != nil {
+	if err := cfg.validate(); err != nil {
 		return Config{}, err
 	}
 
 	return cfg, nil
 }
 
-func (c *Config) applyDefaults() error {
-	if c.Project.ID == "" {
-		c.Project.ID = "default"
-	}
-	if c.Project.Name == "" {
-		c.Project.Name = "OpenCTO"
-	}
-	if c.Project.WorkspaceRoot == "" {
-		c.Project.WorkspaceRoot = "."
-	}
-	if c.Memory.Path == "" {
-		c.Memory.Path = filepath.Join("data", "memory.db")
-	}
-	if c.Memory.BusyTimeout == 0 {
-		c.Memory.BusyTimeout = 5 * time.Second
-	}
-	if c.LLM.Provider == "" {
-		c.LLM.Provider = "openai"
-	}
-	if c.LLM.BaseURL == "" {
-		c.LLM.BaseURL = "http://127.0.0.1:4000"
-	}
-	if c.LLM.ModelReasoning == "" {
-		c.LLM.ModelReasoning = "gpt-5.4"
-	}
-	if c.LLM.ModelFast == "" {
-		c.LLM.ModelFast = "gpt-5.4-mini"
-	}
-	if c.LLM.TranscriptionModel == "" {
-		c.LLM.TranscriptionModel = "gpt-4o-mini-transcribe"
-	}
-	if c.LLM.EmbeddingModel == "" {
-		c.LLM.EmbeddingModel = "text-embedding-3-small"
-	}
-	if c.LLM.EmbeddingDimensions == 0 {
-		c.LLM.EmbeddingDimensions = 1536
-	}
-	if c.Temporal.TaskQueue == "" {
-		c.Temporal.TaskQueue = "opencto"
-	}
-	if c.Temporal.Namespace == "" {
-		c.Temporal.Namespace = "default"
-	}
-	if c.Temporal.HostPort == "" {
-		c.Temporal.HostPort = "127.0.0.1:7233"
-	}
-	if c.Temporal.ContinueAsNewAfterEvents == 0 {
-		c.Temporal.ContinueAsNewAfterEvents = 1000
-	}
-	if c.Observability.LogLevel == "" {
-		c.Observability.LogLevel = "INFO"
-	}
-	if c.Vault.Provider == "" {
-		c.Vault.Provider = "keychain"
-	}
-	if c.Vault.Service == "" {
-		c.Vault.Service = "opencto"
+func (c *Config) validate() error {
+	var missing []string
+
+	requireString := func(value, field string) {
+		if strings.TrimSpace(value) == "" {
+			missing = append(missing, field)
+		}
 	}
 
-	if c.Project.WorkspaceRoot == "" {
-		return errors.New("project.workspace_root is required")
+	requireString(c.Project.ID, "project.id")
+	requireString(c.Project.Name, "project.name")
+	requireString(c.Project.WorkspaceRoot, "project.workspace_root")
+	requireString(c.LLM.Provider, "llm.provider")
+	requireString(c.LLM.BaseURL, "llm.base_url")
+	requireString(c.LLM.ModelReasoning, "llm.model_reasoning")
+	requireString(c.LLM.ModelFast, "llm.model_fast")
+	requireString(c.LLM.TranscriptionModel, "llm.transcription_model")
+	requireString(c.LLM.EmbeddingModel, "llm.embedding_model")
+	requireString(c.Temporal.HostPort, "temporal.host_port")
+	requireString(c.Temporal.Namespace, "temporal.namespace")
+	requireString(c.Temporal.TaskQueue, "temporal.task_queue")
+	requireString(c.Vault.Provider, "vault.provider")
+	requireString(c.Vault.Service, "vault.service")
+	requireString(c.Observability.LogLevel, "observability.log_level")
+
+	var errs []error
+	if len(missing) > 0 {
+		errs = append(errs, errors.New("missing required config values: "+strings.Join(missing, ", ")))
+	}
+	if c.LLM.EmbeddingDimensions <= 0 {
+		errs = append(errs, errors.New("llm.embedding_dimensions must be greater than 0"))
+	}
+	if c.Temporal.ContinueAsNewAfterEvents <= 0 {
+		errs = append(errs, errors.New("temporal.continue_as_new_after_events must be greater than 0"))
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
