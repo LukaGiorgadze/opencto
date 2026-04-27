@@ -1,4 +1,4 @@
-package edit
+package write
 
 import (
 	_ "embed"
@@ -6,21 +6,20 @@ import (
 )
 
 const (
-	EditToolName        = "Command"
-	EditToolDescription = `Performs exact string replacements in files.
+	WriteToolName        = "Write"
+	WriteToolDescription = `Writes a new file to the local filesystem.
 
-    Usage:
-    - You must use your "Read" tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.
-    - When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: line number + tab. Everything after that is the actual file content to match. Never include any part of the line number prefix in the old_string or new_string.
-    - ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
-    - Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
-    - The edit will FAIL if "old_string" is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use "replace_all" to change every instance of "old_string".
-    - Use "replace_all" for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.`
+Usage:
+- Use this tool ONLY to create new files or perform complete rewrites of existing files. For partial modifications, use the "Edit" tool instead.
+- This tool will overwrite the existing file if there is one at the provided path.
+- If this is an existing file you intend to fully rewrite, you MUST use the "Read" tool first to read the file's contents. This tool will fail if you did not read the file first.
+- NEVER create documentationsm *.md/README files unless explicitly requested by the User.
+- Only use emojis and dashes if the user explicitly requests it. Avoid writing emojis and dashes to files unless asked.`
 )
 
 //go:embed schema.json
-var editToolSchema json.RawMessage
+var writeToolSchema json.RawMessage
 
-func EditToolSchema() json.RawMessage {
-	return append(json.RawMessage(nil), editToolSchema...)
+func WriteToolSchema() json.RawMessage {
+	return append(json.RawMessage(nil), writeToolSchema...)
 }
