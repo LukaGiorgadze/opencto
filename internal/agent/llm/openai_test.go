@@ -8,8 +8,7 @@ import (
 
 func TestResolveOpenAIAPIKeyFromConfig(t *testing.T) {
 	key, source, err := ResolveOpenAIAPIKey(config.LLMConfig{
-		APIKey:    "direct-key",
-		APIKeyEnv: "OPENAI_API_KEY",
+		APIKey: "direct-key",
 	})
 	if err != nil {
 		t.Fatalf("resolve api key: %v", err)
@@ -23,10 +22,8 @@ func TestResolveOpenAIAPIKeyFromConfig(t *testing.T) {
 }
 
 func TestResolveOpenAIAPIKeyFromEnvironment(t *testing.T) {
-	t.Setenv("OPENAI_TEST_KEY", "env-key")
-	key, source, err := ResolveOpenAIAPIKey(config.LLMConfig{
-		APIKeyEnv: "OPENAI_TEST_KEY",
-	})
+	t.Setenv("LITELLM_PROXY_KEY", "env-key")
+	key, source, err := ResolveOpenAIAPIKey(config.LLMConfig{})
 	if err != nil {
 		t.Fatalf("resolve api key: %v", err)
 	}
@@ -38,17 +35,15 @@ func TestResolveOpenAIAPIKeyFromEnvironment(t *testing.T) {
 	}
 }
 
-func TestResolveOpenAIAPIKeyFromLegacyAPIKeyEnvField(t *testing.T) {
-	key, source, err := ResolveOpenAIAPIKey(config.LLMConfig{
-		APIKeyEnv: "sk-test-key",
-	})
-	if err != nil {
-		t.Fatalf("resolve api key: %v", err)
+func TestResolveOpenAIAPIKeyMissingEnvironment(t *testing.T) {
+	key, source, err := ResolveOpenAIAPIKey(config.LLMConfig{})
+	if err == nil {
+		t.Fatal("expected missing env error")
 	}
-	if key != "sk-test-key" {
+	if key != "" {
 		t.Fatalf("unexpected key: %s", key)
 	}
-	if source != APIKeySourceLegacyConfig {
+	if source != "" {
 		t.Fatalf("unexpected source: %s", source)
 	}
 }

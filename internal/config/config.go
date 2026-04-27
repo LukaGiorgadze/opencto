@@ -45,7 +45,6 @@ type llmFileConfig struct {
 	TranscriptionModel  string `toml:"transcription_model"`
 	EmbeddingModel      string `toml:"embedding_model"`
 	EmbeddingDimensions int    `toml:"embedding_dimensions"`
-	APIKeyEnv           string `toml:"api_key_env"`
 	APIKey              string `toml:"api_key"`
 }
 
@@ -70,7 +69,6 @@ type LLMConfig struct {
 	TranscriptionModel  string `toml:"transcription_model"`
 	EmbeddingModel      string `toml:"embedding_model"`
 	EmbeddingDimensions int    `toml:"embedding_dimensions"`
-	APIKeyEnv           string `toml:"api_key_env"`
 	APIKey              string `toml:"api_key"`
 }
 
@@ -86,9 +84,7 @@ type ChannelsConfig struct {
 }
 
 type DiscordConfig struct {
-	Enabled          bool   `toml:"enabled"`
-	TokenEnv         string `toml:"token_env"`
-	ApplicationIDEnv string `toml:"application_id_env"`
+	Enabled bool `toml:"enabled"`
 }
 
 type VaultConfig struct {
@@ -127,7 +123,6 @@ func Load(path string) (Config, error) {
 			TranscriptionModel:  raw.LLM.TranscriptionModel,
 			EmbeddingModel:      raw.LLM.EmbeddingModel,
 			EmbeddingDimensions: raw.LLM.EmbeddingDimensions,
-			APIKeyEnv:           raw.LLM.APIKeyEnv,
 			APIKey:              raw.LLM.APIKey,
 		},
 		Temporal:      raw.Temporal,
@@ -186,9 +181,6 @@ func (c *Config) applyDefaults() error {
 	}
 	if c.LLM.EmbeddingDimensions == 0 {
 		c.LLM.EmbeddingDimensions = 1536
-	}
-	if c.LLM.APIKeyEnv == "" {
-		c.LLM.APIKeyEnv = "LITELLM_PROXY_KEY"
 	}
 	if c.Temporal.TaskQueue == "" {
 		c.Temporal.TaskQueue = "opencto"

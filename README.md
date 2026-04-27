@@ -206,7 +206,6 @@ base_url         = "http://127.0.0.1:4000"
 model_reasoning  = "gpt-5.4"
 model_fast       = "gpt-5.4-mini"
 embedding_model  = "text-embedding-3-small"
-api_key_env      = "LITELLM_PROXY_KEY"
 
 [memory]
 backend = "sqlite"

@@ -28,7 +28,7 @@ import (
 
 func main() {
 	var (
-		configPath = flag.String("config", "config/config.example.toml", "path to config file")
+		configPath = flag.String("config", "config.toml", "path to config file")
 		mode       = flag.String("mode", "validate", "validate|worker|inject|serve")
 		body       = flag.String("body", "", "event body for inject mode")
 		actor      = flag.String("actor", "local-user", "actor name for inject mode")
@@ -86,14 +86,14 @@ func main() {
 		availableSkills := discoverAvailableSkills("skills")
 		var discordAdapter *discord.Adapter
 		if cfg.Channels.Discord.Enabled {
-			token := strings.TrimSpace(os.Getenv(cfg.Channels.Discord.TokenEnv))
-			appID := strings.TrimSpace(os.Getenv(cfg.Channels.Discord.ApplicationIDEnv))
+			token := strings.TrimSpace(os.Getenv("DISCORD_TOKEN"))
+			appID := strings.TrimSpace(os.Getenv("DISCORD_APPLICATION_ID"))
 			if token == "" {
-				logger.Error("discord is enabled but the bot token is missing", slog.String("token_env", cfg.Channels.Discord.TokenEnv))
+				logger.Error("discord is enabled but the bot token is missing", slog.String("env", "DISCORD_TOKEN"))
 				os.Exit(1)
 			}
 			if appID == "" {
-				logger.Warn("discord application id is not set; continuing because the runtime does not require it yet", slog.String("application_id_env", cfg.Channels.Discord.ApplicationIDEnv))
+				logger.Warn("discord application id is not set; continuing because the runtime does not require it yet", slog.String("env", "DISCORD_APPLICATION_ID"))
 			}
 			discordAdapter, err = discord.New(cfg.Project.ID, token, appID, dispatcher, logger)
 			if err != nil {
@@ -206,7 +206,7 @@ func buildDecisionEngine(cfg config.Config, logger *slog.Logger) agent.Engine {
 		logger.Warn("openai api key is not configured", slog.String("error", err.Error()))
 		return unavailable(err.Error())
 	}
-	if source == agentllm.APIKeySourceConfig || source == agentllm.APIKeySourceLegacyConfig {
+	if source == agentllm.APIKeySourceConfig {
 		logger.Warn("openai api key is loaded directly from config; prefer environment variables or vault-backed secrets for local and production safety")
 	}
 

@@ -20,9 +20,8 @@ import (
 type APIKeySource string
 
 const (
-	APIKeySourceConfig       APIKeySource = "config"
-	APIKeySourceEnvironment  APIKeySource = "environment"
-	APIKeySourceLegacyConfig APIKeySource = "legacy_api_key_env"
+	APIKeySourceConfig      APIKeySource = "config"
+	APIKeySourceEnvironment APIKeySource = "environment"
 )
 
 const eventPayloadAttachmentsKey = "attachments"
@@ -32,18 +31,9 @@ func ResolveOpenAIAPIKey(cfg config.LLMConfig) (string, APIKeySource, error) {
 		return value, APIKeySourceConfig, nil
 	}
 
-	name := strings.TrimSpace(cfg.APIKeyEnv)
-	if name == "" {
-		return "", "", fmt.Errorf("llm.api_key_env is empty")
-	}
-
-	if strings.HasPrefix(name, "sk-") {
-		return name, APIKeySourceLegacyConfig, nil
-	}
-
-	value := strings.TrimSpace(os.Getenv(name))
+	value := strings.TrimSpace(os.Getenv("LITELLM_PROXY_KEY"))
 	if value == "" {
-		return "", "", fmt.Errorf("environment variable %q is not set", name)
+		return "", "", fmt.Errorf("environment variable %q is not set", "LITELLM_PROXY_KEY")
 	}
 	return value, APIKeySourceEnvironment, nil
 }

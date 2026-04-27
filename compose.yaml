@@ -148,22 +148,6 @@ services:
       retries: 3
       start_period: 40s
 
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: opencto-prometheus
-    restart: unless-stopped
-    networks:
-      - opencto-network
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-      - "--storage.tsdb.retention.time=15d"
-
 networks:
   opencto-network:
     driver: bridge
@@ -171,4 +155,3 @@ networks:
 
 volumes:
   postgresql_data:
-  prometheus_data:

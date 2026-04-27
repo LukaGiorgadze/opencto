@@ -14,7 +14,7 @@ task worker
 
 `task worker` now runs through `air`, so code changes rebuild and restart automatically.
 
-When using the local LiteLLM proxy, `OPENAI_API_KEY` is the upstream provider key for LiteLLM and `LITELLM_PROXY_KEY` is the key OpenCTO uses to authenticate to LiteLLM. The sample config keeps `api_key_env = "LITELLM_PROXY_KEY"`. A direct `llm.api_key` value is also supported for local-only testing, but environment variables or a vault-backed secret are safer.
+When using the local LiteLLM proxy, `OPENAI_API_KEY` is the upstream provider key for LiteLLM and `LITELLM_PROXY_KEY` is the key OpenCTO uses to authenticate to LiteLLM. OpenCTO now reads `LITELLM_PROXY_KEY` directly from the environment. A direct `llm.api_key` value is also supported for local-only testing, but environment variables or a vault-backed secret are safer.
 
 ## Discord
 
@@ -33,7 +33,7 @@ export DISCORD_APPLICATION_ID="..."
 ```
 
 4. Invite the bot to your server with `Send Messages`, `View Channels`, and `Read Message History`.
-5. Set `[channels.discord].enabled = true` in `config/config.example.toml` or your local config.
+5. Set `[channels.discord].enabled = true` in `config.toml` or your local config.
 6. Run `task serve`.
 
 `task worker` alone does not start the Discord adapter. Use `task serve` when Discord is enabled.

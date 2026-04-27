@@ -16,7 +16,6 @@ model_reasoning = "gpt-5.4-mini"
 model_fast = "gpt-5.4-nano"
 embedding_model = "text-embedding-3-small"
 embedding_dimensions = 1536
-api_key_env = "LITELLM_PROXY_KEY"
 
 [temporal]
 host_port = "127.0.0.1:7233"
@@ -26,8 +25,6 @@ continue_as_new_after_events = 1000
 
 [channels.discord]
 enabled = true
-token_env = "DISCORD_TOKEN"
-application_id_env = "DISCORD_APPLICATION_ID"
 
 [vault]
 provider = "keyring"
