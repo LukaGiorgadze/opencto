@@ -10,46 +10,46 @@ import (
 )
 
 const (
-	SelectorToolCommandName = shelltool.SelectorToolName
+	CommandToolName = shelltool.ShellToolName
 )
 
-type SelectorDefinition struct {
+type Definition struct {
 	Name        string
 	Type        domain.ToolType
 	Description string
-	Parameters  json.RawMessage
+	Schema      json.RawMessage
 }
 
-var selectorDefinitions = []SelectorDefinition{
+var definitions = []Definition{
 	{
-		Name:        SelectorToolCommandName,
+		Name:        CommandToolName,
 		Type:        domain.ToolTypeShell,
-		Description: shelltool.SelectorToolDescription,
-		Parameters:  shelltool.SelectorToolParameters(),
+		Description: shelltool.ShellToolDescription,
+		Schema:      shelltool.ShellToolSchema(),
 	},
 }
 
-func SelectorDefinitions() []SelectorDefinition {
-	cloned := make([]SelectorDefinition, len(selectorDefinitions))
-	for i, definition := range selectorDefinitions {
+func Definitions() []Definition {
+	cloned := make([]Definition, len(definitions))
+	for i, definition := range definitions {
 		cloned[i] = definition
-		if definition.Parameters != nil {
-			cloned[i].Parameters = append(json.RawMessage(nil), definition.Parameters...)
+		if definition.Schema != nil {
+			cloned[i].Schema = append(json.RawMessage(nil), definition.Schema...)
 		}
 	}
 	return cloned
 }
 
-func SelectorLLMDefinitions() []llms.Tool {
-	definitions := SelectorDefinitions()
-	tools := make([]llms.Tool, 0, len(definitions))
-	for _, definition := range definitions {
+func LLMDefinitions() []llms.Tool {
+	registered := Definitions()
+	tools := make([]llms.Tool, 0, len(registered))
+	for _, definition := range registered {
 		tools = append(tools, llms.Tool{
 			Type: "function",
 			Function: &llms.FunctionDefinition{
 				Name:        definition.Name,
 				Description: definition.Description,
-				Parameters:  definition.Parameters,
+				Parameters:  definition.Schema,
 				Strict:      true,
 			},
 		})
@@ -57,13 +57,13 @@ func SelectorLLMDefinitions() []llms.Tool {
 	return tools
 }
 
-func SelectorDefinitionByName(name string) (SelectorDefinition, bool) {
-	for _, definition := range selectorDefinitions {
+func DefinitionByName(name string) (Definition, bool) {
+	for _, definition := range definitions {
 		if definition.Name == name {
 			return definition, true
 		}
 	}
-	return SelectorDefinition{}, false
+	return Definition{}, false
 }
 
 func FallbackCandidates(primary domain.ToolType) []domain.ToolType {

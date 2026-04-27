@@ -6,8 +6,8 @@ import (
 )
 
 const (
-	SelectorToolName        = "Command"
-	SelectorToolDescription = `Execute any action necessary to accomplish the current goal.
+	ShellToolName        = "Command"
+	ShellToolDescription = `Execute any action necessary to accomplish the current goal.
 
     **IMPORTANT:** Avoid using this tool to run "find", "grep", "cat", "head", "tail", "sed", "awk", "echo", or "printf" commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:
 
@@ -44,9 +44,9 @@ const (
     **IMPORTANT:** Do not stop because a specific tool or dependency is absent — find another path using shell commands or acquire what is needed.`
 )
 
-//go:embed selector_parameters.json
-var selectorParameters json.RawMessage
+//go:embed schema.json
+var shellToolSchema json.RawMessage
 
-func SelectorToolParameters() json.RawMessage {
-	return append(json.RawMessage(nil), selectorParameters...)
+func ShellToolSchema() json.RawMessage {
+	return append(json.RawMessage(nil), shellToolSchema...)
 }

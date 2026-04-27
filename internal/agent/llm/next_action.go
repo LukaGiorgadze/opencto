@@ -54,7 +54,7 @@ func (e *OpenAIEngine) NextAction(ctx context.Context, input agent.NextActionInp
 	response, err := e.reasoningModel.GenerateContent(
 		ctx,
 		messages,
-		llms.WithTools(toolregistry.SelectorLLMDefinitions()),
+		llms.WithTools(toolregistry.LLMDefinitions()),
 	)
 	if err != nil {
 		return agent.NextActionOutput{}, err
@@ -158,7 +158,7 @@ func nextActionTranscriptMessages(feedback agent.ExecutionFeedback) (llms.Messag
 				ID:   toolCallID,
 				Type: "function",
 				FunctionCall: &llms.FunctionCall{
-					Name:      toolregistry.SelectorToolCommandName,
+					Name:      toolregistry.CommandToolName,
 					Arguments: string(encoded),
 				},
 			},
@@ -169,7 +169,7 @@ func nextActionTranscriptMessages(feedback agent.ExecutionFeedback) (llms.Messag
 		Role: llms.ChatMessageTypeTool,
 		Parts: []llms.ContentPart{llms.ToolCallResponse{
 			ToolCallID: toolCallID,
-			Name:       toolregistry.SelectorToolCommandName,
+			Name:       toolregistry.CommandToolName,
 			Content:    formatToolResultContent(feedback),
 		}},
 	}

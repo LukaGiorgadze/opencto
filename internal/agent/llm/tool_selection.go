@@ -27,7 +27,7 @@ func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) 
 		return agent.ToolChoice{}, fmt.Errorf("tool call %q missing function payload", call.ID)
 	}
 
-	definition, ok := toolregistry.SelectorDefinitionByName(call.FunctionCall.Name)
+	definition, ok := toolregistry.DefinitionByName(call.FunctionCall.Name)
 	if !ok {
 		return agent.ToolChoice{}, fmt.Errorf("unsupported tool call %q", call.FunctionCall.Name)
 	}
@@ -44,7 +44,7 @@ func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) 
 	}
 }
 
-func shellToolChoiceFromInput(definition toolregistry.SelectorDefinition, call llms.ToolCall, args shellToolInput, input agent.ToolSelectionInput) (agent.ToolChoice, error) {
+func shellToolChoiceFromInput(definition toolregistry.Definition, call llms.ToolCall, args shellToolInput, input agent.ToolSelectionInput) (agent.ToolChoice, error) {
 	commandText := strings.TrimSpace(args.Command)
 	if commandText == "" {
 		return agent.ToolChoice{}, fmt.Errorf("%s tool requires a command", definition.Name)

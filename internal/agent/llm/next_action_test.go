@@ -132,7 +132,7 @@ func TestBuildNextActionMessagesUsesOpenAIToolTranscript(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected assistant second part to be tool call, got %T", assistant.Parts[1])
 	}
-	if toolCall.ID != "toolu_abc123" || toolCall.FunctionCall == nil || toolCall.FunctionCall.Name != toolregistry.SelectorToolCommandName {
+	if toolCall.ID != "toolu_abc123" || toolCall.FunctionCall == nil || toolCall.FunctionCall.Name != toolregistry.CommandToolName {
 		t.Fatalf("unexpected tool call: %#v", toolCall)
 	}
 	if !strings.Contains(toolCall.FunctionCall.Arguments, `"work_item_id":"wi-1"`) {
@@ -249,7 +249,7 @@ func TestNextActionReturnsSingleToolChoice(t *testing.T) {
 					ID:   "toolu_next",
 					Type: "function",
 					FunctionCall: &llms.FunctionCall{
-						Name: toolregistry.SelectorToolCommandName,
+						Name: toolregistry.CommandToolName,
 						Arguments: `{
 							"command":"pwd",
 							"args":[],
@@ -297,7 +297,7 @@ func TestToolChoicePreservesCommandAndArgsForDirectExecution(t *testing.T) {
 		ID:   "toolu_direct",
 		Type: "function",
 		FunctionCall: &llms.FunctionCall{
-			Name: toolregistry.SelectorToolCommandName,
+			Name: toolregistry.CommandToolName,
 			Arguments: `{
 				"command":"go",
 				"args":["test","./..."],
@@ -332,7 +332,7 @@ func TestToolChoiceSplitsPlainCommandStringWithoutShell(t *testing.T) {
 		ID:   "toolu_plain",
 		Type: "function",
 		FunctionCall: &llms.FunctionCall{
-			Name:      toolregistry.SelectorToolCommandName,
+			Name:      toolregistry.CommandToolName,
 			Arguments: `{"command":"go test ./...","args":[],"description":"run tests"}`,
 		},
 	}, agent.ToolSelectionInput{
@@ -347,7 +347,7 @@ func TestToolChoiceSplitsPlainCommandStringWithoutShell(t *testing.T) {
 	if got := strings.Join(choice.Args, "\x00"); got != "test\x00./..." {
 		t.Fatalf("expected split args, got %#v", choice.Args)
 	}
-	if choice.Metadata["model_tool"] != toolregistry.SelectorToolCommandName {
+	if choice.Metadata["model_tool"] != toolregistry.CommandToolName {
 		t.Fatalf("expected canonical model tool, got %#v", choice.Metadata)
 	}
 }
@@ -359,7 +359,7 @@ func TestToolChoiceUsesOSAwareShellOnlyForShellSyntax(t *testing.T) {
 		ID:   "toolu_shell",
 		Type: "function",
 		FunctionCall: &llms.FunctionCall{
-			Name:      toolregistry.SelectorToolCommandName,
+			Name:      toolregistry.CommandToolName,
 			Arguments: `{"command":"printf hi | wc -c","args":[],"description":"count bytes"}`,
 		},
 	}, agent.ToolSelectionInput{
@@ -376,7 +376,7 @@ func TestToolChoiceUsesOSAwareShellOnlyForShellSyntax(t *testing.T) {
 		ID:   "toolu_windows_shell",
 		Type: "function",
 		FunctionCall: &llms.FunctionCall{
-			Name:      toolregistry.SelectorToolCommandName,
+			Name:      toolregistry.CommandToolName,
 			Arguments: `{"command":"dir | findstr go.mod","args":[],"description":"find go module"}`,
 		},
 	}, agent.ToolSelectionInput{
