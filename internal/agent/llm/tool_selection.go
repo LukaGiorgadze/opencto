@@ -52,10 +52,17 @@ func shellToolChoiceFromInput(definition toolregistry.SelectorDefinition, call l
 	command := commandText
 	commandArgs := trimStringList(args.Args, 100)
 	wrapped := false
-	if shouldWrapShellCommand(commandText, commandArgs) {
-		command = firstNonEmpty(strings.TrimSpace(input.Runtime.Shell), "/bin/sh")
-		commandArgs = []string{"-lc", commandText}
-		wrapped = true
+	if len(commandArgs) == 0 {
+		if shouldUseShell(commandText) {
+			command, commandArgs = shellCommandForRuntime(input.Runtime, commandText)
+			wrapped = true
+		} else {
+			fields := strings.Fields(commandText)
+			if len(fields) > 1 {
+				command = fields[0]
+				commandArgs = trimStringList(fields[1:], 100)
+			}
+		}
 	}
 
 	metadata := map[string]string{
@@ -84,11 +91,37 @@ func shellToolChoiceFromInput(definition toolregistry.SelectorDefinition, call l
 	}, nil
 }
 
-func shouldWrapShellCommand(command string, args []string) bool {
-	if len(args) > 0 {
-		return false
+func shouldUseShell(command string) bool {
+	return strings.ContainsAny(command, "\r\n;&|<>*$`()\"'")
+}
+
+func shellCommandForRuntime(runtime agent.RuntimeContext, command string) (string, []string) {
+	shell := firstNonEmpty(strings.TrimSpace(runtime.Shell), defaultShellForOS(runtime.OS))
+	name := strings.ToLower(filepathBase(shell))
+	switch name {
+	case "cmd", "cmd.exe":
+		return shell, []string{"/C", command}
+	case "powershell", "powershell.exe", "pwsh", "pwsh.exe":
+		return shell, []string{"-Command", command}
+	default:
+		return shell, []string{"-c", command}
 	}
-	return strings.ContainsAny(command, " \t\r\n;&|<>*$`()")
+}
+
+func defaultShellForOS(osName string) string {
+	if strings.EqualFold(osName, "windows") {
+		return "cmd"
+	}
+	return "sh"
+}
+
+func filepathBase(path string) string {
+	normalized := strings.ReplaceAll(path, "\\", "/")
+	index := strings.LastIndex(normalized, "/")
+	if index == -1 {
+		return normalized
+	}
+	return normalized[index+1:]
 }
 
 func clampToolTimeoutMs(value int) int {

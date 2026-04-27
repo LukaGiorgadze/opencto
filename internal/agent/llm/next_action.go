@@ -133,7 +133,7 @@ func nextActionTranscriptMessages(feedback agent.ExecutionFeedback) (llms.Messag
 		assistantText = strings.TrimSpace(feedback.RequestedAction)
 	}
 	if assistantText == "" {
-		assistantText = "I will run the next shell step."
+		assistantText = "I will run the next command step."
 	}
 
 	args := shellToolInput{
@@ -158,7 +158,7 @@ func nextActionTranscriptMessages(feedback agent.ExecutionFeedback) (llms.Messag
 				ID:   toolCallID,
 				Type: "function",
 				FunctionCall: &llms.FunctionCall{
-					Name:      toolregistry.SelectorToolShellName,
+					Name:      toolregistry.SelectorToolCommandName,
 					Arguments: string(encoded),
 				},
 			},
@@ -169,7 +169,7 @@ func nextActionTranscriptMessages(feedback agent.ExecutionFeedback) (llms.Messag
 		Role: llms.ChatMessageTypeTool,
 		Parts: []llms.ContentPart{llms.ToolCallResponse{
 			ToolCallID: toolCallID,
-			Name:       toolregistry.SelectorToolShellName,
+			Name:       toolregistry.SelectorToolCommandName,
 			Content:    formatToolResultContent(feedback),
 		}},
 	}
@@ -253,13 +253,13 @@ func normalizeNextActionTerminalStatus(output nextActionTerminalOutput) (string,
 	}
 
 	switch status {
-	case "completed", "complete", "final", "succeeded", "success":
+	case "completed", "complete", "final", "succeeded", "success", "finished", "finish":
 		return "completed", domain.WorkItemStatusCompleted, nil
-	case "blocked":
+	case "blocked", "block":
 		return "blocked", domain.WorkItemStatusBlocked, nil
-	case "failed", "failure":
+	case "failed", "failure", "fail":
 		return "failed", domain.WorkItemStatusFailed, nil
-	case "ignored", "ignore":
+	case "ignored", "ignore", "skip", "skipped":
 		return "ignored", domain.WorkItemStatusCompleted, nil
 	default:
 		return "", "", fmt.Errorf("%w: unsupported final status %q", agent.ErrInvalidNextAction, status)

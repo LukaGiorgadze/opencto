@@ -1,0 +1,47 @@
+{
+    "type": "object",
+    "required": [
+        "command",
+        "args",
+        "working_dir",
+        "timeout_ms",
+        "description",
+        "destructive",
+        "work_item_id"
+    ],
+    "additionalProperties": false,
+    "properties": {
+        "command": {
+            "type": "string",
+            "description": "The executable to run for the next execution step. Prefer cross-platform tools when possible."
+        },
+        "args": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            },
+            "description": "Arguments for the executable. Use an empty array when there are no arguments."
+        },
+        "working_dir": {
+            "type": ["string", "null"],
+            "description": "Working directory for the command. Use null to use the project root."
+        },
+        "timeout_ms": {
+            "type": ["number", "null"],
+            "description": "Maximum runtime for the command in milliseconds. Use null to accept the runtime default.",
+            "maximum": 600000
+        },
+        "description": {
+            "type": ["string", "null"],
+            "description": "One sentence describing what this command achieves. Use null when the command itself is self-explanatory."
+        },
+        "destructive": {
+            "type": ["boolean", "null"],
+            "description": "Set true when the command mutates state in a risky or hard-to-reverse way. Use null when unknown."
+        },
+        "work_item_id": {
+            "type": ["string", "null"],
+            "description": "The work item this command advances. Use null only when no work item is available."
+        }
+    }
+}

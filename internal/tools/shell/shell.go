@@ -99,7 +99,7 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 		Duration:    completedAt.Sub(startedAt),
 	}
 
-	e.logger.Info("shell command executed",
+	e.logger.Info("command executed",
 		slog.String("project_id", req.ProjectID),
 		slog.String("intent", req.Intent),
 		slog.String("command", req.Command),

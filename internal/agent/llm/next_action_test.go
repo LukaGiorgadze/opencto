@@ -132,7 +132,7 @@ func TestBuildNextActionMessagesUsesOpenAIToolTranscript(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected assistant second part to be tool call, got %T", assistant.Parts[1])
 	}
-	if toolCall.ID != "toolu_abc123" || toolCall.FunctionCall == nil || toolCall.FunctionCall.Name != toolregistry.SelectorToolShellName {
+	if toolCall.ID != "toolu_abc123" || toolCall.FunctionCall == nil || toolCall.FunctionCall.Name != toolregistry.SelectorToolCommandName {
 		t.Fatalf("unexpected tool call: %#v", toolCall)
 	}
 	if !strings.Contains(toolCall.FunctionCall.Arguments, `"work_item_id":"wi-1"`) {
@@ -249,7 +249,7 @@ func TestNextActionReturnsSingleToolChoice(t *testing.T) {
 					ID:   "toolu_next",
 					Type: "function",
 					FunctionCall: &llms.FunctionCall{
-						Name: toolregistry.SelectorToolShellName,
+						Name: toolregistry.SelectorToolCommandName,
 						Arguments: `{
 							"command":"pwd",
 							"args":[],
@@ -286,7 +286,107 @@ func TestNextActionReturnsSingleToolChoice(t *testing.T) {
 		t.Fatalf("unexpected work item id: %q", output.WorkItemID)
 	}
 	if len(model.options.Tools) != 1 {
-		t.Fatalf("expected Bash tool schema, got %#v", model.options.Tools)
+		t.Fatalf("expected Command tool schema, got %#v", model.options.Tools)
+	}
+}
+
+func TestToolChoicePreservesCommandAndArgsForDirectExecution(t *testing.T) {
+	t.Parallel()
+
+	choice, err := toolChoiceFromToolCall(llms.ToolCall{
+		ID:   "toolu_direct",
+		Type: "function",
+		FunctionCall: &llms.FunctionCall{
+			Name: toolregistry.SelectorToolCommandName,
+			Arguments: `{
+				"command":"go",
+				"args":["test","./..."],
+				"working_dir":null,
+				"timeout_ms":120000,
+				"description":"run tests",
+				"destructive":false,
+				"work_item_id":"wi-1"
+			}`,
+		},
+	}, agent.ToolSelectionInput{
+		Runtime: agent.RuntimeContext{OS: "linux", Shell: "/bin/bash", WorkspaceRoot: "/workspace"},
+	})
+	if err != nil {
+		t.Fatalf("tool choice: %v", err)
+	}
+	if choice.Command != "go" {
+		t.Fatalf("expected direct command go, got %q", choice.Command)
+	}
+	if got := strings.Join(choice.Args, "\x00"); got != "test\x00./..." {
+		t.Fatalf("expected direct args to be preserved, got %#v", choice.Args)
+	}
+	if choice.Metadata["wrapped_shell_command"] == "true" {
+		t.Fatalf("direct command should not be shell wrapped: %#v", choice.Metadata)
+	}
+}
+
+func TestToolChoiceSplitsPlainCommandStringWithoutShell(t *testing.T) {
+	t.Parallel()
+
+	choice, err := toolChoiceFromToolCall(llms.ToolCall{
+		ID:   "toolu_plain",
+		Type: "function",
+		FunctionCall: &llms.FunctionCall{
+			Name:      toolregistry.SelectorToolCommandName,
+			Arguments: `{"command":"go test ./...","args":[],"description":"run tests"}`,
+		},
+	}, agent.ToolSelectionInput{
+		Runtime: agent.RuntimeContext{OS: "darwin", Shell: "/bin/zsh", WorkspaceRoot: "/workspace"},
+	})
+	if err != nil {
+		t.Fatalf("tool choice: %v", err)
+	}
+	if choice.Command != "go" {
+		t.Fatalf("expected plain command string to split to direct executable, got %q", choice.Command)
+	}
+	if got := strings.Join(choice.Args, "\x00"); got != "test\x00./..." {
+		t.Fatalf("expected split args, got %#v", choice.Args)
+	}
+	if choice.Metadata["model_tool"] != toolregistry.SelectorToolCommandName {
+		t.Fatalf("expected canonical model tool, got %#v", choice.Metadata)
+	}
+}
+
+func TestToolChoiceUsesOSAwareShellOnlyForShellSyntax(t *testing.T) {
+	t.Parallel()
+
+	linuxChoice, err := toolChoiceFromToolCall(llms.ToolCall{
+		ID:   "toolu_shell",
+		Type: "function",
+		FunctionCall: &llms.FunctionCall{
+			Name:      toolregistry.SelectorToolCommandName,
+			Arguments: `{"command":"printf hi | wc -c","args":[],"description":"count bytes"}`,
+		},
+	}, agent.ToolSelectionInput{
+		Runtime: agent.RuntimeContext{OS: "linux", Shell: "/bin/bash", WorkspaceRoot: "/workspace"},
+	})
+	if err != nil {
+		t.Fatalf("linux tool choice: %v", err)
+	}
+	if linuxChoice.Command != "/bin/bash" || strings.Join(linuxChoice.Args, "\x00") != "-c\x00printf hi | wc -c" {
+		t.Fatalf("expected OS shell for shell syntax, got %q %#v", linuxChoice.Command, linuxChoice.Args)
+	}
+
+	windowsChoice, err := toolChoiceFromToolCall(llms.ToolCall{
+		ID:   "toolu_windows_shell",
+		Type: "function",
+		FunctionCall: &llms.FunctionCall{
+			Name:      toolregistry.SelectorToolCommandName,
+			Arguments: `{"command":"dir | findstr go.mod","args":[],"description":"find go module"}`,
+		},
+	}, agent.ToolSelectionInput{
+		Runtime: agent.RuntimeContext{OS: "windows", WorkspaceRoot: `C:\workspace`},
+	})
+	if err != nil {
+		t.Fatalf("windows tool choice: %v", err)
+	}
+	if windowsChoice.Command != "cmd" || strings.Join(windowsChoice.Args, "\x00") != "/C\x00dir | findstr go.mod" {
+		t.Fatalf("expected Windows shell for shell syntax, got %q %#v", windowsChoice.Command, windowsChoice.Args)
 	}
 }
 
