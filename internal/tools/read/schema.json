@@ -1,23 +1,23 @@
 {
     "type": "object",
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "required": ["file_path"],
+    "required": ["limit", "pages", "offset", "file_path"],
     "properties": {
         "limit": {
-            "type": "integer",
+            "type": ["integer", "null"],
             "maximum": 9007199254740991,
-            "description": "The number of lines to read. Only provide if the file is too large to read at once.",
+            "description": "The number of lines to read. Use null to use the default limit.",
             "exclusiveMinimum": 0
         },
         "pages": {
-            "type": "string",
-            "description": "Page range for PDF files (e.g., \"1-5\", \"3\", \"10-20\"). Only applicable to PDF files. Maximum 20 pages per request."
+            "type": ["string", "null"],
+            "description": "Page range for PDF files (e.g., \"1-5\", \"3\", \"10-20\"). Use null for non-PDF files. Maximum 20 pages per request."
         },
         "offset": {
-            "type": "integer",
+            "type": ["integer", "null"],
             "maximum": 9007199254740991,
             "minimum": 0,
-            "description": "The line number to start reading from. Only provide if the file is too large to read at once"
+            "description": "The line number to start reading from. Use null to start at the beginning."
         },
         "file_path": {
             "type": "string",

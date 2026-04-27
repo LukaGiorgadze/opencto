@@ -1,6 +1,6 @@
 # Deployment
 
-`compose.yaml` starts the local infra OpenCTO needs for development:
+`compose.yaml` brings up the local development infrastructure OpenCTO depends on:
 
 - PostgreSQL for Temporal persistence
 - Temporal server

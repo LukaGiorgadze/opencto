@@ -1,64 +1,85 @@
 {
     "type": "object",
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "required": ["pattern"],
+    "required": [
+        "-A",
+        "-B",
+        "-C",
+        "-i",
+        "-n",
+        "glob",
+        "path",
+        "type",
+        "offset",
+        "context",
+        "pattern",
+        "multiline",
+        "head_limit",
+        "output_mode"
+    ],
     "properties": {
         "-A": {
-            "type": "number",
-            "description": "Number of lines to show after each match (rg -A). Requires output_mode: \"content\", ignored otherwise."
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "description": "Number of lines to show after each match (rg -A). Use null for no after-context. Requires output_mode: \"content\", ignored otherwise."
         },
         "-B": {
-            "type": "number",
-            "description": "Number of lines to show before each match (rg -B). Requires output_mode: \"content\", ignored otherwise."
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "description": "Number of lines to show before each match (rg -B). Use null for no before-context. Requires output_mode: \"content\", ignored otherwise."
         },
         "-C": {
-            "type": "number",
-            "description": "Alias for context."
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "description": "Alias for context. Use null when not needed."
         },
         "-i": {
-            "type": "boolean",
-            "description": "Case insensitive search (rg -i)"
+            "type": ["boolean", "null"],
+            "description": "Case insensitive search (rg -i). Use null for the default false behavior."
         },
         "-n": {
-            "type": "boolean",
-            "description": "Show line numbers in output (rg -n). Requires output_mode: \"content\", ignored otherwise. Defaults to true."
+            "type": ["boolean", "null"],
+            "description": "Show line numbers in output (rg -n). Use null for the default true behavior. Requires output_mode: \"content\", ignored otherwise."
         },
         "glob": {
-            "type": "string",
-            "description": "Glob pattern to filter files (e.g. \"*.go\", \"*.{ts,tsx}\") - maps to rg --glob"
+            "type": ["string", "null"],
+            "description": "Glob pattern to filter files (e.g. \"*.go\", \"*.{ts,tsx}\") - maps to rg --glob. Use null for no glob filter."
         },
         "path": {
-            "type": "string",
-            "description": "File or directory to search in (rg PATH). Defaults to current working directory."
+            "type": ["string", "null"],
+            "description": "File or directory to search in (rg PATH). Use null for the current working directory."
         },
         "type": {
-            "type": "string",
-            "description": "File type to search (rg --type). Common types: js, py, rust, go, java, etc. More efficient than include for standard file types."
+            "type": ["string", "null"],
+            "description": "File type to search (rg --type). Common types: js, py, rust, go, java, etc. Use null for all file types."
         },
         "offset": {
-            "type": "number",
-            "description": "Skip first N lines/entries before applying head_limit, equivalent to \"| tail -n +N | head -N\". Works across all output modes. Defaults to 0."
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "description": "Skip first N lines/entries before applying head_limit, equivalent to \"| tail -n +N | head -N\". Use null for the default 0 behavior."
         },
         "context": {
-            "type": "number",
-            "description": "Number of lines to show before and after each match (rg -C). Requires output_mode: \"content\", ignored otherwise."
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "description": "Number of lines to show before and after each match (rg -C). Use null for no context. Requires output_mode: \"content\", ignored otherwise."
         },
         "pattern": {
             "type": "string",
             "description": "The regular expression pattern to search for in file contents"
         },
         "multiline": {
-            "type": "boolean",
-            "description": "Enable multiline mode where . matches newlines and patterns can span lines (rg -U --multiline-dotall). Default: false."
+            "type": ["boolean", "null"],
+            "description": "Enable multiline mode where . matches newlines and patterns can span lines (rg -U --multiline-dotall). Use null for the default false behavior."
         },
         "head_limit": {
-            "type": "number",
-            "description": "Limit output to first N lines/entries, equivalent to \"| head -N\". Works across all output modes: content (limits output lines), files_with_matches (limits file paths), count (limits count entries). Defaults to 250 when unspecified. Pass 0 for unlimited (use sparingly — large result sets waste context)."
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "description": "Limit output to first N lines/entries, equivalent to \"| head -N\". Works across all output modes. Use null for the default 250 behavior. Pass 0 for unlimited."
         },
         "output_mode": {
-            "enum": ["content", "files_with_matches", "count"],
-            "type": "string",
-            "description": "Output mode: \"content\" shows matching lines (supports -A/-B/-C context, -n line numbers, head_limit), \"files_with_matches\" shows file paths (supports head_limit), \"count\" shows match counts (supports head_limit). Defaults to \"files_with_matches\"."
+            "enum": ["content", "files_with_matches", "count", null],
+            "type": ["string", "null"],
+            "description": "Output mode: \"content\" shows matching lines, \"files_with_matches\" shows file paths, \"count\" shows match counts. Use null for the default \"files_with_matches\" behavior."
         }
     },
     "additionalProperties": false

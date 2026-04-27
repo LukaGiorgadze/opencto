@@ -1,10 +1,7 @@
 package llm
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -53,93 +50,11 @@ func NewOpenAIEngine(apiKey, baseURL, reasoningModelID, fastModelID, transcripti
 	}, nil
 }
 
-func invokeJSONMessages[T any](ctx context.Context, model llms.Model, messages []llms.MessageContent) (T, error) {
-	var zero T
-
-	response, err := model.GenerateContent(ctx, messages)
-	if err != nil {
-		return zero, err
-	}
-	if response == nil || len(response.Choices) == 0 {
-		return zero, fmt.Errorf("model returned no choices")
-	}
-
-	return decodeJSONOutput[T](response.Choices[0].Content)
-}
-
-func decodeJSONOutput[T any](raw string) (T, error) {
-	var zero T
-
-	decoder := json.NewDecoder(strings.NewReader(extractJSON(raw)))
-	var first json.RawMessage
-	if err := decoder.Decode(&first); err != nil {
-		return zero, err
-	}
-
-	var extra json.RawMessage
-	switch err := decoder.Decode(&extra); err {
-	case nil:
-		return zero, fmt.Errorf("model returned multiple JSON values")
-	case io.EOF:
-	default:
-		return zero, err
-	}
-
-	var output T
-	strictDecoder := json.NewDecoder(strings.NewReader(string(first)))
-	if err := strictDecoder.Decode(&output); err != nil {
-		return zero, err
-	}
-	return output, nil
-}
-
 func formatProjectState(active []domain.WorkItem) string {
 	if len(active) == 0 {
 		return "idle"
 	}
 	return fmt.Sprintf("%d active work item(s)", len(active))
-}
-
-func formatActiveWorkItems(items []domain.WorkItem) string {
-	if len(items) == 0 {
-		return ""
-	}
-	parts := make([]string, 0, len(items))
-	for _, item := range items {
-		title := strings.TrimSpace(item.Title)
-		if title == "" {
-			title = "untitled work item"
-		}
-		parts = append(parts, title+" ["+string(item.Status)+"]")
-	}
-	return strings.Join(parts, "; ")
-}
-
-func formatAvailableSkills(skills []string) string {
-	values := trimStringList(skills, 32)
-	if len(values) == 0 {
-		return "none"
-	}
-	return strings.Join(values, ", ")
-}
-
-func compactWhitespace(value string) string {
-	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
-}
-
-func payloadString(payload map[string]any, key string) string {
-	if len(payload) == 0 {
-		return ""
-	}
-	value, ok := payload[key]
-	if !ok {
-		return ""
-	}
-	text, ok := value.(string)
-	if !ok {
-		return ""
-	}
-	return strings.TrimSpace(text)
 }
 
 func firstNonEmpty(values ...string) string {

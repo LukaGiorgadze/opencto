@@ -136,16 +136,7 @@ func nextActionTranscriptMessages(feedback agent.ExecutionFeedback) (llms.Messag
 		assistantText = "I will run the next command step."
 	}
 
-	args := shellToolInput{
-		Command:     transcriptCommand(feedback),
-		Args:        feedback.Args,
-		WorkingDir:  strings.TrimSpace(feedback.Metadata["working_directory"]),
-		TimeoutMs:   transcriptTimeoutMs(feedback),
-		Description: strings.TrimSpace(feedback.RequestedAction),
-		Destructive: feedback.Metadata["destructive"] == "true",
-		WorkItemID:  strings.TrimSpace(feedback.WorkItemID),
-	}
-	encoded, err := json.Marshal(args)
+	toolName, arguments, err := transcriptToolCall(feedback)
 	if err != nil {
 		return llms.MessageContent{}, llms.MessageContent{}, err
 	}
@@ -158,8 +149,8 @@ func nextActionTranscriptMessages(feedback agent.ExecutionFeedback) (llms.Messag
 				ID:   toolCallID,
 				Type: "function",
 				FunctionCall: &llms.FunctionCall{
-					Name:      toolregistry.CommandToolName,
-					Arguments: string(encoded),
+					Name:      toolName,
+					Arguments: arguments,
 				},
 			},
 		},
@@ -169,7 +160,7 @@ func nextActionTranscriptMessages(feedback agent.ExecutionFeedback) (llms.Messag
 		Role: llms.ChatMessageTypeTool,
 		Parts: []llms.ContentPart{llms.ToolCallResponse{
 			ToolCallID: toolCallID,
-			Name:       toolregistry.CommandToolName,
+			Name:       toolName,
 			Content:    formatToolResultContent(feedback),
 		}},
 	}
@@ -290,6 +281,35 @@ func transcriptTimeoutMs(feedback agent.ExecutionFeedback) int {
 		return 0
 	}
 	return parsed
+}
+
+func transcriptToolCall(feedback agent.ExecutionFeedback) (string, string, error) {
+	if feedback.Tool == "" || feedback.Tool == domain.ToolTypeShell {
+		args := shellToolInput{
+			Command:     transcriptCommand(feedback),
+			Args:        feedback.Args,
+			WorkingDir:  strings.TrimSpace(feedback.Metadata["working_directory"]),
+			TimeoutMs:   transcriptTimeoutMs(feedback),
+			Description: strings.TrimSpace(feedback.RequestedAction),
+			Destructive: feedback.Metadata["destructive"] == "true",
+			WorkItemID:  strings.TrimSpace(feedback.WorkItemID),
+		}
+		encoded, err := json.Marshal(args)
+		if err != nil {
+			return "", "", err
+		}
+		return toolregistry.CommandToolName, string(encoded), nil
+	}
+
+	definition, ok := toolregistry.DefinitionByType(feedback.Tool)
+	if !ok {
+		return "", "", fmt.Errorf("%w: unsupported previous tool type %q", agent.ErrInvalidNextAction, feedback.Tool)
+	}
+	input := strings.TrimSpace(string(feedback.Input))
+	if input == "" {
+		input = "{}"
+	}
+	return definition.Name, input, nil
 }
 
 func formatToolResultContent(feedback agent.ExecutionFeedback) string {

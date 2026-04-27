@@ -51,6 +51,11 @@ type ToolType string
 
 const (
 	ToolTypeShell ToolType = "shell"
+	ToolTypeEdit  ToolType = "edit"
+	ToolTypeGlob  ToolType = "glob"
+	ToolTypeGrep  ToolType = "grep"
+	ToolTypeRead  ToolType = "read"
+	ToolTypeWrite ToolType = "write"
 )
 
 type Project struct {

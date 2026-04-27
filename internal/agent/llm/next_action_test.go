@@ -11,6 +11,7 @@ import (
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
 	toolregistry "github.com/opencto/opencto/internal/tools"
+	readtool "github.com/opencto/opencto/internal/tools/read"
 )
 
 type recordingToolModel struct {
@@ -285,8 +286,8 @@ func TestNextActionReturnsSingleToolChoice(t *testing.T) {
 	if output.WorkItemID != "wi-1" {
 		t.Fatalf("unexpected work item id: %q", output.WorkItemID)
 	}
-	if len(model.options.Tools) != 1 {
-		t.Fatalf("expected Command tool schema, got %#v", model.options.Tools)
+	if len(model.options.Tools) != 6 {
+		t.Fatalf("expected all tool schemas, got %#v", model.options.Tools)
 	}
 }
 
@@ -322,6 +323,33 @@ func TestToolChoicePreservesCommandAndArgsForDirectExecution(t *testing.T) {
 	}
 	if choice.Metadata["wrapped_shell_command"] == "true" {
 		t.Fatalf("direct command should not be shell wrapped: %#v", choice.Metadata)
+	}
+}
+
+func TestToolChoiceCapturesStructuredReadInput(t *testing.T) {
+	t.Parallel()
+
+	choice, err := toolChoiceFromToolCall(llms.ToolCall{
+		ID:   "toolu_read",
+		Type: "function",
+		FunctionCall: &llms.FunctionCall{
+			Name:      readtool.ReadToolName,
+			Arguments: `{"file_path":"/workspace/main.go","offset":10,"limit":20}`,
+		},
+	}, agent.ToolSelectionInput{
+		Runtime: agent.RuntimeContext{WorkspaceRoot: "/workspace"},
+	})
+	if err != nil {
+		t.Fatalf("tool choice: %v", err)
+	}
+	if choice.Type != domain.ToolTypeRead {
+		t.Fatalf("expected read tool type, got %q", choice.Type)
+	}
+	if !strings.Contains(string(choice.Input), `"/workspace/main.go"`) {
+		t.Fatalf("expected raw read input to be preserved, got %s", choice.Input)
+	}
+	if choice.Metadata["model_tool"] != readtool.ReadToolName {
+		t.Fatalf("expected model tool metadata, got %#v", choice.Metadata)
 	}
 }
 

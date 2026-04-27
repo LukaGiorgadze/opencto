@@ -189,14 +189,18 @@ func (r *Request) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
-	if _, ok := raw["-n"]; ok {
+	if value, ok := raw["-n"]; ok && !isJSONNull(value) {
 		decoded.lineNumbersSet = true
 	}
-	if _, ok := raw["head_limit"]; ok {
+	if value, ok := raw["head_limit"]; ok && !isJSONNull(value) {
 		decoded.headLimitSet = true
 	}
 	*r = Request(decoded)
 	return nil
+}
+
+func isJSONNull(value json.RawMessage) bool {
+	return strings.EqualFold(strings.TrimSpace(string(value)), "null")
 }
 
 func normalizeRequest(req Request) (Request, error) {

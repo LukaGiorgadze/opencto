@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/opencto/opencto/internal/domain"
 )
@@ -18,6 +19,7 @@ type ToolChoice struct {
 	Intent       string          `json:"intent"`
 	Command      string          `json:"command,omitempty"`
 	Args         []string        `json:"args,omitempty"`
+	Input        json.RawMessage `json:"input,omitempty"`
 	WorkingDir   string          `json:"working_dir,omitempty"`
 	TimeoutMs    int             `json:"timeout_ms,omitempty"`
 	InputSummary string          `json:"input_summary,omitempty"`
@@ -31,6 +33,7 @@ func (c ToolChoice) IsZero() bool {
 		c.Intent == "" &&
 		c.Command == "" &&
 		len(c.Args) == 0 &&
+		len(c.Input) == 0 &&
 		c.WorkingDir == "" &&
 		c.TimeoutMs == 0 &&
 		c.InputSummary == "" &&
@@ -47,6 +50,7 @@ type ExecutionFeedback struct {
 	RequestedAction string          `json:"requested_action,omitempty"`
 	Command         string          `json:"command,omitempty"`
 	Args            []string        `json:"args,omitempty"`
+	Input           json.RawMessage `json:"input,omitempty"`
 	Observation     string          `json:"observation,omitempty"`
 	Error           string          `json:"error,omitempty"`
 	Metadata        domain.Metadata `json:"metadata,omitempty"`

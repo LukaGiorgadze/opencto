@@ -1,8 +1,10 @@
 package llm
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
@@ -10,6 +12,11 @@ import (
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
 	toolregistry "github.com/opencto/opencto/internal/tools"
+	edittool "github.com/opencto/opencto/internal/tools/edit"
+	globtool "github.com/opencto/opencto/internal/tools/glob"
+	greptool "github.com/opencto/opencto/internal/tools/grep"
+	readtool "github.com/opencto/opencto/internal/tools/read"
+	writetool "github.com/opencto/opencto/internal/tools/write"
 )
 
 type shellToolInput struct {
@@ -32,19 +39,78 @@ func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) 
 		return agent.ToolChoice{}, fmt.Errorf("unsupported tool call %q", call.FunctionCall.Name)
 	}
 
+	raw := json.RawMessage(strings.TrimSpace(call.FunctionCall.Arguments))
 	switch definition.Type {
 	case domain.ToolTypeShell:
 		var args shellToolInput
-		if err := json.Unmarshal([]byte(call.FunctionCall.Arguments), &args); err != nil {
+		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
 			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
 		}
-		return shellToolChoiceFromInput(definition, call, args, input)
+		return shellToolChoiceFromInput(definition, call, raw, args, input)
+	case domain.ToolTypeRead:
+		var args readtool.Request
+		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
+			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
+		}
+		return structuredToolChoiceFromInput(definition, call, raw, input, "read "+strings.TrimSpace(args.FilePath)), nil
+	case domain.ToolTypeEdit:
+		var args edittool.Request
+		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
+			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
+		}
+		return structuredToolChoiceFromInput(definition, call, raw, input, "edit "+strings.TrimSpace(args.FilePath)), nil
+	case domain.ToolTypeWrite:
+		var args writetool.Request
+		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
+			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
+		}
+		return structuredToolChoiceFromInput(definition, call, raw, input, "write "+strings.TrimSpace(args.FilePath)), nil
+	case domain.ToolTypeGlob:
+		var args globtool.Request
+		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
+			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
+		}
+		summary := "glob " + strings.TrimSpace(args.Pattern)
+		if path := strings.TrimSpace(args.Path); path != "" {
+			summary += " in " + path
+		}
+		return structuredToolChoiceFromInput(definition, call, raw, input, summary), nil
+	case domain.ToolTypeGrep:
+		var args greptool.Request
+		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
+			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
+		}
+		summary := "grep " + strings.TrimSpace(args.Pattern)
+		if path := strings.TrimSpace(args.Path); path != "" {
+			summary += " in " + path
+		}
+		return structuredToolChoiceFromInput(definition, call, raw, input, summary), nil
 	default:
 		return agent.ToolChoice{}, fmt.Errorf("unsupported tool type %q for call %q", definition.Type, call.FunctionCall.Name)
 	}
 }
 
-func shellToolChoiceFromInput(definition toolregistry.Definition, call llms.ToolCall, args shellToolInput, input agent.ToolSelectionInput) (agent.ToolChoice, error) {
+func decodeToolArguments(toolName string, raw json.RawMessage, target any) error {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return fmt.Errorf("%s tool arguments are required", toolName)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var extra json.RawMessage
+	switch err := decoder.Decode(&extra); err {
+	case nil:
+		return fmt.Errorf("multiple JSON values")
+	case io.EOF:
+		return nil
+	default:
+		return err
+	}
+}
+
+func shellToolChoiceFromInput(definition toolregistry.Definition, call llms.ToolCall, raw json.RawMessage, args shellToolInput, input agent.ToolSelectionInput) (agent.ToolChoice, error) {
 	commandText := strings.TrimSpace(args.Command)
 	if commandText == "" {
 		return agent.ToolChoice{}, fmt.Errorf("%s tool requires a command", definition.Name)
@@ -83,12 +149,34 @@ func shellToolChoiceFromInput(definition toolregistry.Definition, call llms.Tool
 		Intent:       firstNonEmpty(strings.TrimSpace(args.Description), commandText),
 		Command:      command,
 		Args:         commandArgs,
+		Input:        cloneRawMessage(raw),
 		WorkingDir:   firstNonEmpty(strings.TrimSpace(args.WorkingDir), strings.TrimSpace(input.Runtime.WorkspaceRoot)),
 		TimeoutMs:    clampToolTimeoutMs(args.TimeoutMs),
 		InputSummary: firstNonEmpty(strings.TrimSpace(args.Description), commandText, strings.TrimSpace(input.Context.Event.Body)),
 		Destructive:  args.Destructive,
 		Metadata:     metadata,
 	}, nil
+}
+
+func structuredToolChoiceFromInput(definition toolregistry.Definition, call llms.ToolCall, raw json.RawMessage, input agent.ToolSelectionInput, summary string) agent.ToolChoice {
+	summary = firstNonEmpty(summary, definition.Name+" tool call", strings.TrimSpace(input.Context.Event.Body))
+	return agent.ToolChoice{
+		ToolCallID:   call.ID,
+		Type:         definition.Type,
+		Intent:       summary,
+		Input:        cloneRawMessage(raw),
+		WorkingDir:   strings.TrimSpace(input.Runtime.WorkspaceRoot),
+		TimeoutMs:    clampToolTimeoutMs(0),
+		InputSummary: firstNonEmpty(summary, strings.TrimSpace(input.Context.Event.Body)),
+		Metadata: map[string]string{
+			"model_tool":   definition.Name,
+			"tool_call_id": call.ID,
+		},
+	}
+}
+
+func cloneRawMessage(raw json.RawMessage) json.RawMessage {
+	return append(json.RawMessage(nil), raw...)
 }
 
 func shouldUseShell(command string) bool {

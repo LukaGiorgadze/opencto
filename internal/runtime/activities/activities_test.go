@@ -2,12 +2,17 @@ package activities
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
+	greptool "github.com/opencto/opencto/internal/tools/grep"
 )
 
 type stubProjectStore struct {
@@ -102,4 +107,119 @@ func TestLoadContextReturnsProjectAndActiveWorkItems(t *testing.T) {
 	if loaded.ActiveWorkItems[0].ID != workItem.ID {
 		t.Fatalf("unexpected work item id: %s", loaded.ActiveWorkItems[0].ID)
 	}
+}
+
+func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "example.txt")
+	if err := os.WriteFile(filePath, []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	activities := Activities{
+		WorkspaceRoot: dir,
+		Grep: fakeGrepExecutor{result: greptool.Result{
+			Stdout:   filePath + ":hi\n",
+			ExitCode: 0,
+		}},
+	}
+
+	readResult, err := activities.ExecuteTool(ctx, executeRequest(domain.ToolTypeRead, "read-1", map[string]any{
+		"file_path": filePath,
+	}))
+	if err != nil {
+		t.Fatalf("read tool: %v", err)
+	}
+	if readResult.Status != domain.ExecutionStatusSucceeded || !strings.Contains(readResult.Observation, "hello") {
+		t.Fatalf("unexpected read result: %#v", readResult)
+	}
+
+	editResult, err := activities.ExecuteTool(ctx, executeRequest(domain.ToolTypeEdit, "edit-1", map[string]any{
+		"file_path":   filePath,
+		"old_string":  "hello",
+		"new_string":  "hi",
+		"replace_all": false,
+	}))
+	if err != nil {
+		t.Fatalf("edit tool: %v", err)
+	}
+	if editResult.Status != domain.ExecutionStatusSucceeded || !strings.Contains(editResult.Observation, "replacements: 1") {
+		t.Fatalf("unexpected edit result: %#v", editResult)
+	}
+	edited, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("read edited file: %v", err)
+	}
+	if string(edited) != "hi\n" {
+		t.Fatalf("unexpected edited content: %q", edited)
+	}
+
+	writePath := filepath.Join(dir, "new.txt")
+	writeResult, err := activities.ExecuteTool(ctx, executeRequest(domain.ToolTypeWrite, "write-1", map[string]any{
+		"file_path": writePath,
+		"content":   "new file\n",
+	}))
+	if err != nil {
+		t.Fatalf("write tool: %v", err)
+	}
+	if writeResult.Status != domain.ExecutionStatusSucceeded || !strings.Contains(writeResult.Observation, "overwritten: false") {
+		t.Fatalf("unexpected write result: %#v", writeResult)
+	}
+
+	globResult, err := activities.ExecuteTool(ctx, executeRequest(domain.ToolTypeGlob, "glob-1", map[string]any{
+		"pattern": "*.txt",
+		"path":    dir,
+	}))
+	if err != nil {
+		t.Fatalf("glob tool: %v", err)
+	}
+	if globResult.Status != domain.ExecutionStatusSucceeded || !strings.Contains(globResult.Observation, filePath) || !strings.Contains(globResult.Observation, writePath) {
+		t.Fatalf("unexpected glob result: %#v", globResult)
+	}
+
+	grepResult, err := activities.ExecuteTool(ctx, executeRequest(domain.ToolTypeGrep, "grep-1", map[string]any{
+		"pattern":     "hi",
+		"path":        ".",
+		"output_mode": "content",
+	}))
+	if err != nil {
+		t.Fatalf("grep tool: %v", err)
+	}
+	if grepResult.Status != domain.ExecutionStatusSucceeded || !strings.Contains(grepResult.Observation, filePath+":hi") {
+		t.Fatalf("unexpected grep result: %#v", grepResult)
+	}
+}
+
+func executeRequest(toolType domain.ToolType, callID string, input map[string]any) ExecuteToolRequest {
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		panic(err)
+	}
+	return ExecuteToolRequest{
+		ProjectID:  "project-1",
+		WorkItemID: "work-item-1",
+		ToolChoice: agent.ToolChoice{
+			ToolCallID:   callID,
+			Type:         toolType,
+			Intent:       string(toolType) + " fixture",
+			Input:        json.RawMessage(encoded),
+			InputSummary: string(toolType) + " fixture",
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+				"tool_call_id":    callID,
+			},
+		},
+	}
+}
+
+type fakeGrepExecutor struct {
+	result greptool.Result
+	err    error
+}
+
+func (f fakeGrepExecutor) Run(context.Context, greptool.Request) (greptool.Result, error) {
+	return f.result, f.err
 }

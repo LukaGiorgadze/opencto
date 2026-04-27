@@ -131,6 +131,7 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql://temporal:temporal@postgresql:5432/postgres
+      MAX_STRING_LENGTH_PROMPT_IN_DB: 6000
     volumes:
       - ./litellm.yaml:/app/litellm.yaml:ro
     command:

@@ -28,7 +28,7 @@
             "description": "Working directory for the command. Use null to use the project root."
         },
         "timeout_ms": {
-            "type": ["number", "null"],
+            "type": ["integer", "null"],
             "description": "Maximum runtime for the command in milliseconds. Use null to accept the runtime default.",
             "maximum": 600000
         },

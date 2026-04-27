@@ -3,9 +3,12 @@ package activities
 import (
 	"context"
 	"crypto/sha1"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	goruntime "runtime"
 	"strconv"
 	"strings"
@@ -14,7 +17,12 @@ import (
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
 	toolregistry "github.com/opencto/opencto/internal/tools"
+	edittool "github.com/opencto/opencto/internal/tools/edit"
+	globtool "github.com/opencto/opencto/internal/tools/glob"
+	greptool "github.com/opencto/opencto/internal/tools/grep"
+	readtool "github.com/opencto/opencto/internal/tools/read"
 	"github.com/opencto/opencto/internal/tools/shell"
+	writetool "github.com/opencto/opencto/internal/tools/write"
 )
 
 type ProjectStore interface {
@@ -40,6 +48,11 @@ type Activities struct {
 	Store           ProjectStore
 	Engine          agent.Engine
 	Shell           shell.Executor
+	Edit            edittool.Executor
+	Glob            globtool.Executor
+	Grep            greptool.Executor
+	Read            readtool.Executor
+	Write           writetool.Executor
 	Reporter        Reporter
 	Project         domain.Project
 	WorkspaceRoot   string
@@ -85,6 +98,7 @@ type ExecuteToolResult struct {
 	RequestedAction  string                 `json:"requested_action,omitempty"`
 	Command          string                 `json:"command,omitempty"`
 	Args             []string               `json:"args,omitempty"`
+	Input            json.RawMessage        `json:"input,omitempty"`
 	Observation      string                 `json:"observation,omitempty"`
 	Error            string                 `json:"error,omitempty"`
 	WorkingDirectory string                 `json:"working_directory,omitempty"`
@@ -114,6 +128,13 @@ type toolExecutionContext struct {
 	InvocationID       string
 	Timeout            time.Duration
 	FallbackCandidates []domain.ToolType
+}
+
+type toolRunResult struct {
+	Observation      string
+	ResultCode       string
+	WorkingDirectory string
+	Metadata         map[string]string
 }
 
 func (a *Activities) LoadContext(ctx context.Context, event domain.Event) (agent.Context, error) {
@@ -541,6 +562,7 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 		slog.String("tool_call_id", strings.TrimSpace(request.ToolChoice.ToolCallID)),
 		slog.String("command", request.ToolChoice.Command),
 		slog.Any("args", request.ToolChoice.Args),
+		slog.Int("input_bytes", len(request.ToolChoice.Input)),
 	)
 	execution, err := newToolExecutionContext(request)
 	if err != nil {
@@ -559,14 +581,6 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 		slog.Duration("timeout", execution.Timeout),
 		slog.Any("fallback_candidates", execution.FallbackCandidates),
 	)
-	if a.Shell == nil {
-		a.logActivityStep("ExecuteTool", "missing_shell_executor",
-			slog.String("project_id", execution.ProjectID),
-			slog.String("work_item_id", execution.WorkItemID),
-			slog.String("tool_call_id", execution.ToolCallID),
-		)
-		return ExecuteToolResult{}, fmt.Errorf("shell executor is not configured")
-	}
 
 	attempt := domain.ExecutionAttempt{
 		ID:         execution.ExecutionAttemptID,
@@ -607,35 +621,46 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 		)
 	}
 
-	a.logActivityStep("ExecuteTool", "shell_run_begin",
+	a.logActivityStep("ExecuteTool", "tool_run_begin",
 		slog.String("project_id", execution.ProjectID),
 		slog.String("work_item_id", execution.WorkItemID),
 		slog.String("tool_call_id", execution.ToolCallID),
-		slog.String("command", request.ToolChoice.Command),
-		slog.Any("args", request.ToolChoice.Args),
-		slog.String("working_dir", request.ToolChoice.WorkingDir),
+		slog.String("tool_type", string(request.ToolChoice.Type)),
 	)
-	result, err := a.Shell.Run(ctx, shell.Request{
-		ProjectID:          execution.ProjectID,
-		Intent:             request.ToolChoice.Intent,
-		Command:            request.ToolChoice.Command,
-		Args:               request.ToolChoice.Args,
-		WorkingDir:         request.ToolChoice.WorkingDir,
-		WorkspaceRoot:      a.WorkspaceRoot,
-		Timeout:            execution.Timeout,
-		FallbackCandidates: execution.FallbackCandidates,
-	})
-	a.logActivityStep("ExecuteTool", "shell_run_done",
+	toolResult, runErr := a.runChosenTool(ctx, request.ToolChoice, execution)
+	a.logActivityStep("ExecuteTool", "tool_run_done",
 		slog.String("project_id", execution.ProjectID),
 		slog.String("work_item_id", execution.WorkItemID),
 		slog.String("tool_call_id", execution.ToolCallID),
-		slog.Int("exit_code", result.ExitCode),
-		slog.Duration("duration", result.Duration),
-		slog.Bool("shell_error", err != nil),
+		slog.String("tool_type", string(request.ToolChoice.Type)),
+		slog.String("result_code", toolResult.ResultCode),
+		slog.Bool("tool_error", runErr != nil),
 	)
 
 	completedAt := time.Now().UTC()
 	attempt.CompletedAt = &completedAt
+	metadata := map[string]string{
+		"started_at":   execution.StartedAt.UTC().Format(time.RFC3339Nano),
+		"completed_at": completedAt.UTC().Format(time.RFC3339Nano),
+		"tool_call_id": execution.ToolCallID,
+	}
+	for key, value := range request.ToolChoice.Metadata {
+		if strings.TrimSpace(value) != "" {
+			metadata[key] = value
+		}
+	}
+	for key, value := range toolResult.Metadata {
+		if strings.TrimSpace(value) != "" {
+			metadata[key] = value
+		}
+	}
+	if request.ToolChoice.TimeoutMs > 0 {
+		metadata["timeout_ms"] = strconv.Itoa(request.ToolChoice.TimeoutMs)
+	}
+	if request.ToolChoice.Destructive {
+		metadata["destructive"] = "true"
+	}
+
 	invocation := domain.ToolInvocation{
 		ID:                 execution.InvocationID,
 		ProjectID:          execution.ProjectID,
@@ -643,47 +668,40 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 		RequestedIntent:    request.ToolChoice.Intent,
 		ChosenTool:         request.ToolChoice.Type,
 		FallbackCandidates: execution.FallbackCandidates,
-		WorkingDirectory:   request.ToolChoice.WorkingDir,
+		WorkingDirectory:   firstNonEmpty(toolResult.WorkingDirectory, request.ToolChoice.WorkingDir),
 		TimeoutSeconds:     int(execution.Timeout.Seconds()),
 		InputSummary:       request.ToolChoice.InputSummary,
-		OutputSummary:      strings.TrimSpace(result.Stdout),
-		ResultCode:         fmt.Sprintf("%d", result.ExitCode),
+		OutputSummary:      toolResult.Observation,
+		ResultCode:         firstNonEmpty(toolResult.ResultCode, "0"),
 		CreatedAt:          execution.StartedAt,
 		CompletedAt:        &completedAt,
-		Metadata: map[string]string{
-			"shell_exit_status": fmt.Sprintf("%d", result.ExitCode),
-			"started_at":        result.StartedAt.UTC().Format(time.RFC3339Nano),
-			"completed_at":      result.CompletedAt.UTC().Format(time.RFC3339Nano),
-			"tool_call_id":      execution.ToolCallID,
-		},
-	}
-	for key, value := range request.ToolChoice.Metadata {
-		if strings.TrimSpace(value) != "" {
-			invocation.Metadata[key] = value
-		}
+		Metadata:           metadata,
 	}
 
 	var errorMessage string
-	if err != nil {
-		a.logActivityStep("ExecuteTool", "shell_run_result_error",
+	if runErr != nil {
+		a.logActivityStep("ExecuteTool", "tool_run_result_error",
 			slog.String("project_id", execution.ProjectID),
 			slog.String("work_item_id", execution.WorkItemID),
 			slog.String("tool_call_id", execution.ToolCallID),
-			slog.String("error", err.Error()),
+			slog.String("error", runErr.Error()),
 		)
 		attempt.Status = domain.ExecutionStatusFailed
-		attempt.OutputSummary = fullObservation(result.Stdout, result.Stderr, err)
-		invocation.ErrorDetails = err.Error()
+		attempt.OutputSummary = firstNonEmpty(toolResult.Observation, "Tool execution failed.")
+		invocation.ErrorDetails = runErr.Error()
 		invocation.OutputSummary = attempt.OutputSummary
-		errorMessage = err.Error()
+		if invocation.ResultCode == "" || invocation.ResultCode == "0" {
+			invocation.ResultCode = "1"
+		}
+		errorMessage = runErr.Error()
 	} else {
-		a.logActivityStep("ExecuteTool", "shell_run_result_success",
+		a.logActivityStep("ExecuteTool", "tool_run_result_success",
 			slog.String("project_id", execution.ProjectID),
 			slog.String("work_item_id", execution.WorkItemID),
 			slog.String("tool_call_id", execution.ToolCallID),
 		)
 		attempt.Status = domain.ExecutionStatusSucceeded
-		attempt.OutputSummary = fullObservation(result.Stdout, result.Stderr, nil)
+		attempt.OutputSummary = firstNonEmpty(toolResult.Observation, "Execution completed.")
 		invocation.OutputSummary = attempt.OutputSummary
 	}
 
@@ -736,12 +754,307 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 		RequestedAction:  request.ToolChoice.Intent,
 		Command:          request.ToolChoice.Command,
 		Args:             request.ToolChoice.Args,
+		Input:            cloneRawMessage(request.ToolChoice.Input),
 		Observation:      attempt.OutputSummary,
 		Error:            errorMessage,
-		WorkingDirectory: request.ToolChoice.WorkingDir,
+		WorkingDirectory: invocation.WorkingDirectory,
 		ResultCode:       invocation.ResultCode,
 		Metadata:         invocation.Metadata,
 	}, nil
+}
+
+func (a *Activities) runChosenTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
+	switch choice.Type {
+	case domain.ToolTypeShell:
+		return a.runShellTool(ctx, choice, execution)
+	case domain.ToolTypeRead:
+		return a.runReadTool(ctx, choice)
+	case domain.ToolTypeEdit:
+		return a.runEditTool(ctx, choice)
+	case domain.ToolTypeWrite:
+		return a.runWriteTool(ctx, choice, execution)
+	case domain.ToolTypeGlob:
+		return a.runGlobTool(ctx, choice, execution)
+	case domain.ToolTypeGrep:
+		return a.runGrepTool(ctx, choice, execution)
+	default:
+		return toolRunResult{ResultCode: "1"}, fmt.Errorf("unsupported tool type %q", choice.Type)
+	}
+}
+
+func (a *Activities) runShellTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
+	if a.Shell == nil {
+		return toolRunResult{ResultCode: "1"}, fmt.Errorf("shell executor is not configured")
+	}
+	result, err := a.Shell.Run(ctx, shell.Request{
+		ProjectID:          execution.ProjectID,
+		Intent:             choice.Intent,
+		Command:            choice.Command,
+		Args:               choice.Args,
+		WorkingDir:         choice.WorkingDir,
+		WorkspaceRoot:      a.WorkspaceRoot,
+		Timeout:            execution.Timeout,
+		FallbackCandidates: execution.FallbackCandidates,
+	})
+	metadata := map[string]string{
+		"shell_exit_status": strconv.Itoa(result.ExitCode),
+	}
+	if !result.StartedAt.IsZero() {
+		metadata["tool_started_at"] = result.StartedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if !result.CompletedAt.IsZero() {
+		metadata["tool_completed_at"] = result.CompletedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if result.Duration > 0 {
+		metadata["duration_ms"] = strconv.FormatInt(result.Duration.Milliseconds(), 10)
+	}
+	return toolRunResult{
+		Observation:      fullObservation(result.Stdout, result.Stderr, err),
+		ResultCode:       strconv.Itoa(result.ExitCode),
+		WorkingDirectory: choice.WorkingDir,
+		Metadata:         metadata,
+	}, err
+}
+
+func (a *Activities) runReadTool(ctx context.Context, choice agent.ToolChoice) (toolRunResult, error) {
+	var req readtool.Request
+	if err := decodeChoiceInput(choice, &req); err != nil {
+		return toolRunResult{ResultCode: "1"}, err
+	}
+	executor := a.Read
+	if executor == nil {
+		executor = readtool.NewSafeExecutor(a.activityLogger())
+	}
+	result, err := executor.Run(ctx, req)
+	return toolRunResult{
+		Observation: readObservation(result, err),
+		ResultCode:  resultCodeForError(err),
+		Metadata: map[string]string{
+			"file_path":   result.FilePath,
+			"lines_read":  strconv.Itoa(result.LinesRead),
+			"total_lines": strconv.Itoa(result.TotalLines),
+			"bytes_read":  strconv.Itoa(result.BytesRead),
+			"truncated":   strconv.FormatBool(result.Truncated),
+		},
+	}, err
+}
+
+func (a *Activities) runEditTool(ctx context.Context, choice agent.ToolChoice) (toolRunResult, error) {
+	var req edittool.Request
+	if err := decodeChoiceInput(choice, &req); err != nil {
+		return toolRunResult{ResultCode: "1"}, err
+	}
+	executor := a.Edit
+	if executor == nil {
+		executor = edittool.NewTool()
+	}
+	result, err := executor.Run(ctx, req)
+	return toolRunResult{
+		Observation: editObservation(result, err),
+		ResultCode:  resultCodeForError(err),
+		Metadata: map[string]string{
+			"file_path":     result.FilePath,
+			"replacements":  strconv.Itoa(result.Replacements),
+			"bytes_written": strconv.Itoa(result.BytesWritten),
+		},
+	}, err
+}
+
+func (a *Activities) runWriteTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
+	var req writetool.Request
+	if err := decodeChoiceInput(choice, &req); err != nil {
+		return toolRunResult{ResultCode: "1"}, err
+	}
+	req.ProjectID = execution.ProjectID
+	req.Intent = choice.Intent
+	req.WorkspaceRoot = a.WorkspaceRoot
+
+	executor := a.Write
+	if executor == nil {
+		executor = writetool.NewSafeExecutor(a.activityLogger())
+	}
+	result, err := executor.Run(ctx, req)
+	metadata := map[string]string{
+		"file_path":     result.FilePath,
+		"bytes_written": strconv.Itoa(result.BytesWritten),
+		"overwritten":   strconv.FormatBool(result.Overwritten),
+	}
+	if result.Duration > 0 {
+		metadata["duration_ms"] = strconv.FormatInt(result.Duration.Milliseconds(), 10)
+	}
+	return toolRunResult{
+		Observation: writeObservation(result, err),
+		ResultCode:  resultCodeForError(err),
+		Metadata:    metadata,
+	}, err
+}
+
+func (a *Activities) runGlobTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
+	var req globtool.Request
+	if err := decodeChoiceInput(choice, &req); err != nil {
+		return toolRunResult{ResultCode: "1"}, err
+	}
+	req.ProjectID = execution.ProjectID
+	req.Intent = choice.Intent
+	req.Path = resolveRelativeToolPath(req.Path, firstNonEmpty(choice.WorkingDir, a.WorkspaceRoot))
+	if strings.TrimSpace(req.Path) == "" {
+		req.Path = firstNonEmpty(choice.WorkingDir, a.WorkspaceRoot)
+	}
+	req.Timeout = execution.Timeout
+
+	executor := a.Glob
+	if executor == nil {
+		executor = globtool.NewSafeExecutor(a.activityLogger())
+	}
+	result, err := executor.Run(ctx, req)
+	metadata := map[string]string{
+		"pattern":     result.Pattern,
+		"path":        result.Root,
+		"match_count": strconv.Itoa(len(result.Matches)),
+	}
+	if result.Duration > 0 {
+		metadata["duration_ms"] = strconv.FormatInt(result.Duration.Milliseconds(), 10)
+	}
+	return toolRunResult{
+		Observation: globObservation(result, err),
+		ResultCode:  resultCodeForError(err),
+		Metadata:    metadata,
+	}, err
+}
+
+func (a *Activities) runGrepTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
+	var req greptool.Request
+	if err := decodeChoiceInput(choice, &req); err != nil {
+		return toolRunResult{ResultCode: "1"}, err
+	}
+	req.ProjectID = execution.ProjectID
+	req.Intent = choice.Intent
+	req.WorkingDir = choice.WorkingDir
+	req.WorkspaceRoot = a.WorkspaceRoot
+	req.Timeout = execution.Timeout
+	req.FallbackCandidates = execution.FallbackCandidates
+
+	executor := a.Grep
+	if executor == nil {
+		executor = greptool.NewSafeExecutor(a.activityLogger())
+	}
+	result, err := executor.Run(ctx, req)
+	code := strconv.Itoa(result.ExitCode)
+	if err != nil && result.ExitCode == 0 && result.StartedAt.IsZero() {
+		code = "1"
+	}
+	metadata := map[string]string{
+		"grep_exit_status": strconv.Itoa(result.ExitCode),
+	}
+	if result.Duration > 0 {
+		metadata["duration_ms"] = strconv.FormatInt(result.Duration.Milliseconds(), 10)
+	}
+	return toolRunResult{
+		Observation:      grepObservation(result, err),
+		ResultCode:       code,
+		WorkingDirectory: choice.WorkingDir,
+		Metadata:         metadata,
+	}, err
+}
+
+func decodeChoiceInput(choice agent.ToolChoice, target any) error {
+	if len(strings.TrimSpace(string(choice.Input))) == 0 {
+		return fmt.Errorf("%s tool input is required", choice.Type)
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(choice.Input)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var extra json.RawMessage
+	switch err := decoder.Decode(&extra); err {
+	case nil:
+		return fmt.Errorf("tool input contains multiple JSON values")
+	case io.EOF:
+		return nil
+	default:
+		return err
+	}
+}
+
+func resultCodeForError(err error) string {
+	if err != nil {
+		return "1"
+	}
+	return "0"
+}
+
+func readObservation(result readtool.Result, err error) string {
+	if err != nil {
+		return fullObservation("", "", err)
+	}
+	var builder strings.Builder
+	_, _ = fmt.Fprintf(&builder, "file: %s\nlines: %d/%d\nbytes: %d\ntruncated: %t",
+		result.FilePath,
+		result.LinesRead,
+		result.TotalLines,
+		result.BytesRead,
+		result.Truncated,
+	)
+	if result.Content != "" {
+		builder.WriteString("\ncontent:\n")
+		builder.WriteString(result.Content)
+	}
+	return builder.String()
+}
+
+func editObservation(result edittool.Result, err error) string {
+	if err != nil {
+		return fullObservation("", "", err)
+	}
+	return fmt.Sprintf("edited: %s\nreplacements: %d\nbytes_written: %d", result.FilePath, result.Replacements, result.BytesWritten)
+}
+
+func writeObservation(result writetool.Result, err error) string {
+	if err != nil {
+		return fullObservation("", "", err)
+	}
+	return fmt.Sprintf("wrote: %s\nbytes_written: %d\noverwritten: %t", result.FilePath, result.BytesWritten, result.Overwritten)
+}
+
+func globObservation(result globtool.Result, err error) string {
+	if err != nil {
+		return fullObservation("", "", err)
+	}
+	if len(result.Matches) == 0 {
+		return fmt.Sprintf("pattern: %s\npath: %s\nmatches: 0", result.Pattern, result.Root)
+	}
+	return fmt.Sprintf("pattern: %s\npath: %s\nmatches: %d\n%s",
+		result.Pattern,
+		result.Root,
+		len(result.Matches),
+		strings.Join(result.Matches, "\n"),
+	)
+}
+
+func grepObservation(result greptool.Result, err error) string {
+	if err != nil {
+		return fullObservation(result.Stdout, result.Stderr, err)
+	}
+	if strings.TrimSpace(result.Stdout) == "" && strings.TrimSpace(result.Stderr) == "" && result.ExitCode == 1 {
+		return "No matches found."
+	}
+	return fullObservation(result.Stdout, result.Stderr, nil)
+}
+
+func resolveRelativeToolPath(path, base string) string {
+	path = strings.TrimSpace(path)
+	if path == "" || filepath.IsAbs(path) {
+		return path
+	}
+	if strings.TrimSpace(base) == "" {
+		return path
+	}
+	return filepath.Join(base, path)
+}
+
+func cloneRawMessage(raw json.RawMessage) json.RawMessage {
+	return append(json.RawMessage(nil), raw...)
 }
 
 func newToolExecutionContext(request ExecuteToolRequest) (toolExecutionContext, error) {
@@ -795,6 +1108,7 @@ func executionFeedback(result ExecuteToolResult) agent.ExecutionFeedback {
 		RequestedAction: result.RequestedAction,
 		Command:         result.Command,
 		Args:            result.Args,
+		Input:           cloneRawMessage(result.Input),
 		Observation:     result.Observation,
 		Error:           result.Error,
 		Metadata:        metadata,

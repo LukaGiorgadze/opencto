@@ -6,7 +6,12 @@ import (
 	"github.com/tmc/langchaingo/llms"
 
 	"github.com/opencto/opencto/internal/domain"
+	edittool "github.com/opencto/opencto/internal/tools/edit"
+	globtool "github.com/opencto/opencto/internal/tools/glob"
+	greptool "github.com/opencto/opencto/internal/tools/grep"
+	readtool "github.com/opencto/opencto/internal/tools/read"
 	shelltool "github.com/opencto/opencto/internal/tools/shell"
+	writetool "github.com/opencto/opencto/internal/tools/write"
 )
 
 const (
@@ -26,6 +31,36 @@ var definitions = []Definition{
 		Type:        domain.ToolTypeShell,
 		Description: shelltool.ShellToolDescription,
 		Schema:      shelltool.ShellToolSchema(),
+	},
+	{
+		Name:        readtool.ReadToolName,
+		Type:        domain.ToolTypeRead,
+		Description: readtool.ReadToolDescription,
+		Schema:      readtool.ReadToolSchema(),
+	},
+	{
+		Name:        edittool.EditToolName,
+		Type:        domain.ToolTypeEdit,
+		Description: edittool.EditToolDescription,
+		Schema:      edittool.EditToolSchema(),
+	},
+	{
+		Name:        writetool.WriteToolName,
+		Type:        domain.ToolTypeWrite,
+		Description: writetool.WriteToolDescription,
+		Schema:      writetool.WriteToolSchema(),
+	},
+	{
+		Name:        globtool.GlobToolName,
+		Type:        domain.ToolTypeGlob,
+		Description: globtool.GlobToolDescription,
+		Schema:      globtool.GlobToolSchema(),
+	},
+	{
+		Name:        greptool.GrepToolName,
+		Type:        domain.ToolTypeGrep,
+		Description: greptool.GrepToolDescription,
+		Schema:      greptool.GrepToolSchema(),
 	},
 }
 
@@ -60,6 +95,15 @@ func LLMDefinitions() []llms.Tool {
 func DefinitionByName(name string) (Definition, bool) {
 	for _, definition := range definitions {
 		if definition.Name == name {
+			return definition, true
+		}
+	}
+	return Definition{}, false
+}
+
+func DefinitionByType(toolType domain.ToolType) (Definition, bool) {
+	for _, definition := range definitions {
+		if definition.Type == toolType {
 			return definition, true
 		}
 	}

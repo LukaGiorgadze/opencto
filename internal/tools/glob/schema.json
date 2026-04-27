@@ -1,11 +1,11 @@
 {
     "type": "object",
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "required": ["pattern"],
+    "required": ["path", "pattern"],
     "properties": {
         "path": {
-            "type": "string",
-            "description": "The directory to search in. If not specified, the current working directory will be used. IMPORTANT: Omit this field to use the default directory. DO NOT enter \"undefined\" or \"null\" - simply omit it for the default behavior. Must be a valid directory path if provided. Matching file paths are returned as absolute paths."
+            "type": ["string", "null"],
+            "description": "The directory to search in. Use null for the current working directory. Must be a valid directory path if provided. Matching file paths are returned as absolute paths."
         },
         "pattern": {
             "type": "string",

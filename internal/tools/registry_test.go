@@ -2,16 +2,19 @@ package tools
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 	"testing"
+
+	"github.com/opencto/opencto/internal/domain"
 )
 
-func TestDefinitionsUsePlatformNeutralCommandTool(t *testing.T) {
+func TestDefinitionsIncludeDedicatedTools(t *testing.T) {
 	t.Parallel()
 
 	definitions := Definitions()
-	if len(definitions) != 1 {
-		t.Fatalf("expected one tool definition, got %d", len(definitions))
+	if len(definitions) != 6 {
+		t.Fatalf("expected six tool definitions, got %d", len(definitions))
 	}
 
 	definition := definitions[0]
@@ -30,14 +33,31 @@ func TestDefinitionsUsePlatformNeutralCommandTool(t *testing.T) {
 	if !strings.Contains(description, "project workspace") || !strings.Contains(description, "current operating system") {
 		t.Fatalf("tool description should state workspace and current OS execution: %q", definition.Description)
 	}
+
+	seen := map[domain.ToolType]bool{}
+	for _, definition := range definitions {
+		seen[definition.Type] = true
+	}
+	for _, toolType := range []domain.ToolType{
+		domain.ToolTypeShell,
+		domain.ToolTypeRead,
+		domain.ToolTypeEdit,
+		domain.ToolTypeWrite,
+		domain.ToolTypeGlob,
+		domain.ToolTypeGrep,
+	} {
+		if !seen[toolType] {
+			t.Fatalf("missing tool type %q in registry", toolType)
+		}
+	}
 }
 
 func TestLLMDefinitionsUseCommandNameAndDescription(t *testing.T) {
 	t.Parallel()
 
 	definitions := LLMDefinitions()
-	if len(definitions) != 1 || definitions[0].Function == nil {
-		t.Fatalf("expected one function definition, got %#v", definitions)
+	if len(definitions) != 6 || definitions[0].Function == nil {
+		t.Fatalf("expected six function definitions, got %#v", definitions)
 	}
 
 	function := definitions[0].Function
@@ -84,6 +104,60 @@ func TestDefinitionsDeepCopySchema(t *testing.T) {
 	third := Definitions()
 	if third[0].Schema[0] != original {
 		t.Fatalf("mutating cloned Schema should not alter registry state")
+	}
+}
+
+func TestLLMDefinitionSchemasAreStrictToolCompatible(t *testing.T) {
+	t.Parallel()
+
+	for _, definition := range LLMDefinitions() {
+		if definition.Function == nil {
+			t.Fatalf("tool %q is missing function definition", definition.Type)
+		}
+		rawSchema, ok := definition.Function.Parameters.(json.RawMessage)
+		if !ok {
+			t.Fatalf("tool %q parameters should be raw JSON schema, got %T", definition.Function.Name, definition.Function.Parameters)
+		}
+
+		var schema struct {
+			Properties           map[string]json.RawMessage `json:"properties"`
+			Required             []string                   `json:"required"`
+			AdditionalProperties bool                       `json:"additionalProperties"`
+		}
+		if err := json.Unmarshal(rawSchema, &schema); err != nil {
+			t.Fatalf("decode %s schema: %v", definition.Function.Name, err)
+		}
+		if len(schema.Properties) == 0 {
+			t.Fatalf("%s schema should declare properties", definition.Function.Name)
+		}
+		if schema.AdditionalProperties {
+			t.Fatalf("%s schema should set additionalProperties to false", definition.Function.Name)
+		}
+
+		required := map[string]bool{}
+		for _, field := range schema.Required {
+			required[field] = true
+		}
+		var missing []string
+		for field := range schema.Properties {
+			if !required[field] {
+				missing = append(missing, field)
+			}
+		}
+		sort.Strings(missing)
+		if len(missing) > 0 {
+			t.Fatalf("%s schema required array is missing properties: %s", definition.Function.Name, strings.Join(missing, ", "))
+		}
+		var extra []string
+		for field := range required {
+			if _, ok := schema.Properties[field]; !ok {
+				extra = append(extra, field)
+			}
+		}
+		sort.Strings(extra)
+		if len(extra) > 0 {
+			t.Fatalf("%s schema required array includes unknown properties: %s", definition.Function.Name, strings.Join(extra, ", "))
+		}
 	}
 }
 

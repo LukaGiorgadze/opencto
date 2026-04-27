@@ -122,6 +122,7 @@ func failedExecutionActivityResult(choice agent.ToolChoice, workItemID string, c
 		RequestedAction:  choice.Intent,
 		Command:          choice.Command,
 		Args:             choice.Args,
+		Input:            choice.Input,
 		Observation:      "Tool execution failed before producing a structured result.",
 		Error:            message,
 		WorkingDirectory: choice.WorkingDir,
