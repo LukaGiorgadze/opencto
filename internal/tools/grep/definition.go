@@ -1,4 +1,4 @@
-package edit
+package grep
 
 import (
 	_ "embed"
@@ -6,21 +6,21 @@ import (
 )
 
 const (
-	EditToolName        = "Command"
-	EditToolDescription = `Performs exact string replacements in files.
+	GrepToolName        = "Grep"
+	GrepToolDescription = `A powerful search tool built on ripgrep
 
-    Usage:
-    - You must use your "Read" tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.
-    - When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: line number + tab. Everything after that is the actual file content to match. Never include any part of the line number prefix in the old_string or new_string.
-    - ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
-    - Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
-    - The edit will FAIL if "old_string" is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use "replace_all" to change every instance of "old_string".
-    - Use "replace_all" for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.`
+  Usage:
+  - ALWAYS use Grep for search tasks. NEVER invoke grep or rg as a Shell/Bash command. The Grep tool has been optimized for correct permissions and access.
+  - Supports full regex syntax (e.g., "log.*Error", "functions+w+")
+  - Filter files with glob parameter (e.g., "*.go", "**/*.tsx") or type parameter (e.g., "js", "py", "rust", "go")
+  - Output modes: "content" shows matching lines, "files_with_matches" shows only file paths (default), "count" shows match counts
+  - Pattern syntax: Uses ripgrep (not grep) - literal braces need escaping (use interface{} to find interface{} in Go code)
+  - Multiline matching: By default patterns match within single lines only. For cross-line patterns like struct {[sS]*?field, use multiline: true`
 )
 
 //go:embed schema.json
-var editToolSchema json.RawMessage
+var grepToolSchema json.RawMessage
 
-func EditToolSchema() json.RawMessage {
-	return append(json.RawMessage(nil), editToolSchema...)
+func GrepToolSchema() json.RawMessage {
+	return append(json.RawMessage(nil), grepToolSchema...)
 }
