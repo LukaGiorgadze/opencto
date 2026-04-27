@@ -1,34 +1,34 @@
-package edit
+package read
 
 import (
 	"encoding/json"
 	"testing"
 )
 
-func TestEditToolSchemaIsValidJSON(t *testing.T) {
+func TestReadToolSchemaIsValidJSON(t *testing.T) {
 	t.Parallel()
 
 	var schema map[string]any
-	if err := json.Unmarshal(EditToolSchema(), &schema); err != nil {
-		t.Fatalf("decode edit tool schema: %v", err)
+	if err := json.Unmarshal(ReadToolSchema(), &schema); err != nil {
+		t.Fatalf("decode read tool schema: %v", err)
 	}
 	if schema["type"] != "object" {
 		t.Fatalf("expected object schema, got %#v", schema["type"])
 	}
 }
 
-func TestEditToolSchemaReturnsCopy(t *testing.T) {
+func TestReadToolSchemaReturnsCopy(t *testing.T) {
 	t.Parallel()
 
-	first := EditToolSchema()
-	second := EditToolSchema()
+	first := ReadToolSchema()
+	second := ReadToolSchema()
 	if len(first) == 0 || len(second) == 0 {
-		t.Fatalf("expected non-empty edit tool schema")
+		t.Fatalf("expected non-empty read tool schema")
 	}
 
 	original := second[0]
 	first[0] = 'x'
 	if second[0] != original {
-		t.Fatalf("EditToolSchema should return a copy")
+		t.Fatalf("ReadToolSchema should return a copy")
 	}
 }
