@@ -1,0 +1,19 @@
+{
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "required": [
+        "file_path",
+        "content"
+    ],
+    "properties": {
+        "file_path": {
+            "type": "string",
+            "description": "The absolute path to the file to write"
+        },
+        "content": {
+            "type": "string",
+            "description": "The complete file contents to write"
+        }
+    },
+    "additionalProperties": false
+}

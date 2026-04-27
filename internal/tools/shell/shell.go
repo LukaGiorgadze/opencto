@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -153,9 +154,8 @@ func mergeEnv(overrides map[string]string) []string {
 			current[parts[0]] = parts[1]
 		}
 	}
-	for key, value := range overrides {
-		current[key] = value
-	}
+	maps.Copy(current, overrides)
+
 	keys := make([]string, 0, len(current))
 	for key := range current {
 		keys = append(keys, key)

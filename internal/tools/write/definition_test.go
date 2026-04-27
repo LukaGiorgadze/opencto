@@ -15,6 +15,16 @@ func TestWriteToolSchemaIsValidJSON(t *testing.T) {
 	if schema["type"] != "object" {
 		t.Fatalf("expected object schema, got %#v", schema["type"])
 	}
+	if schema["additionalProperties"] != false {
+		t.Fatalf("expected additionalProperties false, got %#v", schema["additionalProperties"])
+	}
+
+	required, ok := schema["required"].([]any)
+	if !ok {
+		t.Fatalf("expected required array, got %#v", schema["required"])
+	}
+	assertRequired(t, required, "file_path")
+	assertRequired(t, required, "content")
 }
 
 func TestWriteToolSchemaReturnsCopy(t *testing.T) {
@@ -31,4 +41,15 @@ func TestWriteToolSchemaReturnsCopy(t *testing.T) {
 	if second[0] != original {
 		t.Fatalf("WriteToolSchema should return a copy")
 	}
+}
+
+func assertRequired(t *testing.T, required []any, field string) {
+	t.Helper()
+
+	for _, item := range required {
+		if item == field {
+			return
+		}
+	}
+	t.Fatalf("expected required field %q in %#v", field, required)
 }
