@@ -141,8 +141,33 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event) (agent
 	}, nil
 }
 
+func (a *Activities) activityLogger() *slog.Logger {
+	if a.Logger != nil {
+		return a.Logger
+	}
+	return slog.Default()
+}
+
+func (a *Activities) logActivityStep(activity, step string, attrs ...any) {
+	base := []any{
+		slog.String("activity", activity),
+		slog.String("step", step),
+	}
+	a.activityLogger().Info("runtime activity trace", append(base, attrs...)...)
+}
+
 func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) (NextActionResult, error) {
+	a.logActivityStep("NextAction", "start",
+		slog.String("project_id", strings.TrimSpace(request.ProjectID)),
+		slog.String("event_id", request.Event.ID),
+		slog.Int("execution_cycle", request.ExecutionCycle),
+		slog.Bool("force_final", request.ForceFinal),
+		slog.Bool("resumed_from_pause", request.ResumedFromPause),
+		slog.Bool("has_last_result", request.LastResult != nil),
+		slog.Int("observation_history_len", len(request.ObservationHistory)),
+	)
 	if a.Engine == nil {
+		a.logActivityStep("NextAction", "missing_engine")
 		return NextActionResult{}, fmt.Errorf("decision engine is not configured")
 	}
 
@@ -152,38 +177,102 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		projectID = strings.TrimSpace(event.ProjectID)
 	}
 	if projectID == "" {
+		a.logActivityStep("NextAction", "missing_project_id", slog.String("event_project_id", event.ProjectID))
 		return NextActionResult{}, fmt.Errorf("project_id is required")
 	}
 	event.ProjectID = projectID
 	if a.Store != nil && request.ExecutionCycle <= 1 && !request.ResumedFromPause {
+		a.logActivityStep("NextAction", "append_event_begin",
+			slog.String("project_id", projectID),
+			slog.String("event_id", event.ID),
+		)
 		if err := a.Store.Append(ctx, event); err != nil {
+			a.logActivityStep("NextAction", "append_event_error",
+				slog.String("project_id", projectID),
+				slog.String("event_id", event.ID),
+				slog.String("error", err.Error()),
+			)
 			return NextActionResult{}, err
 		}
+		a.logActivityStep("NextAction", "append_event_done",
+			slog.String("project_id", projectID),
+			slog.String("event_id", event.ID),
+		)
 	}
 
+	a.logActivityStep("NextAction", "load_context_begin",
+		slog.String("project_id", projectID),
+		slog.String("event_id", event.ID),
+	)
 	loaded, err := a.loadContext(ctx, event)
 	if err != nil {
+		a.logActivityStep("NextAction", "load_context_error",
+			slog.String("project_id", projectID),
+			slog.String("event_id", event.ID),
+			slog.String("error", err.Error()),
+		)
 		return NextActionResult{}, err
 	}
+	a.logActivityStep("NextAction", "load_context_done",
+		slog.String("project_id", projectID),
+		slog.String("event_id", event.ID),
+		slog.Int("active_work_items", len(loaded.ActiveWorkItems)),
+	)
 
 	now := time.Now().UTC()
 	decision := request.Decision
 	if err := ensureNextActionDecision(&decision, projectID, event, now); err != nil {
+		a.logActivityStep("NextAction", "ensure_decision_error",
+			slog.String("project_id", projectID),
+			slog.String("event_id", event.ID),
+			slog.String("error", err.Error()),
+		)
 		return NextActionResult{}, err
 	}
+	a.logActivityStep("NextAction", "ensure_decision_done",
+		slog.String("project_id", projectID),
+		slog.String("event_id", event.ID),
+		slog.Int("work_items", len(decision.WorkItems)),
+	)
 
 	history := append([]agent.ExecutionFeedback(nil), request.ObservationHistory...)
 	var observation *agent.ExecutionFeedback
 	if request.LastResult != nil {
+		a.logActivityStep("NextAction", "apply_last_result_begin",
+			slog.String("project_id", projectID),
+			slog.String("event_id", event.ID),
+			slog.String("last_result_tool_call_id", request.LastResult.ToolCallID),
+			slog.String("last_result_status", string(request.LastResult.Status)),
+		)
 		feedback := executionFeedback(*request.LastResult)
 		observation = &feedback
 		history = append(history, feedback)
 		decision.ToolChoice = agent.ToolChoice{}
 		if err := applyObservationToDecision(&decision, feedback, now); err != nil {
+			a.logActivityStep("NextAction", "apply_last_result_error",
+				slog.String("project_id", projectID),
+				slog.String("event_id", event.ID),
+				slog.String("work_item_id", feedback.WorkItemID),
+				slog.String("tool_call_id", feedback.ToolCallID),
+				slog.String("error", err.Error()),
+			)
 			return NextActionResult{}, err
 		}
+		a.logActivityStep("NextAction", "apply_last_result_done",
+			slog.String("project_id", projectID),
+			slog.String("event_id", event.ID),
+			slog.String("work_item_id", feedback.WorkItemID),
+			slog.String("tool_call_id", feedback.ToolCallID),
+			slog.Int("history_len", len(history)),
+		)
 	}
 
+	a.logActivityStep("NextAction", "engine_next_action_begin",
+		slog.String("project_id", projectID),
+		slog.String("event_id", event.ID),
+		slog.Int("execution_cycle", request.ExecutionCycle),
+		slog.Int("history_len", len(history)),
+	)
 	engineOutput, err := a.Engine.NextAction(ctx, agent.NextActionInput{
 		ProjectID:          projectID,
 		Context:            loaded,
@@ -196,21 +285,52 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		ObservationHistory: history,
 	})
 	if err != nil {
+		a.logActivityStep("NextAction", "engine_next_action_error",
+			slog.String("project_id", projectID),
+			slog.String("event_id", event.ID),
+			slog.String("error", err.Error()),
+		)
 		return NextActionResult{}, err
 	}
+	a.logActivityStep("NextAction", "engine_next_action_done",
+		slog.String("project_id", projectID),
+		slog.String("event_id", event.ID),
+		slog.String("status", engineOutput.Status),
+		slog.Bool("has_tool_choice", engineOutput.ToolChoice != nil),
+		slog.String("work_item_id", strings.TrimSpace(engineOutput.WorkItemID)),
+	)
 	if len(engineOutput.Decision.WorkItems) > 0 || !engineOutput.Decision.ToolChoice.IsZero() || strings.TrimSpace(engineOutput.Decision.ResponseMessage) != "" {
 		decision = engineOutput.Decision
 	}
 	if err := ensureNextActionDecision(&decision, projectID, event, now); err != nil {
+		a.logActivityStep("NextAction", "ensure_engine_decision_error",
+			slog.String("project_id", projectID),
+			slog.String("event_id", event.ID),
+			slog.String("error", err.Error()),
+		)
 		return NextActionResult{}, err
 	}
+	a.logActivityStep("NextAction", "ensure_engine_decision_done",
+		slog.String("project_id", projectID),
+		slog.String("event_id", event.ID),
+		slog.Int("work_items", len(decision.WorkItems)),
+	)
 
 	if request.ForceFinal && engineOutput.Status == NextActionStatusTool {
+		a.logActivityStep("NextAction", "force_final_override_tool_status",
+			slog.String("project_id", projectID),
+			slog.String("event_id", event.ID),
+		)
 		engineOutput.Status = NextActionStatusBlocked
 		engineOutput.FinalAnswer = cycleLimitFinalAnswer(history)
 		engineOutput.ToolChoice = nil
 	}
 
+	a.logActivityStep("NextAction", "dispatch_status",
+		slog.String("project_id", projectID),
+		slog.String("event_id", event.ID),
+		slog.String("status", engineOutput.Status),
+	)
 	switch engineOutput.Status {
 	case NextActionStatusTool:
 		return a.prepareToolNextAction(ctx, decision, observation, engineOutput, request.ExecutionCycle, now)
@@ -222,21 +342,48 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 }
 
 func (a *Activities) prepareToolNextAction(ctx context.Context, decision agent.DecisionOutput, observation *agent.ExecutionFeedback, output agent.NextActionOutput, cycle int, now time.Time) (NextActionResult, error) {
+	a.logActivityStep("NextAction", "prepare_tool_begin",
+		slog.Int("execution_cycle", cycle),
+		slog.Bool("has_observation", observation != nil),
+		slog.Bool("has_tool_choice", output.ToolChoice != nil),
+		slog.String("output_work_item_id", strings.TrimSpace(output.WorkItemID)),
+	)
 	if output.ToolChoice == nil {
+		a.logActivityStep("NextAction", "prepare_tool_missing_choice")
 		return NextActionResult{}, fmt.Errorf("%w: tool status requires exactly one tool choice", agent.ErrInvalidToolChoice)
 	}
 
 	choice := *output.ToolChoice
 	workItemID := nextActionToolWorkItemID(output, choice, decision)
 	if strings.TrimSpace(workItemID) == "" {
+		a.logActivityStep("NextAction", "prepare_tool_missing_work_item_id",
+			slog.String("tool_call_id", choice.ToolCallID),
+		)
 		return NextActionResult{}, fmt.Errorf("%w: tool choice is missing work item id", agent.ErrInvalidToolChoice)
 	}
+	a.logActivityStep("NextAction", "prepare_tool_work_item_resolved",
+		slog.String("work_item_id", workItemID),
+		slog.String("tool_type", string(choice.Type)),
+		slog.String("tool_call_id", choice.ToolCallID),
+	)
 	if err := ensureToolWorkItem(&decision, workItemID, now); err != nil {
+		a.logActivityStep("NextAction", "prepare_tool_ensure_work_item_error",
+			slog.String("work_item_id", workItemID),
+			slog.String("error", err.Error()),
+		)
 		return NextActionResult{}, err
 	}
 	if err := completePreviousWorkItemForNextAction(&decision, workItemID, observation, now); err != nil {
+		a.logActivityStep("NextAction", "prepare_tool_complete_previous_error",
+			slog.String("work_item_id", workItemID),
+			slog.String("error", err.Error()),
+		)
 		return NextActionResult{}, err
 	}
+	a.logActivityStep("NextAction", "prepare_tool_work_items_ready",
+		slog.String("work_item_id", workItemID),
+		slog.Int("work_items", len(decision.WorkItems)),
+	)
 
 	index := decisionWorkItemIndexByID(decision.WorkItems, workItemID)
 	if index >= 0 {
@@ -252,9 +399,23 @@ func (a *Activities) prepareToolNextAction(ctx context.Context, decision agent.D
 	decision.ToolChoice = choice
 	decision.ResponseMessage = ""
 
+	a.logActivityStep("NextAction", "prepare_tool_persist_decision_begin",
+		slog.String("work_item_id", workItemID),
+		slog.String("tool_call_id", choice.ToolCallID),
+	)
 	if err := a.persistDecision(ctx, decision); err != nil {
+		a.logActivityStep("NextAction", "prepare_tool_persist_decision_error",
+			slog.String("work_item_id", workItemID),
+			slog.String("tool_call_id", choice.ToolCallID),
+			slog.String("error", err.Error()),
+		)
 		return NextActionResult{}, err
 	}
+	a.logActivityStep("NextAction", "prepare_tool_done",
+		slog.String("work_item_id", workItemID),
+		slog.String("tool_call_id", choice.ToolCallID),
+		slog.String("tool_type", string(choice.Type)),
+	)
 
 	return NextActionResult{
 		Decision:      decision,
@@ -267,11 +428,22 @@ func (a *Activities) prepareToolNextAction(ctx context.Context, decision agent.D
 }
 
 func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, decision agent.DecisionOutput, observation *agent.ExecutionFeedback, output agent.NextActionOutput, now time.Time) (NextActionResult, error) {
+	a.logActivityStep("NextAction", "finish_begin",
+		slog.String("project_id", event.ProjectID),
+		slog.String("event_id", event.ID),
+		slog.String("status", output.Status),
+		slog.Bool("has_observation", observation != nil),
+	)
 	message := strings.TrimSpace(output.FinalAnswer)
 	if message == "" {
 		message = strings.TrimSpace(output.Decision.ResponseMessage)
 	}
 	if message == "" {
+		a.logActivityStep("NextAction", "finish_missing_final_answer",
+			slog.String("project_id", event.ProjectID),
+			slog.String("event_id", event.ID),
+			slog.String("status", output.Status),
+		)
 		return NextActionResult{}, fmt.Errorf("%w: terminal next action is missing final answer", agent.ErrInvalidNextAction)
 	}
 
@@ -279,16 +451,46 @@ func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, d
 	decision.ResponseMessage = message
 	markFinalDecisionWorkItems(&decision, terminalWorkItemStatus(output.Status), observation, now)
 
+	a.logActivityStep("NextAction", "finish_persist_decision_begin",
+		slog.String("project_id", event.ProjectID),
+		slog.String("event_id", event.ID),
+		slog.String("status", output.Status),
+	)
 	if err := a.persistDecision(ctx, decision); err != nil {
+		a.logActivityStep("NextAction", "finish_persist_decision_error",
+			slog.String("project_id", event.ProjectID),
+			slog.String("event_id", event.ID),
+			slog.String("error", err.Error()),
+		)
 		return NextActionResult{}, err
 	}
 	if output.Status != NextActionStatusIgnored {
 		if a.Reporter != nil {
+			a.logActivityStep("NextAction", "finish_report_begin",
+				slog.String("project_id", event.ProjectID),
+				slog.String("event_id", event.ID),
+				slog.String("status", output.Status),
+			)
 			if err := a.Reporter.Report(ctx, event, message); err != nil {
+				a.logActivityStep("NextAction", "finish_report_error",
+					slog.String("project_id", event.ProjectID),
+					slog.String("event_id", event.ID),
+					slog.String("error", err.Error()),
+				)
 				return NextActionResult{}, err
 			}
+			a.logActivityStep("NextAction", "finish_report_done",
+				slog.String("project_id", event.ProjectID),
+				slog.String("event_id", event.ID),
+				slog.String("status", output.Status),
+			)
 		}
 	}
+	a.logActivityStep("NextAction", "finish_done",
+		slog.String("project_id", event.ProjectID),
+		slog.String("event_id", event.ID),
+		slog.String("status", output.Status),
+	)
 
 	return NextActionResult{
 		Decision:      decision,
@@ -301,42 +503,68 @@ func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, d
 
 func (a *Activities) persistDecision(ctx context.Context, decision agent.DecisionOutput) error {
 	if a.Store == nil {
+		a.logActivityStep("NextAction", "persist_decision_skip_no_store",
+			slog.Int("work_items", len(decision.WorkItems)),
+		)
 		return nil
 	}
 	for _, item := range decision.WorkItems {
 		if item.ID == "" {
+			a.logActivityStep("NextAction", "persist_decision_skip_empty_work_item_id")
 			continue
 		}
+		a.logActivityStep("NextAction", "persist_decision_upsert_work_item_begin",
+			slog.String("work_item_id", item.ID),
+			slog.String("status", string(item.Status)),
+		)
 		if err := a.Store.UpsertWorkItem(ctx, item); err != nil {
+			a.logActivityStep("NextAction", "persist_decision_upsert_work_item_error",
+				slog.String("work_item_id", item.ID),
+				slog.String("status", string(item.Status)),
+				slog.String("error", err.Error()),
+			)
 			return err
 		}
+		a.logActivityStep("NextAction", "persist_decision_upsert_work_item_done",
+			slog.String("work_item_id", item.ID),
+			slog.String("status", string(item.Status)),
+		)
 	}
 	return nil
 }
 
-func workItemSummaries(items []domain.WorkItem) []string {
-	summaries := make([]string, 0, len(items))
-	for _, item := range items {
-		title := strings.TrimSpace(item.Title)
-		description := strings.TrimSpace(item.Description)
-		switch {
-		case title != "" && description != "":
-			summaries = append(summaries, title+": "+description)
-		case title != "":
-			summaries = append(summaries, title)
-		case description != "":
-			summaries = append(summaries, description)
-		}
-	}
-	return summaries
-}
-
 func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest) (ExecuteToolResult, error) {
+	a.logActivityStep("ExecuteTool", "start",
+		slog.String("project_id", strings.TrimSpace(request.ProjectID)),
+		slog.String("work_item_id", strings.TrimSpace(request.WorkItemID)),
+		slog.String("tool_type", string(request.ToolChoice.Type)),
+		slog.String("tool_call_id", strings.TrimSpace(request.ToolChoice.ToolCallID)),
+		slog.String("command", request.ToolChoice.Command),
+		slog.Any("args", request.ToolChoice.Args),
+	)
 	execution, err := newToolExecutionContext(request)
 	if err != nil {
+		a.logActivityStep("ExecuteTool", "new_execution_context_error",
+			slog.String("project_id", strings.TrimSpace(request.ProjectID)),
+			slog.String("work_item_id", strings.TrimSpace(request.WorkItemID)),
+			slog.String("error", err.Error()),
+		)
 		return ExecuteToolResult{}, err
 	}
+	a.logActivityStep("ExecuteTool", "new_execution_context_done",
+		slog.String("project_id", execution.ProjectID),
+		slog.String("work_item_id", execution.WorkItemID),
+		slog.String("tool_call_id", execution.ToolCallID),
+		slog.Int("cycle", execution.Cycle),
+		slog.Duration("timeout", execution.Timeout),
+		slog.Any("fallback_candidates", execution.FallbackCandidates),
+	)
 	if a.Shell == nil {
+		a.logActivityStep("ExecuteTool", "missing_shell_executor",
+			slog.String("project_id", execution.ProjectID),
+			slog.String("work_item_id", execution.WorkItemID),
+			slog.String("tool_call_id", execution.ToolCallID),
+		)
 		return ExecuteToolResult{}, fmt.Errorf("shell executor is not configured")
 	}
 
@@ -355,11 +583,38 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 		},
 	}
 	if a.Store != nil {
+		a.logActivityStep("ExecuteTool", "upsert_execution_attempt_begin",
+			slog.String("project_id", execution.ProjectID),
+			slog.String("work_item_id", execution.WorkItemID),
+			slog.String("tool_call_id", execution.ToolCallID),
+			slog.String("attempt_id", attempt.ID),
+		)
 		if err := a.Store.UpsertExecutionAttempt(ctx, attempt); err != nil {
+			a.logActivityStep("ExecuteTool", "upsert_execution_attempt_error",
+				slog.String("project_id", execution.ProjectID),
+				slog.String("work_item_id", execution.WorkItemID),
+				slog.String("tool_call_id", execution.ToolCallID),
+				slog.String("attempt_id", attempt.ID),
+				slog.String("error", err.Error()),
+			)
 			return ExecuteToolResult{}, err
 		}
+		a.logActivityStep("ExecuteTool", "upsert_execution_attempt_done",
+			slog.String("project_id", execution.ProjectID),
+			slog.String("work_item_id", execution.WorkItemID),
+			slog.String("tool_call_id", execution.ToolCallID),
+			slog.String("attempt_id", attempt.ID),
+		)
 	}
 
+	a.logActivityStep("ExecuteTool", "shell_run_begin",
+		slog.String("project_id", execution.ProjectID),
+		slog.String("work_item_id", execution.WorkItemID),
+		slog.String("tool_call_id", execution.ToolCallID),
+		slog.String("command", request.ToolChoice.Command),
+		slog.Any("args", request.ToolChoice.Args),
+		slog.String("working_dir", request.ToolChoice.WorkingDir),
+	)
 	result, err := a.Shell.Run(ctx, shell.Request{
 		ProjectID:          execution.ProjectID,
 		Intent:             request.ToolChoice.Intent,
@@ -370,6 +625,14 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 		Timeout:            execution.Timeout,
 		FallbackCandidates: execution.FallbackCandidates,
 	})
+	a.logActivityStep("ExecuteTool", "shell_run_done",
+		slog.String("project_id", execution.ProjectID),
+		slog.String("work_item_id", execution.WorkItemID),
+		slog.String("tool_call_id", execution.ToolCallID),
+		slog.Int("exit_code", result.ExitCode),
+		slog.Duration("duration", result.Duration),
+		slog.Bool("shell_error", err != nil),
+	)
 
 	completedAt := time.Now().UTC()
 	attempt.CompletedAt = &completedAt
@@ -402,25 +665,67 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 
 	var errorMessage string
 	if err != nil {
+		a.logActivityStep("ExecuteTool", "shell_run_result_error",
+			slog.String("project_id", execution.ProjectID),
+			slog.String("work_item_id", execution.WorkItemID),
+			slog.String("tool_call_id", execution.ToolCallID),
+			slog.String("error", err.Error()),
+		)
 		attempt.Status = domain.ExecutionStatusFailed
 		attempt.OutputSummary = fullObservation(result.Stdout, result.Stderr, err)
 		invocation.ErrorDetails = err.Error()
 		invocation.OutputSummary = attempt.OutputSummary
 		errorMessage = err.Error()
 	} else {
+		a.logActivityStep("ExecuteTool", "shell_run_result_success",
+			slog.String("project_id", execution.ProjectID),
+			slog.String("work_item_id", execution.WorkItemID),
+			slog.String("tool_call_id", execution.ToolCallID),
+		)
 		attempt.Status = domain.ExecutionStatusSucceeded
 		attempt.OutputSummary = fullObservation(result.Stdout, result.Stderr, nil)
 		invocation.OutputSummary = attempt.OutputSummary
 	}
 
 	if a.Store != nil {
+		a.logActivityStep("ExecuteTool", "persist_execution_records_begin",
+			slog.String("project_id", execution.ProjectID),
+			slog.String("work_item_id", execution.WorkItemID),
+			slog.String("tool_call_id", execution.ToolCallID),
+			slog.String("attempt_status", string(attempt.Status)),
+		)
 		if persistErr := a.Store.UpsertExecutionAttempt(ctx, attempt); persistErr != nil {
+			a.logActivityStep("ExecuteTool", "persist_execution_attempt_error",
+				slog.String("project_id", execution.ProjectID),
+				slog.String("work_item_id", execution.WorkItemID),
+				slog.String("tool_call_id", execution.ToolCallID),
+				slog.String("error", persistErr.Error()),
+			)
 			return ExecuteToolResult{}, persistErr
 		}
 		if persistErr := a.Store.UpsertToolInvocation(ctx, invocation); persistErr != nil {
+			a.logActivityStep("ExecuteTool", "persist_tool_invocation_error",
+				slog.String("project_id", execution.ProjectID),
+				slog.String("work_item_id", execution.WorkItemID),
+				slog.String("tool_call_id", execution.ToolCallID),
+				slog.String("error", persistErr.Error()),
+			)
 			return ExecuteToolResult{}, persistErr
 		}
+		a.logActivityStep("ExecuteTool", "persist_execution_records_done",
+			slog.String("project_id", execution.ProjectID),
+			slog.String("work_item_id", execution.WorkItemID),
+			slog.String("tool_call_id", execution.ToolCallID),
+			slog.String("attempt_status", string(attempt.Status)),
+		)
 	}
+	a.logActivityStep("ExecuteTool", "done",
+		slog.String("project_id", execution.ProjectID),
+		slog.String("work_item_id", execution.WorkItemID),
+		slog.String("tool_call_id", execution.ToolCallID),
+		slog.String("attempt_status", string(attempt.Status)),
+		slog.String("result_code", invocation.ResultCode),
+	)
 
 	return ExecuteToolResult{
 		Cycle:            attempt.Attempt,

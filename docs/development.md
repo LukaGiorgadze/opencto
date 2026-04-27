@@ -14,7 +14,7 @@ task worker
 
 `task worker` now runs through `air`, so code changes rebuild and restart automatically.
 
-When using the local LiteLLM proxy, `OPENAI_API_KEY` is the upstream provider key for LiteLLM and `LITELLM_PROXY_KEY` is the key OpenCTO uses to authenticate to LiteLLM. OpenCTO now reads `LITELLM_PROXY_KEY` directly from the environment. A direct `llm.api_key` value is also supported for local-only testing, but environment variables or a vault-backed secret are safer.
+When using the local LiteLLM proxy, `OPENAI_API_KEY` is the upstream provider key for LiteLLM and `LITELLM_PROXY_KEY` is the key OpenCTO uses to authenticate to LiteLLM. OpenCTO now reads `LITELLM_PROXY_KEY` directly from the environment. A direct `llm.api_key` value is also supported for local-only testing, but environment variables are safer.
 
 ## Discord
 
@@ -49,7 +49,3 @@ reject <approval-id> optional comment
 ## Persistence
 
 Persistence is not implemented right now. The runtime starts without a database backend until the next storage layer is introduced.
-
-## Vault
-
-The default vault provider now uses [`github.com/zalando/go-keyring`](https://github.com/zalando/go-keyring) behind the existing `vault.Store` interface, so the storage backend can be swapped later without changing callers.

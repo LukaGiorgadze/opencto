@@ -61,22 +61,14 @@ tasks:
     desc: Render the effective Docker Compose configuration.
     cmd: docker compose config
 
-  tidy:
-    desc: Tidy Go module dependencies with local caches.
-    cmd: env GOCACHE=.gocache GOMODCACHE=.gomodcache go mod tidy
-
   fmt:
     aliases: [format]
     desc: Format Go source files.
     cmd: gofmt -w $(find cmd internal pkg -type f -name '*.go')
 
   test:
-    desc: Run the Go test suite.
-    cmd: go test ./...
-
-  test:race:
     desc: Run the Go test suite with the race detector.
-    cmd: go test ./... --race
+    cmd: go test ./.... --race
 
   check:
     desc: Run validation and tests.

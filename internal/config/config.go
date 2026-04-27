@@ -13,7 +13,6 @@ type Config struct {
 	LLM           LLMConfig           `toml:"llm"`
 	Temporal      TemporalConfig      `toml:"temporal"`
 	Channels      ChannelsConfig      `toml:"channels"`
-	Vault         VaultConfig         `toml:"vault"`
 	Observability ObservabilityConfig `toml:"observability"`
 }
 
@@ -22,7 +21,6 @@ type fileConfig struct {
 	LLM           llmFileConfig       `toml:"llm"`
 	Temporal      TemporalConfig      `toml:"temporal"`
 	Channels      ChannelsConfig      `toml:"channels"`
-	Vault         VaultConfig         `toml:"vault"`
 	Observability ObservabilityConfig `toml:"observability"`
 }
 
@@ -69,11 +67,6 @@ type DiscordConfig struct {
 	Enabled bool `toml:"enabled"`
 }
 
-type VaultConfig struct {
-	Provider string `toml:"provider"`
-	Service  string `toml:"service"`
-}
-
 type ObservabilityConfig struct {
 	LogLevel string `toml:"log_level"`
 	JSONLogs bool   `toml:"json_logs"`
@@ -104,7 +97,6 @@ func Load(path string) (Config, error) {
 		},
 		Temporal:      raw.Temporal,
 		Channels:      raw.Channels,
-		Vault:         raw.Vault,
 		Observability: raw.Observability,
 	}
 
@@ -136,8 +128,6 @@ func (c *Config) validate() error {
 	requireString(c.Temporal.HostPort, "temporal.host_port")
 	requireString(c.Temporal.Namespace, "temporal.namespace")
 	requireString(c.Temporal.TaskQueue, "temporal.task_queue")
-	requireString(c.Vault.Provider, "vault.provider")
-	requireString(c.Vault.Service, "vault.service")
 	requireString(c.Observability.LogLevel, "observability.log_level")
 
 	var errs []error

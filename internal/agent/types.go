@@ -13,16 +13,16 @@ type Context struct {
 }
 
 type ToolChoice struct {
-	ToolCallID   string            `json:"tool_call_id,omitempty"`
-	Type         domain.ToolType   `json:"type"`
-	Intent       string            `json:"intent"`
-	Command      string            `json:"command,omitempty"`
-	Args         []string          `json:"args,omitempty"`
-	WorkingDir   string            `json:"working_dir,omitempty"`
-	TimeoutMs    int               `json:"timeout_ms,omitempty"`
-	InputSummary string            `json:"input_summary,omitempty"`
-	Destructive  bool              `json:"destructive,omitempty"`
-	Metadata     map[string]string `json:"metadata,omitempty"`
+	ToolCallID   string          `json:"tool_call_id,omitempty"`
+	Type         domain.ToolType `json:"type"`
+	Intent       string          `json:"intent"`
+	Command      string          `json:"command,omitempty"`
+	Args         []string        `json:"args,omitempty"`
+	WorkingDir   string          `json:"working_dir,omitempty"`
+	TimeoutMs    int             `json:"timeout_ms,omitempty"`
+	InputSummary string          `json:"input_summary,omitempty"`
+	Destructive  bool            `json:"destructive,omitempty"`
+	Metadata     domain.Metadata `json:"metadata,omitempty"`
 }
 
 func (c ToolChoice) IsZero() bool {
@@ -39,17 +39,17 @@ func (c ToolChoice) IsZero() bool {
 }
 
 type ExecutionFeedback struct {
-	Cycle           int               `json:"cycle"`
-	WorkItemID      string            `json:"work_item_id,omitempty"`
-	ToolCallID      string            `json:"tool_call_id,omitempty"`
-	Tool            domain.ToolType   `json:"tool"`
-	Status          string            `json:"status"`
-	RequestedAction string            `json:"requested_action,omitempty"`
-	Command         string            `json:"command,omitempty"`
-	Args            []string          `json:"args,omitempty"`
-	Observation     string            `json:"observation,omitempty"`
-	Error           string            `json:"error,omitempty"`
-	Metadata        map[string]string `json:"metadata,omitempty"`
+	Cycle           int             `json:"cycle"`
+	WorkItemID      string          `json:"work_item_id,omitempty"`
+	ToolCallID      string          `json:"tool_call_id,omitempty"`
+	Tool            domain.ToolType `json:"tool"`
+	Status          string          `json:"status"`
+	RequestedAction string          `json:"requested_action,omitempty"`
+	Command         string          `json:"command,omitempty"`
+	Args            []string        `json:"args,omitempty"`
+	Observation     string          `json:"observation,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	Metadata        domain.Metadata `json:"metadata,omitempty"`
 }
 
 type NextActionOutput struct {

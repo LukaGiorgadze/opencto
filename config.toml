@@ -21,10 +21,6 @@ continue_as_new_after_events = 1000
 [channels.discord]
 enabled = true
 
-[vault]
-provider = "keyring"
-service = "opencto"
-
 [observability]
 log_level = "INFO"
 json_logs = true

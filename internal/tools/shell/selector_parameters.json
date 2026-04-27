@@ -13,7 +13,7 @@
     "properties": {
         "command": {
             "type": "string",
-            "description": "The executable to run for the next execution step. Prefer cross-platform tools when possible."
+            "description": "The executable to run for the next execution step. Prefer cross-platform tools when possible. Do not assume Bash, sh, cmd, or PowerShell."
         },
         "args": {
             "type": "array",

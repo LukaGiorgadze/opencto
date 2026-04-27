@@ -18,7 +18,6 @@ import (
 	"github.com/opencto/opencto/internal/channels/local"
 	"github.com/opencto/opencto/internal/config"
 	"github.com/opencto/opencto/internal/domain"
-	"github.com/opencto/opencto/internal/memory/vault"
 	"github.com/opencto/opencto/internal/observability"
 	"github.com/opencto/opencto/internal/runtime"
 	"github.com/opencto/opencto/internal/runtime/activities"
@@ -43,8 +42,6 @@ func main() {
 	logger := observability.NewLogger(cfg.Observability.LogLevel, cfg.Observability.JSONLogs, os.Stdout)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-
-	_ = buildVault(cfg)
 
 	if *mode == "validate" {
 		logger.Info("configuration validated", slog.String("project_id", cfg.Project.ID))
@@ -144,17 +141,6 @@ func main() {
 	os.Exit(1)
 }
 
-func buildVault(cfg config.Config) vault.Store {
-	switch cfg.Vault.Provider {
-	case "memory":
-		return vault.NewMemoryStore()
-	case "keyring", "keychain":
-		return vault.NewKeychainStore(cfg.Vault.Service)
-	default:
-		return vault.NewKeychainStore(cfg.Vault.Service)
-	}
-}
-
 func discoverAvailableSkills(root string) []string {
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -189,7 +175,7 @@ func buildDecisionEngine(cfg config.Config, logger *slog.Logger) agent.Engine {
 		return unavailable(err.Error())
 	}
 	if source == agentllm.APIKeySourceConfig {
-		logger.Warn("openai api key is loaded directly from config; prefer environment variables or vault-backed secrets for local and production safety")
+		logger.Warn("openai api key is loaded directly from config; prefer environment variables for local and production safety")
 	}
 
 	engine, err := agentllm.NewOpenAIEngine(apiKey, cfg.LLM.BaseURL, cfg.LLM.ModelReasoning, cfg.LLM.ModelFast, cfg.LLM.TranscriptionModel)

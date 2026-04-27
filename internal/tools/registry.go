@@ -2,7 +2,6 @@ package tools
 
 import (
 	"encoding/json"
-	"strings"
 
 	"github.com/tmc/langchaingo/llms"
 
@@ -65,15 +64,6 @@ func SelectorDefinitionByName(name string) (SelectorDefinition, bool) {
 		}
 	}
 	return SelectorDefinition{}, false
-}
-
-func ParseToolType(value string) (domain.ToolType, bool) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "shell":
-		return domain.ToolTypeShell, true
-	default:
-		return "", false
-	}
 }
 
 func FallbackCandidates(primary domain.ToolType) []domain.ToolType {

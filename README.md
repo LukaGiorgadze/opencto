@@ -118,10 +118,10 @@ When given a new integration goal, the agent:
 1. Searches the local MCP registry file.
 2. Explores the tool's authentication requirements via API docs or MCP capabilities.
 3. Determines the best path (e.g., asking the user for a token, generating a URL).
-4. Stores credentials in the secure Vault.
+4. Passes credentials through explicit runtime configuration and environment variables.
 
 **Git Authentication:**
-When OpenCTO is asked to interact with a repository ("Here is the repo for the project"), it dynamically asks the user for credentials (SSH key or PAT) if they are missing from the Vault. The core OpenCTO Git configuration (if it manages its own state) is fed via standard environment variables.
+When OpenCTO is asked to interact with a repository ("Here is the repo for the project"), it must request missing credentials explicitly. The core OpenCTO Git configuration (if it manages its own state) is fed via standard environment variables.
 
 ### 5.3 Internal Event Bus
 Single-process Go channels + goroutines.
@@ -256,13 +256,10 @@ opencto/
 │   ├── agent/                  # Core Intelligence
 │   │   ├── prompts/            # Embedded markdown/text templates for system prompts
 │   │   ├── llm/                # LLM client (OpenAI interface, parsing, retry logic)
-│   │   └── skills/             # Skill Registry loader (Major tech choices)
 │   ├── tools/                  # Tool Layer (OS-Native executions)
 │   │   ├── shell/              # OS Shell executor (os/exec wrapper)
 │   │   ├── browser/            # Browser automation (e.g., Playwright/Rod)
 │   │   ├── mcp/                # MCP Client implementation
-│   ├── memory/                 # Memory Layer
-│   │   └── vault/              # Secure credential storage
 │   └── config/                 # TOML parsing and Config Structs
 ├── pkg/                        # Exportable/Reusable packages (if any)
 ├── data/                       # Local runtime artifacts and logs (gitignored)
@@ -327,10 +324,10 @@ When instructing your AI to write the code, enforce these strict rules:
 * **Rule:** Do not hardcode prompts in Go strings. Place them in `internal/agent/prompts/` as `.tmpl` files and use Go's `embed` package. This allows you to easily tweak prompts without hunting through logic.
 * **Rule:** Enforce **Structured Output** via tool-calling. OpenAI Responses API and compatible SDK layers support structured JSON outputs. The `Decision Engine` activity must unmarshal LLM outputs directly into Go structs such as `ToolChoice` and terminal `NextAction` results.
 
-#### 3. OS-Native Security & Vaulting (Critical)
+#### 3. OS-Native Security (Critical)
 * Because OpenCTO runs OS-natively, it has the power to run `rm -rf /`.
 * **Rule:** The `internal/tools/shell` executor must enforce an absolute working directory boundary. Even if it's "OS Native", restrict the execution context to the specific `ProjectID` workspace folder.
-* **Rule:** Credentials must be loaded into memory dynamically via `internal/memory/vault` (which could just be an encrypted local file or OS keychain). Do not allow the agent to write `.env` files with production secrets; inject them as environment variables during the `os/exec` command generation.
+* **Rule:** Credentials must come from explicit runtime configuration or environment variables. Do not allow the agent to write `.env` files with production secrets; inject them as environment variables during the `os/exec` command generation.
 
 #### 4. The "ContinueAsNew" Loop
 * **Rule:** The main Project Workflow will eventually hit Temporal's 50k event history limit.
@@ -345,6 +342,6 @@ When instructing your AI to write the code, enforce these strict rules:
 
 > **Prompt to start:**
 > *"Here is the OpenCTO Architecture Spec (v0.6). We are going to build this in Go using Temporal. Do not build the whole thing at once. 
-> **Phase 1:** Set up the Go project structure as defined. Then, implement the `internal/tools/shell` and `internal/memory/vault` interfaces. Provide mock implementations so we can test the boundaries. Do not write Temporal workflows yet."*
+> **Phase 1:** Set up the Go project structure as defined. Then, implement the `internal/tools/shell` interfaces and the runtime configuration boundaries around credentials. Provide mock implementations so we can test the boundaries. Do not write Temporal workflows yet."*
 
 Build the side-effect layers first via interfaces, the Temporal Workflows and LLM routing will be much cleaner to build in Phase 2.

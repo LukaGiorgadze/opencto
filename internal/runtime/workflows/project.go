@@ -1,12 +1,9 @@
 package workflows
 
 import (
-	"errors"
 	"time"
 
 	"go.temporal.io/sdk/workflow"
-
-	"github.com/opencto/opencto/internal/domain"
 )
 
 func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
@@ -50,7 +47,6 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 			state.ActiveTaskID = ""
 			state.ProcessedEvents++
 			if err != nil {
-				reportTaskWorkflowFailure(ctx, event, err)
 				continue
 			}
 			continue
@@ -65,33 +61,4 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 		})
 		selector.Select(ctx)
 	}
-}
-
-func reportTaskWorkflowFailure(ctx workflow.Context, event domain.Event, err error) {
-	if err == nil {
-		return
-	}
-	_ = ctx
-	_ = event
-	_ = rootCauseErrorMessage(err)
-}
-
-func rootCauseErrorMessage(err error) string {
-	if err == nil {
-		return ""
-	}
-
-	current := err
-	message := err.Error()
-	for {
-		next := errors.Unwrap(current)
-		if next == nil {
-			break
-		}
-		current = next
-		if trimmed := current.Error(); trimmed != "" {
-			message = trimmed
-		}
-	}
-	return message
 }

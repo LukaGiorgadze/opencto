@@ -10,7 +10,7 @@ const (
 	SelectorToolDescription = `Execute any action necessary to accomplish the current goal.
 
     This tool dispatches to the most appropriate execution backend — shell commands, HTTP requests, browser automation, file operations, or any other available capability.
-    Use it to make concrete, direct progress by whatever means are available.
+    Use it to make concrete, direct progress inside the project workspace on the current operating system by whatever means are available.
     
     You are not limited to any single tool type. If something is missing, acquire it. If a step fails, diagnose and adapt. Always choose the most direct path to completing the goal.
     

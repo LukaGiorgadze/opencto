@@ -37,8 +37,6 @@ workspace_root = "."
 		"temporal.host_port",
 		"temporal.namespace",
 		"temporal.task_queue",
-		"vault.provider",
-		"vault.service",
 		"observability.log_level",
 	} {
 		if !strings.Contains(err.Error(), field) {
@@ -52,7 +50,7 @@ func TestLoadParsesLLMSecretFields(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
-data := []byte(`
+	data := []byte(`
 [project]
 id = "default"
 name = "OpenCTO"
@@ -73,10 +71,6 @@ host_port = "127.0.0.1:7233"
 namespace = "default"
 task_queue = "opencto"
 continue_as_new_after_events = 1000
-
-[vault]
-provider = "keyring"
-service = "opencto"
 
 [observability]
 log_level = "INFO"
@@ -132,10 +126,6 @@ host_port = "127.0.0.1:7233"
 namespace = "default"
 task_queue = "opencto"
 continue_as_new_after_events = 0
-
-[vault]
-provider = "keyring"
-service = "opencto"
 
 [observability]
 log_level = "INFO"
