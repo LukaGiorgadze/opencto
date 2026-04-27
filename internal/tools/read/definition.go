@@ -18,7 +18,7 @@ Usage:
 - This tool allows OpenCTO to read images (eg PNG, JPG, etc). When reading an image file the contents are presented visually as OpenCTO is a multimodal LLM.
 - This tool can read PDF files (.pdf). For large PDFs (more than 10 pages), you MUST provide the pages parameter to read specific page ranges (e.g., pages: "1-5"). Reading a large PDF without the pages parameter will fail. Maximum 20 pages per request.
 - This tool can read Jupyter notebooks (.ipynb files) and returns all cells with their outputs, combining code, text, and visualizations.
-- This tool can only read files, not directories. To read a directory, use an "ls/dir" command via the "Command" (Shell) tool.`
+- This tool can only read files, not directories. To read a directory, use an "ls/dir" command via the "Shell" (Command) tool.`
 )
 
 //go:embed schema.json

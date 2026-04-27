@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	ShellToolName        = "Command"
+	ShellToolName        = "Shell"
 	ShellToolDescription = `Execute any action necessary to accomplish the current goal.
 
 **IMPORTANT:** Avoid using this tool to run "find", "grep", "cat", "head", "tail", "sed", "awk", "echo", or "printf" commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user:
