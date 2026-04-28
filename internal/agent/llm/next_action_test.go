@@ -113,13 +113,12 @@ func TestBuildNextActionMessagesUsesOpenAIToolTranscript(t *testing.T) {
 		"Shell: /bin/zsh",
 		"Project root: /tmp/opencto",
 		"PATH: /usr/bin:/bin",
-		"User request: deploy the app",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q\n%s", want, prompt)
 		}
 	}
-	for _, removed := range []string{"Work items:", "Current work item:"} {
+	for _, removed := range []string{"Work items:", "Current work item:", "## Current Task", "User request:", "Execution cycle:", "deploy the app"} {
 		if strings.Contains(prompt, removed) {
 			t.Fatalf("prompt still contains removed work item field %q\n%s", removed, prompt)
 		}
@@ -158,6 +157,64 @@ func TestBuildNextActionMessagesUsesOpenAIToolTranscript(t *testing.T) {
 		!strings.Contains(toolResult.Content, "output:\nstaging target not found") ||
 		!strings.Contains(toolResult.Content, "error:\nexit status 1") {
 		t.Fatalf("tool result should include failure status and exit code: %q", toolResult.Content)
+	}
+}
+
+func TestBuildNextActionMessagesAppendsAdditionalEventsAsUserMessages(t *testing.T) {
+	t.Parallel()
+
+	input := agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event: domain.Event{
+				ID:        "event-1",
+				ProjectID: "project-1",
+				Body:      "create a folder",
+			},
+			AdditionalEvents: []domain.Event{{
+				ID:        "event-2",
+				ProjectID: "project-1",
+				ActorName: "lukagiorgazde",
+				Body:      "tell me my public ip",
+			}},
+		},
+		ObservationHistory: []agent.ExecutionFeedback{{
+			Cycle:           1,
+			WorkItemID:      "wi-1",
+			ToolCallID:      "toolu_abc123",
+			Tool:            domain.ToolTypeShell,
+			RequestedAction: "create a folder",
+			Command:         "mkdir",
+			Args:            []string{"example2"},
+			Status:          string(domain.ExecutionStatusSucceeded),
+			Observation:     "created",
+			Metadata: map[string]string{
+				"assistant_text": "I'll create the folder.",
+				"result_code":    "0",
+			},
+		}},
+	}
+
+	messages, err := buildNextActionMessages(input)
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	if len(messages) != 5 {
+		t.Fatalf("expected system, initial user, assistant, tool, and additional user messages, got %d", len(messages))
+	}
+	if messages[4].Role != llms.ChatMessageTypeHuman {
+		t.Fatalf("expected additional context as human message, got %q", messages[4].Role)
+	}
+	if got := messageText(messages[4]); got != "tell me my public ip" {
+		t.Fatalf("unexpected additional user message: %q", got)
+	}
+
+	systemPrompt := messageText(messages[0])
+	for _, removed := range []string{"create a folder", "tell me my public ip", "Additional user context"} {
+		if strings.Contains(systemPrompt, removed) {
+			t.Fatalf("system prompt should not contain task-specific text %q\n%s", removed, systemPrompt)
+		}
 	}
 }
 
@@ -480,11 +537,13 @@ func TestNextActionTranscribesAudioAttachmentsBeforePlanning(t *testing.T) {
 	if len(model.messages) != 2 {
 		t.Fatalf("expected system and user messages, got %d", len(model.messages))
 	}
-	for _, message := range model.messages[:2] {
-		text := messageText(message)
-		if !strings.Contains(text, "Voice message transcript (voice-message.ogg): run tests") {
-			t.Fatalf("message missing transcript: %s", text)
-		}
+	systemText := messageText(model.messages[0])
+	if strings.Contains(systemText, "Voice message transcript") {
+		t.Fatalf("system prompt should not contain task transcript: %s", systemText)
+	}
+	userText := messageText(model.messages[1])
+	if !strings.Contains(userText, "Voice message transcript (voice-message.ogg): run tests") {
+		t.Fatalf("user message missing transcript: %s", userText)
 	}
 }
 

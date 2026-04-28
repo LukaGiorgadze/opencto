@@ -9,9 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/tmc/langchaingo/embeddings"
 	"github.com/tmc/langchaingo/llms"
-	openai "github.com/tmc/langchaingo/llms/openai"
 
 	"github.com/opencto/opencto/internal/config"
 	"github.com/opencto/opencto/internal/domain"
@@ -36,24 +34,6 @@ func ResolveOpenAIAPIKey(cfg config.LLMConfig) (string, APIKeySource, error) {
 		return "", "", fmt.Errorf("environment variable %q is not set", "LITELLM_PROXY_KEY")
 	}
 	return value, APIKeySourceEnvironment, nil
-}
-
-func NewOpenAIEmbedder(apiKey, baseURL, embeddingModel string, dimensions int) (*embeddings.EmbedderImpl, error) {
-	options := []openai.Option{
-		openai.WithToken(apiKey),
-		openai.WithBaseURL(baseURL),
-		openai.WithEmbeddingModel(embeddingModel),
-	}
-	if dimensions > 0 {
-		options = append(options, openai.WithEmbeddingDimensions(dimensions))
-	}
-
-	model, err := openai.New(options...)
-	if err != nil {
-		return nil, err
-	}
-
-	return embeddings.NewEmbedder(model)
 }
 
 func openAIUserMessageFromEvent(event domain.Event) (llms.MessageContent, error) {

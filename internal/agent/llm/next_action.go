@@ -21,15 +21,11 @@ type nextActionPromptData struct {
 	ProjectID          string
 	ProjectState       string
 	ProjectDescription string
-	UserRequest        string
-	AdditionalContext  string
 	OS                 string
 	Arch               string
 	Shell              string
 	Path               string
 	ProjectRoot        string
-	ExecutionCycle     int
-	ForceFinal         bool
 }
 
 type nextActionTerminalOutput struct {
@@ -96,6 +92,14 @@ func buildNextActionMessages(input agent.NextActionInput) ([]llms.MessageContent
 		}
 		messages = append(messages, assistantMessage, toolResultMessage)
 	}
+	additionalMessages, err := additionalUserMessages(input.Context.AdditionalEvents)
+	if err != nil {
+		return nil, err
+	}
+	messages = append(messages, additionalMessages...)
+	if input.ForceFinal {
+		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, "Execution cycle limit reached. Do not call tools. Return a final JSON answer with status blocked or failed explaining the cycle limit."))
+	}
 	return messages, nil
 }
 
@@ -110,44 +114,42 @@ func renderNextActionPrompt(input agent.NextActionInput) (string, error) {
 		ProjectID:          input.ProjectID,
 		ProjectState:       formatProjectState(input.Context.ActiveWorkItems),
 		ProjectDescription: strings.TrimSpace(input.Context.Project.Description),
-		UserRequest:        strings.TrimSpace(input.Context.Event.Body),
-		AdditionalContext:  formatAdditionalEvents(input.Context.AdditionalEvents),
 		OS:                 input.Runtime.OS,
 		Arch:               input.Runtime.Arch,
 		Shell:              firstNonEmpty(strings.TrimSpace(input.Runtime.Shell), "unknown"),
 		Path:               strings.TrimSpace(input.Runtime.Path),
 		ProjectRoot:        firstNonEmpty(strings.TrimSpace(input.Runtime.WorkspaceRoot), "."),
-		ExecutionCycle:     input.ExecutionCycle,
-		ForceFinal:         input.ForceFinal,
 	}
 
 	return prompts.Render("next_action.tmpl", data)
 }
 
-func formatAdditionalEvents(events []domain.Event) string {
-	if len(events) == 0 {
-		return ""
-	}
-	var builder strings.Builder
+func additionalUserMessages(events []domain.Event) ([]llms.MessageContent, error) {
+	messages := make([]llms.MessageContent, 0, len(events))
 	for _, event := range events {
-		body := strings.TrimSpace(event.Body)
-		if body == "" {
-			continue
+		message, err := openAIUserMessageFromEvent(event)
+		if err != nil {
+			return nil, err
 		}
-		if builder.Len() > 0 {
-			builder.WriteString("\n")
+		if messageHasContent(message) {
+			messages = append(messages, message)
 		}
-		actor := strings.TrimSpace(event.ActorName)
-		if actor == "" {
-			actor = strings.TrimSpace(event.ActorID)
-		}
-		if actor != "" {
-			builder.WriteString(actor)
-			builder.WriteString(": ")
-		}
-		builder.WriteString(body)
 	}
-	return builder.String()
+	return messages, nil
+}
+
+func messageHasContent(message llms.MessageContent) bool {
+	for _, part := range message.Parts {
+		switch value := part.(type) {
+		case llms.TextContent:
+			if strings.TrimSpace(value.Text) != "" {
+				return true
+			}
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 func nextActionTranscriptMessages(feedback agent.ExecutionFeedback) (llms.MessageContent, llms.MessageContent, error) {

@@ -21,18 +21,6 @@ State: {{ .ProjectState }}
 Description: {{ .ProjectDescription }}
 {{- end }}
 
-## Current Task
-
-User request: {{ .UserRequest }}
-{{- if .AdditionalContext }}
-Additional user context received while work was running:
-{{ .AdditionalContext }}
-{{- end }}
-Execution cycle: {{ .ExecutionCycle }}
-{{- if .ForceFinal }}
-Force final: true. Do not call tools. Return a blocked or failed final answer explaining the cycle limit.
-{{- end }}
-
 ## Execution policy
 
 When the user asks for an outcome, that is authorization to do the minimum necessary work to deliver it.

@@ -14,6 +14,7 @@ import (
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
+	shelltool "github.com/opencto/opencto/internal/tools/shell"
 )
 
 type stubProjectStore struct {
@@ -30,7 +31,9 @@ func (e stubEngine) NextAction(context.Context, agent.NextActionInput) (agent.Ne
 }
 
 type captureReporter struct {
-	messages []string
+	messages     []string
+	typingEvents []domain.Event
+	typingErr    error
 }
 
 func (r *captureReporter) Report(_ context.Context, _ domain.Event, message string) error {
@@ -38,12 +41,13 @@ func (r *captureReporter) Report(_ context.Context, _ domain.Event, message stri
 	return nil
 }
 
-func (s stubProjectStore) Append(context.Context, domain.Event) error {
-	return nil
+func (r *captureReporter) NotifyTyping(_ context.Context, event domain.Event) error {
+	r.typingEvents = append(r.typingEvents, event)
+	return r.typingErr
 }
 
-func (s stubProjectStore) ListByProject(context.Context, string, int) ([]domain.Event, error) {
-	return nil, nil
+func (s stubProjectStore) Append(context.Context, domain.Event) error {
+	return nil
 }
 
 func (s stubProjectStore) ListPending(context.Context, string) ([]domain.WorkItem, error) {
@@ -52,10 +56,6 @@ func (s stubProjectStore) ListPending(context.Context, string) ([]domain.WorkIte
 
 func (s stubProjectStore) UpsertWorkItem(context.Context, domain.WorkItem) error {
 	return nil
-}
-
-func (s stubProjectStore) GetWorkItem(context.Context, string, string) (domain.WorkItem, error) {
-	return domain.WorkItem{}, nil
 }
 
 func (s stubProjectStore) UpsertExecutionAttempt(context.Context, domain.ExecutionAttempt) error {
@@ -139,6 +139,26 @@ func TestLoadContextReturnsProjectAndActiveWorkItems(t *testing.T) {
 	}
 	if loaded.ActiveWorkItems[0].ID != workItem.ID {
 		t.Fatalf("unexpected work item id: %s", loaded.ActiveWorkItems[0].ID)
+	}
+}
+
+func TestNotifyTypingUsesOptionalReporter(t *testing.T) {
+	t.Parallel()
+
+	reporter := &captureReporter{}
+	activities := Activities{Reporter: reporter}
+	event := domain.Event{
+		ID:          "event-1",
+		ProjectID:   "project-1",
+		ChannelID:   "channel-1",
+		ChannelType: domain.ChannelTypeDiscord,
+	}
+
+	if err := activities.NotifyTyping(context.Background(), event); err != nil {
+		t.Fatalf("notify typing: %v", err)
+	}
+	if len(reporter.typingEvents) != 1 || reporter.typingEvents[0].ChannelID != "channel-1" {
+		t.Fatalf("expected typing event to be passed to reporter, got %#v", reporter.typingEvents)
 	}
 }
 
@@ -226,7 +246,7 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 	}
 }
 
-func TestStartShellProcessReturnsManagedProcessMetadata(t *testing.T) {
+func TestExecuteToolReturnsManagedProcessMetadata(t *testing.T) {
 	if goruntime.GOOS == "windows" {
 		t.Skip("uses POSIX shell fixture")
 	}
@@ -258,7 +278,7 @@ func TestStartShellProcessReturnsManagedProcessMetadata(t *testing.T) {
 			},
 		},
 	}
-	result, err := activities.StartShellProcess(context.Background(), request)
+	result, err := activities.ExecuteTool(context.Background(), request)
 	if err != nil {
 		t.Fatalf("start shell process: %v", err)
 	}
@@ -272,11 +292,12 @@ func TestStartShellProcessReturnsManagedProcessMetadata(t *testing.T) {
 	if len(result.Processes) != 1 || result.Processes[0].ID != processID || result.Processes[0].Scope != domain.ProcessScopeTask {
 		t.Fatalf("expected process reference, got %#v", result.Processes)
 	}
+	manager := shelltool.NewProcessManager(nil)
 	defer func() {
-		_, _ = activities.StopShellProcess(context.Background(), ProcessRequest{ProjectID: "project-1", ProcessID: processID})
+		_, _ = manager.Stop(context.Background(), stateDir, processID)
 	}()
 
-	checked, err := activities.CheckShellProcess(context.Background(), ProcessRequest{ProjectID: "project-1", ProcessID: processID})
+	checked, err := manager.Check(context.Background(), stateDir, processID)
 	if err != nil {
 		t.Fatalf("check process: %v", err)
 	}
@@ -286,7 +307,7 @@ func TestStartShellProcessReturnsManagedProcessMetadata(t *testing.T) {
 	var stdoutTail string
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		result, err := activities.ReadShellProcessLogs(context.Background(), ProcessRequest{ProjectID: "project-1", ProcessID: processID, LimitBytes: 1024})
+		result, err := manager.Logs(context.Background(), stateDir, processID, 1024)
 		if err != nil {
 			t.Fatalf("read process logs: %v", err)
 		}
@@ -324,7 +345,7 @@ func TestNextActionReportsAfterTaskProcessCleanup(t *testing.T) {
 		WorkspaceRoot: dir,
 		StateDir:      stateDir,
 	}
-	started, err := activities.StartShellProcess(context.Background(), ExecuteToolRequest{
+	started, err := activities.ExecuteTool(context.Background(), ExecuteToolRequest{
 		ProjectID:  "project-1",
 		WorkItemID: "work-item-1",
 		ToolChoice: agent.ToolChoice{
@@ -348,7 +369,7 @@ func TestNextActionReportsAfterTaskProcessCleanup(t *testing.T) {
 	}
 	processID := started.Metadata["process_id"]
 	defer func() {
-		_, _ = activities.StopShellProcess(context.Background(), ProcessRequest{ProjectID: "project-1", ProcessID: processID})
+		_, _ = shelltool.NewProcessManager(nil).Stop(context.Background(), stateDir, processID)
 	}()
 
 	result, err := activities.NextAction(context.Background(), NextActionRequest{

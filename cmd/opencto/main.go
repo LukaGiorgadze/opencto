@@ -60,10 +60,9 @@ func main() {
 
 	dispatcher := runtime.NewDispatcher(temporalClient, cfg.Temporal.TaskQueue, cfg.Temporal.ContinueAsNewAfterEvents)
 	var reporter activities.Reporter = local.NewReporter(logger)
-	openAI := buildOpenAIServices(cfg, logger)
+	engine := buildDecisionEngine(cfg, logger)
 
 	if *mode == "worker" || *mode == "serve" {
-		availableSkills := discoverAvailableSkills("skills")
 		var discordAdapter *discord.Adapter
 		if cfg.Channels.Discord.Enabled {
 			token := strings.TrimSpace(os.Getenv("DISCORD_TOKEN"))
@@ -85,19 +84,16 @@ func main() {
 		}
 
 		activitySet := &activities.Activities{
-			Engine:   openAI.Engine,
+			Engine:   engine,
 			Shell:    shell.NewSafeExecutor(logger),
 			Reporter: reporter,
 			Project: domain.Project{
 				ID:   cfg.Project.ID,
 				Name: cfg.Project.Name,
 			},
-			WorkspaceRoot:   cfg.Project.WorkspaceRoot,
-			StateDir:        cfg.Runtime.StateDir,
-			AvailableSkills: availableSkills,
-			MemoryEmbedder:  openAI.Embedder,
-			EmbeddingModel:  cfg.LLM.EmbeddingModel,
-			Logger:          logger,
+			WorkspaceRoot: cfg.Project.WorkspaceRoot,
+			StateDir:      cfg.Runtime.StateDir,
+			Logger:        logger,
 		}
 
 		worker := runtime.NewWorker(temporalClient, cfg.Temporal.TaskQueue, activitySet)
@@ -142,26 +138,6 @@ func main() {
 	os.Exit(1)
 }
 
-func discoverAvailableSkills(root string) []string {
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return nil
-	}
-
-	skills := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if !strings.HasSuffix(name, ".md") {
-			continue
-		}
-		skills = append(skills, strings.TrimSuffix(name, ".md"))
-	}
-	return skills
-}
-
 func buildDecisionEngine(cfg config.Config, logger *slog.Logger) agent.Engine {
 	unavailable := func(reason string) agent.Engine {
 		return agent.NewUnavailableEngine(reason)
@@ -192,38 +168,4 @@ func buildDecisionEngine(cfg config.Config, logger *slog.Logger) agent.Engine {
 		slog.String("api_key_source", string(source)),
 	)
 	return engine
-}
-
-type openAIServices struct {
-	Engine   agent.Engine
-	Embedder activities.SemanticEmbedder
-}
-
-func buildOpenAIServices(cfg config.Config, logger *slog.Logger) openAIServices {
-	engine := buildDecisionEngine(cfg, logger)
-	if cfg.LLM.Provider != "" && cfg.LLM.Provider != "openai" {
-		return openAIServices{Engine: engine}
-	}
-
-	apiKey, source, err := agentllm.ResolveOpenAIAPIKey(cfg.LLM)
-	if err != nil {
-		return openAIServices{Engine: engine}
-	}
-
-	embedder, err := agentllm.NewOpenAIEmbedder(apiKey, cfg.LLM.BaseURL, cfg.LLM.EmbeddingModel, cfg.LLM.EmbeddingDimensions)
-	if err != nil {
-		logger.Warn("failed to initialize openai memory embedder; continuing without semantic memory", slog.String("error", err.Error()))
-		return openAIServices{Engine: engine}
-	}
-
-	logger.Info("openai memory embedder configured",
-		slog.String("base_url", cfg.LLM.BaseURL),
-		slog.String("embedding_model", cfg.LLM.EmbeddingModel),
-		slog.Int("embedding_dimensions", cfg.LLM.EmbeddingDimensions),
-		slog.String("api_key_source", string(source)),
-	)
-	return openAIServices{
-		Engine:   engine,
-		Embedder: embedder,
-	}
 }

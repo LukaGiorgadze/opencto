@@ -42,7 +42,6 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 	active := map[string]workflow.ChildWorkflowFuture{}
 
 	for {
-		state.UpdatedAtUnixNano = workflow.Now(ctx).UnixNano()
 		if input.ContinueAsNewAfterEvents > 0 && state.ProcessedEvents >= input.ContinueAsNewAfterEvents && len(active) == 0 {
 			snapshot := state
 			return workflow.NewContinueAsNewError(ctx, ProjectWorkflow, ProjectWorkflowInput{
@@ -69,7 +68,6 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 			}
 			active[event.ID] = future
 			state.ActiveTasks[event.ID] = workflowID
-			state.ActiveTaskID = event.ID
 			continue
 		}
 
@@ -77,7 +75,6 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 		selector.AddReceive(eventSignal, func(c workflow.ReceiveChannel, more bool) {
 			var signal EnqueueEventSignal
 			c.Receive(ctx, &signal)
-			state.UpdatedAtUnixNano = workflow.Now(ctx).UnixNano()
 			handleProjectEventSignal(ctx, &state, active, input.ProjectID, signal.Event)
 		})
 		for eventID, future := range active {
@@ -88,11 +85,7 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 				mergeProjectProcesses(state.Processes, result.Processes)
 				delete(active, eventID)
 				delete(state.ActiveTasks, eventID)
-				if state.ActiveTaskID == eventID {
-					state.ActiveTaskID = ""
-				}
 				state.ProcessedEvents++
-				state.UpdatedAtUnixNano = workflow.Now(ctx).UnixNano()
 			})
 		}
 		selector.Select(ctx)

@@ -20,6 +20,7 @@ import (
 func registerTaskWorkflowActivities(env *testsuite.TestWorkflowEnvironment) {
 	env.RegisterActivityWithOptions((&activities.Activities{}).NextAction, activity.RegisterOptions{Name: "Activities.NextAction"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).ExecuteTool, activity.RegisterOptions{Name: "Activities.ExecuteTool"})
+	env.RegisterActivityWithOptions((&activities.Activities{}).NotifyTyping, activity.RegisterOptions{Name: "Activities.NotifyTyping"})
 }
 
 func TestTaskWorkflowAlternatesNextActionAndExecuteTool(t *testing.T) {
@@ -85,7 +86,6 @@ func TestTaskWorkflowAlternatesNextActionAndExecuteTool(t *testing.T) {
 	})).Return(activities.NextActionResult{
 		Decision:    decision,
 		Observation: &agent.ExecutionFeedback{WorkItemID: "wi-1", ToolCallID: "toolu_1", Status: string(domain.ExecutionStatusSucceeded), Observation: "/tmp/opencto"},
-		FinalAnswer: "done",
 		Status:      activities.NextActionStatusCompleted,
 	}, nil).Once()
 
@@ -129,6 +129,38 @@ func TestTaskWorkflowRejectsNonTerminalNextActionWithoutTool(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "without a tool choice") {
 		t.Fatalf("expected missing tool choice error, got %v", err)
 	}
+}
+
+func TestTaskWorkflowNotifiesTypingForDiscordEvent(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.TaskWorkflow)
+	registerTaskWorkflowActivities(env)
+
+	event := domain.Event{
+		ID:          "event-1",
+		ProjectID:   "project-1",
+		ChannelID:   "channel-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		Body:        "inspect workspace",
+	}
+	env.OnActivity("Activities.NotifyTyping", mock.Anything, mock.MatchedBy(func(event domain.Event) bool {
+		return event.ID == "event-1" && event.ChannelID == "channel-1"
+	})).Return(nil).Once()
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{
+		Status: activities.NextActionStatusCompleted,
+	}, nil).Once()
+
+	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{
+		ProjectID: "project-1",
+		Event:     event,
+	})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("task workflow failed: %v", err)
+	}
+	env.AssertExpectations(t)
 }
 
 func TestTaskWorkflowTracksProcessesReturnedByExecuteTool(t *testing.T) {
@@ -195,8 +227,7 @@ func TestTaskWorkflowTracksProcessesReturnedByExecuteTool(t *testing.T) {
 			len(request.Processes) == 1 &&
 			request.Processes[0].ID == "proc-1"
 	})).Return(activities.NextActionResult{
-		FinalAnswer: "done",
-		Status:      activities.NextActionStatusCompleted,
+		Status: activities.NextActionStatusCompleted,
 		Processes: []domain.ProcessReference{{
 			ID:          "proc-1",
 			Description: "start dev server",
@@ -272,8 +303,7 @@ func TestTaskWorkflowKeepsProjectScopedBackgroundProcessRunning(t *testing.T) {
 		}},
 	}, nil).Once()
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{
-		FinalAnswer: "done",
-		Status:      activities.NextActionStatusCompleted,
+		Status: activities.NextActionStatusCompleted,
 		Processes: []domain.ProcessReference{{
 			ID:          "proc-1",
 			Description: "start persistent server",
@@ -343,8 +373,7 @@ func TestTaskWorkflowMarksIncompleteWhenTaskProcessCleanupFails(t *testing.T) {
 		}},
 	}, nil).Once()
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{
-		FinalAnswer: "done",
-		Status:      activities.NextActionStatusFailed,
+		Status: activities.NextActionStatusFailed,
 		Processes: []domain.ProcessReference{{
 			ID:          "proc-1",
 			Description: "start task server",
@@ -462,8 +491,7 @@ func TestTaskWorkflowPassesAdditionalContextSignalToNextAction(t *testing.T) {
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
 		return len(request.AdditionalEvents) == 1 && request.AdditionalEvents[0].ID == "event-2"
 	})).Return(activities.NextActionResult{
-		FinalAnswer: "done",
-		Status:      activities.NextActionStatusCompleted,
+		Status: activities.NextActionStatusCompleted,
 	}, nil).Once()
 
 	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{

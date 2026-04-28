@@ -70,6 +70,9 @@ func (a *Adapter) Start(ctx context.Context) error {
 			a.logger.Error("normalize discord message", slog.String("error", err.Error()))
 			return
 		}
+		if err := a.NotifyTyping(ctx, event); err != nil {
+			a.logger.Warn("notify discord typing", slog.String("error", err.Error()), slog.String("event_id", event.ID))
+		}
 		if err := a.dispatcher.EnqueueEvent(ctx, event); err != nil {
 			a.logger.Error("enqueue discord event", slog.String("error", err.Error()), slog.String("event_id", event.ID))
 		}
@@ -296,9 +299,12 @@ func safePathSegment(value string) string {
 	return strings.Trim(value, ".-")
 }
 
-func (a *Adapter) Report(_ context.Context, event domain.Event, message string) error {
+func (a *Adapter) Report(ctx context.Context, event domain.Event, message string) error {
 	if a.session == nil || event.ChannelID == "" {
 		return nil
+	}
+	if err := a.NotifyTyping(ctx, event); err != nil && a.logger != nil {
+		a.logger.Warn("notify discord typing before report", slog.String("error", err.Error()), slog.String("event_id", event.ID))
 	}
 	for _, chunk := range splitDiscordMessage(message, discordMessageMaxLength) {
 		if _, err := a.session.ChannelMessageSend(event.ChannelID, chunk); err != nil {
@@ -306,6 +312,18 @@ func (a *Adapter) Report(_ context.Context, event domain.Event, message string) 
 		}
 	}
 	return nil
+}
+
+func (a *Adapter) NotifyTyping(ctx context.Context, event domain.Event) error {
+	if a.session == nil || strings.TrimSpace(event.ChannelID) == "" {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	return a.session.ChannelTyping(event.ChannelID)
 }
 
 func splitDiscordMessage(message string, limit int) []string {

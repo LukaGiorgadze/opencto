@@ -31,10 +31,8 @@ import (
 
 type ProjectStore interface {
 	Append(context.Context, domain.Event) error
-	ListByProject(context.Context, string, int) ([]domain.Event, error)
 	ListPending(context.Context, string) ([]domain.WorkItem, error)
 	UpsertWorkItem(context.Context, domain.WorkItem) error
-	GetWorkItem(context.Context, string, string) (domain.WorkItem, error)
 	UpsertExecutionAttempt(context.Context, domain.ExecutionAttempt) error
 	UpsertToolInvocation(context.Context, domain.ToolInvocation) error
 }
@@ -43,28 +41,24 @@ type Reporter interface {
 	Report(context.Context, domain.Event, string) error
 }
 
-type SemanticEmbedder interface {
-	EmbedDocuments(context.Context, []string) ([][]float32, error)
-	EmbedQuery(context.Context, string) ([]float32, error)
+type TypingReporter interface {
+	NotifyTyping(context.Context, domain.Event) error
 }
 
 type Activities struct {
-	Store           ProjectStore
-	Engine          agent.Engine
-	Shell           shelltool.Executor
-	Edit            edittool.Executor
-	Glob            globtool.Executor
-	Grep            greptool.Executor
-	Read            readtool.Executor
-	Write           writetool.Executor
-	Reporter        Reporter
-	Project         domain.Project
-	WorkspaceRoot   string
-	StateDir        string
-	AvailableSkills []string
-	MemoryEmbedder  SemanticEmbedder
-	EmbeddingModel  string
-	Logger          *slog.Logger
+	Store         ProjectStore
+	Engine        agent.Engine
+	Shell         shelltool.Executor
+	Edit          edittool.Executor
+	Glob          globtool.Executor
+	Grep          greptool.Executor
+	Read          readtool.Executor
+	Write         writetool.Executor
+	Reporter      Reporter
+	Project       domain.Project
+	WorkspaceRoot string
+	StateDir      string
+	Logger        *slog.Logger
 }
 
 type NextActionRequest struct {
@@ -82,14 +76,12 @@ type NextActionRequest struct {
 }
 
 type NextActionResult struct {
-	Decision      agent.DecisionOutput      `json:"decision"`
-	ToolChoice    *agent.ToolChoice         `json:"tool_choice,omitempty"`
-	WorkItemID    string                    `json:"work_item_id,omitempty"`
-	Observation   *agent.ExecutionFeedback  `json:"observation,omitempty"`
-	FinalAnswer   string                    `json:"final_answer,omitempty"`
-	Status        string                    `json:"status"`
-	AssistantText string                    `json:"assistant_text,omitempty"`
-	Processes     []domain.ProcessReference `json:"processes,omitempty"`
+	Decision    agent.DecisionOutput      `json:"decision"`
+	ToolChoice  *agent.ToolChoice         `json:"tool_choice,omitempty"`
+	WorkItemID  string                    `json:"work_item_id,omitempty"`
+	Observation *agent.ExecutionFeedback  `json:"observation,omitempty"`
+	Status      string                    `json:"status"`
+	Processes   []domain.ProcessReference `json:"processes,omitempty"`
 }
 
 type ExecuteToolRequest struct {
@@ -99,19 +91,8 @@ type ExecuteToolRequest struct {
 }
 
 type TaskCompletionRequest struct {
-	ProjectID string                    `json:"project_id"`
-	Event     domain.Event              `json:"event"`
-	Decision  agent.DecisionOutput      `json:"decision"`
 	Status    string                    `json:"status"`
 	Processes []domain.ProcessReference `json:"processes,omitempty"`
-	Persist   bool                      `json:"persist,omitempty"`
-	Report    bool                      `json:"report,omitempty"`
-}
-
-type ProcessRequest struct {
-	ProjectID  string `json:"project_id"`
-	ProcessID  string `json:"process_id"`
-	LimitBytes int64  `json:"limit_bytes,omitempty"`
 }
 
 type ExecuteToolResult struct {
@@ -203,9 +184,39 @@ func (a *Activities) logActivityStep(activity, step string, attrs ...any) {
 	a.activityLogger().Info("runtime activity trace", append(base, attrs...)...)
 }
 
+func (a *Activities) NotifyTyping(ctx context.Context, event domain.Event) error {
+	a.logActivityStep("NotifyTyping", "start",
+		slog.String("project_id", strings.TrimSpace(event.ProjectID)),
+		slog.String("event_id", event.ID),
+		slog.String("channel_type", string(event.ChannelType)),
+		slog.String("channel_id", strings.TrimSpace(event.ChannelID)),
+	)
+	reporter, ok := a.Reporter.(TypingReporter)
+	if !ok || reporter == nil {
+		a.logActivityStep("NotifyTyping", "skip_no_reporter",
+			slog.String("project_id", strings.TrimSpace(event.ProjectID)),
+			slog.String("event_id", event.ID),
+		)
+		return nil
+	}
+	if err := reporter.NotifyTyping(ctx, event); err != nil {
+		a.logActivityStep("NotifyTyping", "error",
+			slog.String("project_id", strings.TrimSpace(event.ProjectID)),
+			slog.String("event_id", event.ID),
+			slog.String("error", err.Error()),
+		)
+		return nil
+	}
+	a.logActivityStep("NotifyTyping", "done",
+		slog.String("project_id", strings.TrimSpace(event.ProjectID)),
+		slog.String("event_id", event.ID),
+	)
+	return nil
+}
+
 func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) (NextActionResult, error) {
 	if request.Completion != nil {
-		return a.completeTask(ctx, *request.Completion)
+		return a.completeTask(ctx, request.ProjectID, request.Event, agent.DecisionOutput{}, *request.Completion, false, false)
 	}
 	a.logActivityStep("NextAction", "start",
 		slog.String("project_id", strings.TrimSpace(request.ProjectID)),
@@ -373,7 +384,7 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 			slog.String("event_id", event.ID),
 		)
 		engineOutput.Status = NextActionStatusBlocked
-		engineOutput.FinalAnswer = cycleLimitFinalAnswer(history)
+		engineOutput.Decision.ResponseMessage = cycleLimitFinalAnswer(history)
 		engineOutput.ToolChoice = nil
 	}
 
@@ -469,12 +480,11 @@ func (a *Activities) prepareToolNextAction(ctx context.Context, decision agent.D
 	)
 
 	return NextActionResult{
-		Decision:      decision,
-		ToolChoice:    &choice,
-		WorkItemID:    workItemID,
-		Observation:   observation,
-		Status:        NextActionStatusTool,
-		AssistantText: assistantText,
+		Decision:    decision,
+		ToolChoice:  &choice,
+		WorkItemID:  workItemID,
+		Observation: observation,
+		Status:      NextActionStatusTool,
 	}, nil
 }
 
@@ -501,20 +511,14 @@ func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, d
 	decision.ToolChoice = agent.ToolChoice{}
 	decision.ResponseMessage = message
 	markFinalDecisionWorkItems(&decision, terminalWorkItemStatus(output.Status), observation, now)
-	result, err := a.completeTask(ctx, TaskCompletionRequest{
-		ProjectID: event.ProjectID,
-		Event:     event,
-		Decision:  decision,
+	result, err := a.completeTask(ctx, event.ProjectID, event, decision, TaskCompletionRequest{
 		Status:    output.Status,
 		Processes: processes,
-		Persist:   true,
-		Report:    true,
-	})
+	}, true, true)
 	if err != nil {
 		return NextActionResult{}, err
 	}
 	result.Observation = observation
-	result.AssistantText = output.AssistantText
 	a.logActivityStep("NextAction", "finish_done",
 		slog.String("project_id", event.ProjectID),
 		slog.String("event_id", event.ID),
@@ -523,23 +527,21 @@ func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, d
 	return result, nil
 }
 
-func (a *Activities) completeTask(ctx context.Context, request TaskCompletionRequest) (NextActionResult, error) {
-	event := request.Event
+func (a *Activities) completeTask(ctx context.Context, projectID string, event domain.Event, decision agent.DecisionOutput, request TaskCompletionRequest, persist bool, report bool) (NextActionResult, error) {
 	if strings.TrimSpace(event.ProjectID) == "" {
-		event.ProjectID = strings.TrimSpace(request.ProjectID)
+		event.ProjectID = strings.TrimSpace(projectID)
 	}
 	status := strings.TrimSpace(request.Status)
 	if status == "" {
 		status = NextActionStatusFailed
 	}
-	decision := request.Decision
 	a.logActivityStep("NextAction", "complete_task_begin",
 		slog.String("project_id", event.ProjectID),
 		slog.String("event_id", event.ID),
 		slog.String("status", status),
 		slog.Int("processes", len(request.Processes)),
-		slog.Bool("persist", request.Persist),
-		slog.Bool("report", request.Report),
+		slog.Bool("persist", persist),
+		slog.Bool("report", report),
 	)
 
 	cleaned, stopped, cleanupFailed := a.cleanupTaskProcesses(ctx, event.ProjectID, request.Processes)
@@ -552,7 +554,7 @@ func (a *Activities) completeTask(ctx context.Context, request TaskCompletionReq
 	}
 
 	message := strings.TrimSpace(decision.ResponseMessage)
-	if request.Persist {
+	if persist {
 		if err := a.persistDecision(ctx, decision); err != nil {
 			a.logActivityStep("NextAction", "complete_task_persist_error",
 				slog.String("project_id", event.ProjectID),
@@ -562,7 +564,7 @@ func (a *Activities) completeTask(ctx context.Context, request TaskCompletionReq
 			return NextActionResult{}, err
 		}
 	}
-	if request.Report && status != NextActionStatusIgnored && a.Reporter != nil && message != "" {
+	if report && status != NextActionStatusIgnored && a.Reporter != nil && message != "" {
 		a.logActivityStep("NextAction", "complete_task_report_begin",
 			slog.String("project_id", event.ProjectID),
 			slog.String("event_id", event.ID),
@@ -589,10 +591,9 @@ func (a *Activities) completeTask(ctx context.Context, request TaskCompletionReq
 		slog.Int("processes", len(cleaned)),
 	)
 	return NextActionResult{
-		Decision:    decision,
-		FinalAnswer: message,
-		Status:      status,
-		Processes:   cleaned,
+		Decision:  decision,
+		Status:    status,
+		Processes: cleaned,
 	}, nil
 }
 
@@ -707,7 +708,7 @@ func (a *Activities) persistDecision(ctx context.Context, decision agent.Decisio
 
 func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest) (ExecuteToolResult, error) {
 	if request.ToolChoice.Type == domain.ToolTypeShell && request.ToolChoice.RunMode == domain.ToolRunModeStartBackground {
-		return a.StartShellProcess(ctx, request)
+		return a.startShellProcess(ctx, request)
 	}
 	a.logActivityStep("ExecuteTool", "start",
 		slog.String("project_id", strings.TrimSpace(request.ProjectID)),
@@ -917,7 +918,7 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 	}, nil
 }
 
-func (a *Activities) StartShellProcess(ctx context.Context, request ExecuteToolRequest) (ExecuteToolResult, error) {
+func (a *Activities) startShellProcess(ctx context.Context, request ExecuteToolRequest) (ExecuteToolResult, error) {
 	execution, err := newToolExecutionContext(request)
 	if err != nil {
 		return ExecuteToolResult{}, err
@@ -1054,18 +1055,6 @@ func (a *Activities) StartShellProcess(ctx context.Context, request ExecuteToolR
 		Metadata:         metadata,
 		Processes:        processes,
 	}, nil
-}
-
-func (a *Activities) CheckShellProcess(ctx context.Context, request ProcessRequest) (domain.ManagedProcess, error) {
-	return shelltool.NewProcessManager(a.activityLogger()).Check(ctx, a.runtimeStateDir(request.ProjectID), request.ProcessID)
-}
-
-func (a *Activities) StopShellProcess(ctx context.Context, request ProcessRequest) (domain.ManagedProcess, error) {
-	return shelltool.NewProcessManager(a.activityLogger()).Stop(ctx, a.runtimeStateDir(request.ProjectID), request.ProcessID)
-}
-
-func (a *Activities) ReadShellProcessLogs(ctx context.Context, request ProcessRequest) (shelltool.ProcessLogResult, error) {
-	return shelltool.NewProcessManager(a.activityLogger()).Logs(ctx, a.runtimeStateDir(request.ProjectID), request.ProcessID, request.LimitBytes)
 }
 
 func (a *Activities) runChosenTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
