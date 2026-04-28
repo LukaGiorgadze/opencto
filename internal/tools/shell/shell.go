@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/opencto/opencto/internal/domain"
+	"github.com/opencto/opencto/internal/workspace"
 )
 
 var (
@@ -118,14 +119,9 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 }
 
 func secureWorkingDir(workspaceRoot, workingDir string, allowOutside bool) (string, error) {
-	root := workspaceRoot
-	if root == "" {
-		root = "."
-	}
-
-	absRoot, err := filepath.Abs(root)
+	absRoot, err := workspace.ResolveRoot(workspaceRoot)
 	if err != nil {
-		return "", fmt.Errorf("resolve workspace root: %w", err)
+		return "", err
 	}
 
 	dir := workingDir

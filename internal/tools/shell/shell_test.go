@@ -52,6 +52,23 @@ func TestSafeExecutorRunsCommandInsideWorkspace(t *testing.T) {
 	}
 }
 
+func TestSecureWorkingDirDefaultsToOpenCTOInUserHome(t *testing.T) {
+	t.Parallel()
+
+	workingDir, err := secureWorkingDir("", "", false)
+	if err != nil {
+		t.Fatalf("resolve working directory: %v", err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("resolve user home: %v", err)
+	}
+	want := filepath.Join(home, "opencto")
+	if workingDir != want {
+		t.Fatalf("expected %q, got %q", want, workingDir)
+	}
+}
+
 func TestHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
 		return

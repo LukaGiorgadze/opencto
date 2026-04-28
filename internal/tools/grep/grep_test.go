@@ -2,6 +2,8 @@ package grep
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -37,5 +39,22 @@ func TestRequestUnmarshalTreatsNullableDefaultsAsUnset(t *testing.T) {
 	}
 	if normalized.HeadLimit != defaultHeadLimit {
 		t.Fatalf("expected nullable head_limit to use default %d, got %d", defaultHeadLimit, normalized.HeadLimit)
+	}
+}
+
+func TestSecureWorkingDirDefaultsToOpenCTOInUserHome(t *testing.T) {
+	t.Parallel()
+
+	workingDir, err := secureWorkingDir("", "", false)
+	if err != nil {
+		t.Fatalf("resolve working directory: %v", err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("resolve user home: %v", err)
+	}
+	want := filepath.Join(home, "opencto")
+	if workingDir != want {
+		t.Fatalf("expected %q, got %q", want, workingDir)
 	}
 }

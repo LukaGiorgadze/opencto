@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"strings"
+
+	"github.com/opencto/opencto/internal/workspace"
 )
 
 type Config struct {
@@ -99,6 +101,11 @@ func Load(path string) (Config, error) {
 		Observability: raw.Observability,
 	}
 
+	cfg.Project.WorkspaceRoot, err = workspace.ResolveRoot(cfg.Project.WorkspaceRoot)
+	if err != nil {
+		return Config{}, err
+	}
+
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
 	}
@@ -117,7 +124,6 @@ func (c *Config) validate() error {
 
 	requireString(c.Project.ID, "project.id")
 	requireString(c.Project.Name, "project.name")
-	requireString(c.Project.WorkspaceRoot, "project.workspace_root")
 	requireString(c.LLM.Provider, "llm.provider")
 	requireString(c.LLM.BaseURL, "llm.base_url")
 	requireString(c.LLM.ModelReasoning, "llm.model_reasoning")

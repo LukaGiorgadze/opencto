@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/opencto/opencto/internal/domain"
+	"github.com/opencto/opencto/internal/workspace"
 )
 
 const (
@@ -280,14 +281,9 @@ func ripgrepArgs(req Request) []string {
 }
 
 func secureWorkingDir(workspaceRoot, workingDir string, allowOutside bool) (string, error) {
-	root := workspaceRoot
-	if root == "" {
-		root = "."
-	}
-
-	absRoot, err := filepath.Abs(root)
+	absRoot, err := workspace.ResolveRoot(workspaceRoot)
 	if err != nil {
-		return "", fmt.Errorf("resolve workspace root: %w", err)
+		return "", err
 	}
 
 	dir := workingDir
@@ -313,13 +309,9 @@ func secureSearchPath(workspaceRoot, workingDir, searchPath string, allowOutside
 		return searchPath, nil
 	}
 
-	root := workspaceRoot
-	if root == "" {
-		root = "."
-	}
-	absRoot, err := filepath.Abs(root)
+	absRoot, err := workspace.ResolveRoot(workspaceRoot)
 	if err != nil {
-		return "", fmt.Errorf("resolve workspace root: %w", err)
+		return "", err
 	}
 
 	candidate := searchPath

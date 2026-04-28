@@ -25,7 +25,7 @@
         },
         "working_dir": {
             "type": ["string", "null"],
-            "description": "Working directory for the command. Use null to use the project root."
+            "description": "Working directory for the command. Use null to use the configured workspace root, which defaults to $HOME/opencto."
         },
         "timeout_ms": {
             "type": ["integer", "null"],
