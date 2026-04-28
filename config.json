@@ -1,0 +1,31 @@
+{
+  "project": {
+    "id": "default",
+    "name": "OpenCTO",
+    "workspace_root": "."
+  },
+  "llm": {
+    "provider": "openai",
+    "base_url": "http://127.0.0.1:4000",
+    "model_reasoning": "gpt-5.4-mini",
+    "model_fast": "gpt-5.4-nano",
+    "transcription_model": "gpt-4o-mini-transcribe",
+    "embedding_model": "text-embedding-3-small",
+    "embedding_dimensions": 1536
+  },
+  "temporal": {
+    "host_port": "127.0.0.1:7233",
+    "namespace": "default",
+    "task_queue": "opencto",
+    "continue_as_new_after_events": 1000
+  },
+  "channels": {
+    "discord": {
+      "enabled": true
+    }
+  },
+  "observability": {
+    "log_level": "INFO",
+    "json_logs": true
+  }
+}

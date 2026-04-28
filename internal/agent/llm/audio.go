@@ -16,8 +16,6 @@ import (
 	"github.com/opencto/opencto/internal/domain"
 )
 
-const defaultTranscriptionModel = "gpt-4o-mini-transcribe"
-
 type audioTranscriber interface {
 	TranscribeAudio(context.Context, domain.EventAttachment) (string, error)
 }
@@ -31,9 +29,6 @@ type openAICompatibleAudioTranscriber struct {
 
 func newOpenAICompatibleAudioTranscriber(apiKey, baseURL, model string, httpClient *http.Client) *openAICompatibleAudioTranscriber {
 	model = strings.TrimSpace(model)
-	if model == "" {
-		model = defaultTranscriptionModel
-	}
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}

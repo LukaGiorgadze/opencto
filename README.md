@@ -196,26 +196,33 @@ To prevent race conditions, OpenCTO enforces a **Project-Level Execution Mutex**
 
 ## 8. Configuration
 
-```toml
-[project]
-id   = "default"
-
-[llm]
-provider         = "openai"
-base_url         = "http://127.0.0.1:4000"
-model_reasoning  = "gpt-5.4"
-model_fast       = "gpt-5.4-mini"
-transcription_model = "gpt-4o-mini-transcribe"
-embedding_model  = "text-embedding-3-small"
-
-[mcp]
-registry_file = "./config/mcp-registry.json"
-
-[autonomy]
-threshold                  = 2
-
-[temporal]
-..temporal specific config...
+```json
+{
+  "project": {
+    "id": "default",
+    "name": "OpenCTO",
+    "workspace_root": "."
+  },
+  "llm": {
+    "provider": "openai",
+    "base_url": "http://127.0.0.1:4000",
+    "model_reasoning": "gpt-5.4-mini",
+    "model_fast": "gpt-5.4-nano",
+    "transcription_model": "gpt-4o-mini-transcribe",
+    "embedding_model": "text-embedding-3-small",
+    "embedding_dimensions": 1536
+  },
+  "temporal": {
+    "host_port": "127.0.0.1:7233",
+    "namespace": "default",
+    "task_queue": "opencto",
+    "continue_as_new_after_events": 1000
+  },
+  "observability": {
+    "log_level": "INFO",
+    "json_logs": true
+  }
+}
 ```
 
 ---
@@ -260,11 +267,11 @@ opencto/
 │   │   ├── shell/              # OS Shell executor (os/exec wrapper)
 │   │   ├── browser/            # Browser automation (e.g., Playwright/Rod)
 │   │   ├── mcp/                # MCP Client implementation
-│   └── config/                 # TOML parsing and Config Structs
+│   └── config/                 # JSON parsing and Config structs
 ├── pkg/                        # Exportable/Reusable packages (if any)
 ├── data/                       # Local runtime artifacts and logs (gitignored)
 ├── skills/                     # Skill definition files (e.g., supabase.md, nextjs.md)
-├── config/                     # Default config (e.g., config.toml, mcp-registry.json)
+├── config/                     # Default config (e.g., config.json, mcp-registry.json)
 ├── go.mod
 └── go.sum
 ```

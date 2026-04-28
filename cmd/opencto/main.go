@@ -26,7 +26,7 @@ import (
 
 func main() {
 	var (
-		configPath = flag.String("config", "config.toml", "path to config file")
+		configPath = flag.String("config", "config.json", "path to config file")
 		mode       = flag.String("mode", "validate", "validate|worker|inject|serve")
 		body       = flag.String("body", "", "event body for inject mode")
 		actor      = flag.String("actor", "local-user", "actor name for inject mode")

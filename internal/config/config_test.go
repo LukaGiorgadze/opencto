@@ -11,10 +11,13 @@ func TestLoadRequiresExplicitConfigValues(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.toml")
+	path := filepath.Join(dir, "config.json")
 	data := []byte(`
-[project]
-workspace_root = "."
+{
+  "project": {
+    "workspace_root": "."
+  }
+}
 `)
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -49,31 +52,34 @@ func TestLoadParsesLLMSecretFields(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.toml")
+	path := filepath.Join(dir, "config.json")
 	data := []byte(`
-[project]
-id = "default"
-name = "OpenCTO"
-workspace_root = "."
-
-[llm]
-provider = "openai"
-api_key = "test-key"
-base_url = "http://127.0.0.1:4000"
-model_reasoning = "gpt-5.4"
-model_fast = "gpt-5.4-mini"
-transcription_model = "gpt-4o-mini-transcribe"
-embedding_model = "text-embedding-3-large"
-embedding_dimensions = 1024
-
-[temporal]
-host_port = "127.0.0.1:7233"
-namespace = "default"
-task_queue = "opencto"
-continue_as_new_after_events = 1000
-
-[observability]
-log_level = "INFO"
+{
+  "project": {
+    "id": "default",
+    "name": "OpenCTO",
+    "workspace_root": "."
+  },
+  "llm": {
+    "provider": "openai",
+    "api_key": "test-key",
+    "base_url": "http://127.0.0.1:4000",
+    "model_reasoning": "gpt-5.4",
+    "model_fast": "gpt-5.4-mini",
+    "transcription_model": "gpt-4o-mini-transcribe",
+    "embedding_model": "text-embedding-3-large",
+    "embedding_dimensions": 1024
+  },
+  "temporal": {
+    "host_port": "127.0.0.1:7233",
+    "namespace": "default",
+    "task_queue": "opencto",
+    "continue_as_new_after_events": 1000
+  },
+  "observability": {
+    "log_level": "INFO"
+  }
+}
 `)
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -105,30 +111,33 @@ func TestLoadRejectsNonPositiveNumericConfigValues(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.toml")
+	path := filepath.Join(dir, "config.json")
 	data := []byte(`
-[project]
-id = "default"
-name = "OpenCTO"
-workspace_root = "."
-
-[llm]
-provider = "openai"
-base_url = "http://127.0.0.1:4000"
-model_reasoning = "gpt-5.4"
-model_fast = "gpt-5.4-mini"
-transcription_model = "gpt-4o-mini-transcribe"
-embedding_model = "text-embedding-3-large"
-embedding_dimensions = 0
-
-[temporal]
-host_port = "127.0.0.1:7233"
-namespace = "default"
-task_queue = "opencto"
-continue_as_new_after_events = 0
-
-[observability]
-log_level = "INFO"
+{
+  "project": {
+    "id": "default",
+    "name": "OpenCTO",
+    "workspace_root": "."
+  },
+  "llm": {
+    "provider": "openai",
+    "base_url": "http://127.0.0.1:4000",
+    "model_reasoning": "gpt-5.4",
+    "model_fast": "gpt-5.4-mini",
+    "transcription_model": "gpt-4o-mini-transcribe",
+    "embedding_model": "text-embedding-3-large",
+    "embedding_dimensions": 0
+  },
+  "temporal": {
+    "host_port": "127.0.0.1:7233",
+    "namespace": "default",
+    "task_queue": "opencto",
+    "continue_as_new_after_events": 0
+  },
+  "observability": {
+    "log_level": "INFO"
+  }
+}
 `)
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write config: %v", err)

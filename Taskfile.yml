@@ -4,7 +4,7 @@ dotenv:
   - .env
 
 vars:
-  CONFIG: '{{default "config.toml" .CONFIG}}'
+  CONFIG: '{{default "config.json" .CONFIG}}'
   ACTOR: '{{default "local-user" .ACTOR}}'
   BODY: '{{default "hello from task inject" .BODY}}'
 

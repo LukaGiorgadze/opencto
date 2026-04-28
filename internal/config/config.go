@@ -1,75 +1,74 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
-
-	"github.com/pelletier/go-toml/v2"
 )
 
 type Config struct {
-	Project       ProjectConfig       `toml:"project"`
-	LLM           LLMConfig           `toml:"llm"`
-	Temporal      TemporalConfig      `toml:"temporal"`
-	Channels      ChannelsConfig      `toml:"channels"`
-	Observability ObservabilityConfig `toml:"observability"`
+	Project       ProjectConfig       `json:"project"`
+	LLM           LLMConfig           `json:"llm"`
+	Temporal      TemporalConfig      `json:"temporal"`
+	Channels      ChannelsConfig      `json:"channels"`
+	Observability ObservabilityConfig `json:"observability"`
 }
 
 type fileConfig struct {
-	Project       ProjectConfig       `toml:"project"`
-	LLM           llmFileConfig       `toml:"llm"`
-	Temporal      TemporalConfig      `toml:"temporal"`
-	Channels      ChannelsConfig      `toml:"channels"`
-	Observability ObservabilityConfig `toml:"observability"`
+	Project       ProjectConfig       `json:"project"`
+	LLM           llmFileConfig       `json:"llm"`
+	Temporal      TemporalConfig      `json:"temporal"`
+	Channels      ChannelsConfig      `json:"channels"`
+	Observability ObservabilityConfig `json:"observability"`
 }
 
 type llmFileConfig struct {
-	Provider            string `toml:"provider"`
-	BaseURL             string `toml:"base_url"`
-	ModelReasoning      string `toml:"model_reasoning"`
-	ModelFast           string `toml:"model_fast"`
-	TranscriptionModel  string `toml:"transcription_model"`
-	EmbeddingModel      string `toml:"embedding_model"`
-	EmbeddingDimensions int    `toml:"embedding_dimensions"`
-	APIKey              string `toml:"api_key"`
+	Provider            string `json:"provider"`
+	BaseURL             string `json:"base_url"`
+	ModelReasoning      string `json:"model_reasoning"`
+	ModelFast           string `json:"model_fast"`
+	TranscriptionModel  string `json:"transcription_model"`
+	EmbeddingModel      string `json:"embedding_model"`
+	EmbeddingDimensions int    `json:"embedding_dimensions"`
+	APIKey              string `json:"api_key"`
 }
 
 type ProjectConfig struct {
-	ID            string `toml:"id"`
-	Name          string `toml:"name"`
-	WorkspaceRoot string `toml:"workspace_root"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	WorkspaceRoot string `json:"workspace_root"`
 }
 
 type LLMConfig struct {
-	Provider            string `toml:"provider"`
-	BaseURL             string `toml:"base_url"`
-	ModelReasoning      string `toml:"model_reasoning"`
-	ModelFast           string `toml:"model_fast"`
-	TranscriptionModel  string `toml:"transcription_model"`
-	EmbeddingModel      string `toml:"embedding_model"`
-	EmbeddingDimensions int    `toml:"embedding_dimensions"`
-	APIKey              string `toml:"api_key"`
+	Provider            string `json:"provider"`
+	BaseURL             string `json:"base_url"`
+	ModelReasoning      string `json:"model_reasoning"`
+	ModelFast           string `json:"model_fast"`
+	TranscriptionModel  string `json:"transcription_model"`
+	EmbeddingModel      string `json:"embedding_model"`
+	EmbeddingDimensions int    `json:"embedding_dimensions"`
+	APIKey              string `json:"api_key"`
 }
 
 type TemporalConfig struct {
-	HostPort                 string `toml:"host_port"`
-	Namespace                string `toml:"namespace"`
-	TaskQueue                string `toml:"task_queue"`
-	ContinueAsNewAfterEvents int    `toml:"continue_as_new_after_events"`
+	HostPort                 string `json:"host_port"`
+	Namespace                string `json:"namespace"`
+	TaskQueue                string `json:"task_queue"`
+	ContinueAsNewAfterEvents int    `json:"continue_as_new_after_events"`
 }
 
 type ChannelsConfig struct {
-	Discord DiscordConfig `toml:"discord"`
+	Discord DiscordConfig `json:"discord"`
 }
 
 type DiscordConfig struct {
-	Enabled bool `toml:"enabled"`
+	Enabled bool `json:"enabled"`
 }
 
 type ObservabilityConfig struct {
-	LogLevel string `toml:"log_level"`
-	JSONLogs bool   `toml:"json_logs"`
+	LogLevel string `json:"log_level"`
+	JSONLogs bool   `json:"json_logs"`
 }
 
 func Load(path string) (Config, error) {
@@ -79,7 +78,7 @@ func Load(path string) (Config, error) {
 	}
 
 	var raw fileConfig
-	if err := toml.Unmarshal(data, &raw); err != nil {
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return Config{}, err
 	}
 

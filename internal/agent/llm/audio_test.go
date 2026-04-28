@@ -15,6 +15,8 @@ import (
 func TestOpenAICompatibleAudioTranscriberPostsMultipartAudio(t *testing.T) {
 	t.Parallel()
 
+	const transcriptionModel = "configured-transcription-model"
+
 	var sawAuthorization bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/audio/transcriptions" {
@@ -24,7 +26,7 @@ func TestOpenAICompatibleAudioTranscriberPostsMultipartAudio(t *testing.T) {
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			t.Fatalf("parse multipart form: %v", err)
 		}
-		if got := r.FormValue("model"); got != defaultTranscriptionModel {
+		if got := r.FormValue("model"); got != transcriptionModel {
 			t.Fatalf("unexpected model: %s", got)
 		}
 		file, header, err := r.FormFile("file")
@@ -45,7 +47,7 @@ func TestOpenAICompatibleAudioTranscriberPostsMultipartAudio(t *testing.T) {
 		t.Fatalf("write audio: %v", err)
 	}
 
-	transcriber := newOpenAICompatibleAudioTranscriber("test-key", server.URL, "", server.Client())
+	transcriber := newOpenAICompatibleAudioTranscriber("test-key", server.URL, transcriptionModel, server.Client())
 	transcript, err := transcriber.TranscribeAudio(context.Background(), domain.EventAttachment{
 		Filename:  "voice.ogg",
 		LocalPath: path,

@@ -33,7 +33,7 @@ export DISCORD_APPLICATION_ID="..."
 ```
 
 4. Invite the bot to your server with `Send Messages`, `View Channels`, and `Read Message History`.
-5. Set `[channels.discord].enabled = true` in `config.toml` or your local config.
+5. Set `"channels.discord.enabled": true` in `config.json` or your local config.
 6. Run `task serve`.
 
 `task worker` alone does not start the Discord adapter. Use `task serve` when Discord is enabled.
