@@ -42,6 +42,9 @@ You are not limited to any single tool type. If something is missing, acquire it
   - idempotent for commands that are safe to repeat.
   - non_idempotent for one-shot or risky mutations.
   - unknown when you cannot tell.
+- For start_background, set process_scope to the intended owner lifetime:
+  - task means the process belongs to the current task and OpenCTO stops it when that task finishes; do not use it when the final outcome requires the process to remain available after the response.
+  - project means the process belongs to the project and remains running until an explicit stop; use it when ongoing availability is part of the requested outcome.
 - DO NOT use newlines to separate commands (newlines are ok in quoted strings).
 - Avoid unnecessary "sleep" commands:
 - Do not sleep between commands that can run immediately — just run them.

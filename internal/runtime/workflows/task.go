@@ -42,6 +42,7 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 	additionalEvents := append([]domain.Event(nil), input.AdditionalEvents...)
 	var observationHistory []agent.ExecutionFeedback
 	var lastResult *activities.ExecuteToolResult
+	var processes []domain.ProcessReference
 
 	for cycle := 1; cycle <= maxExecutionCycles; cycle++ {
 		drainTaskSignals(ctx, &additionalEvents)
@@ -52,11 +53,12 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			Decision:           decision,
 			LastResult:         lastResult,
 			ObservationHistory: observationHistory,
+			Processes:          processes,
 			ExecutionCycle:     cycle,
 			ResumedFromPause:   input.ResumedFromPause,
 		})
 		if err != nil {
-			return TaskWorkflowResult{}, err
+			return completeTaskAfterProcessStart(decisionCtx, input.ProjectID, input.Event, decision, processes, err)
 		}
 
 		decision = next.Decision
@@ -67,15 +69,16 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			return resultFromNextAction(next, decision), nil
 		}
 		if next.ToolChoice == nil {
-			return TaskWorkflowResult{}, fmt.Errorf("Activities.NextAction returned non-terminal status %q without a tool choice", next.Status)
+			return completeTaskAfterProcessStart(decisionCtx, input.ProjectID, input.Event, decision, processes, fmt.Errorf("Activities.NextAction returned non-terminal status %q without a tool choice", next.Status))
 		}
 		if strings.TrimSpace(next.WorkItemID) == "" {
-			return TaskWorkflowResult{}, fmt.Errorf("Activities.NextAction returned a tool choice without a work item id")
+			return completeTaskAfterProcessStart(decisionCtx, input.ProjectID, input.Event, decision, processes, fmt.Errorf("Activities.NextAction returned a tool choice without a work item id"))
 		}
 
 		execResult, canceled, err := executeToolStep(ctx, toolCtx, input.ProjectID, next.WorkItemID, *next.ToolChoice, cycle, &additionalEvents)
+		mergeTaskProcesses(&processes, execResult.Processes)
 		if canceled {
-			return TaskWorkflowResult{Completed: false, Decision: decision}, nil
+			return completeIncompleteTask(decisionCtx, input.ProjectID, input.Event, decision, processes)
 		}
 		if err != nil {
 			execResult = failedExecutionActivityResult(*next.ToolChoice, next.WorkItemID, cycle, err)
@@ -90,18 +93,19 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 		Decision:           decision,
 		LastResult:         lastResult,
 		ObservationHistory: observationHistory,
+		Processes:          processes,
 		ExecutionCycle:     maxExecutionCycles + 1,
 		ForceFinal:         true,
 		ResumedFromPause:   input.ResumedFromPause,
 	})
 	if err != nil {
-		return TaskWorkflowResult{}, err
+		return completeTaskAfterProcessStart(decisionCtx, input.ProjectID, input.Event, decision, processes, err)
 	}
 	if final.Observation != nil {
 		observationHistory = append(observationHistory, *final.Observation)
 	}
 	if !final.IsTerminal() {
-		return TaskWorkflowResult{}, fmt.Errorf("Activities.NextAction returned non-terminal status %q for force-final request", final.Status)
+		return completeTaskAfterProcessStart(decisionCtx, input.ProjectID, input.Event, final.Decision, processes, fmt.Errorf("Activities.NextAction returned non-terminal status %q for force-final request", final.Status))
 	}
 	return resultFromNextAction(final, final.Decision), nil
 }
@@ -115,11 +119,7 @@ func nextAction(ctx workflow.Context, request activities.NextActionRequest) (act
 func executeToolStep(ctx workflow.Context, toolCtx workflow.Context, projectID, workItemID string, choice agent.ToolChoice, cycle int, additionalEvents *[]domain.Event) (activities.ExecuteToolResult, bool, error) {
 	activityCtx, cancelActivity := workflow.WithCancel(toolCtx)
 	defer cancelActivity()
-	activityName := "Activities.ExecuteTool"
-	if choice.Type == domain.ToolTypeShell && choice.RunMode == domain.ToolRunModeStartBackground {
-		activityName = "Activities.StartShellProcess"
-	}
-	future := workflow.ExecuteActivity(activityCtx, activityName, activities.ExecuteToolRequest{
+	future := workflow.ExecuteActivity(activityCtx, "Activities.ExecuteTool", activities.ExecuteToolRequest{
 		ProjectID:  projectID,
 		WorkItemID: workItemID,
 		ToolChoice: choice,
@@ -189,6 +189,56 @@ func resultFromNextAction(next activities.NextActionResult, decision agent.Decis
 	return TaskWorkflowResult{
 		Completed: next.Status == activities.NextActionStatusCompleted || next.Status == activities.NextActionStatusIgnored,
 		Decision:  decision,
+		Processes: next.Processes,
+	}
+}
+
+func completeTaskAfterProcessStart(ctx workflow.Context, projectID string, event domain.Event, decision agent.DecisionOutput, processes []domain.ProcessReference, err error) (TaskWorkflowResult, error) {
+	if len(processes) == 0 {
+		return TaskWorkflowResult{}, err
+	}
+	return completeIncompleteTask(ctx, projectID, event, decision, processes)
+}
+
+func completeIncompleteTask(ctx workflow.Context, projectID string, event domain.Event, decision agent.DecisionOutput, processes []domain.ProcessReference) (TaskWorkflowResult, error) {
+	if len(processes) == 0 {
+		return TaskWorkflowResult{Completed: false, Decision: decision}, nil
+	}
+	cleanupCtx, _ := workflow.NewDisconnectedContext(ctx)
+	var next activities.NextActionResult
+	err := workflow.ExecuteActivity(cleanupCtx, "Activities.NextAction", activities.NextActionRequest{
+		ProjectID: projectID,
+		Event:     event,
+		Completion: &activities.TaskCompletionRequest{
+			ProjectID: projectID,
+			Event:     event,
+			Decision:  decision,
+			Status:    activities.NextActionStatusFailed,
+			Processes: processes,
+		},
+	}).Get(cleanupCtx, &next)
+	if err != nil {
+		return TaskWorkflowResult{}, err
+	}
+	return resultFromNextAction(next, next.Decision), nil
+}
+
+func mergeTaskProcesses(processes *[]domain.ProcessReference, updates []domain.ProcessReference) {
+	for _, update := range updates {
+		if strings.TrimSpace(update.ID) == "" {
+			continue
+		}
+		replaced := false
+		for index := range *processes {
+			if (*processes)[index].ID == update.ID {
+				(*processes)[index] = update
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			*processes = append(*processes, update)
+		}
 	}
 }
 

@@ -63,6 +63,13 @@ const (
 	ToolIdempotencyUnknown       ToolIdempotency = "unknown"
 )
 
+type ProcessScope string
+
+const (
+	ProcessScopeTask    ProcessScope = "task"
+	ProcessScopeProject ProcessScope = "project"
+)
+
 type ToolType string
 
 const (
@@ -177,6 +184,13 @@ const (
 	ProcessStatusStopped  ProcessStatus = "stopped"
 	ProcessStatusFailed   ProcessStatus = "failed"
 )
+
+type ProcessReference struct {
+	ID          string        `json:"id"`
+	Description string        `json:"description,omitempty"`
+	Status      ProcessStatus `json:"status"`
+	Scope       ProcessScope  `json:"scope"`
+}
 
 type ManagedProcess struct {
 	ID               string        `json:"id"`

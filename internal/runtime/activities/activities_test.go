@@ -20,6 +20,24 @@ type stubProjectStore struct {
 	pending []domain.WorkItem
 }
 
+type stubEngine struct {
+	output agent.NextActionOutput
+	err    error
+}
+
+func (e stubEngine) NextAction(context.Context, agent.NextActionInput) (agent.NextActionOutput, error) {
+	return e.output, e.err
+}
+
+type captureReporter struct {
+	messages []string
+}
+
+func (r *captureReporter) Report(_ context.Context, _ domain.Event, message string) error {
+	r.messages = append(r.messages, message)
+	return nil
+}
+
 func (s stubProjectStore) Append(context.Context, domain.Event) error {
 	return nil
 }
@@ -62,6 +80,20 @@ func TestFullObservationIncludesAllStreamsAndError(t *testing.T) {
 	expected := "stdout:\ncommand output\n\nstderr:\ncommand failed\nwith stderr\n\nerror:\nexit status 1"
 	if observation != expected {
 		t.Fatalf("unexpected observation: %q", observation)
+	}
+}
+
+func TestRuntimeStateDirDefaultsToOpenCTOState(t *testing.T) {
+	t.Parallel()
+
+	got := (&Activities{}).runtimeStateDir("project-1")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("resolve user home: %v", err)
+	}
+	want := filepath.Join(home, "opencto", ".state")
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
 	}
 }
 
@@ -237,6 +269,9 @@ func TestStartShellProcessReturnsManagedProcessMetadata(t *testing.T) {
 	if processID == "" || result.Metadata["pid"] == "" {
 		t.Fatalf("expected process metadata, got %#v", result.Metadata)
 	}
+	if len(result.Processes) != 1 || result.Processes[0].ID != processID || result.Processes[0].Scope != domain.ProcessScopeTask {
+		t.Fatalf("expected process reference, got %#v", result.Processes)
+	}
 	defer func() {
 		_, _ = activities.StopShellProcess(context.Background(), ProcessRequest{ProjectID: "project-1", ProcessID: processID})
 	}()
@@ -263,6 +298,79 @@ func TestStartShellProcessReturnsManagedProcessMetadata(t *testing.T) {
 	}
 	if !strings.Contains(stdoutTail, "ready") {
 		t.Fatalf("expected stdout logs to contain ready, got %q", stdoutTail)
+	}
+}
+
+func TestNextActionReportsAfterTaskProcessCleanup(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("uses POSIX shell fixture")
+	}
+	t.Parallel()
+
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	reporter := &captureReporter{}
+	activities := Activities{
+		Engine: stubEngine{output: agent.NextActionOutput{
+			Decision: agent.DecisionOutput{WorkItems: []domain.WorkItem{{
+				ID:        "work-item-1",
+				ProjectID: "project-1",
+				Status:    domain.WorkItemStatusRunning,
+			}}},
+			FinalAnswer: "server is available",
+			Status:      NextActionStatusCompleted,
+		}},
+		Reporter:      reporter,
+		WorkspaceRoot: dir,
+		StateDir:      stateDir,
+	}
+	started, err := activities.StartShellProcess(context.Background(), ExecuteToolRequest{
+		ProjectID:  "project-1",
+		WorkItemID: "work-item-1",
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_bg",
+			Type:       domain.ToolTypeShell,
+			Intent:     "start server",
+			Command:    "sh",
+			Args:       []string{"-c", "printf 'ready\n'; sleep 30"},
+			WorkingDir: dir,
+			TimeoutMs:  1000,
+			RunMode:    domain.ToolRunModeStartBackground,
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+				"tool_call_id":    "toolu_bg",
+				"work_item_id":    "work-item-1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("start shell process: %v", err)
+	}
+	processID := started.Metadata["process_id"]
+	defer func() {
+		_, _ = activities.StopShellProcess(context.Background(), ProcessRequest{ProjectID: "project-1", ProcessID: processID})
+	}()
+
+	result, err := activities.NextAction(context.Background(), NextActionRequest{
+		ProjectID:      "project-1",
+		Event:          domain.Event{ID: "event-1", ProjectID: "project-1", Body: "run server"},
+		Processes:      started.Processes,
+		ExecutionCycle: 2,
+	})
+	if err != nil {
+		t.Fatalf("next action: %v", err)
+	}
+	if result.Status != NextActionStatusCompleted {
+		t.Fatalf("expected completed status, got %#v", result)
+	}
+	if len(result.Processes) != 1 || result.Processes[0].Status != domain.ProcessStatusStopped {
+		t.Fatalf("expected stopped process reference, got %#v", result.Processes)
+	}
+	if len(reporter.messages) != 1 {
+		t.Fatalf("expected one report, got %#v", reporter.messages)
+	}
+	if !strings.Contains(reporter.messages[0], "server is available") || !strings.Contains(reporter.messages[0], "stopped task-scoped background process") {
+		t.Fatalf("expected cleanup notice in report, got %q", reporter.messages[0])
 	}
 }
 

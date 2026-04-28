@@ -327,18 +327,27 @@ func transcriptIdempotency(feedback agent.ExecutionFeedback) string {
 	return value
 }
 
+func transcriptProcessScope(feedback agent.ExecutionFeedback) string {
+	value := strings.TrimSpace(feedback.Metadata["process_scope"])
+	if value == "" {
+		return string(domain.ProcessScopeTask)
+	}
+	return value
+}
+
 func transcriptToolCall(feedback agent.ExecutionFeedback) (string, string, error) {
 	if feedback.Tool == "" || feedback.Tool == domain.ToolTypeShell {
 		args := shellToolInput{
-			Command:     transcriptCommand(feedback),
-			Args:        feedback.Args,
-			WorkingDir:  strings.TrimSpace(feedback.Metadata["working_directory"]),
-			TimeoutMs:   transcriptTimeoutMs(feedback),
-			RunMode:     transcriptRunMode(feedback),
-			Idempotency: transcriptIdempotency(feedback),
-			Description: strings.TrimSpace(feedback.RequestedAction),
-			Destructive: feedback.Metadata["destructive"] == "true",
-			WorkItemID:  strings.TrimSpace(feedback.WorkItemID),
+			Command:      transcriptCommand(feedback),
+			Args:         feedback.Args,
+			WorkingDir:   strings.TrimSpace(feedback.Metadata["working_directory"]),
+			TimeoutMs:    transcriptTimeoutMs(feedback),
+			RunMode:      transcriptRunMode(feedback),
+			Idempotency:  transcriptIdempotency(feedback),
+			ProcessScope: transcriptProcessScope(feedback),
+			Description:  strings.TrimSpace(feedback.RequestedAction),
+			Destructive:  feedback.Metadata["destructive"] == "true",
+			WorkItemID:   strings.TrimSpace(feedback.WorkItemID),
 		}
 		encoded, err := json.Marshal(args)
 		if err != nil {

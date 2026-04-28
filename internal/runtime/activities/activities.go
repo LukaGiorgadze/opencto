@@ -26,6 +26,7 @@ import (
 	readtool "github.com/opencto/opencto/internal/tools/read"
 	shelltool "github.com/opencto/opencto/internal/tools/shell"
 	writetool "github.com/opencto/opencto/internal/tools/write"
+	"github.com/opencto/opencto/internal/workspace"
 )
 
 type ProjectStore interface {
@@ -73,25 +74,38 @@ type NextActionRequest struct {
 	Decision           agent.DecisionOutput      `json:"decision"`
 	LastResult         *ExecuteToolResult        `json:"last_result,omitempty"`
 	ObservationHistory []agent.ExecutionFeedback `json:"observation_history,omitempty"`
+	Processes          []domain.ProcessReference `json:"processes,omitempty"`
 	ExecutionCycle     int                       `json:"execution_cycle"`
 	ForceFinal         bool                      `json:"force_final,omitempty"`
 	ResumedFromPause   bool                      `json:"resumed_from_pause,omitempty"`
+	Completion         *TaskCompletionRequest    `json:"completion,omitempty"`
 }
 
 type NextActionResult struct {
-	Decision      agent.DecisionOutput     `json:"decision"`
-	ToolChoice    *agent.ToolChoice        `json:"tool_choice,omitempty"`
-	WorkItemID    string                   `json:"work_item_id,omitempty"`
-	Observation   *agent.ExecutionFeedback `json:"observation,omitempty"`
-	FinalAnswer   string                   `json:"final_answer,omitempty"`
-	Status        string                   `json:"status"`
-	AssistantText string                   `json:"assistant_text,omitempty"`
+	Decision      agent.DecisionOutput      `json:"decision"`
+	ToolChoice    *agent.ToolChoice         `json:"tool_choice,omitempty"`
+	WorkItemID    string                    `json:"work_item_id,omitempty"`
+	Observation   *agent.ExecutionFeedback  `json:"observation,omitempty"`
+	FinalAnswer   string                    `json:"final_answer,omitempty"`
+	Status        string                    `json:"status"`
+	AssistantText string                    `json:"assistant_text,omitempty"`
+	Processes     []domain.ProcessReference `json:"processes,omitempty"`
 }
 
 type ExecuteToolRequest struct {
 	ProjectID  string           `json:"project_id"`
 	WorkItemID string           `json:"work_item_id"`
 	ToolChoice agent.ToolChoice `json:"tool_choice"`
+}
+
+type TaskCompletionRequest struct {
+	ProjectID string                    `json:"project_id"`
+	Event     domain.Event              `json:"event"`
+	Decision  agent.DecisionOutput      `json:"decision"`
+	Status    string                    `json:"status"`
+	Processes []domain.ProcessReference `json:"processes,omitempty"`
+	Persist   bool                      `json:"persist,omitempty"`
+	Report    bool                      `json:"report,omitempty"`
 }
 
 type ProcessRequest struct {
@@ -101,20 +115,21 @@ type ProcessRequest struct {
 }
 
 type ExecuteToolResult struct {
-	Cycle            int                    `json:"cycle"`
-	WorkItemID       string                 `json:"work_item_id,omitempty"`
-	ToolCallID       string                 `json:"tool_call_id,omitempty"`
-	Tool             domain.ToolType        `json:"tool,omitempty"`
-	Status           domain.ExecutionStatus `json:"status"`
-	RequestedAction  string                 `json:"requested_action,omitempty"`
-	Command          string                 `json:"command,omitempty"`
-	Args             []string               `json:"args,omitempty"`
-	Input            json.RawMessage        `json:"input,omitempty"`
-	Observation      string                 `json:"observation,omitempty"`
-	Error            string                 `json:"error,omitempty"`
-	WorkingDirectory string                 `json:"working_directory,omitempty"`
-	ResultCode       string                 `json:"result_code,omitempty"`
-	Metadata         map[string]string      `json:"metadata,omitempty"`
+	Cycle            int                       `json:"cycle"`
+	WorkItemID       string                    `json:"work_item_id,omitempty"`
+	ToolCallID       string                    `json:"tool_call_id,omitempty"`
+	Tool             domain.ToolType           `json:"tool,omitempty"`
+	Status           domain.ExecutionStatus    `json:"status"`
+	RequestedAction  string                    `json:"requested_action,omitempty"`
+	Command          string                    `json:"command,omitempty"`
+	Args             []string                  `json:"args,omitempty"`
+	Input            json.RawMessage           `json:"input,omitempty"`
+	Observation      string                    `json:"observation,omitempty"`
+	Error            string                    `json:"error,omitempty"`
+	WorkingDirectory string                    `json:"working_directory,omitempty"`
+	ResultCode       string                    `json:"result_code,omitempty"`
+	Metadata         map[string]string         `json:"metadata,omitempty"`
+	Processes        []domain.ProcessReference `json:"processes,omitempty"`
 }
 
 const (
@@ -189,6 +204,9 @@ func (a *Activities) logActivityStep(activity, step string, attrs ...any) {
 }
 
 func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) (NextActionResult, error) {
+	if request.Completion != nil {
+		return a.completeTask(ctx, *request.Completion)
+	}
 	a.logActivityStep("NextAction", "start",
 		slog.String("project_id", strings.TrimSpace(request.ProjectID)),
 		slog.String("event_id", request.Event.ID),
@@ -368,7 +386,7 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 	case NextActionStatusTool:
 		return a.prepareToolNextAction(ctx, decision, observation, engineOutput, request.ExecutionCycle, now)
 	case NextActionStatusCompleted, NextActionStatusBlocked, NextActionStatusFailed, NextActionStatusIgnored:
-		return a.finishNextAction(ctx, event, decision, observation, engineOutput, now)
+		return a.finishNextAction(ctx, event, decision, observation, engineOutput, request.Processes, now)
 	default:
 		return NextActionResult{}, fmt.Errorf("unsupported next action status %q", engineOutput.Status)
 	}
@@ -460,7 +478,7 @@ func (a *Activities) prepareToolNextAction(ctx context.Context, decision agent.D
 	}, nil
 }
 
-func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, decision agent.DecisionOutput, observation *agent.ExecutionFeedback, output agent.NextActionOutput, now time.Time) (NextActionResult, error) {
+func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, decision agent.DecisionOutput, observation *agent.ExecutionFeedback, output agent.NextActionOutput, processes []domain.ProcessReference, now time.Time) (NextActionResult, error) {
 	a.logActivityStep("NextAction", "finish_begin",
 		slog.String("project_id", event.ProjectID),
 		slog.String("event_id", event.ID),
@@ -483,55 +501,176 @@ func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, d
 	decision.ToolChoice = agent.ToolChoice{}
 	decision.ResponseMessage = message
 	markFinalDecisionWorkItems(&decision, terminalWorkItemStatus(output.Status), observation, now)
-
-	a.logActivityStep("NextAction", "finish_persist_decision_begin",
-		slog.String("project_id", event.ProjectID),
-		slog.String("event_id", event.ID),
-		slog.String("status", output.Status),
-	)
-	if err := a.persistDecision(ctx, decision); err != nil {
-		a.logActivityStep("NextAction", "finish_persist_decision_error",
-			slog.String("project_id", event.ProjectID),
-			slog.String("event_id", event.ID),
-			slog.String("error", err.Error()),
-		)
+	result, err := a.completeTask(ctx, TaskCompletionRequest{
+		ProjectID: event.ProjectID,
+		Event:     event,
+		Decision:  decision,
+		Status:    output.Status,
+		Processes: processes,
+		Persist:   true,
+		Report:    true,
+	})
+	if err != nil {
 		return NextActionResult{}, err
 	}
-	if output.Status != NextActionStatusIgnored {
-		if a.Reporter != nil {
-			a.logActivityStep("NextAction", "finish_report_begin",
-				slog.String("project_id", event.ProjectID),
-				slog.String("event_id", event.ID),
-				slog.String("status", output.Status),
-			)
-			if err := a.Reporter.Report(ctx, event, message); err != nil {
-				a.logActivityStep("NextAction", "finish_report_error",
-					slog.String("project_id", event.ProjectID),
-					slog.String("event_id", event.ID),
-					slog.String("error", err.Error()),
-				)
-				return NextActionResult{}, err
-			}
-			a.logActivityStep("NextAction", "finish_report_done",
-				slog.String("project_id", event.ProjectID),
-				slog.String("event_id", event.ID),
-				slog.String("status", output.Status),
-			)
-		}
-	}
+	result.Observation = observation
+	result.AssistantText = output.AssistantText
 	a.logActivityStep("NextAction", "finish_done",
 		slog.String("project_id", event.ProjectID),
 		slog.String("event_id", event.ID),
-		slog.String("status", output.Status),
+		slog.String("status", result.Status),
+	)
+	return result, nil
+}
+
+func (a *Activities) completeTask(ctx context.Context, request TaskCompletionRequest) (NextActionResult, error) {
+	event := request.Event
+	if strings.TrimSpace(event.ProjectID) == "" {
+		event.ProjectID = strings.TrimSpace(request.ProjectID)
+	}
+	status := strings.TrimSpace(request.Status)
+	if status == "" {
+		status = NextActionStatusFailed
+	}
+	decision := request.Decision
+	a.logActivityStep("NextAction", "complete_task_begin",
+		slog.String("project_id", event.ProjectID),
+		slog.String("event_id", event.ID),
+		slog.String("status", status),
+		slog.Int("processes", len(request.Processes)),
+		slog.Bool("persist", request.Persist),
+		slog.Bool("report", request.Report),
 	)
 
+	cleaned, stopped, cleanupFailed := a.cleanupTaskProcesses(ctx, event.ProjectID, request.Processes)
+	if cleanupFailed {
+		status = NextActionStatusFailed
+		markFinalDecisionWorkItems(&decision, domain.WorkItemStatusFailed, nil, time.Now().UTC())
+	}
+	if stopped || cleanupFailed {
+		decision.ResponseMessage = appendProcessCleanupNotice(decision.ResponseMessage, cleaned, stopped, cleanupFailed)
+	}
+
+	message := strings.TrimSpace(decision.ResponseMessage)
+	if request.Persist {
+		if err := a.persistDecision(ctx, decision); err != nil {
+			a.logActivityStep("NextAction", "complete_task_persist_error",
+				slog.String("project_id", event.ProjectID),
+				slog.String("event_id", event.ID),
+				slog.String("error", err.Error()),
+			)
+			return NextActionResult{}, err
+		}
+	}
+	if request.Report && status != NextActionStatusIgnored && a.Reporter != nil && message != "" {
+		a.logActivityStep("NextAction", "complete_task_report_begin",
+			slog.String("project_id", event.ProjectID),
+			slog.String("event_id", event.ID),
+			slog.String("status", status),
+		)
+		if err := a.Reporter.Report(ctx, event, message); err != nil {
+			a.logActivityStep("NextAction", "complete_task_report_error",
+				slog.String("project_id", event.ProjectID),
+				slog.String("event_id", event.ID),
+				slog.String("error", err.Error()),
+			)
+			return NextActionResult{}, err
+		}
+		a.logActivityStep("NextAction", "complete_task_report_done",
+			slog.String("project_id", event.ProjectID),
+			slog.String("event_id", event.ID),
+			slog.String("status", status),
+		)
+	}
+	a.logActivityStep("NextAction", "complete_task_done",
+		slog.String("project_id", event.ProjectID),
+		slog.String("event_id", event.ID),
+		slog.String("status", status),
+		slog.Int("processes", len(cleaned)),
+	)
 	return NextActionResult{
-		Decision:      decision,
-		Observation:   observation,
-		FinalAnswer:   message,
-		Status:        output.Status,
-		AssistantText: output.AssistantText,
+		Decision:    decision,
+		FinalAnswer: message,
+		Status:      status,
+		Processes:   cleaned,
 	}, nil
+}
+
+func (a *Activities) cleanupTaskProcesses(ctx context.Context, projectID string, processes []domain.ProcessReference) ([]domain.ProcessReference, bool, bool) {
+	if len(processes) == 0 {
+		return nil, false, false
+	}
+	updated := append([]domain.ProcessReference(nil), processes...)
+	failed := false
+	stoppedAny := false
+	manager := shelltool.NewProcessManager(a.activityLogger())
+	for index := range updated {
+		process := &updated[index]
+		if process.Scope == domain.ProcessScopeProject || process.Status != domain.ProcessStatusRunning {
+			continue
+		}
+		stopped, err := manager.Stop(ctx, a.runtimeStateDir(projectID), process.ID)
+		if err != nil {
+			failed = true
+			continue
+		}
+		if stopped.Status == domain.ProcessStatusRunning {
+			failed = true
+			continue
+		}
+		process.Status = stopped.Status
+		stoppedAny = true
+	}
+	return updated, stoppedAny, failed
+}
+
+func appendProcessCleanupNotice(message string, processes []domain.ProcessReference, stopped bool, failed bool) string {
+	var notes []string
+	if stopped {
+		notes = append(notes, "OpenCTO stopped task-scoped background process(es) at task completion: "+processRefs(processes, false))
+	}
+	if failed {
+		notes = append(notes, "OpenCTO could not stop one or more task-scoped background process(es); they may still be running: "+processRefs(processes, true))
+	}
+	note := strings.Join(notes, " ")
+	if note == "" {
+		return strings.TrimSpace(message)
+	}
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return note
+	}
+	return message + " · " + note
+}
+
+func processRefs(processes []domain.ProcessReference, running bool) string {
+	var refs []string
+	for _, process := range processes {
+		if process.Scope == domain.ProcessScopeProject {
+			continue
+		}
+		if running && process.Status != domain.ProcessStatusRunning {
+			continue
+		}
+		if !running && process.Status == domain.ProcessStatusRunning {
+			continue
+		}
+		label := strings.TrimSpace(process.Description)
+		if label == "" {
+			label = process.ID
+		}
+		if process.ID != "" && label != process.ID {
+			label += " (" + process.ID + ")"
+		}
+		refs = append(refs, label)
+		if len(refs) == 3 {
+			break
+		}
+	}
+	if len(refs) == 0 {
+		return "unknown"
+	}
+	return strings.Join(refs, ", ")
 }
 
 func (a *Activities) persistDecision(ctx context.Context, decision agent.DecisionOutput) error {
@@ -787,6 +926,7 @@ func (a *Activities) StartShellProcess(ctx context.Context, request ExecuteToolR
 	if choice.Type != domain.ToolTypeShell {
 		return ExecuteToolResult{}, fmt.Errorf("start background process requires shell tool, got %q", choice.Type)
 	}
+	processScope := toolProcessScope(choice.ProcessScope)
 	attempt := domain.ExecutionAttempt{
 		ID:         execution.ExecutionAttemptID,
 		ProjectID:  execution.ProjectID,
@@ -800,6 +940,7 @@ func (a *Activities) StartShellProcess(ctx context.Context, request ExecuteToolR
 			"execution_cycle": strconv.Itoa(execution.Cycle),
 			"tool_call_id":    execution.ToolCallID,
 			"run_mode":        string(domain.ToolRunModeStartBackground),
+			"process_scope":   string(processScope),
 		},
 	}
 	if a.Store != nil {
@@ -815,6 +956,7 @@ func (a *Activities) StartShellProcess(ctx context.Context, request ExecuteToolR
 		WorkItemID:    execution.WorkItemID,
 		ToolCallID:    execution.ToolCallID,
 		Intent:        choice.Intent,
+		ProcessScope:  processScope,
 		Command:       choice.Command,
 		Args:          choice.Args,
 		WorkingDir:    choice.WorkingDir,
@@ -828,6 +970,7 @@ func (a *Activities) StartShellProcess(ctx context.Context, request ExecuteToolR
 		"execution_cycle":               strconv.Itoa(execution.Cycle),
 		"run_mode":                      string(domain.ToolRunModeStartBackground),
 		"idempotency":                   string(firstNonEmpty(string(choice.Idempotency), string(domain.ToolIdempotencyUnknown))),
+		"process_scope":                 string(processScope),
 		"process_id":                    processID,
 		"possible_long_running_process": "true",
 	}
@@ -885,6 +1028,15 @@ func (a *Activities) StartShellProcess(ctx context.Context, request ExecuteToolR
 			return ExecuteToolResult{}, err
 		}
 	}
+	processes := []domain.ProcessReference(nil)
+	if status == domain.ExecutionStatusSucceeded && strings.TrimSpace(process.ID) != "" {
+		processes = []domain.ProcessReference{{
+			ID:          process.ID,
+			Description: firstNonEmpty(choice.Intent, choice.Command),
+			Status:      process.Status,
+			Scope:       processScope,
+		}}
+	}
 	return ExecuteToolResult{
 		Cycle:            execution.Cycle,
 		WorkItemID:       execution.WorkItemID,
@@ -900,6 +1052,7 @@ func (a *Activities) StartShellProcess(ctx context.Context, request ExecuteToolR
 		WorkingDirectory: invocation.WorkingDirectory,
 		ResultCode:       resultCode,
 		Metadata:         metadata,
+		Processes:        processes,
 	}, nil
 }
 
@@ -952,6 +1105,7 @@ func (a *Activities) runShellTool(ctx context.Context, choice agent.ToolChoice, 
 		"shell_exit_status": strconv.Itoa(result.ExitCode),
 		"run_mode":          string(firstNonEmpty(string(choice.RunMode), string(domain.ToolRunModeWaitForExit))),
 		"idempotency":       string(firstNonEmpty(string(choice.Idempotency), string(domain.ToolIdempotencyUnknown))),
+		"process_scope":     string(toolProcessScope(choice.ProcessScope)),
 	}
 	resultCode := strconv.Itoa(result.ExitCode)
 	if errors.Is(err, context.DeadlineExceeded) {
@@ -1457,8 +1611,19 @@ func ensureToolChoiceMetadata(choice *agent.ToolChoice, workItemID string, cycle
 	if choice.Idempotency == "" {
 		choice.Idempotency = domain.ToolIdempotencyUnknown
 	}
+	if choice.ProcessScope == "" {
+		choice.ProcessScope = domain.ProcessScopeTask
+	}
 	choice.Metadata["run_mode"] = string(choice.RunMode)
 	choice.Metadata["idempotency"] = string(choice.Idempotency)
+	choice.Metadata["process_scope"] = string(choice.ProcessScope)
+}
+
+func toolProcessScope(scope domain.ProcessScope) domain.ProcessScope {
+	if scope == domain.ProcessScopeProject {
+		return domain.ProcessScopeProject
+	}
+	return domain.ProcessScopeTask
 }
 
 func markFinalDecisionWorkItems(decision *agent.DecisionOutput, status domain.WorkItemStatus, observation *agent.ExecutionFeedback, now time.Time) {
@@ -1622,18 +1787,11 @@ func toolChoiceTimeout(choice agent.ToolChoice) time.Duration {
 }
 
 func (a *Activities) runtimeStateDir(projectID string) string {
-	if strings.TrimSpace(a.StateDir) != "" {
-		return strings.TrimSpace(a.StateDir)
-	}
-	home, err := os.UserHomeDir()
+	stateDir, err := workspace.ResolveStateDir(a.StateDir, projectID)
 	if err != nil {
 		return ""
 	}
-	projectID = strings.TrimSpace(projectID)
-	if projectID == "" {
-		projectID = "default"
-	}
-	return filepath.Join(home, ".opencto", "state", projectID)
+	return stateDir
 }
 
 func processStartObservation(process domain.ManagedProcess) string {

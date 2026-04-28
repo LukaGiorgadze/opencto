@@ -255,6 +255,23 @@ func TestSecureWorkingDirDefaultsToOpenCTOInUserHome(t *testing.T) {
 	}
 }
 
+func TestProcessStateDirDefaultsToOpenCTOState(t *testing.T) {
+	t.Parallel()
+
+	stateDir, err := processStateDir("")
+	if err != nil {
+		t.Fatalf("resolve process state dir: %v", err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("resolve user home: %v", err)
+	}
+	want := filepath.Join(home, "opencto", ".state")
+	if stateDir != want {
+		t.Fatalf("expected %q, got %q", want, stateDir)
+	}
+}
+
 func TestHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
 		return

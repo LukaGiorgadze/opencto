@@ -7,6 +7,8 @@ import (
 	"strings"
 )
 
+const defaultStateDirName = ".state"
+
 func DefaultRoot() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -15,22 +17,41 @@ func DefaultRoot() (string, error) {
 	return filepath.Join(home, "opencto"), nil
 }
 
+func DefaultStateRoot() (string, error) {
+	root, err := DefaultRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, defaultStateDirName), nil
+}
+
 func ResolveRoot(root string) (string, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
 		return DefaultRoot()
 	}
+	return resolvePath(root, "workspace root")
+}
 
+func ResolveStateDir(stateDir, projectID string) (string, error) {
+	stateDir = strings.TrimSpace(stateDir)
+	if stateDir == "" {
+		return DefaultStateRoot()
+	}
+	return resolvePath(stateDir, "state dir")
+}
+
+func resolvePath(path, label string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve user home: %w", err)
 	}
-	if root == "~" {
-		root = home
-	} else if strings.HasPrefix(root, "~/") || strings.HasPrefix(root, `~\`) {
-		root = filepath.Join(home, root[2:])
+	if path == "~" {
+		path = home
+	} else if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`) {
+		path = filepath.Join(home, path[2:])
 	} else {
-		root = os.Expand(root, func(key string) string {
+		path = os.Expand(path, func(key string) string {
 			switch key {
 			case "HOME", "USERPROFILE":
 				return home
@@ -40,9 +61,9 @@ func ResolveRoot(root string) (string, error) {
 		})
 	}
 
-	absRoot, err := filepath.Abs(root)
+	absPath, err := filepath.Abs(path)
 	if err != nil {
-		return "", fmt.Errorf("resolve workspace root: %w", err)
+		return "", fmt.Errorf("resolve %s: %w", label, err)
 	}
-	return absRoot, nil
+	return absPath, nil
 }

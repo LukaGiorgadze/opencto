@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/opencto/opencto/internal/workspace"
@@ -162,42 +161,5 @@ func (c *Config) validate() error {
 }
 
 func resolveRuntimeStateDir(stateDir, projectID string) (string, error) {
-	stateDir = strings.TrimSpace(stateDir)
-	if stateDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		stateDir = os.Expand(filepath.Join(home, ".opencto", "state", projectID), func(key string) string {
-			switch key {
-			case "HOME", "USERPROFILE":
-				return home
-			default:
-				return os.Getenv(key)
-			}
-		})
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	if stateDir == "~" {
-		stateDir = home
-	} else if strings.HasPrefix(stateDir, "~/") || strings.HasPrefix(stateDir, `~\`) {
-		stateDir = filepath.Join(home, stateDir[2:])
-	} else {
-		stateDir = os.Expand(stateDir, func(key string) string {
-			switch key {
-			case "HOME", "USERPROFILE":
-				return home
-			default:
-				return os.Getenv(key)
-			}
-		})
-	}
-	abs, err := filepath.Abs(stateDir)
-	if err != nil {
-		return "", err
-	}
-	return abs, nil
+	return workspace.ResolveStateDir(stateDir, projectID)
 }

@@ -20,15 +20,16 @@ import (
 )
 
 type shellToolInput struct {
-	Command     string   `json:"command"`
-	Args        []string `json:"args,omitempty"`
-	WorkingDir  string   `json:"working_dir,omitempty"`
-	TimeoutMs   int      `json:"timeout_ms,omitempty"`
-	RunMode     string   `json:"run_mode,omitempty"`
-	Idempotency string   `json:"idempotency,omitempty"`
-	Description string   `json:"description,omitempty"`
-	Destructive bool     `json:"destructive,omitempty"`
-	WorkItemID  string   `json:"work_item_id,omitempty"`
+	Command      string   `json:"command"`
+	Args         []string `json:"args,omitempty"`
+	WorkingDir   string   `json:"working_dir,omitempty"`
+	TimeoutMs    int      `json:"timeout_ms,omitempty"`
+	RunMode      string   `json:"run_mode,omitempty"`
+	Idempotency  string   `json:"idempotency,omitempty"`
+	ProcessScope string   `json:"process_scope,omitempty"`
+	Description  string   `json:"description,omitempty"`
+	Destructive  bool     `json:"destructive,omitempty"`
+	WorkItemID   string   `json:"work_item_id,omitempty"`
 }
 
 func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) (agent.ToolChoice, error) {
@@ -146,8 +147,10 @@ func shellToolChoiceFromInput(definition toolregistry.Definition, call llms.Tool
 	}
 	runMode := normalizeToolRunMode(args.RunMode)
 	idempotency := normalizeToolIdempotency(args.Idempotency)
+	processScope := normalizeProcessScope(args.ProcessScope)
 	metadata["run_mode"] = string(runMode)
 	metadata["idempotency"] = string(idempotency)
+	metadata["process_scope"] = string(processScope)
 
 	return agent.ToolChoice{
 		ToolCallID:   call.ID,
@@ -160,6 +163,7 @@ func shellToolChoiceFromInput(definition toolregistry.Definition, call llms.Tool
 		TimeoutMs:    clampToolTimeoutMs(args.TimeoutMs),
 		RunMode:      runMode,
 		Idempotency:  idempotency,
+		ProcessScope: processScope,
 		InputSummary: firstNonEmpty(strings.TrimSpace(args.Description), commandText, strings.TrimSpace(input.Context.Event.Body)),
 		Destructive:  args.Destructive,
 		Metadata:     metadata,
@@ -206,6 +210,15 @@ func normalizeToolIdempotency(value string) domain.ToolIdempotency {
 		return domain.ToolIdempotencyNonIdempotent
 	default:
 		return domain.ToolIdempotencyUnknown
+	}
+}
+
+func normalizeProcessScope(value string) domain.ProcessScope {
+	switch domain.ProcessScope(strings.ToLower(strings.TrimSpace(value))) {
+	case domain.ProcessScopeProject:
+		return domain.ProcessScopeProject
+	default:
+		return domain.ProcessScopeTask
 	}
 }
 

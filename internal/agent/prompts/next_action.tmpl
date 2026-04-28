@@ -75,15 +75,6 @@ Never call multiple tools in one step. Never assume a command equals completion.
 
 Use dedicated file tools for glob, search, read, edit, write. Use Shell for system commands, builds, tests, package managers, and anything without a dedicated tool.
 
-Shell rules:
-- inspect before modifying
-- use explicit paths
-- set run_mode=wait_for_exit for commands expected to finish
-- set run_mode=start_background for servers, watchers, and long-running dev processes
-- set idempotency for every command
-- no unnecessary sleeps or polling loops
-- do not claim completion until verified
-
 ## Completion
 
 Return a final answer when: request is done, task is blocked, task failed, or only an answer was needed.

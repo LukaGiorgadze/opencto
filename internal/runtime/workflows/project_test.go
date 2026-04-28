@@ -20,7 +20,6 @@ import (
 func registerTaskWorkflowActivities(env *testsuite.TestWorkflowEnvironment) {
 	env.RegisterActivityWithOptions((&activities.Activities{}).NextAction, activity.RegisterOptions{Name: "Activities.NextAction"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).ExecuteTool, activity.RegisterOptions{Name: "Activities.ExecuteTool"})
-	env.RegisterActivityWithOptions((&activities.Activities{}).StartShellProcess, activity.RegisterOptions{Name: "Activities.StartShellProcess"})
 }
 
 func TestTaskWorkflowAlternatesNextActionAndExecuteTool(t *testing.T) {
@@ -132,7 +131,7 @@ func TestTaskWorkflowRejectsNonTerminalNextActionWithoutTool(t *testing.T) {
 	}
 }
 
-func TestTaskWorkflowRoutesBackgroundShellToStartProcess(t *testing.T) {
+func TestTaskWorkflowTracksProcessesReturnedByExecuteTool(t *testing.T) {
 	t.Parallel()
 
 	var suite testsuite.WorkflowTestSuite
@@ -165,7 +164,7 @@ func TestTaskWorkflowRoutesBackgroundShellToStartProcess(t *testing.T) {
 		WorkItemID: "wi-1",
 		Status:     activities.NextActionStatusTool,
 	}, nil).Once()
-	env.OnActivity("Activities.StartShellProcess", mock.Anything, mock.MatchedBy(func(request activities.ExecuteToolRequest) bool {
+	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.MatchedBy(func(request activities.ExecuteToolRequest) bool {
 		return request.ToolChoice.ToolCallID == "toolu_bg" && request.ToolChoice.RunMode == domain.ToolRunModeStartBackground
 	})).Return(activities.ExecuteToolResult{
 		Cycle:           1,
@@ -178,15 +177,32 @@ func TestTaskWorkflowRoutesBackgroundShellToStartProcess(t *testing.T) {
 		Args:            []string{"run", "dev"},
 		Observation:     "Started background process.",
 		Metadata: map[string]string{
-			"tool_call_id": "toolu_bg",
-			"process_id":   "proc-1",
+			"tool_call_id":  "toolu_bg",
+			"process_id":    "proc-1",
+			"process_scope": string(domain.ProcessScopeTask),
+			"run_mode":      string(domain.ToolRunModeStartBackground),
 		},
+		Processes: []domain.ProcessReference{{
+			ID:          "proc-1",
+			Description: "start dev server",
+			Status:      domain.ProcessStatusRunning,
+			Scope:       domain.ProcessScopeTask,
+		}},
 	}, nil).Once()
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
-		return request.LastResult != nil && request.LastResult.Metadata["process_id"] == "proc-1"
+		return request.LastResult != nil &&
+			request.LastResult.Metadata["process_id"] == "proc-1" &&
+			len(request.Processes) == 1 &&
+			request.Processes[0].ID == "proc-1"
 	})).Return(activities.NextActionResult{
 		FinalAnswer: "done",
 		Status:      activities.NextActionStatusCompleted,
+		Processes: []domain.ProcessReference{{
+			ID:          "proc-1",
+			Description: "start dev server",
+			Status:      domain.ProcessStatusStopped,
+			Scope:       domain.ProcessScopeTask,
+		}},
 	}, nil).Once()
 
 	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{
@@ -195,6 +211,237 @@ func TestTaskWorkflowRoutesBackgroundShellToStartProcess(t *testing.T) {
 	})
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatalf("task workflow failed: %v", err)
+	}
+	var result workflows.TaskWorkflowResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatalf("get result: %v", err)
+	}
+	if len(result.Processes) != 1 || result.Processes[0].Status != domain.ProcessStatusStopped {
+		t.Fatalf("expected stopped task-scoped process, got %#v", result.Processes)
+	}
+	env.AssertExpectations(t)
+}
+
+func TestTaskWorkflowKeepsProjectScopedBackgroundProcessRunning(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.TaskWorkflow)
+	registerTaskWorkflowActivities(env)
+
+	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "run persistent server"}
+	choice := agent.ToolChoice{
+		ToolCallID:   "toolu_bg",
+		Type:         domain.ToolTypeShell,
+		Intent:       "start persistent server",
+		Command:      "server",
+		RunMode:      domain.ToolRunModeStartBackground,
+		Idempotency:  domain.ToolIdempotencyNonIdempotent,
+		ProcessScope: domain.ProcessScopeProject,
+	}
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{
+		Decision: agent.DecisionOutput{WorkItems: []domain.WorkItem{{
+			ID:        "wi-1",
+			ProjectID: "project-1",
+			Status:    domain.WorkItemStatusReady,
+		}}},
+		ToolChoice: &choice,
+		WorkItemID: "wi-1",
+		Status:     activities.NextActionStatusTool,
+	}, nil).Once()
+	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.Anything).Return(activities.ExecuteToolResult{
+		Cycle:           1,
+		WorkItemID:      "wi-1",
+		ToolCallID:      "toolu_bg",
+		Tool:            domain.ToolTypeShell,
+		Status:          domain.ExecutionStatusSucceeded,
+		RequestedAction: "start persistent server",
+		Command:         "server",
+		Observation:     "Started background process.",
+		Metadata: map[string]string{
+			"process_id":    "proc-1",
+			"process_scope": string(domain.ProcessScopeProject),
+			"run_mode":      string(domain.ToolRunModeStartBackground),
+		},
+		Processes: []domain.ProcessReference{{
+			ID:          "proc-1",
+			Description: "start persistent server",
+			Status:      domain.ProcessStatusRunning,
+			Scope:       domain.ProcessScopeProject,
+		}},
+	}, nil).Once()
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{
+		FinalAnswer: "done",
+		Status:      activities.NextActionStatusCompleted,
+		Processes: []domain.ProcessReference{{
+			ID:          "proc-1",
+			Description: "start persistent server",
+			Status:      domain.ProcessStatusRunning,
+			Scope:       domain.ProcessScopeProject,
+		}},
+	}, nil).Once()
+
+	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{
+		ProjectID: "project-1",
+		Event:     event,
+	})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("task workflow failed: %v", err)
+	}
+	var result workflows.TaskWorkflowResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatalf("get result: %v", err)
+	}
+	if len(result.Processes) != 1 || result.Processes[0].Scope != domain.ProcessScopeProject || result.Processes[0].Status != domain.ProcessStatusRunning {
+		t.Fatalf("expected running project-scoped process, got %#v", result.Processes)
+	}
+	env.AssertExpectations(t)
+}
+
+func TestTaskWorkflowMarksIncompleteWhenTaskProcessCleanupFails(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.TaskWorkflow)
+	registerTaskWorkflowActivities(env)
+
+	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "run server"}
+	choice := agent.ToolChoice{
+		ToolCallID:  "toolu_bg",
+		Type:        domain.ToolTypeShell,
+		Intent:      "start task server",
+		Command:     "server",
+		RunMode:     domain.ToolRunModeStartBackground,
+		Idempotency: domain.ToolIdempotencyNonIdempotent,
+	}
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{
+		Decision:   agent.DecisionOutput{},
+		ToolChoice: &choice,
+		WorkItemID: "wi-1",
+		Status:     activities.NextActionStatusTool,
+	}, nil).Once()
+	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.Anything).Return(activities.ExecuteToolResult{
+		Cycle:           1,
+		WorkItemID:      "wi-1",
+		ToolCallID:      "toolu_bg",
+		Tool:            domain.ToolTypeShell,
+		Status:          domain.ExecutionStatusSucceeded,
+		RequestedAction: "start task server",
+		Command:         "server",
+		Metadata: map[string]string{
+			"process_id":    "proc-1",
+			"process_scope": string(domain.ProcessScopeTask),
+			"run_mode":      string(domain.ToolRunModeStartBackground),
+		},
+		Processes: []domain.ProcessReference{{
+			ID:          "proc-1",
+			Description: "start task server",
+			Status:      domain.ProcessStatusRunning,
+			Scope:       domain.ProcessScopeTask,
+		}},
+	}, nil).Once()
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{
+		FinalAnswer: "done",
+		Status:      activities.NextActionStatusFailed,
+		Processes: []domain.ProcessReference{{
+			ID:          "proc-1",
+			Description: "start task server",
+			Status:      domain.ProcessStatusRunning,
+			Scope:       domain.ProcessScopeTask,
+		}},
+	}, nil).Once()
+
+	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{
+		ProjectID: "project-1",
+		Event:     event,
+	})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("task workflow failed: %v", err)
+	}
+	var result workflows.TaskWorkflowResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatalf("get result: %v", err)
+	}
+	if result.Completed || len(result.Processes) != 1 || result.Processes[0].Status != domain.ProcessStatusRunning {
+		t.Fatalf("expected incomplete result with running process, got %#v", result)
+	}
+	env.AssertExpectations(t)
+}
+
+func TestTaskWorkflowPreservesProjectProcessAfterDecisionError(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.TaskWorkflow)
+	registerTaskWorkflowActivities(env)
+
+	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "run persistent server"}
+	choice := agent.ToolChoice{
+		ToolCallID:   "toolu_bg",
+		Type:         domain.ToolTypeShell,
+		Intent:       "start persistent server",
+		Command:      "server",
+		RunMode:      domain.ToolRunModeStartBackground,
+		Idempotency:  domain.ToolIdempotencyNonIdempotent,
+		ProcessScope: domain.ProcessScopeProject,
+	}
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{
+		Decision:   agent.DecisionOutput{},
+		ToolChoice: &choice,
+		WorkItemID: "wi-1",
+		Status:     activities.NextActionStatusTool,
+	}, nil).Once()
+	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.Anything).Return(activities.ExecuteToolResult{
+		Cycle:           1,
+		WorkItemID:      "wi-1",
+		ToolCallID:      "toolu_bg",
+		Tool:            domain.ToolTypeShell,
+		Status:          domain.ExecutionStatusSucceeded,
+		RequestedAction: "start persistent server",
+		Command:         "server",
+		Metadata: map[string]string{
+			"process_id":    "proc-1",
+			"process_scope": string(domain.ProcessScopeProject),
+			"run_mode":      string(domain.ToolRunModeStartBackground),
+		},
+		Processes: []domain.ProcessReference{{
+			ID:          "proc-1",
+			Description: "start persistent server",
+			Status:      domain.ProcessStatusRunning,
+			Scope:       domain.ProcessScopeProject,
+		}},
+	}, nil).Once()
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{}, errors.New("decision failed")).Once()
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
+		return request.Completion != nil &&
+			len(request.Completion.Processes) == 1 &&
+			request.Completion.Processes[0].ID == "proc-1"
+	})).Return(activities.NextActionResult{
+		Status: activities.NextActionStatusFailed,
+		Processes: []domain.ProcessReference{{
+			ID:          "proc-1",
+			Description: "start persistent server",
+			Status:      domain.ProcessStatusRunning,
+			Scope:       domain.ProcessScopeProject,
+		}},
+	}, nil).Once()
+
+	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{
+		ProjectID: "project-1",
+		Event:     event,
+	})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("task workflow failed: %v", err)
+	}
+	var result workflows.TaskWorkflowResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatalf("get result: %v", err)
+	}
+	if result.Completed || len(result.Processes) != 1 || result.Processes[0].Scope != domain.ProcessScopeProject || result.Processes[0].Status != domain.ProcessStatusRunning {
+		t.Fatalf("expected incomplete result with running project process, got %#v", result)
 	}
 	env.AssertExpectations(t)
 }
@@ -259,6 +506,49 @@ func TestProjectWorkflowSignalsActiveTaskWithAdditionalContext(t *testing.T) {
 	}
 	if !received {
 		t.Fatalf("expected active child task to receive additional context signal")
+	}
+}
+
+func TestProjectWorkflowTracksProjectScopedProcesses(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ProjectWorkflow)
+	env.RegisterWorkflowWithOptions(func(_ workflow.Context, _ workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		return workflows.TaskWorkflowResult{
+			Completed: true,
+			Processes: []workflows.ProjectProcess{{
+				ID:          "proc-1",
+				Description: "start persistent server",
+				Status:      domain.ProcessStatusRunning,
+				Scope:       domain.ProcessScopeProject,
+			}},
+		}, nil
+	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{ID: "event-1", ProjectID: "project-1", Body: "run server"}})
+	}, 0)
+	observed := false
+	env.RegisterDelayedCallback(func() {
+		value, err := env.QueryWorkflow(workflows.QueryProjectState)
+		if err == nil {
+			var state workflows.ProjectWorkflowState
+			if value.Get(&state) == nil {
+				process, ok := state.Processes["proc-1"]
+				observed = ok && process.Description == "start persistent server" && process.Status == domain.ProcessStatusRunning
+			}
+		}
+		env.CancelWorkflow()
+	}, 2*time.Millisecond)
+
+	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	if !observed {
+		t.Fatalf("expected project workflow state to include running process")
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/opencto/opencto/internal/domain"
+	"github.com/opencto/opencto/internal/workspace"
 )
 
 type StartProcessRequest struct {
@@ -22,6 +23,7 @@ type StartProcessRequest struct {
 	WorkItemID    string
 	ToolCallID    string
 	Intent        string
+	ProcessScope  domain.ProcessScope
 	Command       string
 	Args          []string
 	WorkingDir    string
@@ -60,6 +62,13 @@ func backgroundStartupWindow(timeout time.Duration) time.Duration {
 		return timeout
 	}
 	return backgroundStartupObservation
+}
+
+func startProcessScope(scope domain.ProcessScope) domain.ProcessScope {
+	if scope == domain.ProcessScopeProject {
+		return domain.ProcessScopeProject
+	}
+	return domain.ProcessScopeTask
 }
 
 func (m *ProcessManager) Start(ctx context.Context, req StartProcessRequest) (domain.ManagedProcess, error) {
@@ -132,7 +141,8 @@ func (m *ProcessManager) Start(ctx context.Context, req StartProcessRequest) (do
 		StartedAt:        startedAt,
 		UpdatedAt:        startedAt,
 		Metadata: domain.Metadata{
-			"intent": req.Intent,
+			"intent":        req.Intent,
+			"process_scope": string(startProcessScope(req.ProcessScope)),
 		},
 	}
 
@@ -265,15 +275,7 @@ func (m *ProcessManager) Logs(ctx context.Context, stateDir, processID string, l
 }
 
 func processStateDir(stateDir string) (string, error) {
-	stateDir = strings.TrimSpace(stateDir)
-	if stateDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		stateDir = filepath.Join(home, ".opencto", "state", "default")
-	}
-	return filepath.Abs(stateDir)
+	return workspace.ResolveStateDir(stateDir, "default")
 }
 
 func processPath(stateDir, processID string) string {

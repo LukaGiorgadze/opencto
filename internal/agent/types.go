@@ -25,6 +25,7 @@ type ToolChoice struct {
 	TimeoutMs    int                    `json:"timeout_ms,omitempty"`
 	RunMode      domain.ToolRunMode     `json:"run_mode,omitempty"`
 	Idempotency  domain.ToolIdempotency `json:"idempotency,omitempty"`
+	ProcessScope domain.ProcessScope    `json:"process_scope,omitempty"`
 	InputSummary string                 `json:"input_summary,omitempty"`
 	Destructive  bool                   `json:"destructive,omitempty"`
 	Metadata     domain.Metadata        `json:"metadata,omitempty"`
@@ -41,6 +42,7 @@ func (c ToolChoice) IsZero() bool {
 		c.TimeoutMs == 0 &&
 		c.RunMode == "" &&
 		c.Idempotency == "" &&
+		c.ProcessScope == "" &&
 		c.InputSummary == "" &&
 		!c.Destructive &&
 		len(c.Metadata) == 0

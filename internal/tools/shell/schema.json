@@ -8,6 +8,7 @@
         "timeout_ms",
         "run_mode",
         "idempotency",
+        "process_scope",
         "description",
         "destructive",
         "work_item_id"
@@ -43,6 +44,11 @@
             "type": ["string", "null"],
             "enum": ["read_only", "idempotent", "non_idempotent", "unknown", null],
             "description": "Classify whether rerunning this command is safe. Use read_only for inspection, idempotent for safe repeatable actions, non_idempotent for one-shot/mutating actions, and unknown when unsure."
+        },
+        "process_scope": {
+            "type": ["string", "null"],
+            "enum": ["task", "project", null],
+      "description": "For start_background only. Select the intended owner lifetime: task means the process belongs to the current task and is stopped when that task finishes, so do not use it when the final outcome requires the process to remain available after the response; project means the process belongs to the project and remains running until an explicit stop, so use it when ongoing availability is part of the requested outcome."
         },
         "description": {
             "type": ["string", "null"],

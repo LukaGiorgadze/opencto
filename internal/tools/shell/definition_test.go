@@ -22,7 +22,7 @@ func TestShellToolSchemaIsValidJSON(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected required array, got %#v", schema["required"])
 	}
-	for _, field := range []string{"run_mode", "idempotency"} {
+	for _, field := range []string{"run_mode", "idempotency", "process_scope"} {
 		if !containsRequiredField(required, field) {
 			t.Fatalf("expected %q to be required, got %#v", field, required)
 		}
@@ -31,7 +31,7 @@ func TestShellToolSchemaIsValidJSON(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected properties object, got %#v", schema["properties"])
 	}
-	for _, field := range []string{"run_mode", "idempotency"} {
+	for _, field := range []string{"run_mode", "idempotency", "process_scope"} {
 		if _, ok := properties[field]; !ok {
 			t.Fatalf("expected %q property in schema", field)
 		}
