@@ -24,6 +24,8 @@ type shellToolInput struct {
 	Args        []string `json:"args,omitempty"`
 	WorkingDir  string   `json:"working_dir,omitempty"`
 	TimeoutMs   int      `json:"timeout_ms,omitempty"`
+	RunMode     string   `json:"run_mode,omitempty"`
+	Idempotency string   `json:"idempotency,omitempty"`
 	Description string   `json:"description,omitempty"`
 	Destructive bool     `json:"destructive,omitempty"`
 	WorkItemID  string   `json:"work_item_id,omitempty"`
@@ -142,6 +144,10 @@ func shellToolChoiceFromInput(definition toolregistry.Definition, call llms.Tool
 		metadata["wrapped_shell_command"] = "true"
 		metadata["original_command"] = commandText
 	}
+	runMode := normalizeToolRunMode(args.RunMode)
+	idempotency := normalizeToolIdempotency(args.Idempotency)
+	metadata["run_mode"] = string(runMode)
+	metadata["idempotency"] = string(idempotency)
 
 	return agent.ToolChoice{
 		ToolCallID:   call.ID,
@@ -152,6 +158,8 @@ func shellToolChoiceFromInput(definition toolregistry.Definition, call llms.Tool
 		Input:        cloneRawMessage(raw),
 		WorkingDir:   firstNonEmpty(strings.TrimSpace(args.WorkingDir), strings.TrimSpace(input.Runtime.WorkspaceRoot)),
 		TimeoutMs:    clampToolTimeoutMs(args.TimeoutMs),
+		RunMode:      runMode,
+		Idempotency:  idempotency,
 		InputSummary: firstNonEmpty(strings.TrimSpace(args.Description), commandText, strings.TrimSpace(input.Context.Event.Body)),
 		Destructive:  args.Destructive,
 		Metadata:     metadata,
@@ -177,6 +185,28 @@ func structuredToolChoiceFromInput(definition toolregistry.Definition, call llms
 
 func cloneRawMessage(raw json.RawMessage) json.RawMessage {
 	return append(json.RawMessage(nil), raw...)
+}
+
+func normalizeToolRunMode(value string) domain.ToolRunMode {
+	switch domain.ToolRunMode(strings.ToLower(strings.TrimSpace(value))) {
+	case domain.ToolRunModeStartBackground:
+		return domain.ToolRunModeStartBackground
+	default:
+		return domain.ToolRunModeWaitForExit
+	}
+}
+
+func normalizeToolIdempotency(value string) domain.ToolIdempotency {
+	switch domain.ToolIdempotency(strings.ToLower(strings.TrimSpace(value))) {
+	case domain.ToolIdempotencyReadOnly:
+		return domain.ToolIdempotencyReadOnly
+	case domain.ToolIdempotencyIdempotent:
+		return domain.ToolIdempotencyIdempotent
+	case domain.ToolIdempotencyNonIdempotent:
+		return domain.ToolIdempotencyNonIdempotent
+	default:
+		return domain.ToolIdempotencyUnknown
+	}
 }
 
 func shouldUseShell(command string) bool {
@@ -215,7 +245,7 @@ func filepathBase(path string) string {
 func clampToolTimeoutMs(value int) int {
 	switch {
 	case value <= 0:
-		return 120000
+		return 60000
 	case value > 600000:
 		return 600000
 	default:

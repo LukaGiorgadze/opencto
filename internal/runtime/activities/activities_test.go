@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"time"
@@ -190,6 +191,78 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 	}
 	if grepResult.Status != domain.ExecutionStatusSucceeded || !strings.Contains(grepResult.Observation, filePath+":hi") {
 		t.Fatalf("unexpected grep result: %#v", grepResult)
+	}
+}
+
+func TestStartShellProcessReturnsManagedProcessMetadata(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("uses POSIX shell fixture")
+	}
+	t.Parallel()
+
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	activities := Activities{
+		WorkspaceRoot: dir,
+		StateDir:      stateDir,
+	}
+	request := ExecuteToolRequest{
+		ProjectID:  "project-1",
+		WorkItemID: "work-item-1",
+		ToolChoice: agent.ToolChoice{
+			ToolCallID:  "toolu_bg",
+			Type:        domain.ToolTypeShell,
+			Intent:      "start background fixture",
+			Command:     "sh",
+			Args:        []string{"-c", "printf 'ready\n'; sleep 30"},
+			WorkingDir:  dir,
+			TimeoutMs:   1000,
+			RunMode:     domain.ToolRunModeStartBackground,
+			Idempotency: domain.ToolIdempotencyNonIdempotent,
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+				"tool_call_id":    "toolu_bg",
+				"work_item_id":    "work-item-1",
+			},
+		},
+	}
+	result, err := activities.StartShellProcess(context.Background(), request)
+	if err != nil {
+		t.Fatalf("start shell process: %v", err)
+	}
+	if result.Status != domain.ExecutionStatusSucceeded {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	processID := result.Metadata["process_id"]
+	if processID == "" || result.Metadata["pid"] == "" {
+		t.Fatalf("expected process metadata, got %#v", result.Metadata)
+	}
+	defer func() {
+		_, _ = activities.StopShellProcess(context.Background(), ProcessRequest{ProjectID: "project-1", ProcessID: processID})
+	}()
+
+	checked, err := activities.CheckShellProcess(context.Background(), ProcessRequest{ProjectID: "project-1", ProcessID: processID})
+	if err != nil {
+		t.Fatalf("check process: %v", err)
+	}
+	if checked.Status != domain.ProcessStatusRunning {
+		t.Fatalf("expected running process, got %#v", checked)
+	}
+	var stdoutTail string
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		result, err := activities.ReadShellProcessLogs(context.Background(), ProcessRequest{ProjectID: "project-1", ProcessID: processID, LimitBytes: 1024})
+		if err != nil {
+			t.Fatalf("read process logs: %v", err)
+		}
+		stdoutTail = result.StdoutTail
+		if strings.Contains(stdoutTail, "ready") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(stdoutTail, "ready") {
+		t.Fatalf("expected stdout logs to contain ready, got %q", stdoutTail)
 	}
 }
 

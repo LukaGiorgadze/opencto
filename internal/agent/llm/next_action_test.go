@@ -256,6 +256,8 @@ func TestNextActionReturnsSingleToolChoice(t *testing.T) {
 							"args":[],
 							"working_dir":null,
 							"timeout_ms":120000,
+							"run_mode":"wait_for_exit",
+							"idempotency":"read_only",
 							"description":"inspect workspace",
 							"destructive":false,
 							"work_item_id":"wi-1"
@@ -286,6 +288,9 @@ func TestNextActionReturnsSingleToolChoice(t *testing.T) {
 	if output.WorkItemID != "wi-1" {
 		t.Fatalf("unexpected work item id: %q", output.WorkItemID)
 	}
+	if output.ToolChoice.RunMode != domain.ToolRunModeWaitForExit || output.ToolChoice.Idempotency != domain.ToolIdempotencyReadOnly {
+		t.Fatalf("tool execution metadata was not preserved: %#v", output.ToolChoice)
+	}
 	if len(model.options.Tools) != 6 {
 		t.Fatalf("expected all tool schemas, got %#v", model.options.Tools)
 	}
@@ -304,6 +309,8 @@ func TestToolChoicePreservesCommandAndArgsForDirectExecution(t *testing.T) {
 				"args":["test","./..."],
 				"working_dir":null,
 				"timeout_ms":120000,
+				"run_mode":"wait_for_exit",
+				"idempotency":"idempotent",
 				"description":"run tests",
 				"destructive":false,
 				"work_item_id":"wi-1"
@@ -323,6 +330,9 @@ func TestToolChoicePreservesCommandAndArgsForDirectExecution(t *testing.T) {
 	}
 	if choice.Metadata["wrapped_shell_command"] == "true" {
 		t.Fatalf("direct command should not be shell wrapped: %#v", choice.Metadata)
+	}
+	if choice.RunMode != domain.ToolRunModeWaitForExit || choice.Idempotency != domain.ToolIdempotencyIdempotent {
+		t.Fatalf("expected execution metadata to be preserved, got %#v", choice)
 	}
 }
 

@@ -93,6 +93,7 @@ func main() {
 				Name: cfg.Project.Name,
 			},
 			WorkspaceRoot:   cfg.Project.WorkspaceRoot,
+			StateDir:        cfg.Runtime.StateDir,
 			AvailableSkills: availableSkills,
 			MemoryEmbedder:  openAI.Embedder,
 			EmbeddingModel:  cfg.LLM.EmbeddingModel,

@@ -16,7 +16,7 @@ import (
 const maxExecutionCycles = 20
 
 func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowResult, error) {
-	ao := workflow.ActivityOptions{
+	decisionAO := workflow.ActivityOptions{
 		StartToCloseTimeout: 2 * time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
 			InitialInterval:    2 * time.Second,
@@ -24,19 +24,31 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			MaximumAttempts:    5,
 		},
 	}
-	ctx = workflow.WithActivityOptions(ctx, ao)
+	toolAO := workflow.ActivityOptions{
+		StartToCloseTimeout: 10 * time.Minute,
+		HeartbeatTimeout:    10 * time.Second,
+		WaitForCancellation: true,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 1,
+		},
+	}
+	decisionCtx := workflow.WithActivityOptions(ctx, decisionAO)
+	toolCtx := workflow.WithActivityOptions(ctx, toolAO)
 
 	var decision agent.DecisionOutput
 	if input.Decision != nil {
 		decision = *input.Decision
 	}
+	additionalEvents := append([]domain.Event(nil), input.AdditionalEvents...)
 	var observationHistory []agent.ExecutionFeedback
 	var lastResult *activities.ExecuteToolResult
 
 	for cycle := 1; cycle <= maxExecutionCycles; cycle++ {
-		next, err := nextAction(ctx, activities.NextActionRequest{
+		drainTaskSignals(ctx, &additionalEvents)
+		next, err := nextAction(decisionCtx, activities.NextActionRequest{
 			ProjectID:          input.ProjectID,
 			Event:              input.Event,
+			AdditionalEvents:   additionalEvents,
 			Decision:           decision,
 			LastResult:         lastResult,
 			ObservationHistory: observationHistory,
@@ -61,21 +73,20 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			return TaskWorkflowResult{}, fmt.Errorf("Activities.NextAction returned a tool choice without a work item id")
 		}
 
-		var execResult activities.ExecuteToolResult
-		err = workflow.ExecuteActivity(ctx, "Activities.ExecuteTool", activities.ExecuteToolRequest{
-			ProjectID:  input.ProjectID,
-			WorkItemID: next.WorkItemID,
-			ToolChoice: *next.ToolChoice,
-		}).Get(ctx, &execResult)
+		execResult, canceled, err := executeToolStep(ctx, toolCtx, input.ProjectID, next.WorkItemID, *next.ToolChoice, cycle, &additionalEvents)
+		if canceled {
+			return TaskWorkflowResult{Completed: false, Decision: decision}, nil
+		}
 		if err != nil {
 			execResult = failedExecutionActivityResult(*next.ToolChoice, next.WorkItemID, cycle, err)
 		}
 		lastResult = &execResult
 	}
 
-	final, err := nextAction(ctx, activities.NextActionRequest{
+	final, err := nextAction(decisionCtx, activities.NextActionRequest{
 		ProjectID:          input.ProjectID,
 		Event:              input.Event,
+		AdditionalEvents:   additionalEvents,
 		Decision:           decision,
 		LastResult:         lastResult,
 		ObservationHistory: observationHistory,
@@ -99,6 +110,79 @@ func nextAction(ctx workflow.Context, request activities.NextActionRequest) (act
 	var result activities.NextActionResult
 	err := workflow.ExecuteActivity(ctx, "Activities.NextAction", request).Get(ctx, &result)
 	return result, err
+}
+
+func executeToolStep(ctx workflow.Context, toolCtx workflow.Context, projectID, workItemID string, choice agent.ToolChoice, cycle int, additionalEvents *[]domain.Event) (activities.ExecuteToolResult, bool, error) {
+	activityCtx, cancelActivity := workflow.WithCancel(toolCtx)
+	defer cancelActivity()
+	activityName := "Activities.ExecuteTool"
+	if choice.Type == domain.ToolTypeShell && choice.RunMode == domain.ToolRunModeStartBackground {
+		activityName = "Activities.StartShellProcess"
+	}
+	future := workflow.ExecuteActivity(activityCtx, activityName, activities.ExecuteToolRequest{
+		ProjectID:  projectID,
+		WorkItemID: workItemID,
+		ToolChoice: choice,
+	})
+
+	var result activities.ExecuteToolResult
+	interrupted := false
+	canceled := false
+	for {
+		selector := workflow.NewSelector(ctx)
+		selector.AddFuture(future, func(f workflow.Future) {
+			err := f.Get(ctx, &result)
+			if err != nil {
+				result = failedExecutionActivityResult(choice, workItemID, cycle, err)
+			}
+		})
+		selector.AddReceive(workflow.GetSignalChannel(ctx, SignalTaskCancel), func(c workflow.ReceiveChannel, more bool) {
+			var signal TaskControlSignal
+			c.Receive(ctx, &signal)
+			canceled = true
+			cancelActivity()
+		})
+		selector.AddReceive(workflow.GetSignalChannel(ctx, SignalTaskInterrupt), func(c workflow.ReceiveChannel, more bool) {
+			var signal TaskControlSignal
+			c.Receive(ctx, &signal)
+			if strings.TrimSpace(signal.Event.Body) != "" {
+				*additionalEvents = append(*additionalEvents, signal.Event)
+			}
+			interrupted = true
+			cancelActivity()
+		})
+		selector.AddReceive(workflow.GetSignalChannel(ctx, SignalTaskAdditionalContext), func(c workflow.ReceiveChannel, more bool) {
+			var signal AdditionalContextSignal
+			c.Receive(ctx, &signal)
+			*additionalEvents = append(*additionalEvents, signal.Event)
+		})
+		selector.Select(ctx)
+		if result.ToolCallID != "" || result.Status != "" {
+			if canceled {
+				return result, true, nil
+			}
+			if interrupted {
+				result.Status = domain.ExecutionStatusCanceled
+				result.Error = "interrupted by user message"
+			}
+			return result, false, nil
+		}
+		if interrupted {
+			result = failedExecutionActivityResult(choice, workItemID, cycle, fmt.Errorf("interrupted by user message"))
+			result.Status = domain.ExecutionStatusCanceled
+			return result, false, nil
+		}
+	}
+}
+
+func drainTaskSignals(ctx workflow.Context, additionalEvents *[]domain.Event) {
+	for {
+		var signal AdditionalContextSignal
+		if !workflow.GetSignalChannel(ctx, SignalTaskAdditionalContext).ReceiveAsync(&signal) {
+			return
+		}
+		*additionalEvents = append(*additionalEvents, signal.Event)
+	}
 }
 
 func resultFromNextAction(next activities.NextActionResult, decision agent.DecisionOutput) TaskWorkflowResult {

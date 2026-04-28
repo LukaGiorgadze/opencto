@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"go.temporal.io/sdk/activity"
 
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
@@ -56,6 +59,7 @@ type Activities struct {
 	Reporter        Reporter
 	Project         domain.Project
 	WorkspaceRoot   string
+	StateDir        string
 	AvailableSkills []string
 	MemoryEmbedder  SemanticEmbedder
 	EmbeddingModel  string
@@ -65,6 +69,7 @@ type Activities struct {
 type NextActionRequest struct {
 	ProjectID          string                    `json:"project_id"`
 	Event              domain.Event              `json:"event"`
+	AdditionalEvents   []domain.Event            `json:"additional_events,omitempty"`
 	Decision           agent.DecisionOutput      `json:"decision"`
 	LastResult         *ExecuteToolResult        `json:"last_result,omitempty"`
 	ObservationHistory []agent.ExecutionFeedback `json:"observation_history,omitempty"`
@@ -87,6 +92,12 @@ type ExecuteToolRequest struct {
 	ProjectID  string           `json:"project_id"`
 	WorkItemID string           `json:"work_item_id"`
 	ToolChoice agent.ToolChoice `json:"tool_choice"`
+}
+
+type ProcessRequest struct {
+	ProjectID  string `json:"project_id"`
+	ProcessID  string `json:"process_id"`
+	LimitBytes int64  `json:"limit_bytes,omitempty"`
 }
 
 type ExecuteToolResult struct {
@@ -234,6 +245,7 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		)
 		return NextActionResult{}, err
 	}
+	loaded.AdditionalEvents = append([]domain.Event(nil), request.AdditionalEvents...)
 	a.logActivityStep("NextAction", "load_context_done",
 		slog.String("project_id", projectID),
 		slog.String("event_id", event.ID),
@@ -555,6 +567,9 @@ func (a *Activities) persistDecision(ctx context.Context, decision agent.Decisio
 }
 
 func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest) (ExecuteToolResult, error) {
+	if request.ToolChoice.Type == domain.ToolTypeShell && request.ToolChoice.RunMode == domain.ToolRunModeStartBackground {
+		return a.StartShellProcess(ctx, request)
+	}
 	a.logActivityStep("ExecuteTool", "start",
 		slog.String("project_id", strings.TrimSpace(request.ProjectID)),
 		slog.String("work_item_id", strings.TrimSpace(request.WorkItemID)),
@@ -763,6 +778,143 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 	}, nil
 }
 
+func (a *Activities) StartShellProcess(ctx context.Context, request ExecuteToolRequest) (ExecuteToolResult, error) {
+	execution, err := newToolExecutionContext(request)
+	if err != nil {
+		return ExecuteToolResult{}, err
+	}
+	choice := request.ToolChoice
+	if choice.Type != domain.ToolTypeShell {
+		return ExecuteToolResult{}, fmt.Errorf("start background process requires shell tool, got %q", choice.Type)
+	}
+	attempt := domain.ExecutionAttempt{
+		ID:         execution.ExecutionAttemptID,
+		ProjectID:  execution.ProjectID,
+		WorkItemID: execution.WorkItemID,
+		Status:     domain.ExecutionStatusRunning,
+		Attempt:    execution.Cycle,
+		Tool:       choice.Type,
+		Summary:    choice.Intent,
+		StartedAt:  execution.StartedAt,
+		Metadata: map[string]string{
+			"execution_cycle": strconv.Itoa(execution.Cycle),
+			"tool_call_id":    execution.ToolCallID,
+			"run_mode":        string(domain.ToolRunModeStartBackground),
+		},
+	}
+	if a.Store != nil {
+		if err := a.Store.UpsertExecutionAttempt(ctx, attempt); err != nil {
+			return ExecuteToolResult{}, err
+		}
+	}
+	processID := stableActivityID("managed-process", execution.ProjectID, execution.WorkItemID, execution.ToolCallID)
+	manager := shelltool.NewProcessManager(a.activityLogger())
+	process, runErr := manager.Start(ctx, shelltool.StartProcessRequest{
+		ProcessID:     processID,
+		ProjectID:     execution.ProjectID,
+		WorkItemID:    execution.WorkItemID,
+		ToolCallID:    execution.ToolCallID,
+		Intent:        choice.Intent,
+		Command:       choice.Command,
+		Args:          choice.Args,
+		WorkingDir:    choice.WorkingDir,
+		WorkspaceRoot: a.WorkspaceRoot,
+		StateDir:      a.runtimeStateDir(execution.ProjectID),
+		Timeout:       execution.Timeout,
+	})
+	metadata := map[string]string{
+		"tool_call_id":                  execution.ToolCallID,
+		"work_item_id":                  execution.WorkItemID,
+		"execution_cycle":               strconv.Itoa(execution.Cycle),
+		"run_mode":                      string(domain.ToolRunModeStartBackground),
+		"idempotency":                   string(firstNonEmpty(string(choice.Idempotency), string(domain.ToolIdempotencyUnknown))),
+		"process_id":                    processID,
+		"possible_long_running_process": "true",
+	}
+	if choice.TimeoutMs > 0 {
+		metadata["timeout_ms"] = strconv.Itoa(choice.TimeoutMs)
+	}
+	if process.PID > 0 {
+		metadata["pid"] = strconv.Itoa(process.PID)
+	}
+	if process.PGID > 0 {
+		metadata["pgid"] = strconv.Itoa(process.PGID)
+	}
+	if process.StdoutLogPath != "" {
+		metadata["stdout_log_path"] = process.StdoutLogPath
+	}
+	if process.StderrLogPath != "" {
+		metadata["stderr_log_path"] = process.StderrLogPath
+	}
+	status := domain.ExecutionStatusSucceeded
+	resultCode := "0"
+	observation := processStartObservation(process)
+	var errorMessage string
+	if runErr != nil {
+		status = domain.ExecutionStatusFailed
+		resultCode = "1"
+		errorMessage = runErr.Error()
+		observation = fullObservation("", "", runErr)
+	}
+	completedAt := time.Now().UTC()
+	attempt.Status = status
+	attempt.OutputSummary = observation
+	attempt.CompletedAt = &completedAt
+	invocation := domain.ToolInvocation{
+		ID:                 execution.InvocationID,
+		ProjectID:          execution.ProjectID,
+		ExecutionAttemptID: execution.ExecutionAttemptID,
+		RequestedIntent:    choice.Intent,
+		ChosenTool:         choice.Type,
+		FallbackCandidates: execution.FallbackCandidates,
+		WorkingDirectory:   firstNonEmpty(process.WorkingDirectory, choice.WorkingDir),
+		TimeoutSeconds:     int(execution.Timeout.Seconds()),
+		InputSummary:       choice.InputSummary,
+		OutputSummary:      observation,
+		ResultCode:         resultCode,
+		ErrorDetails:       errorMessage,
+		CreatedAt:          execution.StartedAt,
+		CompletedAt:        &completedAt,
+		Metadata:           metadata,
+	}
+	if a.Store != nil {
+		if err := a.Store.UpsertExecutionAttempt(ctx, attempt); err != nil {
+			return ExecuteToolResult{}, err
+		}
+		if err := a.Store.UpsertToolInvocation(ctx, invocation); err != nil {
+			return ExecuteToolResult{}, err
+		}
+	}
+	return ExecuteToolResult{
+		Cycle:            execution.Cycle,
+		WorkItemID:       execution.WorkItemID,
+		ToolCallID:       execution.ToolCallID,
+		Tool:             choice.Type,
+		Status:           status,
+		RequestedAction:  choice.Intent,
+		Command:          choice.Command,
+		Args:             choice.Args,
+		Input:            cloneRawMessage(choice.Input),
+		Observation:      observation,
+		Error:            errorMessage,
+		WorkingDirectory: invocation.WorkingDirectory,
+		ResultCode:       resultCode,
+		Metadata:         metadata,
+	}, nil
+}
+
+func (a *Activities) CheckShellProcess(ctx context.Context, request ProcessRequest) (domain.ManagedProcess, error) {
+	return shelltool.NewProcessManager(a.activityLogger()).Check(ctx, a.runtimeStateDir(request.ProjectID), request.ProcessID)
+}
+
+func (a *Activities) StopShellProcess(ctx context.Context, request ProcessRequest) (domain.ManagedProcess, error) {
+	return shelltool.NewProcessManager(a.activityLogger()).Stop(ctx, a.runtimeStateDir(request.ProjectID), request.ProcessID)
+}
+
+func (a *Activities) ReadShellProcessLogs(ctx context.Context, request ProcessRequest) (shelltool.ProcessLogResult, error) {
+	return shelltool.NewProcessManager(a.activityLogger()).Logs(ctx, a.runtimeStateDir(request.ProjectID), request.ProcessID, request.LimitBytes)
+}
+
 func (a *Activities) runChosenTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
 	switch choice.Type {
 	case domain.ToolTypeShell:
@@ -786,7 +938,7 @@ func (a *Activities) runShellTool(ctx context.Context, choice agent.ToolChoice, 
 	if a.Shell == nil {
 		return toolRunResult{ResultCode: "1"}, fmt.Errorf("shell executor is not configured")
 	}
-	result, err := a.Shell.Run(ctx, shelltool.Request{
+	result, err := a.runShellWithHeartbeats(ctx, shelltool.Request{
 		ProjectID:          execution.ProjectID,
 		Intent:             choice.Intent,
 		Command:            choice.Command,
@@ -798,6 +950,14 @@ func (a *Activities) runShellTool(ctx context.Context, choice agent.ToolChoice, 
 	})
 	metadata := map[string]string{
 		"shell_exit_status": strconv.Itoa(result.ExitCode),
+		"run_mode":          string(firstNonEmpty(string(choice.RunMode), string(domain.ToolRunModeWaitForExit))),
+		"idempotency":       string(firstNonEmpty(string(choice.Idempotency), string(domain.ToolIdempotencyUnknown))),
+	}
+	resultCode := strconv.Itoa(result.ExitCode)
+	if errors.Is(err, context.DeadlineExceeded) {
+		resultCode = "timeout"
+		metadata["possible_long_running_process"] = "true"
+		metadata["timeout"] = "true"
 	}
 	if !result.StartedAt.IsZero() {
 		metadata["tool_started_at"] = result.StartedAt.UTC().Format(time.RFC3339Nano)
@@ -809,11 +969,53 @@ func (a *Activities) runShellTool(ctx context.Context, choice agent.ToolChoice, 
 		metadata["duration_ms"] = strconv.FormatInt(result.Duration.Milliseconds(), 10)
 	}
 	return toolRunResult{
-		Observation:      fullObservation(result.Stdout, result.Stderr, err),
-		ResultCode:       strconv.Itoa(result.ExitCode),
+		Observation:      shellObservation(result, err),
+		ResultCode:       resultCode,
 		WorkingDirectory: choice.WorkingDir,
 		Metadata:         metadata,
 	}, err
+}
+
+func (a *Activities) runShellWithHeartbeats(ctx context.Context, req shelltool.Request) (shelltool.Result, error) {
+	type shellRun struct {
+		result shelltool.Result
+		err    error
+	}
+	done := make(chan shellRun, 1)
+	go func() {
+		result, err := a.Shell.Run(ctx, req)
+		done <- shellRun{result: result, err: err}
+	}()
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case run := <-done:
+			return run.result, run.err
+		case <-ticker.C:
+			if activity.IsActivity(ctx) {
+				activity.RecordHeartbeat(ctx, map[string]string{
+					"command": req.Command,
+					"intent":  req.Intent,
+				})
+			}
+		case <-ctx.Done():
+			run := <-done
+			if run.err != nil {
+				return run.result, run.err
+			}
+			return run.result, ctx.Err()
+		}
+	}
+}
+
+func shellObservation(result shelltool.Result, err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		observation := fullObservation(result.Stdout, result.Stderr, err)
+		return observation + "\n\nresult_code: timeout\npossible_long_running_process: true\nsuggestion: retry this command with run_mode=start_background if it is expected to keep running."
+	}
+	return fullObservation(result.Stdout, result.Stderr, err)
 }
 
 func (a *Activities) runReadTool(ctx context.Context, choice agent.ToolChoice) (toolRunResult, error) {
@@ -1249,6 +1451,14 @@ func ensureToolChoiceMetadata(choice *agent.ToolChoice, workItemID string, cycle
 	if choice.TimeoutMs > 0 {
 		choice.Metadata["timeout_ms"] = strconv.Itoa(choice.TimeoutMs)
 	}
+	if choice.RunMode == "" {
+		choice.RunMode = domain.ToolRunModeWaitForExit
+	}
+	if choice.Idempotency == "" {
+		choice.Idempotency = domain.ToolIdempotencyUnknown
+	}
+	choice.Metadata["run_mode"] = string(choice.RunMode)
+	choice.Metadata["idempotency"] = string(choice.Idempotency)
 }
 
 func markFinalDecisionWorkItems(decision *agent.DecisionOutput, status domain.WorkItemStatus, observation *agent.ExecutionFeedback, now time.Time) {
@@ -1409,6 +1619,48 @@ func toolChoiceTimeout(choice agent.ToolChoice) time.Duration {
 		return time.Duration(choice.TimeoutMs) * time.Millisecond
 	}
 	return 60 * time.Second
+}
+
+func (a *Activities) runtimeStateDir(projectID string) string {
+	if strings.TrimSpace(a.StateDir) != "" {
+		return strings.TrimSpace(a.StateDir)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		projectID = "default"
+	}
+	return filepath.Join(home, ".opencto", "state", projectID)
+}
+
+func processStartObservation(process domain.ManagedProcess) string {
+	if strings.TrimSpace(process.ID) == "" {
+		return "Background process did not start."
+	}
+	var builder strings.Builder
+	builder.WriteString("Started background process.")
+	builder.WriteString("\nprocess_id: ")
+	builder.WriteString(process.ID)
+	if process.PID > 0 {
+		builder.WriteString("\npid: ")
+		builder.WriteString(strconv.Itoa(process.PID))
+	}
+	if process.PGID > 0 {
+		builder.WriteString("\npgid: ")
+		builder.WriteString(strconv.Itoa(process.PGID))
+	}
+	if process.StdoutLogPath != "" {
+		builder.WriteString("\nstdout_log: ")
+		builder.WriteString(process.StdoutLogPath)
+	}
+	if process.StderrLogPath != "" {
+		builder.WriteString("\nstderr_log: ")
+		builder.WriteString(process.StderrLogPath)
+	}
+	return builder.String()
 }
 
 func buildRuntimeContext(workspaceRoot string) agent.RuntimeContext {

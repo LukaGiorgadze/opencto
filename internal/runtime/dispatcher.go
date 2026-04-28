@@ -52,10 +52,21 @@ func (d *Dispatcher) EnsureProjectWorkflow(ctx context.Context, projectID string
 }
 
 func (d *Dispatcher) EnqueueEvent(ctx context.Context, event domain.Event) error {
-	if err := d.EnsureProjectWorkflow(ctx, event.ProjectID); err != nil {
-		return err
-	}
-	return d.client.SignalWorkflow(ctx, WorkflowID(event.ProjectID), "", workflows.SignalEnqueueEvent, signals.EnqueueEventSignal{
-		Event: event,
-	})
+	_, err := d.client.SignalWithStartWorkflow(
+		ctx,
+		WorkflowID(event.ProjectID),
+		workflows.SignalEnqueueEvent,
+		signals.EnqueueEventSignal{Event: event},
+		client.StartWorkflowOptions{
+			ID:                    WorkflowID(event.ProjectID),
+			TaskQueue:             d.taskQueue,
+			WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,
+		},
+		workflows.ProjectWorkflowName,
+		workflows.ProjectWorkflowInput{
+			ProjectID:                event.ProjectID,
+			ContinueAsNewAfterEvents: d.continueAsNewAfterEvents,
+		},
+	)
+	return err
 }

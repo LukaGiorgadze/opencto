@@ -47,6 +47,22 @@ const (
 	ExecutionStatusCanceled  ExecutionStatus = "canceled"
 )
 
+type ToolRunMode string
+
+const (
+	ToolRunModeWaitForExit     ToolRunMode = "wait_for_exit"
+	ToolRunModeStartBackground ToolRunMode = "start_background"
+)
+
+type ToolIdempotency string
+
+const (
+	ToolIdempotencyReadOnly      ToolIdempotency = "read_only"
+	ToolIdempotencyIdempotent    ToolIdempotency = "idempotent"
+	ToolIdempotencyNonIdempotent ToolIdempotency = "non_idempotent"
+	ToolIdempotencyUnknown       ToolIdempotency = "unknown"
+)
+
 type ToolType string
 
 const (
@@ -150,4 +166,32 @@ type ToolInvocation struct {
 	Metadata           Metadata   `json:"metadata,omitempty"`
 	CreatedAt          time.Time  `json:"created_at"`
 	CompletedAt        *time.Time `json:"completed_at,omitempty"`
+}
+
+type ProcessStatus string
+
+const (
+	ProcessStatusStarting ProcessStatus = "starting"
+	ProcessStatusRunning  ProcessStatus = "running"
+	ProcessStatusExited   ProcessStatus = "exited"
+	ProcessStatusStopped  ProcessStatus = "stopped"
+	ProcessStatusFailed   ProcessStatus = "failed"
+)
+
+type ManagedProcess struct {
+	ID               string        `json:"id"`
+	ProjectID        string        `json:"project_id"`
+	WorkItemID       string        `json:"work_item_id,omitempty"`
+	ToolCallID       string        `json:"tool_call_id,omitempty"`
+	Command          string        `json:"command"`
+	Args             []string      `json:"args,omitempty"`
+	WorkingDirectory string        `json:"working_directory"`
+	PID              int           `json:"pid"`
+	PGID             int           `json:"pgid,omitempty"`
+	Status           ProcessStatus `json:"status"`
+	StdoutLogPath    string        `json:"stdout_log_path,omitempty"`
+	StderrLogPath    string        `json:"stderr_log_path,omitempty"`
+	StartedAt        time.Time     `json:"started_at"`
+	UpdatedAt        time.Time     `json:"updated_at"`
+	Metadata         Metadata      `json:"metadata,omitempty"`
 }

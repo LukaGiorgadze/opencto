@@ -18,6 +18,24 @@ func TestShellToolSchemaIsValidJSON(t *testing.T) {
 	if schema["type"] != "object" {
 		t.Fatalf("expected object schema, got %#v", schema["type"])
 	}
+	required, ok := schema["required"].([]any)
+	if !ok {
+		t.Fatalf("expected required array, got %#v", schema["required"])
+	}
+	for _, field := range []string{"run_mode", "idempotency"} {
+		if !containsRequiredField(required, field) {
+			t.Fatalf("expected %q to be required, got %#v", field, required)
+		}
+	}
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected properties object, got %#v", schema["properties"])
+	}
+	for _, field := range []string{"run_mode", "idempotency"} {
+		if _, ok := properties[field]; !ok {
+			t.Fatalf("expected %q property in schema", field)
+		}
+	}
 }
 
 func TestShellToolSchemaReturnsCopy(t *testing.T) {
@@ -34,4 +52,13 @@ func TestShellToolSchemaReturnsCopy(t *testing.T) {
 	if second[0] != original {
 		t.Fatalf("ShellToolSchema should return a copy")
 	}
+}
+
+func containsRequiredField(required []any, field string) bool {
+	for _, value := range required {
+		if value == field {
+			return true
+		}
+	}
+	return false
 }

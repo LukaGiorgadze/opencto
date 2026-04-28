@@ -80,16 +80,17 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 		defer cancel()
 	}
 
-	cmd := exec.CommandContext(runCtx, req.Command, req.Args...)
+	cmd := exec.Command(req.Command, req.Args...)
 	cmd.Dir = workingDir
 	cmd.Env = mergeEnv(req.Environment)
+	setProcessGroup(cmd)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err = cmd.Run()
+	err = runCommandWithContext(runCtx, cmd)
 	completedAt := time.Now()
 
 	result := Result{
@@ -116,6 +117,31 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 	}
 
 	return result, nil
+}
+
+func runCommandWithContext(ctx context.Context, cmd *exec.Cmd) error {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-waitCh:
+		return err
+	case <-ctx.Done():
+		if cmd.Process != nil {
+			_ = terminateProcessGroup(cmd.Process.Pid, 2*time.Second)
+		}
+		err := <-waitCh
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return err
+	}
 }
 
 func secureWorkingDir(workspaceRoot, workingDir string, allowOutside bool) (string, error) {

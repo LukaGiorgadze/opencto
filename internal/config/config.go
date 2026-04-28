@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/opencto/opencto/internal/workspace"
@@ -11,6 +12,7 @@ import (
 
 type Config struct {
 	Project       ProjectConfig       `json:"project"`
+	Runtime       RuntimeConfig       `json:"runtime"`
 	LLM           LLMConfig           `json:"llm"`
 	Temporal      TemporalConfig      `json:"temporal"`
 	Channels      ChannelsConfig      `json:"channels"`
@@ -19,6 +21,7 @@ type Config struct {
 
 type fileConfig struct {
 	Project       ProjectConfig       `json:"project"`
+	Runtime       RuntimeConfig       `json:"runtime"`
 	LLM           llmFileConfig       `json:"llm"`
 	Temporal      TemporalConfig      `json:"temporal"`
 	Channels      ChannelsConfig      `json:"channels"`
@@ -40,6 +43,10 @@ type ProjectConfig struct {
 	ID            string `json:"id"`
 	Name          string `json:"name"`
 	WorkspaceRoot string `json:"workspace_root"`
+}
+
+type RuntimeConfig struct {
+	StateDir string `json:"state_dir"`
 }
 
 type LLMConfig struct {
@@ -86,6 +93,7 @@ func Load(path string) (Config, error) {
 
 	cfg := Config{
 		Project: raw.Project,
+		Runtime: raw.Runtime,
 		LLM: LLMConfig{
 			Provider:            raw.LLM.Provider,
 			BaseURL:             raw.LLM.BaseURL,
@@ -102,6 +110,10 @@ func Load(path string) (Config, error) {
 	}
 
 	cfg.Project.WorkspaceRoot, err = workspace.ResolveRoot(cfg.Project.WorkspaceRoot)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Runtime.StateDir, err = resolveRuntimeStateDir(cfg.Runtime.StateDir, cfg.Project.ID)
 	if err != nil {
 		return Config{}, err
 	}
@@ -147,4 +159,45 @@ func (c *Config) validate() error {
 	}
 
 	return errors.Join(errs...)
+}
+
+func resolveRuntimeStateDir(stateDir, projectID string) (string, error) {
+	stateDir = strings.TrimSpace(stateDir)
+	if stateDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		stateDir = os.Expand(filepath.Join(home, ".opencto", "state", projectID), func(key string) string {
+			switch key {
+			case "HOME", "USERPROFILE":
+				return home
+			default:
+				return os.Getenv(key)
+			}
+		})
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	if stateDir == "~" {
+		stateDir = home
+	} else if strings.HasPrefix(stateDir, "~/") || strings.HasPrefix(stateDir, `~\`) {
+		stateDir = filepath.Join(home, stateDir[2:])
+	} else {
+		stateDir = os.Expand(stateDir, func(key string) string {
+			switch key {
+			case "HOME", "USERPROFILE":
+				return home
+			default:
+				return os.Getenv(key)
+			}
+		})
+	}
+	abs, err := filepath.Abs(stateDir)
+	if err != nil {
+		return "", err
+	}
+	return abs, nil
 }

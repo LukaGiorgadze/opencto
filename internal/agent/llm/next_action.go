@@ -22,6 +22,7 @@ type nextActionPromptData struct {
 	ProjectState       string
 	ProjectDescription string
 	UserRequest        string
+	AdditionalContext  string
 	OS                 string
 	Arch               string
 	Shell              string
@@ -110,6 +111,7 @@ func renderNextActionPrompt(input agent.NextActionInput) (string, error) {
 		ProjectState:       formatProjectState(input.Context.ActiveWorkItems),
 		ProjectDescription: strings.TrimSpace(input.Context.Project.Description),
 		UserRequest:        strings.TrimSpace(input.Context.Event.Body),
+		AdditionalContext:  formatAdditionalEvents(input.Context.AdditionalEvents),
 		OS:                 input.Runtime.OS,
 		Arch:               input.Runtime.Arch,
 		Shell:              firstNonEmpty(strings.TrimSpace(input.Runtime.Shell), "unknown"),
@@ -120,6 +122,32 @@ func renderNextActionPrompt(input agent.NextActionInput) (string, error) {
 	}
 
 	return prompts.Render("next_action.tmpl", data)
+}
+
+func formatAdditionalEvents(events []domain.Event) string {
+	if len(events) == 0 {
+		return ""
+	}
+	var builder strings.Builder
+	for _, event := range events {
+		body := strings.TrimSpace(event.Body)
+		if body == "" {
+			continue
+		}
+		if builder.Len() > 0 {
+			builder.WriteString("\n")
+		}
+		actor := strings.TrimSpace(event.ActorName)
+		if actor == "" {
+			actor = strings.TrimSpace(event.ActorID)
+		}
+		if actor != "" {
+			builder.WriteString(actor)
+			builder.WriteString(": ")
+		}
+		builder.WriteString(body)
+	}
+	return builder.String()
 }
 
 func nextActionTranscriptMessages(feedback agent.ExecutionFeedback) (llms.MessageContent, llms.MessageContent, error) {
@@ -283,6 +311,22 @@ func transcriptTimeoutMs(feedback agent.ExecutionFeedback) int {
 	return parsed
 }
 
+func transcriptRunMode(feedback agent.ExecutionFeedback) string {
+	value := strings.TrimSpace(feedback.Metadata["run_mode"])
+	if value == "" {
+		return string(domain.ToolRunModeWaitForExit)
+	}
+	return value
+}
+
+func transcriptIdempotency(feedback agent.ExecutionFeedback) string {
+	value := strings.TrimSpace(feedback.Metadata["idempotency"])
+	if value == "" {
+		return string(domain.ToolIdempotencyUnknown)
+	}
+	return value
+}
+
 func transcriptToolCall(feedback agent.ExecutionFeedback) (string, string, error) {
 	if feedback.Tool == "" || feedback.Tool == domain.ToolTypeShell {
 		args := shellToolInput{
@@ -290,6 +334,8 @@ func transcriptToolCall(feedback agent.ExecutionFeedback) (string, string, error
 			Args:        feedback.Args,
 			WorkingDir:  strings.TrimSpace(feedback.Metadata["working_directory"]),
 			TimeoutMs:   transcriptTimeoutMs(feedback),
+			RunMode:     transcriptRunMode(feedback),
+			Idempotency: transcriptIdempotency(feedback),
 			Description: strings.TrimSpace(feedback.RequestedAction),
 			Destructive: feedback.Metadata["destructive"] == "true",
 			WorkItemID:  strings.TrimSpace(feedback.WorkItemID),

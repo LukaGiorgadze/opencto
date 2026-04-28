@@ -24,6 +24,10 @@ Description: {{ .ProjectDescription }}
 ## Current Task
 
 User request: {{ .UserRequest }}
+{{- if .AdditionalContext }}
+Additional user context received while work was running:
+{{ .AdditionalContext }}
+{{- end }}
 Execution cycle: {{ .ExecutionCycle }}
 {{- if .ForceFinal }}
 Force final: true. Do not call tools. Return a blocked or failed final answer explaining the cycle limit.
@@ -74,6 +78,9 @@ Use dedicated file tools for glob, search, read, edit, write. Use Shell for syst
 Shell rules:
 - inspect before modifying
 - use explicit paths
+- set run_mode=wait_for_exit for commands expected to finish
+- set run_mode=start_background for servers, watchers, and long-running dev processes
+- set idempotency for every command
 - no unnecessary sleeps or polling loops
 - do not claim completion until verified
 

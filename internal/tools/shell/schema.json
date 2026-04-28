@@ -6,6 +6,8 @@
         "args",
         "working_dir",
         "timeout_ms",
+        "run_mode",
+        "idempotency",
         "description",
         "destructive",
         "work_item_id"
@@ -29,8 +31,18 @@
         },
         "timeout_ms": {
             "type": ["integer", "null"],
-            "description": "Maximum runtime for the command in milliseconds. Use null to accept the runtime default.",
+            "description": "Maximum runtime for this execution step in milliseconds. Use null to accept the runtime default. For start_background, this is only the startup window before OpenCTO returns control.",
             "maximum": 600000
+        },
+        "run_mode": {
+            "type": ["string", "null"],
+            "enum": ["wait_for_exit", "start_background", null],
+            "description": "Use wait_for_exit for commands expected to finish. Use start_background for servers, watchers, dev processes, or any command expected to keep running while the user continues chatting."
+        },
+        "idempotency": {
+            "type": ["string", "null"],
+            "enum": ["read_only", "idempotent", "non_idempotent", "unknown", null],
+            "description": "Classify whether rerunning this command is safe. Use read_only for inspection, idempotent for safe repeatable actions, non_idempotent for one-shot/mutating actions, and unknown when unsure."
         },
         "description": {
             "type": ["string", "null"],

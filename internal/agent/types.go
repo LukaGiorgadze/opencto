@@ -8,23 +8,26 @@ import (
 )
 
 type Context struct {
-	Event           domain.Event      `json:"event"`
-	Project         domain.Project    `json:"project"`
-	ActiveWorkItems []domain.WorkItem `json:"active_work_items,omitempty"`
+	Event            domain.Event      `json:"event"`
+	Project          domain.Project    `json:"project"`
+	ActiveWorkItems  []domain.WorkItem `json:"active_work_items,omitempty"`
+	AdditionalEvents []domain.Event    `json:"additional_events,omitempty"`
 }
 
 type ToolChoice struct {
-	ToolCallID   string          `json:"tool_call_id,omitempty"`
-	Type         domain.ToolType `json:"type"`
-	Intent       string          `json:"intent"`
-	Command      string          `json:"command,omitempty"`
-	Args         []string        `json:"args,omitempty"`
-	Input        json.RawMessage `json:"input,omitempty"`
-	WorkingDir   string          `json:"working_dir,omitempty"`
-	TimeoutMs    int             `json:"timeout_ms,omitempty"`
-	InputSummary string          `json:"input_summary,omitempty"`
-	Destructive  bool            `json:"destructive,omitempty"`
-	Metadata     domain.Metadata `json:"metadata,omitempty"`
+	ToolCallID   string                 `json:"tool_call_id,omitempty"`
+	Type         domain.ToolType        `json:"type"`
+	Intent       string                 `json:"intent"`
+	Command      string                 `json:"command,omitempty"`
+	Args         []string               `json:"args,omitempty"`
+	Input        json.RawMessage        `json:"input,omitempty"`
+	WorkingDir   string                 `json:"working_dir,omitempty"`
+	TimeoutMs    int                    `json:"timeout_ms,omitempty"`
+	RunMode      domain.ToolRunMode     `json:"run_mode,omitempty"`
+	Idempotency  domain.ToolIdempotency `json:"idempotency,omitempty"`
+	InputSummary string                 `json:"input_summary,omitempty"`
+	Destructive  bool                   `json:"destructive,omitempty"`
+	Metadata     domain.Metadata        `json:"metadata,omitempty"`
 }
 
 func (c ToolChoice) IsZero() bool {
@@ -36,6 +39,8 @@ func (c ToolChoice) IsZero() bool {
 		len(c.Input) == 0 &&
 		c.WorkingDir == "" &&
 		c.TimeoutMs == 0 &&
+		c.RunMode == "" &&
+		c.Idempotency == "" &&
 		c.InputSummary == "" &&
 		!c.Destructive &&
 		len(c.Metadata) == 0
