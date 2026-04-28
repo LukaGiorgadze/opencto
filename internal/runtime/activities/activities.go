@@ -21,7 +21,7 @@ import (
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	readtool "github.com/opencto/opencto/internal/tools/read"
-	"github.com/opencto/opencto/internal/tools/shell"
+	shelltool "github.com/opencto/opencto/internal/tools/shell"
 	writetool "github.com/opencto/opencto/internal/tools/write"
 )
 
@@ -47,7 +47,7 @@ type SemanticEmbedder interface {
 type Activities struct {
 	Store           ProjectStore
 	Engine          agent.Engine
-	Shell           shell.Executor
+	Shell           shelltool.Executor
 	Edit            edittool.Executor
 	Glob            globtool.Executor
 	Grep            greptool.Executor
@@ -786,7 +786,7 @@ func (a *Activities) runShellTool(ctx context.Context, choice agent.ToolChoice, 
 	if a.Shell == nil {
 		return toolRunResult{ResultCode: "1"}, fmt.Errorf("shell executor is not configured")
 	}
-	result, err := a.Shell.Run(ctx, shell.Request{
+	result, err := a.Shell.Run(ctx, shelltool.Request{
 		ProjectID:          execution.ProjectID,
 		Intent:             choice.Intent,
 		Command:            choice.Command,
