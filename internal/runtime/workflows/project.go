@@ -16,16 +16,12 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 	state := ProjectWorkflowState{
 		ProjectID:    input.ProjectID,
 		ActiveTasks:  map[string]string{},
-		Processes:    map[string]ProjectProcess{},
 		SeenEventIDs: map[string]bool{},
 	}
 	if input.Snapshot != nil {
 		state = *input.Snapshot
 		if state.ActiveTasks == nil {
 			state.ActiveTasks = map[string]string{}
-		}
-		if state.Processes == nil {
-			state.Processes = map[string]ProjectProcess{}
 		}
 		if state.SeenEventIDs == nil {
 			state.SeenEventIDs = map[string]bool{}
@@ -80,28 +76,13 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 		for eventID, future := range active {
 			eventID := eventID
 			selector.AddFuture(future, func(f workflow.Future) {
-				var result TaskWorkflowResult
-				_ = f.Get(ctx, &result)
-				mergeProjectProcesses(state.Processes, result.Processes)
+				_ = f.Get(ctx, nil)
 				delete(active, eventID)
 				delete(state.ActiveTasks, eventID)
 				state.ProcessedEvents++
 			})
 		}
 		selector.Select(ctx)
-	}
-}
-
-func mergeProjectProcesses(state map[string]ProjectProcess, updates []ProjectProcess) {
-	for _, process := range updates {
-		if strings.TrimSpace(process.ID) == "" {
-			continue
-		}
-		if process.Status == domain.ProcessStatusStopped || process.Status == domain.ProcessStatusExited || process.Status == domain.ProcessStatusFailed {
-			delete(state, process.ID)
-			continue
-		}
-		state[process.ID] = process
 	}
 }
 

@@ -237,7 +237,6 @@ func drainTaskSignals(ctx workflow.Context, additionalEvents *[]domain.Event) {
 func resultFromNextAction(next activities.NextActionResult) TaskWorkflowResult {
 	return TaskWorkflowResult{
 		Completed: next.Status == activities.NextActionStatusCompleted || next.Status == activities.NextActionStatusIgnored,
-		Processes: next.Processes,
 	}
 }
 

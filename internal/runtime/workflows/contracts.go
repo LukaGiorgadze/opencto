@@ -31,15 +31,12 @@ type (
 )
 
 type ProjectWorkflowState struct {
-	ProjectID       string                    `json:"project_id"`
-	Queue           []domain.Event            `json:"queue,omitempty"`
-	ActiveTasks     map[string]string         `json:"active_tasks,omitempty"`
-	Processes       map[string]ProjectProcess `json:"processes,omitempty"`
-	SeenEventIDs    map[string]bool           `json:"seen_event_ids,omitempty"`
-	ProcessedEvents int                       `json:"processed_events"`
+	ProjectID       string            `json:"project_id"`
+	Queue           []domain.Event    `json:"queue,omitempty"`
+	ActiveTasks     map[string]string `json:"active_tasks,omitempty"`
+	SeenEventIDs    map[string]bool   `json:"seen_event_ids,omitempty"`
+	ProcessedEvents int               `json:"processed_events"`
 }
-
-type ProjectProcess = domain.ProcessReference
 
 type TaskWorkflowInput struct {
 	ProjectID        string            `json:"project_id"`
@@ -50,6 +47,5 @@ type TaskWorkflowInput struct {
 }
 
 type TaskWorkflowResult struct {
-	Completed bool             `json:"completed"`
-	Processes []ProjectProcess `json:"processes,omitempty"`
+	Completed bool `json:"completed"`
 }

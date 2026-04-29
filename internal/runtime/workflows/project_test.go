@@ -165,7 +165,7 @@ func TestTaskWorkflowStartsResponseSessionForChannelEvent(t *testing.T) {
 	env.AssertExpectations(t)
 }
 
-func TestTaskWorkflowTracksProcessesReturnedByExecuteTool(t *testing.T) {
+func TestTaskWorkflowPassesProcessesReturnedByExecuteToolToNextAction(t *testing.T) {
 	t.Parallel()
 
 	var suite testsuite.WorkflowTestSuite
@@ -249,8 +249,8 @@ func TestTaskWorkflowTracksProcessesReturnedByExecuteTool(t *testing.T) {
 	if err := env.GetWorkflowResult(&result); err != nil {
 		t.Fatalf("get result: %v", err)
 	}
-	if len(result.Processes) != 1 || result.Processes[0].Status != domain.ProcessStatusStopped {
-		t.Fatalf("expected stopped task-scoped process, got %#v", result.Processes)
+	if !result.Completed {
+		t.Fatalf("expected workflow to complete")
 	}
 	env.AssertExpectations(t)
 }
@@ -304,14 +304,12 @@ func TestTaskWorkflowKeepsProjectScopedBackgroundProcessRunning(t *testing.T) {
 			Scope:       domain.ProcessScopeProject,
 		}},
 	}, nil).Once()
-	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
+		return len(request.Processes) == 1 &&
+			request.Processes[0].ID == "proc-1" &&
+			request.Processes[0].Scope == domain.ProcessScopeProject
+	})).Return(activities.NextActionResult{
 		Status: activities.NextActionStatusCompleted,
-		Processes: []domain.ProcessReference{{
-			ID:          "proc-1",
-			Description: "start persistent server",
-			Status:      domain.ProcessStatusRunning,
-			Scope:       domain.ProcessScopeProject,
-		}},
 	}, nil).Once()
 
 	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{
@@ -325,8 +323,8 @@ func TestTaskWorkflowKeepsProjectScopedBackgroundProcessRunning(t *testing.T) {
 	if err := env.GetWorkflowResult(&result); err != nil {
 		t.Fatalf("get result: %v", err)
 	}
-	if len(result.Processes) != 1 || result.Processes[0].Scope != domain.ProcessScopeProject || result.Processes[0].Status != domain.ProcessStatusRunning {
-		t.Fatalf("expected running project-scoped process, got %#v", result.Processes)
+	if !result.Completed {
+		t.Fatalf("expected workflow to complete")
 	}
 	env.AssertExpectations(t)
 }
@@ -395,8 +393,8 @@ func TestTaskWorkflowMarksIncompleteWhenTaskProcessCleanupFails(t *testing.T) {
 	if err := env.GetWorkflowResult(&result); err != nil {
 		t.Fatalf("get result: %v", err)
 	}
-	if result.Completed || len(result.Processes) != 1 || result.Processes[0].Status != domain.ProcessStatusRunning {
-		t.Fatalf("expected incomplete result with running process, got %#v", result)
+	if result.Completed {
+		t.Fatalf("expected incomplete result")
 	}
 	env.AssertExpectations(t)
 }
@@ -471,8 +469,8 @@ func TestTaskWorkflowPreservesProjectProcessAfterNextActionError(t *testing.T) {
 	if err := env.GetWorkflowResult(&result); err != nil {
 		t.Fatalf("get result: %v", err)
 	}
-	if result.Completed || len(result.Processes) != 1 || result.Processes[0].Scope != domain.ProcessScopeProject || result.Processes[0].Status != domain.ProcessStatusRunning {
-		t.Fatalf("expected incomplete result with running project process, got %#v", result)
+	if result.Completed {
+		t.Fatalf("expected incomplete result")
 	}
 	env.AssertExpectations(t)
 }
@@ -536,49 +534,6 @@ func TestProjectWorkflowSignalsActiveTaskWithAdditionalContext(t *testing.T) {
 	}
 	if !received {
 		t.Fatalf("expected active child task to receive additional context signal")
-	}
-}
-
-func TestProjectWorkflowTracksProjectScopedProcesses(t *testing.T) {
-	t.Parallel()
-
-	var suite testsuite.WorkflowTestSuite
-	env := suite.NewTestWorkflowEnvironment()
-	env.RegisterWorkflow(workflows.ProjectWorkflow)
-	env.RegisterWorkflowWithOptions(func(_ workflow.Context, _ workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
-		return workflows.TaskWorkflowResult{
-			Completed: true,
-			Processes: []workflows.ProjectProcess{{
-				ID:          "proc-1",
-				Description: "start persistent server",
-				Status:      domain.ProcessStatusRunning,
-				Scope:       domain.ProcessScopeProject,
-			}},
-		}, nil
-	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
-
-	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{ID: "event-1", ProjectID: "project-1", Body: "run server"}})
-	}, 0)
-	observed := false
-	env.RegisterDelayedCallback(func() {
-		value, err := env.QueryWorkflow(workflows.QueryProjectState)
-		if err == nil {
-			var state workflows.ProjectWorkflowState
-			if value.Get(&state) == nil {
-				process, ok := state.Processes["proc-1"]
-				observed = ok && process.Description == "start persistent server" && process.Status == domain.ProcessStatusRunning
-			}
-		}
-		env.CancelWorkflow()
-	}, 2*time.Millisecond)
-
-	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
-	if err := env.GetWorkflowError(); err == nil {
-		t.Fatalf("expected cancellation error")
-	}
-	if !observed {
-		t.Fatalf("expected project workflow state to include running process")
 	}
 }
 
