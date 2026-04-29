@@ -327,7 +327,7 @@ func TestExecuteToolReturnsManagedProcessMetadata(t *testing.T) {
 	}
 }
 
-func TestNextActionReportsAfterTaskProcessCleanup(t *testing.T) {
+func TestNextActionReturnsResponseAfterTaskProcessCleanup(t *testing.T) {
 	if goruntime.GOOS == "windows" {
 		t.Skip("uses POSIX shell fixture")
 	}
@@ -335,7 +335,6 @@ func TestNextActionReportsAfterTaskProcessCleanup(t *testing.T) {
 
 	dir := t.TempDir()
 	stateDir := t.TempDir()
-	reporter := &captureReporter{}
 	activities := Activities{
 		Engine: stubEngine{output: agent.NextActionOutput{
 			NextAction: agent.NextAction{WorkItems: []domain.WorkItem{{
@@ -346,7 +345,6 @@ func TestNextActionReportsAfterTaskProcessCleanup(t *testing.T) {
 			FinalAnswer: "server is available",
 			Status:      NextActionStatusCompleted,
 		}},
-		Reporter:      reporter,
 		WorkspaceRoot: dir,
 		StateDir:      stateDir,
 	}
@@ -392,11 +390,11 @@ func TestNextActionReportsAfterTaskProcessCleanup(t *testing.T) {
 	if len(result.Processes) != 1 || result.Processes[0].Status != domain.ProcessStatusStopped {
 		t.Fatalf("expected stopped process reference, got %#v", result.Processes)
 	}
-	if len(reporter.messages) != 1 {
-		t.Fatalf("expected one report, got %#v", reporter.messages)
+	if len(result.NextAction.ResponseMessage) == 0 {
+		t.Fatalf("expected response message")
 	}
-	if !strings.Contains(reporter.messages[0], "server is available") || !strings.Contains(reporter.messages[0], "stopped task-scoped background process") {
-		t.Fatalf("expected cleanup notice in report, got %q", reporter.messages[0])
+	if !strings.Contains(result.NextAction.ResponseMessage, "server is available") || !strings.Contains(result.NextAction.ResponseMessage, "stopped task-scoped background process") {
+		t.Fatalf("expected cleanup notice in response, got %q", result.NextAction.ResponseMessage)
 	}
 }
 

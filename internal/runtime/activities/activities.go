@@ -95,6 +95,11 @@ type TaskCompletionRequest struct {
 	Processes []domain.ProcessReference `json:"processes,omitempty"`
 }
 
+type ReportResponseRequest struct {
+	Event   domain.Event `json:"event"`
+	Message string       `json:"message"`
+}
+
 type ResponseSessionRequest struct {
 	ProjectID              string       `json:"project_id"`
 	Event                  domain.Event `json:"event"`
@@ -127,7 +132,7 @@ const (
 	NextActionStatusFailed    = "failed"
 	NextActionStatusIgnored   = "ignored"
 
-	defaultResponseSessionRefresh = 8 * time.Second
+	defaultResponseSessionRefresh = 4 * time.Second
 	defaultResponseSessionMaxAge  = 30 * time.Minute
 )
 
@@ -264,6 +269,32 @@ func (a *Activities) ResponseSession(ctx context.Context, request ResponseSessio
 			refresh()
 		}
 	}
+}
+
+func (a *Activities) ReportResponse(ctx context.Context, request ReportResponseRequest) error {
+	message := strings.TrimSpace(request.Message)
+	if message == "" || a.Reporter == nil {
+		return nil
+	}
+	a.logActivityStep("ReportResponse", "start",
+		slog.String("project_id", request.Event.ProjectID),
+		slog.String("event_id", request.Event.ID),
+		slog.String("channel_type", string(request.Event.ChannelType)),
+		slog.String("channel_id", strings.TrimSpace(request.Event.ChannelID)),
+	)
+	if err := a.Reporter.Report(ctx, request.Event, message); err != nil {
+		a.logActivityStep("ReportResponse", "error",
+			slog.String("project_id", request.Event.ProjectID),
+			slog.String("event_id", request.Event.ID),
+			slog.String("error", err.Error()),
+		)
+		return err
+	}
+	a.logActivityStep("ReportResponse", "done",
+		slog.String("project_id", request.Event.ProjectID),
+		slog.String("event_id", request.Event.ID),
+	)
+	return nil
 }
 
 func recordResponseSessionHeartbeat(ctx context.Context, details any) {
@@ -573,7 +604,7 @@ func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, n
 	result, err := a.completeTask(ctx, event.ProjectID, event, nextAction, TaskCompletionRequest{
 		Status:    output.Status,
 		Processes: processes,
-	}, true, true)
+	}, true, false)
 	if err != nil {
 		return NextActionResult{}, err
 	}

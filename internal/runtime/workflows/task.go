@@ -84,7 +84,7 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			observationHistory = append(observationHistory, *next.Observation)
 		}
 		if next.IsTerminal() {
-			return resultFromNextAction(next), nil
+			return resultFromNextAction(input.Event, next), nil
 		}
 		if next.ToolChoice == nil {
 			return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, fmt.Errorf("Activities.NextAction returned non-terminal status %q without a tool choice", next.Status))
@@ -125,7 +125,7 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 	if !final.IsTerminal() {
 		return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, fmt.Errorf("Activities.NextAction returned non-terminal status %q for force-final request", final.Status))
 	}
-	return resultFromNextAction(final), nil
+	return resultFromNextAction(input.Event, final), nil
 }
 
 func nextAction(ctx workflow.Context, request activities.NextActionRequest) (activities.NextActionResult, error) {
@@ -234,9 +234,14 @@ func drainTaskSignals(ctx workflow.Context, additionalEvents *[]domain.Event) {
 	}
 }
 
-func resultFromNextAction(next activities.NextActionResult) TaskWorkflowResult {
+func resultFromNextAction(event domain.Event, next activities.NextActionResult) TaskWorkflowResult {
+	message := strings.TrimSpace(next.NextAction.ResponseMessage)
 	return TaskWorkflowResult{
-		Completed: next.Status == activities.NextActionStatusCompleted || next.Status == activities.NextActionStatusIgnored,
+		Completed:       next.Status == activities.NextActionStatusCompleted || next.Status == activities.NextActionStatusIgnored,
+		Status:          next.Status,
+		Event:           event,
+		ResponseMessage: message,
+		Report:          next.Status != activities.NextActionStatusIgnored && message != "",
 	}
 }
 
@@ -264,7 +269,7 @@ func completeIncompleteTask(ctx workflow.Context, projectID string, event domain
 	if err != nil {
 		return TaskWorkflowResult{}, err
 	}
-	return resultFromNextAction(next), nil
+	return resultFromNextAction(event, next), nil
 }
 
 func mergeTaskProcesses(processes *[]domain.ProcessReference, updates []domain.ProcessReference) {

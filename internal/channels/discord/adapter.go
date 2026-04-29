@@ -303,10 +303,12 @@ func (a *Adapter) Report(ctx context.Context, event domain.Event, message string
 	if a.session == nil || event.ChannelID == "" {
 		return nil
 	}
-	if err := a.NotifyTyping(ctx, event); err != nil && a.logger != nil {
-		a.logger.Warn("notify discord typing before report", slog.String("error", err.Error()), slog.String("event_id", event.ID))
-	}
 	for _, chunk := range splitDiscordMessage(message, discordMessageMaxLength) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		if _, err := a.session.ChannelMessageSend(event.ChannelID, chunk); err != nil {
 			return err
 		}

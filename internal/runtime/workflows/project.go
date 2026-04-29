@@ -8,6 +8,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/opencto/opencto/internal/domain"
+	"github.com/opencto/opencto/internal/runtime/activities"
 )
 
 func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
@@ -36,8 +37,17 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 
 	eventSignal := workflow.GetSignalChannel(ctx, SignalEnqueueEvent)
 	active := map[string]workflow.ChildWorkflowFuture{}
+	var pendingReports []TaskWorkflowResult
 
 	for {
+		for len(pendingReports) > 0 {
+			report := pendingReports[0]
+			pendingReports = pendingReports[1:]
+			if err := reportTaskResult(ctx, report); err != nil {
+				return err
+			}
+		}
+
 		if input.ContinueAsNewAfterEvents > 0 && state.ProcessedEvents >= input.ContinueAsNewAfterEvents && len(active) == 0 {
 			snapshot := state
 			return workflow.NewContinueAsNewError(ctx, ProjectWorkflow, ProjectWorkflowInput{
@@ -76,7 +86,11 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 		for eventID, future := range active {
 			eventID := eventID
 			selector.AddFuture(future, func(f workflow.Future) {
-				_ = f.Get(ctx, nil)
+				var result TaskWorkflowResult
+				_ = f.Get(ctx, &result)
+				if result.Report {
+					pendingReports = append(pendingReports, result)
+				}
 				delete(active, eventID)
 				delete(state.ActiveTasks, eventID)
 				state.ProcessedEvents++
@@ -84,6 +98,16 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 		}
 		selector.Select(ctx)
 	}
+}
+
+func reportTaskResult(ctx workflow.Context, result TaskWorkflowResult) error {
+	if !result.Report || strings.TrimSpace(result.ResponseMessage) == "" {
+		return nil
+	}
+	return workflow.ExecuteActivity(ctx, "Activities.ReportResponse", activities.ReportResponseRequest{
+		Event:   result.Event,
+		Message: result.ResponseMessage,
+	}).Get(ctx, nil)
 }
 
 func handleProjectEventSignal(ctx workflow.Context, state *ProjectWorkflowState, active map[string]workflow.ChildWorkflowFuture, projectID string, event domain.Event) {

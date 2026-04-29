@@ -21,6 +21,7 @@ func registerTaskWorkflowActivities(env *testsuite.TestWorkflowEnvironment) {
 	env.RegisterActivityWithOptions((&activities.Activities{}).NextAction, activity.RegisterOptions{Name: "Activities.NextAction"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).ExecuteTool, activity.RegisterOptions{Name: "Activities.ExecuteTool"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).ResponseSession, activity.RegisterOptions{Name: "Activities.ResponseSession"})
+	env.RegisterActivityWithOptions((&activities.Activities{}).ReportResponse, activity.RegisterOptions{Name: "Activities.ReportResponse"})
 }
 
 func TestTaskWorkflowAlternatesNextActionAndExecuteTool(t *testing.T) {
@@ -443,7 +444,7 @@ func TestTaskWorkflowPreservesProjectProcessAfterNextActionError(t *testing.T) {
 			Scope:       domain.ProcessScopeProject,
 		}},
 	}, nil).Once()
-	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{}, errors.New("next action failed")).Once()
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{}, errors.New("next action failed")).Times(5)
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
 		return request.Completion != nil &&
 			len(request.Completion.Processes) == 1 &&
@@ -535,6 +536,50 @@ func TestProjectWorkflowSignalsActiveTaskWithAdditionalContext(t *testing.T) {
 	if !received {
 		t.Fatalf("expected active child task to receive additional context signal")
 	}
+}
+
+func TestProjectWorkflowReportsAfterTaskWorkflowCompletes(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ProjectWorkflow)
+	env.RegisterWorkflowWithOptions(func(_ workflow.Context, input workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		return workflows.TaskWorkflowResult{
+			Completed:       true,
+			Status:          activities.NextActionStatusCompleted,
+			Event:           input.Event,
+			ResponseMessage: "done",
+			Report:          true,
+		}, nil
+	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+	env.RegisterActivityWithOptions((&activities.Activities{}).ReportResponse, activity.RegisterOptions{Name: "Activities.ReportResponse"})
+
+	reported := false
+	env.OnActivity("Activities.ReportResponse", mock.Anything, mock.MatchedBy(func(request activities.ReportResponseRequest) bool {
+		reported = request.Event.ID == "event-1" && request.Message == "done"
+		return reported
+	})).Run(func(mock.Arguments) {
+		env.CancelWorkflow()
+	}).Return(nil).Once()
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "project-1",
+			ChannelID:   "channel-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			Body:        "do work",
+		}})
+	}, 0)
+	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	if !reported {
+		t.Fatalf("expected project workflow to report after child task result")
+	}
+	env.AssertExpectations(t)
 }
 
 func TestProjectWorkflowKeepsRunningAfterTaskFailure(t *testing.T) {
