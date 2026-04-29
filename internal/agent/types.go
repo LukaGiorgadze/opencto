@@ -64,7 +64,7 @@ type ExecutionFeedback struct {
 }
 
 type NextActionOutput struct {
-	Decision      DecisionOutput     `json:"decision"`
+	NextAction    NextAction         `json:"next_action"`
 	ToolChoice    *ToolChoice        `json:"tool_choice,omitempty"`
 	WorkItemID    string             `json:"work_item_id,omitempty"`
 	Observation   *ExecutionFeedback `json:"observation,omitempty"`
@@ -73,7 +73,7 @@ type NextActionOutput struct {
 	AssistantText string             `json:"assistant_text,omitempty"`
 }
 
-type DecisionOutput struct {
+type NextAction struct {
 	WorkItems       []domain.WorkItem `json:"work_items,omitempty"`
 	ToolChoice      ToolChoice        `json:"tool_choice,omitempty,omitzero"`
 	ResponseMessage string            `json:"response_message,omitempty"`
@@ -97,7 +97,7 @@ type ToolSelectionInput struct {
 type NextActionInput struct {
 	ProjectID          string
 	Context            Context
-	Decision           DecisionOutput
+	NextAction         NextAction
 	Runtime            RuntimeContext
 	ExecutionCycle     int
 	ForceFinal         bool

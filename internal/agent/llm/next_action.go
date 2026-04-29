@@ -221,7 +221,7 @@ func nextActionToolOutput(choice *llms.ContentChoice, input agent.NextActionInpu
 		assistantText = strings.TrimSpace(toolChoice.Intent)
 	}
 	return agent.NextActionOutput{
-		Decision:      input.Decision,
+		NextAction:    input.NextAction,
 		ToolChoice:    &toolChoice,
 		WorkItemID:    workItemID,
 		Status:        "tool",
@@ -245,7 +245,7 @@ func nextActionTerminalFromContent(content string, input agent.NextActionInput) 
 	}
 	_ = finalStatus
 	return agent.NextActionOutput{
-		Decision:    input.Decision,
+		NextAction:  input.NextAction,
 		FinalAnswer: answer,
 		Status:      status,
 	}, nil

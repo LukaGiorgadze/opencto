@@ -38,7 +38,7 @@ tasks:
   infra:up:
     aliases: [up]
     desc: Start Temporal and supporting infrastructure.
-    cmd: docker compose up -d
+    cmd: docker compose up -d --remove-orphans
 
   infra:down:
     aliases: [down]

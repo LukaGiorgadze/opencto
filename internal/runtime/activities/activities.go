@@ -65,7 +65,7 @@ type NextActionRequest struct {
 	ProjectID          string                    `json:"project_id"`
 	Event              domain.Event              `json:"event"`
 	AdditionalEvents   []domain.Event            `json:"additional_events,omitempty"`
-	Decision           agent.DecisionOutput      `json:"decision"`
+	NextAction         agent.NextAction          `json:"next_action"`
 	LastResult         *ExecuteToolResult        `json:"last_result,omitempty"`
 	ObservationHistory []agent.ExecutionFeedback `json:"observation_history,omitempty"`
 	Processes          []domain.ProcessReference `json:"processes,omitempty"`
@@ -76,7 +76,7 @@ type NextActionRequest struct {
 }
 
 type NextActionResult struct {
-	Decision    agent.DecisionOutput      `json:"decision"`
+	NextAction  agent.NextAction          `json:"next_action"`
 	ToolChoice  *agent.ToolChoice         `json:"tool_choice,omitempty"`
 	WorkItemID  string                    `json:"work_item_id,omitempty"`
 	Observation *agent.ExecutionFeedback  `json:"observation,omitempty"`
@@ -93,6 +93,13 @@ type ExecuteToolRequest struct {
 type TaskCompletionRequest struct {
 	Status    string                    `json:"status"`
 	Processes []domain.ProcessReference `json:"processes,omitempty"`
+}
+
+type ResponseSessionRequest struct {
+	ProjectID              string       `json:"project_id"`
+	Event                  domain.Event `json:"event"`
+	RefreshIntervalSeconds int          `json:"refresh_interval_seconds,omitempty"`
+	MaxDurationSeconds     int          `json:"max_duration_seconds,omitempty"`
 }
 
 type ExecuteToolResult struct {
@@ -119,6 +126,9 @@ const (
 	NextActionStatusBlocked   = "blocked"
 	NextActionStatusFailed    = "failed"
 	NextActionStatusIgnored   = "ignored"
+
+	defaultResponseSessionRefresh = 8 * time.Second
+	defaultResponseSessionMaxAge  = 30 * time.Minute
 )
 
 func (r NextActionResult) IsTerminal() bool {
@@ -184,39 +194,88 @@ func (a *Activities) logActivityStep(activity, step string, attrs ...any) {
 	a.activityLogger().Info("runtime activity trace", append(base, attrs...)...)
 }
 
-func (a *Activities) NotifyTyping(ctx context.Context, event domain.Event) error {
-	a.logActivityStep("NotifyTyping", "start",
-		slog.String("project_id", strings.TrimSpace(event.ProjectID)),
+func (a *Activities) ResponseSession(ctx context.Context, request ResponseSessionRequest) error {
+	event := request.Event
+	projectID := strings.TrimSpace(request.ProjectID)
+	if projectID == "" {
+		projectID = strings.TrimSpace(event.ProjectID)
+	}
+	a.logActivityStep("ResponseSession", "start",
+		slog.String("project_id", projectID),
 		slog.String("event_id", event.ID),
 		slog.String("channel_type", string(event.ChannelType)),
 		slog.String("channel_id", strings.TrimSpace(event.ChannelID)),
 	)
 	reporter, ok := a.Reporter.(TypingReporter)
 	if !ok || reporter == nil {
-		a.logActivityStep("NotifyTyping", "skip_no_reporter",
-			slog.String("project_id", strings.TrimSpace(event.ProjectID)),
+		a.logActivityStep("ResponseSession", "skip_no_indicator_reporter",
+			slog.String("project_id", projectID),
 			slog.String("event_id", event.ID),
 		)
 		return nil
 	}
-	if err := reporter.NotifyTyping(ctx, event); err != nil {
-		a.logActivityStep("NotifyTyping", "error",
-			slog.String("project_id", strings.TrimSpace(event.ProjectID)),
-			slog.String("event_id", event.ID),
-			slog.String("error", err.Error()),
-		)
-		return nil
+
+	interval := defaultResponseSessionRefresh
+	if request.RefreshIntervalSeconds > 0 {
+		interval = time.Duration(request.RefreshIntervalSeconds) * time.Second
 	}
-	a.logActivityStep("NotifyTyping", "done",
-		slog.String("project_id", strings.TrimSpace(event.ProjectID)),
-		slog.String("event_id", event.ID),
-	)
-	return nil
+	maxAge := defaultResponseSessionMaxAge
+	if request.MaxDurationSeconds > 0 {
+		maxAge = time.Duration(request.MaxDurationSeconds) * time.Second
+	}
+
+	refresh := func() {
+		recordResponseSessionHeartbeat(ctx, map[string]string{
+			"project_id":   projectID,
+			"event_id":     event.ID,
+			"channel_type": string(event.ChannelType),
+		})
+		if err := reporter.NotifyTyping(ctx, event); err != nil && ctx.Err() == nil {
+			a.logActivityStep("ResponseSession", "indicator_error",
+				slog.String("project_id", projectID),
+				slog.String("event_id", event.ID),
+				slog.String("error", err.Error()),
+			)
+		}
+	}
+
+	refresh()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	deadline := time.NewTimer(maxAge)
+	defer deadline.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			a.logActivityStep("ResponseSession", "canceled",
+				slog.String("project_id", projectID),
+				slog.String("event_id", event.ID),
+			)
+			return nil
+		case <-deadline.C:
+			a.logActivityStep("ResponseSession", "expired",
+				slog.String("project_id", projectID),
+				slog.String("event_id", event.ID),
+				slog.Duration("max_age", maxAge),
+			)
+			return nil
+		case <-ticker.C:
+			refresh()
+		}
+	}
+}
+
+func recordResponseSessionHeartbeat(ctx context.Context, details any) {
+	defer func() {
+		_ = recover()
+	}()
+	activity.RecordHeartbeat(ctx, details)
 }
 
 func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) (NextActionResult, error) {
 	if request.Completion != nil {
-		return a.completeTask(ctx, request.ProjectID, request.Event, agent.DecisionOutput{}, *request.Completion, false, false)
+		return a.completeTask(ctx, request.ProjectID, request.Event, agent.NextAction{}, *request.Completion, false, false)
 	}
 	a.logActivityStep("NextAction", "start",
 		slog.String("project_id", strings.TrimSpace(request.ProjectID)),
@@ -229,7 +288,7 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 	)
 	if a.Engine == nil {
 		a.logActivityStep("NextAction", "missing_engine")
-		return NextActionResult{}, fmt.Errorf("decision engine is not configured")
+		return NextActionResult{}, fmt.Errorf("next action engine is not configured")
 	}
 
 	projectID := strings.TrimSpace(request.ProjectID)
@@ -282,19 +341,19 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 	)
 
 	now := time.Now().UTC()
-	decision := request.Decision
-	if err := ensureNextActionDecision(&decision, projectID, event, now); err != nil {
-		a.logActivityStep("NextAction", "ensure_decision_error",
+	nextAction := request.NextAction
+	if err := ensureNextAction(&nextAction, projectID, event, now); err != nil {
+		a.logActivityStep("NextAction", "ensure_next_action_error",
 			slog.String("project_id", projectID),
 			slog.String("event_id", event.ID),
 			slog.String("error", err.Error()),
 		)
 		return NextActionResult{}, err
 	}
-	a.logActivityStep("NextAction", "ensure_decision_done",
+	a.logActivityStep("NextAction", "ensure_next_action_done",
 		slog.String("project_id", projectID),
 		slog.String("event_id", event.ID),
-		slog.Int("work_items", len(decision.WorkItems)),
+		slog.Int("work_items", len(nextAction.WorkItems)),
 	)
 
 	history := append([]agent.ExecutionFeedback(nil), request.ObservationHistory...)
@@ -309,8 +368,8 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		feedback := executionFeedback(*request.LastResult)
 		observation = &feedback
 		history = append(history, feedback)
-		decision.ToolChoice = agent.ToolChoice{}
-		if err := applyObservationToDecision(&decision, feedback, now); err != nil {
+		nextAction.ToolChoice = agent.ToolChoice{}
+		if err := applyObservationToNextAction(&nextAction, feedback, now); err != nil {
 			a.logActivityStep("NextAction", "apply_last_result_error",
 				slog.String("project_id", projectID),
 				slog.String("event_id", event.ID),
@@ -338,7 +397,7 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 	engineOutput, err := a.Engine.NextAction(ctx, agent.NextActionInput{
 		ProjectID:          projectID,
 		Context:            loaded,
-		Decision:           decision,
+		NextAction:         nextAction,
 		Runtime:            buildRuntimeContext(a.WorkspaceRoot),
 		ExecutionCycle:     request.ExecutionCycle,
 		ForceFinal:         request.ForceFinal,
@@ -361,21 +420,21 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		slog.Bool("has_tool_choice", engineOutput.ToolChoice != nil),
 		slog.String("work_item_id", strings.TrimSpace(engineOutput.WorkItemID)),
 	)
-	if len(engineOutput.Decision.WorkItems) > 0 || !engineOutput.Decision.ToolChoice.IsZero() || strings.TrimSpace(engineOutput.Decision.ResponseMessage) != "" {
-		decision = engineOutput.Decision
+	if len(engineOutput.NextAction.WorkItems) > 0 || !engineOutput.NextAction.ToolChoice.IsZero() || strings.TrimSpace(engineOutput.NextAction.ResponseMessage) != "" {
+		nextAction = engineOutput.NextAction
 	}
-	if err := ensureNextActionDecision(&decision, projectID, event, now); err != nil {
-		a.logActivityStep("NextAction", "ensure_engine_decision_error",
+	if err := ensureNextAction(&nextAction, projectID, event, now); err != nil {
+		a.logActivityStep("NextAction", "ensure_engine_next_action_error",
 			slog.String("project_id", projectID),
 			slog.String("event_id", event.ID),
 			slog.String("error", err.Error()),
 		)
 		return NextActionResult{}, err
 	}
-	a.logActivityStep("NextAction", "ensure_engine_decision_done",
+	a.logActivityStep("NextAction", "ensure_engine_next_action_done",
 		slog.String("project_id", projectID),
 		slog.String("event_id", event.ID),
-		slog.Int("work_items", len(decision.WorkItems)),
+		slog.Int("work_items", len(nextAction.WorkItems)),
 	)
 
 	if request.ForceFinal && engineOutput.Status == NextActionStatusTool {
@@ -384,7 +443,7 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 			slog.String("event_id", event.ID),
 		)
 		engineOutput.Status = NextActionStatusBlocked
-		engineOutput.Decision.ResponseMessage = cycleLimitFinalAnswer(history)
+		engineOutput.NextAction.ResponseMessage = cycleLimitFinalAnswer(history)
 		engineOutput.ToolChoice = nil
 	}
 
@@ -395,15 +454,15 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 	)
 	switch engineOutput.Status {
 	case NextActionStatusTool:
-		return a.prepareToolNextAction(ctx, decision, observation, engineOutput, request.ExecutionCycle, now)
+		return a.prepareToolNextAction(ctx, nextAction, observation, engineOutput, request.ExecutionCycle, now)
 	case NextActionStatusCompleted, NextActionStatusBlocked, NextActionStatusFailed, NextActionStatusIgnored:
-		return a.finishNextAction(ctx, event, decision, observation, engineOutput, request.Processes, now)
+		return a.finishNextAction(ctx, event, nextAction, observation, engineOutput, request.Processes, now)
 	default:
 		return NextActionResult{}, fmt.Errorf("unsupported next action status %q", engineOutput.Status)
 	}
 }
 
-func (a *Activities) prepareToolNextAction(ctx context.Context, decision agent.DecisionOutput, observation *agent.ExecutionFeedback, output agent.NextActionOutput, cycle int, now time.Time) (NextActionResult, error) {
+func (a *Activities) prepareToolNextAction(ctx context.Context, nextAction agent.NextAction, observation *agent.ExecutionFeedback, output agent.NextActionOutput, cycle int, now time.Time) (NextActionResult, error) {
 	a.logActivityStep("NextAction", "prepare_tool_begin",
 		slog.Int("execution_cycle", cycle),
 		slog.Bool("has_observation", observation != nil),
@@ -416,7 +475,7 @@ func (a *Activities) prepareToolNextAction(ctx context.Context, decision agent.D
 	}
 
 	choice := *output.ToolChoice
-	workItemID := nextActionToolWorkItemID(output, choice, decision)
+	workItemID := nextActionToolWorkItemID(output, choice, nextAction)
 	if strings.TrimSpace(workItemID) == "" {
 		a.logActivityStep("NextAction", "prepare_tool_missing_work_item_id",
 			slog.String("tool_call_id", choice.ToolCallID),
@@ -428,14 +487,14 @@ func (a *Activities) prepareToolNextAction(ctx context.Context, decision agent.D
 		slog.String("tool_type", string(choice.Type)),
 		slog.String("tool_call_id", choice.ToolCallID),
 	)
-	if err := ensureToolWorkItem(&decision, workItemID, now); err != nil {
+	if err := ensureToolWorkItem(&nextAction, workItemID, now); err != nil {
 		a.logActivityStep("NextAction", "prepare_tool_ensure_work_item_error",
 			slog.String("work_item_id", workItemID),
 			slog.String("error", err.Error()),
 		)
 		return NextActionResult{}, err
 	}
-	if err := completePreviousWorkItemForNextAction(&decision, workItemID, observation, now); err != nil {
+	if err := completePreviousWorkItemForNextAction(&nextAction, workItemID, observation, now); err != nil {
 		a.logActivityStep("NextAction", "prepare_tool_complete_previous_error",
 			slog.String("work_item_id", workItemID),
 			slog.String("error", err.Error()),
@@ -444,13 +503,13 @@ func (a *Activities) prepareToolNextAction(ctx context.Context, decision agent.D
 	}
 	a.logActivityStep("NextAction", "prepare_tool_work_items_ready",
 		slog.String("work_item_id", workItemID),
-		slog.Int("work_items", len(decision.WorkItems)),
+		slog.Int("work_items", len(nextAction.WorkItems)),
 	)
 
-	index := decisionWorkItemIndexByID(decision.WorkItems, workItemID)
+	index := nextActionWorkItemIndexByID(nextAction.WorkItems, workItemID)
 	if index >= 0 {
-		decision.WorkItems[index].Status = domain.WorkItemStatusRunning
-		decision.WorkItems[index].UpdatedAt = now
+		nextAction.WorkItems[index].Status = domain.WorkItemStatusRunning
+		nextAction.WorkItems[index].UpdatedAt = now
 	}
 
 	assistantText := strings.TrimSpace(output.AssistantText)
@@ -458,15 +517,15 @@ func (a *Activities) prepareToolNextAction(ctx context.Context, decision agent.D
 		assistantText = strings.TrimSpace(choice.Intent)
 	}
 	ensureToolChoiceMetadata(&choice, workItemID, cycle, assistantText)
-	decision.ToolChoice = choice
-	decision.ResponseMessage = ""
+	nextAction.ToolChoice = choice
+	nextAction.ResponseMessage = ""
 
-	a.logActivityStep("NextAction", "prepare_tool_persist_decision_begin",
+	a.logActivityStep("NextAction", "prepare_tool_persist_next_action_begin",
 		slog.String("work_item_id", workItemID),
 		slog.String("tool_call_id", choice.ToolCallID),
 	)
-	if err := a.persistDecision(ctx, decision); err != nil {
-		a.logActivityStep("NextAction", "prepare_tool_persist_decision_error",
+	if err := a.persistNextAction(ctx, nextAction); err != nil {
+		a.logActivityStep("NextAction", "prepare_tool_persist_next_action_error",
 			slog.String("work_item_id", workItemID),
 			slog.String("tool_call_id", choice.ToolCallID),
 			slog.String("error", err.Error()),
@@ -480,7 +539,7 @@ func (a *Activities) prepareToolNextAction(ctx context.Context, decision agent.D
 	)
 
 	return NextActionResult{
-		Decision:    decision,
+		NextAction:  nextAction,
 		ToolChoice:  &choice,
 		WorkItemID:  workItemID,
 		Observation: observation,
@@ -488,7 +547,7 @@ func (a *Activities) prepareToolNextAction(ctx context.Context, decision agent.D
 	}, nil
 }
 
-func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, decision agent.DecisionOutput, observation *agent.ExecutionFeedback, output agent.NextActionOutput, processes []domain.ProcessReference, now time.Time) (NextActionResult, error) {
+func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, nextAction agent.NextAction, observation *agent.ExecutionFeedback, output agent.NextActionOutput, processes []domain.ProcessReference, now time.Time) (NextActionResult, error) {
 	a.logActivityStep("NextAction", "finish_begin",
 		slog.String("project_id", event.ProjectID),
 		slog.String("event_id", event.ID),
@@ -497,7 +556,7 @@ func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, d
 	)
 	message := strings.TrimSpace(output.FinalAnswer)
 	if message == "" {
-		message = strings.TrimSpace(output.Decision.ResponseMessage)
+		message = strings.TrimSpace(output.NextAction.ResponseMessage)
 	}
 	if message == "" {
 		a.logActivityStep("NextAction", "finish_missing_final_answer",
@@ -508,10 +567,10 @@ func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, d
 		return NextActionResult{}, fmt.Errorf("%w: terminal next action is missing final answer", agent.ErrInvalidNextAction)
 	}
 
-	decision.ToolChoice = agent.ToolChoice{}
-	decision.ResponseMessage = message
-	markFinalDecisionWorkItems(&decision, terminalWorkItemStatus(output.Status), observation, now)
-	result, err := a.completeTask(ctx, event.ProjectID, event, decision, TaskCompletionRequest{
+	nextAction.ToolChoice = agent.ToolChoice{}
+	nextAction.ResponseMessage = message
+	markFinalNextActionWorkItems(&nextAction, terminalWorkItemStatus(output.Status), observation, now)
+	result, err := a.completeTask(ctx, event.ProjectID, event, nextAction, TaskCompletionRequest{
 		Status:    output.Status,
 		Processes: processes,
 	}, true, true)
@@ -527,7 +586,7 @@ func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, d
 	return result, nil
 }
 
-func (a *Activities) completeTask(ctx context.Context, projectID string, event domain.Event, decision agent.DecisionOutput, request TaskCompletionRequest, persist bool, report bool) (NextActionResult, error) {
+func (a *Activities) completeTask(ctx context.Context, projectID string, event domain.Event, nextAction agent.NextAction, request TaskCompletionRequest, persist bool, report bool) (NextActionResult, error) {
 	if strings.TrimSpace(event.ProjectID) == "" {
 		event.ProjectID = strings.TrimSpace(projectID)
 	}
@@ -547,15 +606,15 @@ func (a *Activities) completeTask(ctx context.Context, projectID string, event d
 	cleaned, stopped, cleanupFailed := a.cleanupTaskProcesses(ctx, event.ProjectID, request.Processes)
 	if cleanupFailed {
 		status = NextActionStatusFailed
-		markFinalDecisionWorkItems(&decision, domain.WorkItemStatusFailed, nil, time.Now().UTC())
+		markFinalNextActionWorkItems(&nextAction, domain.WorkItemStatusFailed, nil, time.Now().UTC())
 	}
 	if stopped || cleanupFailed {
-		decision.ResponseMessage = appendProcessCleanupNotice(decision.ResponseMessage, cleaned, stopped, cleanupFailed)
+		nextAction.ResponseMessage = appendProcessCleanupNotice(nextAction.ResponseMessage, cleaned, stopped, cleanupFailed)
 	}
 
-	message := strings.TrimSpace(decision.ResponseMessage)
+	message := strings.TrimSpace(nextAction.ResponseMessage)
 	if persist {
-		if err := a.persistDecision(ctx, decision); err != nil {
+		if err := a.persistNextAction(ctx, nextAction); err != nil {
 			a.logActivityStep("NextAction", "complete_task_persist_error",
 				slog.String("project_id", event.ProjectID),
 				slog.String("event_id", event.ID),
@@ -591,9 +650,9 @@ func (a *Activities) completeTask(ctx context.Context, projectID string, event d
 		slog.Int("processes", len(cleaned)),
 	)
 	return NextActionResult{
-		Decision:  decision,
-		Status:    status,
-		Processes: cleaned,
+		NextAction: nextAction,
+		Status:     status,
+		Processes:  cleaned,
 	}, nil
 }
 
@@ -674,31 +733,31 @@ func processRefs(processes []domain.ProcessReference, running bool) string {
 	return strings.Join(refs, ", ")
 }
 
-func (a *Activities) persistDecision(ctx context.Context, decision agent.DecisionOutput) error {
+func (a *Activities) persistNextAction(ctx context.Context, nextAction agent.NextAction) error {
 	if a.Store == nil {
-		a.logActivityStep("NextAction", "persist_decision_skip_no_store",
-			slog.Int("work_items", len(decision.WorkItems)),
+		a.logActivityStep("NextAction", "persist_next_action_skip_no_store",
+			slog.Int("work_items", len(nextAction.WorkItems)),
 		)
 		return nil
 	}
-	for _, item := range decision.WorkItems {
+	for _, item := range nextAction.WorkItems {
 		if item.ID == "" {
-			a.logActivityStep("NextAction", "persist_decision_skip_empty_work_item_id")
+			a.logActivityStep("NextAction", "persist_next_action_skip_empty_work_item_id")
 			continue
 		}
-		a.logActivityStep("NextAction", "persist_decision_upsert_work_item_begin",
+		a.logActivityStep("NextAction", "persist_next_action_upsert_work_item_begin",
 			slog.String("work_item_id", item.ID),
 			slog.String("status", string(item.Status)),
 		)
 		if err := a.Store.UpsertWorkItem(ctx, item); err != nil {
-			a.logActivityStep("NextAction", "persist_decision_upsert_work_item_error",
+			a.logActivityStep("NextAction", "persist_next_action_upsert_work_item_error",
 				slog.String("work_item_id", item.ID),
 				slog.String("status", string(item.Status)),
 				slog.String("error", err.Error()),
 			)
 			return err
 		}
-		a.logActivityStep("NextAction", "persist_decision_upsert_work_item_done",
+		a.logActivityStep("NextAction", "persist_next_action_upsert_work_item_done",
 			slog.String("work_item_id", item.ID),
 			slog.String("status", string(item.Status)),
 		)
@@ -1460,14 +1519,14 @@ func executionFeedback(result ExecuteToolResult) agent.ExecutionFeedback {
 	}
 }
 
-func ensureNextActionDecision(decision *agent.DecisionOutput, projectID string, event domain.Event, now time.Time) error {
-	if decision == nil {
-		return fmt.Errorf("decision is required")
+func ensureNextAction(nextAction *agent.NextAction, projectID string, event domain.Event, now time.Time) error {
+	if nextAction == nil {
+		return fmt.Errorf("next action is required")
 	}
 	summary := firstNonEmpty(strings.TrimSpace(event.Body), "Handle inbound request.")
-	if len(decision.WorkItems) == 0 {
+	if len(nextAction.WorkItems) == 0 {
 		workItemID := stableActivityID("work-item", projectID, event.ID, "1")
-		decision.WorkItems = []domain.WorkItem{{
+		nextAction.WorkItems = []domain.WorkItem{{
 			ID:          workItemID,
 			ProjectID:   projectID,
 			Title:       "Handle request",
@@ -1478,25 +1537,25 @@ func ensureNextActionDecision(decision *agent.DecisionOutput, projectID string, 
 		}}
 		return nil
 	}
-	for index := range decision.WorkItems {
-		if decision.WorkItems[index].ProjectID == "" {
-			decision.WorkItems[index].ProjectID = projectID
+	for index := range nextAction.WorkItems {
+		if nextAction.WorkItems[index].ProjectID == "" {
+			nextAction.WorkItems[index].ProjectID = projectID
 		}
-		if decision.WorkItems[index].Status == "" {
-			decision.WorkItems[index].Status = domain.WorkItemStatusReady
+		if nextAction.WorkItems[index].Status == "" {
+			nextAction.WorkItems[index].Status = domain.WorkItemStatusReady
 		}
-		if decision.WorkItems[index].CreatedAt.IsZero() {
-			decision.WorkItems[index].CreatedAt = now
+		if nextAction.WorkItems[index].CreatedAt.IsZero() {
+			nextAction.WorkItems[index].CreatedAt = now
 		}
-		if decision.WorkItems[index].UpdatedAt.IsZero() {
-			decision.WorkItems[index].UpdatedAt = now
+		if nextAction.WorkItems[index].UpdatedAt.IsZero() {
+			nextAction.WorkItems[index].UpdatedAt = now
 		}
 	}
 	return nil
 }
 
-func ensureToolWorkItem(decision *agent.DecisionOutput, workItemID string, now time.Time) error {
-	if decisionWorkItemIndexByID(decision.WorkItems, workItemID) >= 0 {
+func ensureToolWorkItem(nextAction *agent.NextAction, workItemID string, now time.Time) error {
+	if nextActionWorkItemIndexByID(nextAction.WorkItems, workItemID) >= 0 {
 		return nil
 	}
 	if strings.TrimSpace(workItemID) == "" {
@@ -1504,19 +1563,19 @@ func ensureToolWorkItem(decision *agent.DecisionOutput, workItemID string, now t
 	}
 	item := domain.WorkItem{
 		ID:          workItemID,
-		ProjectID:   decisionProjectID(*decision),
+		ProjectID:   nextActionProjectID(*nextAction),
 		Title:       "Handle request",
 		Description: "Handle inbound request.",
 		Status:      domain.WorkItemStatusReady,
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
-	decision.WorkItems = append(decision.WorkItems, item)
+	nextAction.WorkItems = append(nextAction.WorkItems, item)
 	return nil
 }
 
-func decisionProjectID(decision agent.DecisionOutput) string {
-	for _, item := range decision.WorkItems {
+func nextActionProjectID(nextAction agent.NextAction) string {
+	for _, item := range nextAction.WorkItems {
 		if projectID := strings.TrimSpace(item.ProjectID); projectID != "" {
 			return projectID
 		}
@@ -1524,15 +1583,15 @@ func decisionProjectID(decision agent.DecisionOutput) string {
 	return ""
 }
 
-func currentNextActionWorkItemID(decision agent.DecisionOutput, observation *agent.ExecutionFeedback) string {
+func currentNextActionWorkItemID(nextAction agent.NextAction, observation *agent.ExecutionFeedback) string {
 	if observation != nil {
 		workItemID := strings.TrimSpace(observation.WorkItemID)
-		index := decisionWorkItemIndexByID(decision.WorkItems, workItemID)
-		if index >= 0 && decision.WorkItems[index].Status != domain.WorkItemStatusCompleted {
+		index := nextActionWorkItemIndexByID(nextAction.WorkItems, workItemID)
+		if index >= 0 && nextAction.WorkItems[index].Status != domain.WorkItemStatusCompleted {
 			return workItemID
 		}
 	}
-	for _, item := range decision.WorkItems {
+	for _, item := range nextAction.WorkItems {
 		if item.Status != domain.WorkItemStatusCompleted {
 			return item.ID
 		}
@@ -1540,17 +1599,17 @@ func currentNextActionWorkItemID(decision agent.DecisionOutput, observation *age
 	return ""
 }
 
-func nextActionToolWorkItemID(output agent.NextActionOutput, choice agent.ToolChoice, decision agent.DecisionOutput) string {
+func nextActionToolWorkItemID(output agent.NextActionOutput, choice agent.ToolChoice, nextAction agent.NextAction) string {
 	if strings.TrimSpace(output.WorkItemID) != "" {
 		return strings.TrimSpace(output.WorkItemID)
 	}
 	if strings.TrimSpace(choice.Metadata["work_item_id"]) != "" {
 		return strings.TrimSpace(choice.Metadata["work_item_id"])
 	}
-	return currentNextActionWorkItemID(decision, nil)
+	return currentNextActionWorkItemID(nextAction, nil)
 }
 
-func completePreviousWorkItemForNextAction(decision *agent.DecisionOutput, nextWorkItemID string, observation *agent.ExecutionFeedback, now time.Time) error {
+func completePreviousWorkItemForNextAction(nextAction *agent.NextAction, nextWorkItemID string, observation *agent.ExecutionFeedback, now time.Time) error {
 	if observation == nil {
 		return nil
 	}
@@ -1561,12 +1620,12 @@ func completePreviousWorkItemForNextAction(decision *agent.DecisionOutput, nextW
 	if previousWorkItemID == "" || previousWorkItemID == strings.TrimSpace(nextWorkItemID) {
 		return nil
 	}
-	index := decisionWorkItemIndexByID(decision.WorkItems, previousWorkItemID)
+	index := nextActionWorkItemIndexByID(nextAction.WorkItems, previousWorkItemID)
 	if index < 0 {
 		return fmt.Errorf("work item %q not found for status update", previousWorkItemID)
 	}
-	decision.WorkItems[index].Status = domain.WorkItemStatusCompleted
-	decision.WorkItems[index].UpdatedAt = now
+	nextAction.WorkItems[index].Status = domain.WorkItemStatusCompleted
+	nextAction.WorkItems[index].UpdatedAt = now
 	return nil
 }
 
@@ -1615,23 +1674,23 @@ func toolProcessScope(scope domain.ProcessScope) domain.ProcessScope {
 	return domain.ProcessScopeTask
 }
 
-func markFinalDecisionWorkItems(decision *agent.DecisionOutput, status domain.WorkItemStatus, observation *agent.ExecutionFeedback, now time.Time) {
+func markFinalNextActionWorkItems(nextAction *agent.NextAction, status domain.WorkItemStatus, observation *agent.ExecutionFeedback, now time.Time) {
 	if status == "" {
 		status = domain.WorkItemStatusCompleted
 	}
 	if observation != nil && strings.TrimSpace(observation.WorkItemID) != "" {
-		index := decisionWorkItemIndexByID(decision.WorkItems, observation.WorkItemID)
-		if index >= 0 && decision.WorkItems[index].Status != domain.WorkItemStatusCompleted {
-			decision.WorkItems[index].Status = status
-			decision.WorkItems[index].UpdatedAt = now
+		index := nextActionWorkItemIndexByID(nextAction.WorkItems, observation.WorkItemID)
+		if index >= 0 && nextAction.WorkItems[index].Status != domain.WorkItemStatusCompleted {
+			nextAction.WorkItems[index].Status = status
+			nextAction.WorkItems[index].UpdatedAt = now
 		}
 	}
-	for index := range decision.WorkItems {
-		if decision.WorkItems[index].Status == domain.WorkItemStatusCompleted {
+	for index := range nextAction.WorkItems {
+		if nextAction.WorkItems[index].Status == domain.WorkItemStatusCompleted {
 			continue
 		}
-		decision.WorkItems[index].Status = status
-		decision.WorkItems[index].UpdatedAt = now
+		nextAction.WorkItems[index].Status = status
+		nextAction.WorkItems[index].UpdatedAt = now
 	}
 }
 
@@ -1683,9 +1742,9 @@ func cycleLimitFinalAnswer(history []agent.ExecutionFeedback) string {
 	return builder.String()
 }
 
-func applyObservationToDecision(decision *agent.DecisionOutput, observation agent.ExecutionFeedback, now time.Time) error {
-	if decision == nil {
-		return fmt.Errorf("decision is required")
+func applyObservationToNextAction(nextAction *agent.NextAction, observation agent.ExecutionFeedback, now time.Time) error {
+	if nextAction == nil {
+		return fmt.Errorf("next action is required")
 	}
 	if observation.WorkItemID == "" {
 		return nil
@@ -1694,34 +1753,34 @@ func applyObservationToDecision(decision *agent.DecisionOutput, observation agen
 	if observation.Status == string(domain.ExecutionStatusCanceled) {
 		status = domain.WorkItemStatusBlocked
 	}
-	if err := setDecisionWorkItemStatus(decision, observation.WorkItemID, status, now); err != nil {
+	if err := setNextActionWorkItemStatus(nextAction, observation.WorkItemID, status, now); err != nil {
 		return err
 	}
-	index := decisionWorkItemIndexByID(decision.WorkItems, observation.WorkItemID)
+	index := nextActionWorkItemIndexByID(nextAction.WorkItems, observation.WorkItemID)
 	if index >= 0 {
-		if decision.WorkItems[index].Metadata == nil {
-			decision.WorkItems[index].Metadata = map[string]string{}
+		if nextAction.WorkItems[index].Metadata == nil {
+			nextAction.WorkItems[index].Metadata = map[string]string{}
 		}
-		decision.WorkItems[index].Metadata["last_execution_status"] = observation.Status
+		nextAction.WorkItems[index].Metadata["last_execution_status"] = observation.Status
 		if code := strings.TrimSpace(observation.Metadata["result_code"]); code != "" {
-			decision.WorkItems[index].Metadata["last_result_code"] = code
+			nextAction.WorkItems[index].Metadata["last_result_code"] = code
 		}
 	}
 	return nil
 }
 
-func setDecisionWorkItemStatus(decision *agent.DecisionOutput, workItemID string, status domain.WorkItemStatus, now time.Time) error {
-	for index := range decision.WorkItems {
-		if decision.WorkItems[index].ID == workItemID {
-			decision.WorkItems[index].Status = status
-			decision.WorkItems[index].UpdatedAt = now
+func setNextActionWorkItemStatus(nextAction *agent.NextAction, workItemID string, status domain.WorkItemStatus, now time.Time) error {
+	for index := range nextAction.WorkItems {
+		if nextAction.WorkItems[index].ID == workItemID {
+			nextAction.WorkItems[index].Status = status
+			nextAction.WorkItems[index].UpdatedAt = now
 			return nil
 		}
 	}
 	return fmt.Errorf("work item %q not found for status update", workItemID)
 }
 
-func decisionWorkItemIndexByID(items []domain.WorkItem, workItemID string) int {
+func nextActionWorkItemIndexByID(items []domain.WorkItem, workItemID string) int {
 	workItemID = strings.TrimSpace(workItemID)
 	if workItemID == "" {
 		return -1

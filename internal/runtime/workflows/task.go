@@ -14,13 +14,17 @@ import (
 )
 
 const (
-	maxExecutionCycles    = 20
-	typingRefreshInterval = 5 * time.Second
+	maxExecutionCycles          = 20
+	nextActionActivityTimeout   = 2 * time.Minute
+	toolActivityTimeout         = 10 * time.Minute
+	responseSessionGracePeriod  = 5 * time.Minute
+	responseSessionMaxDuration  = maxExecutionCycles*(nextActionActivityTimeout+toolActivityTimeout) + nextActionActivityTimeout + responseSessionGracePeriod
+	responseSessionHeartbeatGap = 30 * time.Second
 )
 
 func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowResult, error) {
-	decisionAO := workflow.ActivityOptions{
-		StartToCloseTimeout: 2 * time.Minute,
+	nextActionAO := workflow.ActivityOptions{
+		StartToCloseTimeout: nextActionActivityTimeout,
 		RetryPolicy: &temporal.RetryPolicy{
 			InitialInterval:    2 * time.Second,
 			BackoffCoefficient: 2.0,
@@ -28,26 +32,30 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 		},
 	}
 	toolAO := workflow.ActivityOptions{
-		StartToCloseTimeout: 10 * time.Minute,
+		StartToCloseTimeout: toolActivityTimeout,
 		HeartbeatTimeout:    10 * time.Second,
 		WaitForCancellation: true,
 		RetryPolicy: &temporal.RetryPolicy{
 			MaximumAttempts: 1,
 		},
 	}
-	typingAO := workflow.ActivityOptions{
-		StartToCloseTimeout: 5 * time.Second,
+	sessionAO := workflow.ActivityOptions{
+		StartToCloseTimeout: responseSessionMaxDuration,
+		HeartbeatTimeout:    responseSessionHeartbeatGap,
+		WaitForCancellation: true,
 		RetryPolicy: &temporal.RetryPolicy{
 			MaximumAttempts: 1,
 		},
 	}
-	decisionCtx := workflow.WithActivityOptions(ctx, decisionAO)
+	nextActionCtx := workflow.WithActivityOptions(ctx, nextActionAO)
 	toolCtx := workflow.WithActivityOptions(ctx, toolAO)
-	typingCtx := workflow.WithActivityOptions(ctx, typingAO)
+	sessionCtx := workflow.WithActivityOptions(ctx, sessionAO)
+	session := startResponseSession(ctx, sessionCtx, input.ProjectID, input.Event)
+	defer stopResponseSession(ctx, session)
 
-	var decision agent.DecisionOutput
-	if input.Decision != nil {
-		decision = *input.Decision
+	var currentAction agent.NextAction
+	if input.NextAction != nil {
+		currentAction = *input.NextAction
 	}
 	additionalEvents := append([]domain.Event(nil), input.AdditionalEvents...)
 	var observationHistory []agent.ExecutionFeedback
@@ -56,11 +64,11 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 
 	for cycle := 1; cycle <= maxExecutionCycles; cycle++ {
 		drainTaskSignals(ctx, &additionalEvents)
-		next, err := nextAction(ctx, decisionCtx, typingCtx, activities.NextActionRequest{
+		next, err := nextAction(nextActionCtx, activities.NextActionRequest{
 			ProjectID:          input.ProjectID,
 			Event:              input.Event,
 			AdditionalEvents:   additionalEvents,
-			Decision:           decision,
+			NextAction:         currentAction,
 			LastResult:         lastResult,
 			ObservationHistory: observationHistory,
 			Processes:          processes,
@@ -68,10 +76,10 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			ResumedFromPause:   input.ResumedFromPause,
 		})
 		if err != nil {
-			return completeTaskAfterProcessStart(decisionCtx, input.ProjectID, input.Event, processes, err)
+			return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)
 		}
 
-		decision = next.Decision
+		currentAction = next.NextAction
 		if next.Observation != nil {
 			observationHistory = append(observationHistory, *next.Observation)
 		}
@@ -79,16 +87,16 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			return resultFromNextAction(next), nil
 		}
 		if next.ToolChoice == nil {
-			return completeTaskAfterProcessStart(decisionCtx, input.ProjectID, input.Event, processes, fmt.Errorf("Activities.NextAction returned non-terminal status %q without a tool choice", next.Status))
+			return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, fmt.Errorf("Activities.NextAction returned non-terminal status %q without a tool choice", next.Status))
 		}
 		if strings.TrimSpace(next.WorkItemID) == "" {
-			return completeTaskAfterProcessStart(decisionCtx, input.ProjectID, input.Event, processes, fmt.Errorf("Activities.NextAction returned a tool choice without a work item id"))
+			return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, fmt.Errorf("Activities.NextAction returned a tool choice without a work item id"))
 		}
 
-		execResult, canceled, err := executeToolStep(ctx, toolCtx, typingCtx, input.Event, input.ProjectID, next.WorkItemID, *next.ToolChoice, cycle, &additionalEvents)
+		execResult, canceled, err := executeToolStep(ctx, toolCtx, input.ProjectID, next.WorkItemID, *next.ToolChoice, cycle, &additionalEvents)
 		mergeTaskProcesses(&processes, execResult.Processes)
 		if canceled {
-			return completeIncompleteTask(decisionCtx, input.ProjectID, input.Event, processes)
+			return completeIncompleteTask(nextActionCtx, input.ProjectID, input.Event, processes)
 		}
 		if err != nil {
 			execResult = failedExecutionActivityResult(*next.ToolChoice, next.WorkItemID, cycle, err)
@@ -96,11 +104,11 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 		lastResult = &execResult
 	}
 
-	final, err := nextAction(ctx, decisionCtx, typingCtx, activities.NextActionRequest{
+	final, err := nextAction(nextActionCtx, activities.NextActionRequest{
 		ProjectID:          input.ProjectID,
 		Event:              input.Event,
 		AdditionalEvents:   additionalEvents,
-		Decision:           decision,
+		NextAction:         currentAction,
 		LastResult:         lastResult,
 		ObservationHistory: observationHistory,
 		Processes:          processes,
@@ -109,27 +117,24 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 		ResumedFromPause:   input.ResumedFromPause,
 	})
 	if err != nil {
-		return completeTaskAfterProcessStart(decisionCtx, input.ProjectID, input.Event, processes, err)
+		return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)
 	}
 	if final.Observation != nil {
 		observationHistory = append(observationHistory, *final.Observation)
 	}
 	if !final.IsTerminal() {
-		return completeTaskAfterProcessStart(decisionCtx, input.ProjectID, input.Event, processes, fmt.Errorf("Activities.NextAction returned non-terminal status %q for force-final request", final.Status))
+		return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, fmt.Errorf("Activities.NextAction returned non-terminal status %q for force-final request", final.Status))
 	}
 	return resultFromNextAction(final), nil
 }
 
-func nextAction(ctx workflow.Context, activityCtx workflow.Context, typingCtx workflow.Context, request activities.NextActionRequest) (activities.NextActionResult, error) {
+func nextAction(ctx workflow.Context, request activities.NextActionRequest) (activities.NextActionResult, error) {
 	var result activities.NextActionResult
-	future := workflow.ExecuteActivity(activityCtx, "Activities.NextAction", request)
-	err := waitForActivityWithTyping(ctx, typingCtx, request.Event, future, func(f workflow.Future) error {
-		return f.Get(ctx, &result)
-	})
+	err := workflow.ExecuteActivity(ctx, "Activities.NextAction", request).Get(ctx, &result)
 	return result, err
 }
 
-func executeToolStep(ctx workflow.Context, toolCtx workflow.Context, typingCtx workflow.Context, event domain.Event, projectID, workItemID string, choice agent.ToolChoice, cycle int, additionalEvents *[]domain.Event) (activities.ExecuteToolResult, bool, error) {
+func executeToolStep(ctx workflow.Context, toolCtx workflow.Context, projectID, workItemID string, choice agent.ToolChoice, cycle int, additionalEvents *[]domain.Event) (activities.ExecuteToolResult, bool, error) {
 	activityCtx, cancelActivity := workflow.WithCancel(toolCtx)
 	defer cancelActivity()
 	future := workflow.ExecuteActivity(activityCtx, "Activities.ExecuteTool", activities.ExecuteToolRequest{
@@ -141,26 +146,14 @@ func executeToolStep(ctx workflow.Context, toolCtx workflow.Context, typingCtx w
 	var result activities.ExecuteToolResult
 	interrupted := false
 	canceled := false
-	notifyTyping(ctx, typingCtx, event)
-	typingTimer := newTypingTimer(ctx, event)
 	for {
 		selector := workflow.NewSelector(ctx)
-		activityDone := false
-		typingDue := false
-		var additionalTypingEvent *domain.Event
 		selector.AddFuture(future, func(f workflow.Future) {
 			err := f.Get(ctx, &result)
 			if err != nil {
 				result = failedExecutionActivityResult(choice, workItemID, cycle, err)
 			}
-			activityDone = true
 		})
-		if typingTimer != nil {
-			selector.AddFuture(typingTimer.future, func(f workflow.Future) {
-				_ = f.Get(ctx, nil)
-				typingDue = true
-			})
-		}
 		selector.AddReceive(workflow.GetSignalChannel(ctx, SignalTaskCancel), func(c workflow.ReceiveChannel, more bool) {
 			var signal TaskControlSignal
 			c.Receive(ctx, &signal)
@@ -180,11 +173,9 @@ func executeToolStep(ctx workflow.Context, toolCtx workflow.Context, typingCtx w
 			var signal AdditionalContextSignal
 			c.Receive(ctx, &signal)
 			*additionalEvents = append(*additionalEvents, signal.Event)
-			additionalTypingEvent = &signal.Event
 		})
 		selector.Select(ctx)
-		if activityDone || result.ToolCallID != "" || result.Status != "" {
-			cancelTypingTimer(typingTimer)
+		if result.ToolCallID != "" || result.Status != "" {
 			if canceled {
 				return result, true, nil
 			}
@@ -195,87 +186,42 @@ func executeToolStep(ctx workflow.Context, toolCtx workflow.Context, typingCtx w
 			return result, false, nil
 		}
 		if interrupted {
-			cancelTypingTimer(typingTimer)
 			result = failedExecutionActivityResult(choice, workItemID, cycle, fmt.Errorf("interrupted by user message"))
 			result.Status = domain.ExecutionStatusCanceled
 			return result, false, nil
 		}
-		if additionalTypingEvent != nil {
-			notifyTyping(ctx, typingCtx, *additionalTypingEvent)
-		}
-		if typingDue {
-			notifyTyping(ctx, typingCtx, event)
-			cancelTypingTimer(typingTimer)
-			typingTimer = newTypingTimer(ctx, event)
-		}
 	}
 }
 
-func waitForActivityWithTyping(ctx workflow.Context, typingCtx workflow.Context, event domain.Event, future workflow.Future, get func(workflow.Future) error) error {
-	if !shouldNotifyTyping(event) {
-		return get(future)
-	}
-	notifyTyping(ctx, typingCtx, event)
-	typingTimer := newTypingTimer(ctx, event)
-	for {
-		selector := workflow.NewSelector(ctx)
-		activityDone := false
-		typingDue := false
-		var activityErr error
-		selector.AddFuture(future, func(f workflow.Future) {
-			activityErr = get(f)
-			activityDone = true
-		})
-		if typingTimer != nil {
-			selector.AddFuture(typingTimer.future, func(f workflow.Future) {
-				_ = f.Get(ctx, nil)
-				typingDue = true
-			})
-		}
-		selector.Select(ctx)
-		if activityDone {
-			cancelTypingTimer(typingTimer)
-			return activityErr
-		}
-		if typingDue {
-			notifyTyping(ctx, typingCtx, event)
-			cancelTypingTimer(typingTimer)
-			typingTimer = newTypingTimer(ctx, event)
-		}
-	}
-}
-
-type typingTimerHandle struct {
+type responseSessionHandle struct {
 	future workflow.Future
 	cancel workflow.CancelFunc
 }
 
-func newTypingTimer(ctx workflow.Context, event domain.Event) *typingTimerHandle {
-	if !shouldNotifyTyping(event) {
+func startResponseSession(ctx workflow.Context, sessionCtx workflow.Context, projectID string, event domain.Event) *responseSessionHandle {
+	if !shouldStartResponseSession(event) {
 		return nil
 	}
-	timerCtx, cancel := workflow.WithCancel(ctx)
-	return &typingTimerHandle{
-		future: workflow.NewTimer(timerCtx, typingRefreshInterval),
+	activityCtx, cancel := workflow.WithCancel(sessionCtx)
+	return &responseSessionHandle{
+		future: workflow.ExecuteActivity(activityCtx, "Activities.ResponseSession", activities.ResponseSessionRequest{
+			ProjectID: projectID,
+			Event:     event,
+		}),
 		cancel: cancel,
 	}
 }
 
-func cancelTypingTimer(timer *typingTimerHandle) {
-	if timer != nil && timer.cancel != nil {
-		timer.cancel()
-	}
-}
-
-func notifyTyping(ctx workflow.Context, typingCtx workflow.Context, event domain.Event) {
-	if !shouldNotifyTyping(event) {
+func stopResponseSession(ctx workflow.Context, session *responseSessionHandle) {
+	if session == nil {
 		return
 	}
-	_ = workflow.ExecuteActivity(typingCtx, "Activities.NotifyTyping", event).Get(ctx, nil)
+	session.cancel()
+	_ = session.future.Get(ctx, nil)
 }
 
-func shouldNotifyTyping(event domain.Event) bool {
-	return event.ChannelType == domain.ChannelTypeDiscord && strings.TrimSpace(event.ChannelID) != ""
+func shouldStartResponseSession(event domain.Event) bool {
+	return strings.TrimSpace(event.ChannelID) != ""
 }
 
 func drainTaskSignals(ctx workflow.Context, additionalEvents *[]domain.Event) {

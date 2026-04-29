@@ -20,7 +20,7 @@ import (
 func registerTaskWorkflowActivities(env *testsuite.TestWorkflowEnvironment) {
 	env.RegisterActivityWithOptions((&activities.Activities{}).NextAction, activity.RegisterOptions{Name: "Activities.NextAction"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).ExecuteTool, activity.RegisterOptions{Name: "Activities.ExecuteTool"})
-	env.RegisterActivityWithOptions((&activities.Activities{}).NotifyTyping, activity.RegisterOptions{Name: "Activities.NotifyTyping"})
+	env.RegisterActivityWithOptions((&activities.Activities{}).ResponseSession, activity.RegisterOptions{Name: "Activities.ResponseSession"})
 }
 
 func TestTaskWorkflowAlternatesNextActionAndExecuteTool(t *testing.T) {
@@ -32,7 +32,7 @@ func TestTaskWorkflowAlternatesNextActionAndExecuteTool(t *testing.T) {
 	registerTaskWorkflowActivities(env)
 
 	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "inspect workspace"}
-	decision := agent.DecisionOutput{
+	nextAction := agent.NextAction{
 		WorkItems: []domain.WorkItem{{
 			ID:        "wi-1",
 			ProjectID: "project-1",
@@ -55,7 +55,7 @@ func TestTaskWorkflowAlternatesNextActionAndExecuteTool(t *testing.T) {
 			request.LastResult == nil &&
 			len(request.ObservationHistory) == 0
 	})).Return(activities.NextActionResult{
-		Decision:   decision,
+		NextAction: nextAction,
 		ToolChoice: &toolChoice,
 		WorkItemID: "wi-1",
 		Status:     activities.NextActionStatusTool,
@@ -84,7 +84,7 @@ func TestTaskWorkflowAlternatesNextActionAndExecuteTool(t *testing.T) {
 			request.LastResult.Observation == "/tmp/opencto" &&
 			len(request.ObservationHistory) == 0
 	})).Return(activities.NextActionResult{
-		Decision:    decision,
+		NextAction:  nextAction,
 		Observation: &agent.ExecutionFeedback{WorkItemID: "wi-1", ToolCallID: "toolu_1", Status: string(domain.ExecutionStatusSucceeded), Observation: "/tmp/opencto"},
 		Status:      activities.NextActionStatusCompleted,
 	}, nil).Once()
@@ -131,7 +131,7 @@ func TestTaskWorkflowRejectsNonTerminalNextActionWithoutTool(t *testing.T) {
 	}
 }
 
-func TestTaskWorkflowNotifiesTypingForDiscordEvent(t *testing.T) {
+func TestTaskWorkflowStartsResponseSessionForChannelEvent(t *testing.T) {
 	t.Parallel()
 
 	var suite testsuite.WorkflowTestSuite
@@ -146,8 +146,10 @@ func TestTaskWorkflowNotifiesTypingForDiscordEvent(t *testing.T) {
 		ChannelType: domain.ChannelTypeDiscord,
 		Body:        "inspect workspace",
 	}
-	env.OnActivity("Activities.NotifyTyping", mock.Anything, mock.MatchedBy(func(event domain.Event) bool {
-		return event.ID == "event-1" && event.ChannelID == "channel-1"
+	env.OnActivity("Activities.ResponseSession", mock.Anything, mock.MatchedBy(func(request activities.ResponseSessionRequest) bool {
+		return request.ProjectID == "project-1" &&
+			request.Event.ID == "event-1" &&
+			request.Event.ChannelID == "channel-1"
 	})).Return(nil).Once()
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{
 		Status: activities.NextActionStatusCompleted,
@@ -187,7 +189,7 @@ func TestTaskWorkflowTracksProcessesReturnedByExecuteTool(t *testing.T) {
 		},
 	}
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{
-		Decision: agent.DecisionOutput{WorkItems: []domain.WorkItem{{
+		NextAction: agent.NextAction{WorkItems: []domain.WorkItem{{
 			ID:        "wi-1",
 			ProjectID: "project-1",
 			Status:    domain.WorkItemStatusReady,
@@ -272,7 +274,7 @@ func TestTaskWorkflowKeepsProjectScopedBackgroundProcessRunning(t *testing.T) {
 		ProcessScope: domain.ProcessScopeProject,
 	}
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{
-		Decision: agent.DecisionOutput{WorkItems: []domain.WorkItem{{
+		NextAction: agent.NextAction{WorkItems: []domain.WorkItem{{
 			ID:        "wi-1",
 			ProjectID: "project-1",
 			Status:    domain.WorkItemStatusReady,
@@ -347,7 +349,7 @@ func TestTaskWorkflowMarksIncompleteWhenTaskProcessCleanupFails(t *testing.T) {
 		Idempotency: domain.ToolIdempotencyNonIdempotent,
 	}
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{
-		Decision:   agent.DecisionOutput{},
+		NextAction: agent.NextAction{},
 		ToolChoice: &choice,
 		WorkItemID: "wi-1",
 		Status:     activities.NextActionStatusTool,
@@ -399,7 +401,7 @@ func TestTaskWorkflowMarksIncompleteWhenTaskProcessCleanupFails(t *testing.T) {
 	env.AssertExpectations(t)
 }
 
-func TestTaskWorkflowPreservesProjectProcessAfterDecisionError(t *testing.T) {
+func TestTaskWorkflowPreservesProjectProcessAfterNextActionError(t *testing.T) {
 	t.Parallel()
 
 	var suite testsuite.WorkflowTestSuite
@@ -418,7 +420,7 @@ func TestTaskWorkflowPreservesProjectProcessAfterDecisionError(t *testing.T) {
 		ProcessScope: domain.ProcessScopeProject,
 	}
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{
-		Decision:   agent.DecisionOutput{},
+		NextAction: agent.NextAction{},
 		ToolChoice: &choice,
 		WorkItemID: "wi-1",
 		Status:     activities.NextActionStatusTool,
@@ -443,7 +445,7 @@ func TestTaskWorkflowPreservesProjectProcessAfterDecisionError(t *testing.T) {
 			Scope:       domain.ProcessScopeProject,
 		}},
 	}, nil).Once()
-	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{}, errors.New("decision failed")).Once()
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{}, errors.New("next action failed")).Once()
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
 		return request.Completion != nil &&
 			len(request.Completion.Processes) == 1 &&

@@ -2,7 +2,7 @@
 
 ## OpenAI
 
-OpenCTO uses OpenAI for decisioning and semantic memory when `[llm].provider = "openai"`.
+OpenCTO uses OpenAI for next-action planning and semantic memory when `[llm].provider = "openai"`.
 
 Recommended local setup:
 

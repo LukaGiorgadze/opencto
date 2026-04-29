@@ -42,11 +42,11 @@ type ProjectWorkflowState struct {
 type ProjectProcess = domain.ProcessReference
 
 type TaskWorkflowInput struct {
-	ProjectID        string                `json:"project_id"`
-	Event            domain.Event          `json:"event"`
-	AdditionalEvents []domain.Event        `json:"additional_events,omitempty"`
-	ResumedFromPause bool                  `json:"resumed_from_pause,omitempty"`
-	Decision         *agent.DecisionOutput `json:"decision,omitempty"`
+	ProjectID        string            `json:"project_id"`
+	Event            domain.Event      `json:"event"`
+	AdditionalEvents []domain.Event    `json:"additional_events,omitempty"`
+	ResumedFromPause bool              `json:"resumed_from_pause,omitempty"`
+	NextAction       *agent.NextAction `json:"next_action,omitempty"`
 }
 
 type TaskWorkflowResult struct {

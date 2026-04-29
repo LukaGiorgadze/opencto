@@ -20,7 +20,7 @@ func (e *UnavailableEngine) NextAction(_ context.Context, _ NextActionInput) (Ne
 
 func (e *UnavailableEngine) err(operation string) error {
 	if e.reason == "" {
-		return fmt.Errorf("%w: cannot %s", ErrDecisionEngineUnavailable, operation)
+		return fmt.Errorf("%w: cannot %s", ErrNextActionEngineUnavailable, operation)
 	}
-	return fmt.Errorf("%w: cannot %s: %s", ErrDecisionEngineUnavailable, operation, e.reason)
+	return fmt.Errorf("%w: cannot %s: %s", ErrNextActionEngineUnavailable, operation, e.reason)
 }

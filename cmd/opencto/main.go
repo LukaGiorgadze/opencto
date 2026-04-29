@@ -60,7 +60,7 @@ func main() {
 
 	dispatcher := runtime.NewDispatcher(temporalClient, cfg.Temporal.TaskQueue, cfg.Temporal.ContinueAsNewAfterEvents)
 	var reporter activities.Reporter = local.NewReporter(logger)
-	engine := buildDecisionEngine(cfg, logger)
+	engine := buildNextActionEngine(cfg, logger)
 
 	if *mode == "worker" || *mode == "serve" {
 		var discordAdapter *discord.Adapter
@@ -138,7 +138,7 @@ func main() {
 	os.Exit(1)
 }
 
-func buildDecisionEngine(cfg config.Config, logger *slog.Logger) agent.Engine {
+func buildNextActionEngine(cfg config.Config, logger *slog.Logger) agent.Engine {
 	unavailable := func(reason string) agent.Engine {
 		return agent.NewUnavailableEngine(reason)
 	}
@@ -157,10 +157,10 @@ func buildDecisionEngine(cfg config.Config, logger *slog.Logger) agent.Engine {
 
 	engine, err := agentllm.NewOpenAIEngine(apiKey, cfg.LLM.BaseURL, cfg.LLM.ModelReasoning, cfg.LLM.ModelFast, cfg.LLM.TranscriptionModel)
 	if err != nil {
-		logger.Warn("failed to initialize openai decision engine", slog.String("error", err.Error()))
+		logger.Warn("failed to initialize openai next action engine", slog.String("error", err.Error()))
 		return unavailable(err.Error())
 	}
-	logger.Info("openai decision engine configured",
+	logger.Info("openai next action engine configured",
 		slog.String("base_url", cfg.LLM.BaseURL),
 		slog.String("model_reasoning", cfg.LLM.ModelReasoning),
 		slog.String("model_fast", cfg.LLM.ModelFast),

@@ -34,6 +34,7 @@ type captureReporter struct {
 	messages     []string
 	typingEvents []domain.Event
 	typingErr    error
+	onTyping     func()
 }
 
 func (r *captureReporter) Report(_ context.Context, _ domain.Event, message string) error {
@@ -43,6 +44,9 @@ func (r *captureReporter) Report(_ context.Context, _ domain.Event, message stri
 
 func (r *captureReporter) NotifyTyping(_ context.Context, event domain.Event) error {
 	r.typingEvents = append(r.typingEvents, event)
+	if r.onTyping != nil {
+		r.onTyping()
+	}
 	return r.typingErr
 }
 
@@ -142,10 +146,11 @@ func TestLoadContextReturnsProjectAndActiveWorkItems(t *testing.T) {
 	}
 }
 
-func TestNotifyTypingUsesOptionalReporter(t *testing.T) {
+func TestResponseSessionUsesOptionalReporter(t *testing.T) {
 	t.Parallel()
 
-	reporter := &captureReporter{}
+	ctx, cancel := context.WithCancel(context.Background())
+	reporter := &captureReporter{onTyping: cancel}
 	activities := Activities{Reporter: reporter}
 	event := domain.Event{
 		ID:          "event-1",
@@ -154,11 +159,11 @@ func TestNotifyTypingUsesOptionalReporter(t *testing.T) {
 		ChannelType: domain.ChannelTypeDiscord,
 	}
 
-	if err := activities.NotifyTyping(context.Background(), event); err != nil {
-		t.Fatalf("notify typing: %v", err)
+	if err := activities.ResponseSession(ctx, ResponseSessionRequest{ProjectID: "project-1", Event: event}); err != nil {
+		t.Fatalf("response session: %v", err)
 	}
 	if len(reporter.typingEvents) != 1 || reporter.typingEvents[0].ChannelID != "channel-1" {
-		t.Fatalf("expected typing event to be passed to reporter, got %#v", reporter.typingEvents)
+		t.Fatalf("expected response indicator event to be passed to reporter, got %#v", reporter.typingEvents)
 	}
 }
 
@@ -333,7 +338,7 @@ func TestNextActionReportsAfterTaskProcessCleanup(t *testing.T) {
 	reporter := &captureReporter{}
 	activities := Activities{
 		Engine: stubEngine{output: agent.NextActionOutput{
-			Decision: agent.DecisionOutput{WorkItems: []domain.WorkItem{{
+			NextAction: agent.NextAction{WorkItems: []domain.WorkItem{{
 				ID:        "work-item-1",
 				ProjectID: "project-1",
 				Status:    domain.WorkItemStatusRunning,
