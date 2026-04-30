@@ -3,6 +3,7 @@ package shell
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -29,12 +31,27 @@ type Request struct {
 	Intent                string
 	Command               string
 	Args                  []string
+	Actions               []Action
 	WorkingDir            string
 	WorkspaceRoot         string
 	Timeout               time.Duration
 	Environment           map[string]string
 	AllowOutsideWorkspace bool
 	FallbackCandidates    []domain.ToolType
+}
+
+type Action struct {
+	Intent                string            `json:"intent,omitempty"`
+	Command               string            `json:"command"`
+	Args                  []string          `json:"args,omitempty"`
+	WorkingDir            string            `json:"working_dir,omitempty"`
+	TimeoutMs             int               `json:"timeout_ms,omitempty"`
+	Environment           map[string]string `json:"environment,omitempty"`
+	AllowOutsideWorkspace bool              `json:"allow_outside_workspace,omitempty"`
+}
+
+type BatchInput struct {
+	Actions []Action `json:"actions"`
 }
 
 type Result struct {
@@ -50,6 +67,22 @@ type Executor interface {
 	Run(context.Context, Request) (Result, error)
 }
 
+func DecodeBatchInput(raw json.RawMessage) (BatchInput, error) {
+	var input BatchInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return BatchInput{}, err
+	}
+	if len(input.Actions) == 0 {
+		return BatchInput{}, ErrEmptyCommand
+	}
+	for _, action := range input.Actions {
+		if strings.TrimSpace(action.Command) == "" {
+			return BatchInput{}, ErrEmptyCommand
+		}
+	}
+	return input, nil
+}
+
 type SafeExecutor struct {
 	logger *slog.Logger
 }
@@ -62,6 +95,54 @@ func NewSafeExecutor(logger *slog.Logger) *SafeExecutor {
 }
 
 func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
+	if len(req.Actions) > 0 {
+		return e.runBatch(ctx, req)
+	}
+	return e.runSingle(ctx, req)
+}
+
+func (e *SafeExecutor) runBatch(ctx context.Context, req Request) (Result, error) {
+	startedAt := time.Now()
+	runCtx, cancel := commandContext(ctx, req.Timeout)
+	if cancel != nil {
+		defer cancel()
+	}
+
+	var stdout strings.Builder
+	var stderr strings.Builder
+	exitCode := 0
+
+	for index, action := range req.Actions {
+		subReq := shellRequestForAction(req, action)
+		result, err := e.runSingle(runCtx, subReq)
+		appendActionOutput(&stdout, index, action.Command, action.Args, result.Stdout)
+		appendActionOutput(&stderr, index, action.Command, action.Args, result.Stderr)
+		exitCode = result.ExitCode
+		if err != nil {
+			completedAt := time.Now()
+			return Result{
+				Stdout:      stdout.String(),
+				Stderr:      stderr.String(),
+				ExitCode:    exitCode,
+				StartedAt:   startedAt,
+				CompletedAt: completedAt,
+				Duration:    completedAt.Sub(startedAt),
+			}, err
+		}
+	}
+
+	completedAt := time.Now()
+	return Result{
+		Stdout:      stdout.String(),
+		Stderr:      stderr.String(),
+		ExitCode:    exitCode,
+		StartedAt:   startedAt,
+		CompletedAt: completedAt,
+		Duration:    completedAt.Sub(startedAt),
+	}, nil
+}
+
+func (e *SafeExecutor) runSingle(ctx context.Context, req Request) (Result, error) {
 	if strings.TrimSpace(req.Command) == "" {
 		return Result{}, ErrEmptyCommand
 	}
@@ -73,10 +154,8 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 		return Result{}, err
 	}
 
-	runCtx := ctx
-	var cancel context.CancelFunc
-	if req.Timeout > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, req.Timeout)
+	runCtx, cancel := commandContext(ctx, req.Timeout)
+	if cancel != nil {
 		defer cancel()
 	}
 
@@ -117,6 +196,70 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 	}
 
 	return result, nil
+}
+
+func commandContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return ctx, nil
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+func shellRequestForAction(parent Request, action Action) Request {
+	timeout := time.Duration(action.TimeoutMs) * time.Millisecond
+	return Request{
+		ProjectID:             parent.ProjectID,
+		Intent:                firstNonEmpty(action.Intent, parent.Intent),
+		Command:               action.Command,
+		Args:                  append([]string(nil), action.Args...),
+		WorkingDir:            firstNonEmpty(action.WorkingDir, parent.WorkingDir),
+		WorkspaceRoot:         parent.WorkspaceRoot,
+		Timeout:               timeout,
+		Environment:           mergeStringMaps(parent.Environment, action.Environment),
+		AllowOutsideWorkspace: parent.AllowOutsideWorkspace || action.AllowOutsideWorkspace,
+		FallbackCandidates:    append([]domain.ToolType(nil), parent.FallbackCandidates...),
+	}
+}
+
+func appendActionOutput(builder *strings.Builder, index int, command string, args []string, output string) {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return
+	}
+	if builder.Len() > 0 {
+		builder.WriteString("\n\n")
+	}
+	builder.WriteString("command ")
+	builder.WriteString(strconv.Itoa(index + 1))
+	builder.WriteString(": ")
+	builder.WriteString(commandLine(command, args))
+	builder.WriteString("\n")
+	builder.WriteString(output)
+}
+
+func commandLine(command string, args []string) string {
+	parts := append([]string{command}, args...)
+	return strings.Join(parts, " ")
+}
+
+func mergeStringMaps(base, overrides map[string]string) map[string]string {
+	if len(base) == 0 && len(overrides) == 0 {
+		return nil
+	}
+	merged := map[string]string{}
+	maps.Copy(merged, base)
+	maps.Copy(merged, overrides)
+	return merged
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func runCommandWithContext(ctx context.Context, cmd *exec.Cmd) error {

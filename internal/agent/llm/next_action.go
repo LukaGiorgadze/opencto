@@ -61,10 +61,7 @@ func (e *OpenAIEngine) NextAction(ctx context.Context, input agent.NextActionInp
 	}
 
 	choice := response.Choices[0]
-	if len(choice.ToolCalls) > 1 {
-		return agent.NextActionOutput{}, fmt.Errorf("%w: next action requires exactly one tool call or one final answer", agent.ErrInvalidNextAction)
-	}
-	if len(choice.ToolCalls) == 1 {
+	if len(choice.ToolCalls) > 0 {
 		return nextActionToolOutput(choice, input)
 	}
 	return nextActionTerminalFromContent(choice.Content, input)
@@ -204,7 +201,7 @@ func nextActionToolOutput(choice *llms.ContentChoice, input agent.NextActionInpu
 		Runtime:        input.Runtime,
 		ExecutionCycle: input.ExecutionCycle,
 	}
-	toolChoice, err := toolChoiceFromToolCall(choice.ToolCalls[0], selectionInput)
+	toolChoice, err := toolChoiceFromToolCalls(choice.ToolCalls, selectionInput)
 	if err != nil {
 		return agent.NextActionOutput{}, err
 	}

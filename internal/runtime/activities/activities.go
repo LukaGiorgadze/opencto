@@ -1170,7 +1170,7 @@ func (a *Activities) runShellTool(ctx context.Context, choice agent.ToolChoice, 
 	if a.Shell == nil {
 		return toolRunResult{ResultCode: "1"}, fmt.Errorf("shell executor is not configured")
 	}
-	result, err := a.runShellWithHeartbeats(ctx, shelltool.Request{
+	req := shelltool.Request{
 		ProjectID:          execution.ProjectID,
 		Intent:             choice.Intent,
 		Command:            choice.Command,
@@ -1179,7 +1179,17 @@ func (a *Activities) runShellTool(ctx context.Context, choice agent.ToolChoice, 
 		WorkspaceRoot:      a.WorkspaceRoot,
 		Timeout:            execution.Timeout,
 		FallbackCandidates: execution.FallbackCandidates,
-	})
+	}
+	if choice.Metadata["multi_action"] == "true" {
+		input, err := shelltool.DecodeBatchInput(choice.Input)
+		if err != nil {
+			return toolRunResult{ResultCode: "1"}, fmt.Errorf("decode shell batch input: %w", err)
+		}
+		req.Command = ""
+		req.Args = nil
+		req.Actions = input.Actions
+	}
+	result, err := a.runShellWithHeartbeats(ctx, req)
 	metadata := map[string]string{
 		"shell_exit_status": strconv.Itoa(result.ExitCode),
 		"run_mode":          string(firstNonEmpty(string(choice.RunMode), string(domain.ToolRunModeWaitForExit))),

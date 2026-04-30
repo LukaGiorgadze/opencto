@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/opencto/opencto/internal/domain"
 	toolregistry "github.com/opencto/opencto/internal/tools"
 	readtool "github.com/opencto/opencto/internal/tools/read"
+	shelltool "github.com/opencto/opencto/internal/tools/shell"
 )
 
 type recordingToolModel struct {
@@ -351,6 +353,83 @@ func TestNextActionReturnsSingleToolChoice(t *testing.T) {
 	}
 	if len(model.options.Tools) != 6 {
 		t.Fatalf("expected all tool schemas, got %#v", model.options.Tools)
+	}
+}
+
+func TestNextActionCombinesMultipleShellToolCalls(t *testing.T) {
+	t.Parallel()
+
+	model := &recordingToolModel{
+		response: &llms.ContentResponse{
+			Choices: []*llms.ContentChoice{{
+				ToolCalls: []llms.ToolCall{
+					{
+						ID:   "toolu_pwd",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name: toolregistry.CommandToolName,
+							Arguments: `{
+								"command":"pwd",
+								"args":[],
+								"working_dir":null,
+								"timeout_ms":10000,
+								"run_mode":"wait_for_exit",
+								"idempotency":"read_only",
+								"process_scope":"task",
+								"description":"confirm workspace",
+								"destructive":false,
+								"work_item_id":"wi-1"
+							}`,
+						},
+					},
+					{
+						ID:   "toolu_uname",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name: toolregistry.CommandToolName,
+							Arguments: `{
+								"command":"uname",
+								"args":["-a"],
+								"working_dir":null,
+								"timeout_ms":10000,
+								"run_mode":"wait_for_exit",
+								"idempotency":"read_only",
+								"process_scope":"task",
+								"description":"capture platform",
+								"destructive":false,
+								"work_item_id":"wi-1"
+							}`,
+						},
+					},
+				},
+			}},
+		},
+	}
+
+	engine := &OpenAIEngine{reasoningModel: model}
+	output, err := engine.NextAction(context.Background(), agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1"},
+			Event:   domain.Event{Body: "inspect system"},
+		},
+		Runtime: agent.RuntimeContext{WorkspaceRoot: "/workspace"},
+	})
+	if err != nil {
+		t.Fatalf("NextAction: %v", err)
+	}
+	if output.ToolChoice == nil || output.ToolChoice.Metadata["multi_action"] != "true" {
+		t.Fatalf("expected multi-action shell choice, got %#v", output.ToolChoice)
+	}
+	var batch shelltool.BatchInput
+	if err := json.Unmarshal(output.ToolChoice.Input, &batch); err != nil {
+		t.Fatalf("decode batch input: %v", err)
+	}
+	if len(batch.Actions) != 2 || batch.Actions[0].Command != "pwd" || batch.Actions[1].Command != "uname" {
+		t.Fatalf("unexpected batch actions: %#v", batch.Actions)
+	}
+	if output.WorkItemID != "wi-1" {
+		t.Fatalf("unexpected work item id: %q", output.WorkItemID)
 	}
 }
 

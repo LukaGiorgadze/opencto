@@ -16,6 +16,7 @@ import (
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	readtool "github.com/opencto/opencto/internal/tools/read"
+	shelltool "github.com/opencto/opencto/internal/tools/shell"
 	writetool "github.com/opencto/opencto/internal/tools/write"
 )
 
@@ -30,6 +31,37 @@ type shellToolInput struct {
 	Description  string   `json:"description,omitempty"`
 	Destructive  bool     `json:"destructive,omitempty"`
 	WorkItemID   string   `json:"work_item_id,omitempty"`
+}
+
+func toolChoiceFromToolCalls(calls []llms.ToolCall, input agent.ToolSelectionInput) (agent.ToolChoice, error) {
+	if len(calls) == 0 {
+		return agent.ToolChoice{}, fmt.Errorf("tool call is required")
+	}
+	if len(calls) == 1 {
+		return toolChoiceFromToolCall(calls[0], input)
+	}
+
+	choices := make([]agent.ToolChoice, 0, len(calls))
+	for _, call := range calls {
+		choice, err := toolChoiceFromToolCall(call, input)
+		if err != nil {
+			return agent.ToolChoice{}, err
+		}
+		choices = append(choices, choice)
+	}
+	return multiToolChoiceFromChoices(choices)
+}
+
+func multiToolChoiceFromChoices(choices []agent.ToolChoice) (agent.ToolChoice, error) {
+	for _, choice := range choices {
+		if choice.Type != domain.ToolTypeShell {
+			return agent.ToolChoice{}, fmt.Errorf("tool %q does not support multiple actions", choice.Type)
+		}
+		if choice.RunMode == domain.ToolRunModeStartBackground {
+			return agent.ToolChoice{}, fmt.Errorf("shell does not support multiple background actions")
+		}
+	}
+	return multiShellToolChoice(choices)
 }
 
 func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) (agent.ToolChoice, error) {
@@ -90,6 +122,82 @@ func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) 
 		return structuredToolChoiceFromInput(definition, call, raw, input, summary), nil
 	default:
 		return agent.ToolChoice{}, fmt.Errorf("unsupported tool type %q for call %q", definition.Type, call.FunctionCall.Name)
+	}
+}
+
+func multiShellToolChoice(choices []agent.ToolChoice) (agent.ToolChoice, error) {
+	actions := make([]shelltool.Action, 0, len(choices))
+	ids := make([]string, 0, len(choices))
+	intents := make([]string, 0, len(choices))
+	timeoutMs := 0
+	destructive := false
+	idempotency := domain.ToolIdempotencyReadOnly
+	workItemID := ""
+
+	for _, choice := range choices {
+		actions = append(actions, shelltool.Action{
+			Intent:     choice.Intent,
+			Command:    choice.Command,
+			Args:       append([]string(nil), choice.Args...),
+			WorkingDir: choice.WorkingDir,
+			TimeoutMs:  choice.TimeoutMs,
+		})
+		ids = append(ids, strings.TrimSpace(choice.ToolCallID))
+		intents = append(intents, strings.TrimSpace(firstNonEmpty(choice.Intent, choice.Command)))
+		timeoutMs += clampToolTimeoutMs(choice.TimeoutMs)
+		destructive = destructive || choice.Destructive
+		idempotency = combineToolIdempotency(idempotency, choice.Idempotency)
+		if workItemID == "" && choice.Metadata != nil {
+			workItemID = strings.TrimSpace(choice.Metadata["work_item_id"])
+		}
+	}
+
+	raw, err := json.Marshal(shelltool.BatchInput{Actions: actions})
+	if err != nil {
+		return agent.ToolChoice{}, err
+	}
+
+	metadata := map[string]string{
+		"model_tool":        toolregistry.CommandToolName,
+		"tool_call_id":      firstNonEmpty(ids...),
+		"tool_call_ids":     strings.Join(ids, ","),
+		"multi_action":      "true",
+		"multi_action_size": fmt.Sprintf("%d", len(actions)),
+		"run_mode":          string(domain.ToolRunModeWaitForExit),
+		"idempotency":       string(idempotency),
+		"process_scope":     string(domain.ProcessScopeTask),
+	}
+	if workItemID != "" {
+		metadata["work_item_id"] = workItemID
+	}
+
+	return agent.ToolChoice{
+		ToolCallID:   firstNonEmpty(ids...),
+		Type:         domain.ToolTypeShell,
+		Intent:       fmt.Sprintf("run %d shell commands", len(actions)),
+		Command:      "shell-batch",
+		Input:        json.RawMessage(raw),
+		WorkingDir:   choices[0].WorkingDir,
+		TimeoutMs:    clampToolTimeoutMs(timeoutMs),
+		RunMode:      domain.ToolRunModeWaitForExit,
+		Idempotency:  idempotency,
+		ProcessScope: domain.ProcessScopeTask,
+		InputSummary: strings.Join(trimStringList(intents, 10), "; "),
+		Destructive:  destructive,
+		Metadata:     metadata,
+	}, nil
+}
+
+func combineToolIdempotency(current, next domain.ToolIdempotency) domain.ToolIdempotency {
+	switch {
+	case current == domain.ToolIdempotencyNonIdempotent || next == domain.ToolIdempotencyNonIdempotent:
+		return domain.ToolIdempotencyNonIdempotent
+	case current == domain.ToolIdempotencyUnknown || next == domain.ToolIdempotencyUnknown:
+		return domain.ToolIdempotencyUnknown
+	case current == domain.ToolIdempotencyIdempotent || next == domain.ToolIdempotencyIdempotent:
+		return domain.ToolIdempotencyIdempotent
+	default:
+		return domain.ToolIdempotencyReadOnly
 	}
 }
 

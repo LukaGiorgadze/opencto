@@ -58,6 +58,43 @@ func TestSafeExecutorRunsCommandInsideWorkspace(t *testing.T) {
 	}
 }
 
+func TestSafeExecutorRunsBatchActions(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	executor := NewSafeExecutor(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	result, err := executor.Run(context.Background(), Request{
+		ProjectID:     "project-1",
+		Intent:        "inspect system",
+		WorkspaceRoot: workspace,
+		WorkingDir:    workspace,
+		Timeout:       time.Second,
+		Environment: map[string]string{
+			"GO_WANT_HELPER_PROCESS": "1",
+		},
+		Actions: []Action{
+			{
+				Command: executable,
+				Args:    []string{"-test.run=TestHelperProcess", "--", "hello"},
+			},
+			{
+				Command: executable,
+				Args:    []string{"-test.run=TestHelperProcess", "--", "world"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("run batch: %v", err)
+	}
+	if !strings.Contains(result.Stdout, "command 1:") || !strings.Contains(result.Stdout, "hello") || !strings.Contains(result.Stdout, "world") {
+		t.Fatalf("unexpected stdout: %q", result.Stdout)
+	}
+}
+
 func TestSafeExecutorTimeoutKillsCommand(t *testing.T) {
 	t.Parallel()
 
