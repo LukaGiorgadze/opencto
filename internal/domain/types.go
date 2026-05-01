@@ -78,6 +78,7 @@ const (
 	ToolTypeGlob  ToolType = "glob"
 	ToolTypeGrep  ToolType = "grep"
 	ToolTypeRead  ToolType = "read"
+	ToolTypeSkill ToolType = "skill"
 	ToolTypeWrite ToolType = "write"
 )
 

@@ -11,6 +11,7 @@ import (
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	readtool "github.com/opencto/opencto/internal/tools/read"
 	shelltool "github.com/opencto/opencto/internal/tools/shell"
+	skilltool "github.com/opencto/opencto/internal/tools/skill"
 	writetool "github.com/opencto/opencto/internal/tools/write"
 )
 
@@ -61,6 +62,12 @@ var definitions = []Definition{
 		Type:        domain.ToolTypeGrep,
 		Description: greptool.GrepToolDescription,
 		Schema:      greptool.GrepToolSchema(),
+	},
+	{
+		Name:        skilltool.SkillToolName,
+		Type:        domain.ToolTypeSkill,
+		Description: skilltool.SkillToolDescription,
+		Schema:      skilltool.SkillToolSchema(),
 	},
 }
 

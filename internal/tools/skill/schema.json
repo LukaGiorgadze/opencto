@@ -1,0 +1,12 @@
+{
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "required": ["skill_id"],
+    "properties": {
+        "skill_id": {
+            "type": "string",
+            "description": "Repository-local skill id, matching skills/<skill_id>/SKILL.md."
+        }
+    },
+    "additionalProperties": false
+}

@@ -13,6 +13,7 @@ import (
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/agent/prompts"
 	"github.com/opencto/opencto/internal/domain"
+	"github.com/opencto/opencto/internal/skills"
 	toolregistry "github.com/opencto/opencto/internal/tools"
 )
 
@@ -80,8 +81,11 @@ func buildNextActionMessages(input agent.NextActionInput) ([]llms.MessageContent
 
 	messages := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, prompt),
-		userMessage,
 	}
+	if reminder := skills.Reminder(input.Context.Skills); reminder != "" {
+		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, reminder))
+	}
+	messages = append(messages, userMessage)
 	for _, feedback := range input.ObservationHistory {
 		assistantMessage, toolResultMessage, err := nextActionTranscriptMessages(feedback)
 		if err != nil {

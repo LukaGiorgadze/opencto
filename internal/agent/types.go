@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 
 	"github.com/opencto/opencto/internal/domain"
+	"github.com/opencto/opencto/internal/skills"
 )
 
 type Context struct {
 	Event            domain.Event      `json:"event"`
 	Project          domain.Project    `json:"project"`
 	ActiveWorkItems  []domain.WorkItem `json:"active_work_items,omitempty"`
+	Skills           []skills.Summary  `json:"skills,omitempty"`
 	AdditionalEvents []domain.Event    `json:"additional_events,omitempty"`
 }
 

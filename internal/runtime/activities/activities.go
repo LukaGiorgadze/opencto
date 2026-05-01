@@ -19,12 +19,14 @@ import (
 
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
+	skillcatalog "github.com/opencto/opencto/internal/skills"
 	toolregistry "github.com/opencto/opencto/internal/tools"
 	edittool "github.com/opencto/opencto/internal/tools/edit"
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	readtool "github.com/opencto/opencto/internal/tools/read"
 	shelltool "github.com/opencto/opencto/internal/tools/shell"
+	skilltool "github.com/opencto/opencto/internal/tools/skill"
 	writetool "github.com/opencto/opencto/internal/tools/write"
 	"github.com/opencto/opencto/internal/workspace"
 )
@@ -53,10 +55,12 @@ type Activities struct {
 	Glob          globtool.Executor
 	Grep          greptool.Executor
 	Read          readtool.Executor
+	Skill         skilltool.Executor
 	Write         writetool.Executor
 	Reporter      Reporter
 	Project       domain.Project
 	WorkspaceRoot string
+	SkillsRoot    string
 	StateDir      string
 	Logger        *slog.Logger
 }
@@ -177,10 +181,15 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event) (agent
 	if strings.TrimSpace(project.ID) == "" {
 		project.ID = event.ProjectID
 	}
+	availableSkills, err := skillcatalog.Discover(ctx, a.skillsRoots()...)
+	if err != nil {
+		return agent.Context{}, err
+	}
 	return agent.Context{
 		Event:           event,
 		Project:         project,
 		ActiveWorkItems: activeWorkItems,
+		Skills:          availableSkills,
 	}, nil
 }
 
@@ -1161,6 +1170,8 @@ func (a *Activities) runChosenTool(ctx context.Context, choice agent.ToolChoice,
 		return a.runGlobTool(ctx, choice, execution)
 	case domain.ToolTypeGrep:
 		return a.runGrepTool(ctx, choice, execution)
+	case domain.ToolTypeSkill:
+		return a.runSkillTool(ctx, choice)
 	default:
 		return toolRunResult{ResultCode: "1"}, fmt.Errorf("unsupported tool type %q", choice.Type)
 	}
@@ -1402,6 +1413,27 @@ func (a *Activities) runGrepTool(ctx context.Context, choice agent.ToolChoice, e
 	}, err
 }
 
+func (a *Activities) runSkillTool(ctx context.Context, choice agent.ToolChoice) (toolRunResult, error) {
+	var req skilltool.Request
+	if err := decodeChoiceInput(choice, &req); err != nil {
+		return toolRunResult{ResultCode: "1"}, err
+	}
+	executor := a.Skill
+	if executor == nil {
+		executor = skilltool.NewSafeExecutor(a.skillsRoots()...)
+	}
+	result, err := executor.Run(ctx, req)
+	return toolRunResult{
+		Observation: skillObservation(result, err),
+		ResultCode:  resultCodeForError(err),
+		Metadata: map[string]string{
+			"skill_id":   result.SkillID,
+			"skill_path": result.Path,
+			"bytes_read": strconv.Itoa(result.BytesRead),
+		},
+	}, err
+}
+
 func decodeChoiceInput(choice agent.ToolChoice, target any) error {
 	if len(strings.TrimSpace(string(choice.Input))) == 0 {
 		return fmt.Errorf("%s tool input is required", choice.Type)
@@ -1485,6 +1517,17 @@ func grepObservation(result greptool.Result, err error) string {
 		return "No matches found."
 	}
 	return fullObservation(result.Stdout, result.Stderr, nil)
+}
+
+func skillObservation(result skilltool.Result, err error) string {
+	if err != nil {
+		return fullObservation("", "", err)
+	}
+	return fmt.Sprintf("<skill_content name=%q>\n%s\n\nSkill directory: %s\nRelative paths in this skill are relative to the skill directory.\n</skill_content>",
+		result.SkillID,
+		strings.TrimSpace(result.Content),
+		filepath.Dir(result.Path),
+	)
 }
 
 func resolveRelativeToolPath(path, base string) string {
@@ -1881,6 +1924,13 @@ func (a *Activities) runtimeStateDir(projectID string) string {
 		return ""
 	}
 	return stateDir
+}
+
+func (a *Activities) skillsRoots() []string {
+	if strings.TrimSpace(a.SkillsRoot) != "" {
+		return []string{a.SkillsRoot}
+	}
+	return skillcatalog.DefaultRoots()
 }
 
 func processStartObservation(process domain.ManagedProcess) string {

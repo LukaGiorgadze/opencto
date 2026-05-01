@@ -13,6 +13,7 @@ import (
 
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
+	skillcatalog "github.com/opencto/opencto/internal/skills"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	shelltool "github.com/opencto/opencto/internal/tools/shell"
 )
@@ -105,6 +106,14 @@ func TestLoadContextReturnsProjectAndActiveWorkItems(t *testing.T) {
 	t.Parallel()
 
 	base := time.Date(2026, 4, 23, 17, 31, 0, 0, time.UTC)
+	skillsRoot := t.TempDir()
+	skillDir := filepath.Join(skillsRoot, "go-testing")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, skillcatalog.SkillFileName), []byte("# Go Testing\n\nUse when testing Go code.\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
 	event := domain.Event{
 		ID:          "event-current",
 		ProjectID:   "default",
@@ -126,8 +135,9 @@ func TestLoadContextReturnsProjectAndActiveWorkItems(t *testing.T) {
 	}
 
 	activities := Activities{
-		Store:   stubProjectStore{pending: []domain.WorkItem{workItem}},
-		Project: domain.Project{ID: "default", Name: "OpenCTO"},
+		Store:      stubProjectStore{pending: []domain.WorkItem{workItem}},
+		Project:    domain.Project{ID: "default", Name: "OpenCTO"},
+		SkillsRoot: skillsRoot,
 	}
 
 	loaded, err := activities.LoadContext(context.Background(), event)
@@ -143,6 +153,9 @@ func TestLoadContextReturnsProjectAndActiveWorkItems(t *testing.T) {
 	}
 	if loaded.ActiveWorkItems[0].ID != workItem.ID {
 		t.Fatalf("unexpected work item id: %s", loaded.ActiveWorkItems[0].ID)
+	}
+	if len(loaded.Skills) != 1 || loaded.Skills[0].ID != "go-testing" {
+		t.Fatalf("expected project skill to be discovered, got %#v", loaded.Skills)
 	}
 }
 
@@ -176,9 +189,18 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 	if err := os.WriteFile(filePath, []byte("hello\n"), 0o644); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
+	skillsRoot := filepath.Join(dir, "skills")
+	skillDir := filepath.Join(skillsRoot, "go-testing")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, skillcatalog.SkillFileName), []byte("# Go Testing\n\nUse when testing Go code.\n"), 0o644); err != nil {
+		t.Fatalf("write skill fixture: %v", err)
+	}
 
 	activities := Activities{
 		WorkspaceRoot: dir,
+		SkillsRoot:    skillsRoot,
 		Grep: fakeGrepExecutor{result: greptool.Result{
 			Stdout:   filePath + ":hi\n",
 			ExitCode: 0,
@@ -248,6 +270,16 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 	}
 	if grepResult.Status != domain.ExecutionStatusSucceeded || !strings.Contains(grepResult.Observation, filePath+":hi") {
 		t.Fatalf("unexpected grep result: %#v", grepResult)
+	}
+
+	skillResult, err := activities.ExecuteTool(ctx, executeRequest(domain.ToolTypeSkill, "skill-1", map[string]any{
+		"skill_id": "go-testing",
+	}))
+	if err != nil {
+		t.Fatalf("skill tool: %v", err)
+	}
+	if skillResult.Status != domain.ExecutionStatusSucceeded || !strings.Contains(skillResult.Observation, "# Go Testing") {
+		t.Fatalf("unexpected skill result: %#v", skillResult)
 	}
 }
 

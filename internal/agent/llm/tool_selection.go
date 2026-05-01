@@ -17,6 +17,7 @@ import (
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	readtool "github.com/opencto/opencto/internal/tools/read"
 	shelltool "github.com/opencto/opencto/internal/tools/shell"
+	skilltool "github.com/opencto/opencto/internal/tools/skill"
 	writetool "github.com/opencto/opencto/internal/tools/write"
 )
 
@@ -120,6 +121,12 @@ func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) 
 			summary += " in " + path
 		}
 		return structuredToolChoiceFromInput(definition, call, raw, input, summary), nil
+	case domain.ToolTypeSkill:
+		var args skilltool.Request
+		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
+			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
+		}
+		return structuredToolChoiceFromInput(definition, call, raw, input, "load skill "+strings.TrimSpace(args.SkillID)), nil
 	default:
 		return agent.ToolChoice{}, fmt.Errorf("unsupported tool type %q for call %q", definition.Type, call.FunctionCall.Name)
 	}

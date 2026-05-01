@@ -13,8 +13,8 @@ func TestDefinitionsIncludeDedicatedTools(t *testing.T) {
 	t.Parallel()
 
 	definitions := Definitions()
-	if len(definitions) != 6 {
-		t.Fatalf("expected six tool definitions, got %d", len(definitions))
+	if len(definitions) != 7 {
+		t.Fatalf("expected seven tool definitions, got %d", len(definitions))
 	}
 
 	definition := definitions[0]
@@ -45,6 +45,7 @@ func TestDefinitionsIncludeDedicatedTools(t *testing.T) {
 		domain.ToolTypeWrite,
 		domain.ToolTypeGlob,
 		domain.ToolTypeGrep,
+		domain.ToolTypeSkill,
 	} {
 		if !seen[toolType] {
 			t.Fatalf("missing tool type %q in registry", toolType)
@@ -56,8 +57,8 @@ func TestLLMDefinitionsUseCommandNameAndDescription(t *testing.T) {
 	t.Parallel()
 
 	definitions := LLMDefinitions()
-	if len(definitions) != 6 || definitions[0].Function == nil {
-		t.Fatalf("expected six function definitions, got %#v", definitions)
+	if len(definitions) != 7 || definitions[0].Function == nil {
+		t.Fatalf("expected seven function definitions, got %#v", definitions)
 	}
 
 	function := definitions[0].Function

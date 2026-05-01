@@ -11,9 +11,11 @@ import (
 
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
+	"github.com/opencto/opencto/internal/skills"
 	toolregistry "github.com/opencto/opencto/internal/tools"
 	readtool "github.com/opencto/opencto/internal/tools/read"
 	shelltool "github.com/opencto/opencto/internal/tools/shell"
+	skilltool "github.com/opencto/opencto/internal/tools/skill"
 )
 
 type recordingToolModel struct {
@@ -220,6 +222,54 @@ func TestBuildNextActionMessagesAppendsAdditionalEventsAsUserMessages(t *testing
 	}
 }
 
+func TestBuildNextActionMessagesAddsSkillReminderAsUserMessage(t *testing.T) {
+	t.Parallel()
+
+	input := agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event: domain.Event{
+				ID:        "event-1",
+				ProjectID: "project-1",
+				Body:      "add test coverage",
+			},
+			Skills: []skills.Summary{{
+				ID:          "go-testing",
+				Name:        "Go Testing",
+				Description: "Use when adding or fixing Go tests.",
+				Path:        "/repo/skills/go-testing/SKILL.md",
+			}},
+		},
+	}
+
+	messages, err := buildNextActionMessages(input)
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	if len(messages) != 3 {
+		t.Fatalf("expected system, skill reminder, and user messages, got %d", len(messages))
+	}
+	if messages[1].Role != llms.ChatMessageTypeHuman {
+		t.Fatalf("expected skill reminder as human message, got %q", messages[1].Role)
+	}
+	systemPrompt := messageText(messages[0])
+	if !strings.Contains(systemPrompt, "skills/<skill_id>/SKILL.md") {
+		t.Fatalf("system prompt should include concise skill path rule:\n%s", systemPrompt)
+	}
+	if strings.Contains(systemPrompt, "go-testing") || strings.Contains(systemPrompt, "Use when adding or fixing Go tests.") {
+		t.Fatalf("system prompt should not include skill catalog entries:\n%s", systemPrompt)
+	}
+	reminder := messageText(messages[1])
+	if !strings.Contains(reminder, "<system-reminder>") ||
+		!strings.Contains(reminder, "- go-testing: Use when adding or fixing Go tests.") {
+		t.Fatalf("unexpected skill reminder:\n%s", reminder)
+	}
+	if got := messageText(messages[2]); got != "add test coverage" {
+		t.Fatalf("unexpected user message: %q", got)
+	}
+}
+
 func TestBuildNextActionMessagesIncludesEventAttachments(t *testing.T) {
 	t.Parallel()
 
@@ -351,7 +401,7 @@ func TestNextActionReturnsSingleToolChoice(t *testing.T) {
 	if output.ToolChoice.RunMode != domain.ToolRunModeWaitForExit || output.ToolChoice.Idempotency != domain.ToolIdempotencyReadOnly || output.ToolChoice.ProcessScope != domain.ProcessScopeTask {
 		t.Fatalf("tool execution metadata was not preserved: %#v", output.ToolChoice)
 	}
-	if len(model.options.Tools) != 6 {
+	if len(model.options.Tools) != 7 {
 		t.Fatalf("expected all tool schemas, got %#v", model.options.Tools)
 	}
 }
@@ -497,6 +547,33 @@ func TestToolChoiceCapturesStructuredReadInput(t *testing.T) {
 		t.Fatalf("expected raw read input to be preserved, got %s", choice.Input)
 	}
 	if choice.Metadata["model_tool"] != readtool.ReadToolName {
+		t.Fatalf("expected model tool metadata, got %#v", choice.Metadata)
+	}
+}
+
+func TestToolChoiceCapturesSkillInput(t *testing.T) {
+	t.Parallel()
+
+	choice, err := toolChoiceFromToolCall(llms.ToolCall{
+		ID:   "toolu_skill",
+		Type: "function",
+		FunctionCall: &llms.FunctionCall{
+			Name:      skilltool.SkillToolName,
+			Arguments: `{"skill_id":"go-testing"}`,
+		},
+	}, agent.ToolSelectionInput{
+		Runtime: agent.RuntimeContext{WorkspaceRoot: "/workspace"},
+	})
+	if err != nil {
+		t.Fatalf("tool choice: %v", err)
+	}
+	if choice.Type != domain.ToolTypeSkill {
+		t.Fatalf("expected skill tool type, got %q", choice.Type)
+	}
+	if !strings.Contains(string(choice.Input), `"go-testing"`) {
+		t.Fatalf("expected raw skill input to be preserved, got %s", choice.Input)
+	}
+	if choice.Metadata["model_tool"] != skilltool.SkillToolName {
 		t.Fatalf("expected model tool metadata, got %#v", choice.Metadata)
 	}
 }
