@@ -582,27 +582,44 @@ func TestProjectWorkflowReportsAfterTaskWorkflowCompletes(t *testing.T) {
 	env.AssertExpectations(t)
 }
 
-func TestProjectWorkflowKeepsRunningAfterTaskFailure(t *testing.T) {
+func TestProjectWorkflowReportsAfterTaskWorkflowFails(t *testing.T) {
 	t.Parallel()
 
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(workflows.ProjectWorkflow)
-	taskErr := errors.New("task failed")
+	taskErr := errors.New("activity error: ContextWindowExceededError: Input tokens exceed the configured limit")
 	env.RegisterWorkflowWithOptions(func(_ workflow.Context, _ workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
 		return workflows.TaskWorkflowResult{}, taskErr
 	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+	env.RegisterActivityWithOptions((&activities.Activities{}).ReportResponse, activity.RegisterOptions{Name: "Activities.ReportResponse"})
 
-	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "do work"}
+	reported := false
+	env.OnActivity("Activities.ReportResponse", mock.Anything, mock.MatchedBy(func(request activities.ReportResponseRequest) bool {
+		reported = request.Event.ID == "event-1" &&
+			strings.Contains(request.Message, "model context window was exceeded")
+		return reported
+	})).Run(func(mock.Arguments) {
+		env.CancelWorkflow()
+	}).Return(nil).Once()
+
+	event := domain.Event{
+		ID:          "event-1",
+		ProjectID:   "project-1",
+		ChannelID:   "channel-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		Body:        "do work",
+	}
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: event})
-	}, 0)
-	env.RegisterDelayedCallback(func() {
-		env.CancelWorkflow()
 	}, 0)
 
 	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
 	if err := env.GetWorkflowError(); err == nil {
 		t.Fatalf("expected cancellation error")
 	}
+	if !reported {
+		t.Fatalf("expected project workflow to report after child task failure")
+	}
+	env.AssertExpectations(t)
 }

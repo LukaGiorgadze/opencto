@@ -36,7 +36,7 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 	}
 
 	eventSignal := workflow.GetSignalChannel(ctx, SignalEnqueueEvent)
-	active := map[string]workflow.ChildWorkflowFuture{}
+	active := map[string]activeTask{}
 	var pendingReports []TaskWorkflowResult
 
 	for {
@@ -69,10 +69,11 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 				Event:     event,
 			})
 			if err := future.GetChildWorkflowExecution().Get(ctx, nil); err != nil {
+				pendingReports = append(pendingReports, failedTaskWorkflowResult(event, err))
 				state.ProcessedEvents++
 				continue
 			}
-			active[event.ID] = future
+			active[event.ID] = activeTask{Future: future, Event: event}
 			state.ActiveTasks[event.ID] = workflowID
 			continue
 		}
@@ -83,11 +84,14 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 			c.Receive(ctx, &signal)
 			handleProjectEventSignal(ctx, &state, active, input.ProjectID, signal.Event)
 		})
-		for eventID, future := range active {
+		for eventID, task := range active {
 			eventID := eventID
-			selector.AddFuture(future, func(f workflow.Future) {
+			task := task
+			selector.AddFuture(task.Future, func(f workflow.Future) {
 				var result TaskWorkflowResult
-				_ = f.Get(ctx, &result)
+				if err := f.Get(ctx, &result); err != nil {
+					result = failedTaskWorkflowResult(task.Event, err)
+				}
 				if result.Report {
 					pendingReports = append(pendingReports, result)
 				}
@@ -100,6 +104,11 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 	}
 }
 
+type activeTask struct {
+	Future workflow.ChildWorkflowFuture
+	Event  domain.Event
+}
+
 func reportTaskResult(ctx workflow.Context, result TaskWorkflowResult) error {
 	if !result.Report || strings.TrimSpace(result.ResponseMessage) == "" {
 		return nil
@@ -110,7 +119,48 @@ func reportTaskResult(ctx workflow.Context, result TaskWorkflowResult) error {
 	}).Get(ctx, nil)
 }
 
-func handleProjectEventSignal(ctx workflow.Context, state *ProjectWorkflowState, active map[string]workflow.ChildWorkflowFuture, projectID string, event domain.Event) {
+func failedTaskWorkflowResult(event domain.Event, err error) TaskWorkflowResult {
+	return TaskWorkflowResult{
+		Completed:       false,
+		Status:          activities.NextActionStatusFailed,
+		Event:           event,
+		ResponseMessage: taskWorkflowFailureMessage(err),
+		Report:          true,
+	}
+}
+
+func taskWorkflowFailureMessage(err error) string {
+	detail := taskWorkflowFailureDetail(err)
+	if detail == "" {
+		return "I couldn't complete the task because the task workflow failed."
+	}
+	return "I couldn't complete the task: " + detail
+}
+
+func taskWorkflowFailureDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := strings.TrimSpace(err.Error())
+	if text == "" {
+		return ""
+	}
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "contextwindowexceeded") || strings.Contains(lower, "context window") || strings.Contains(lower, "input tokens exceed") {
+		return "the model context window was exceeded. Please reduce the amount of context and try again."
+	}
+	if index := strings.IndexByte(text, '\n'); index >= 0 {
+		text = text[:index]
+	}
+	text = strings.Join(strings.Fields(text), " ")
+	const maxDetailLength = 500
+	if len(text) > maxDetailLength {
+		text = text[:maxDetailLength] + "..."
+	}
+	return "the task workflow failed (" + text + ")."
+}
+
+func handleProjectEventSignal(ctx workflow.Context, state *ProjectWorkflowState, active map[string]activeTask, projectID string, event domain.Event) {
 	eventID := strings.TrimSpace(event.ID)
 	if eventID != "" && state.SeenEventIDs[eventID] {
 		return
