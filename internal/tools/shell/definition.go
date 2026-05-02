@@ -36,7 +36,7 @@ You are not limited to any single tool type. If something is missing, acquire it
 - You may specify an optional timeout in milliseconds (up to 600000ms / 10 minutes).
 - You must classify how the command should run:
   - run_mode=wait_for_exit for commands that should finish and return an exit code.
-  - run_mode=start_background for servers, watchers, dev processes, daemons, or commands such as "npm run dev" that are expected to keep running while the user continues chatting.
+  - run_mode=start_background for servers, watchers, dev processes, daemons, or commands such as "pnpm run dev" that are expected to keep running while the user continues chatting.
 - You must classify idempotency:
   - read_only for inspection commands.
   - idempotent for commands that are safe to repeat.

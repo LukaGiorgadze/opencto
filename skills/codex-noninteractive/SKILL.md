@@ -158,4 +158,4 @@ debugging CLI flags.
 
 ## Command line options
 
-See [options and flags for the Codex terminal client](references/REFERENCE.md) for details.
+See [options and flags for the Codex terminal client](references/command-line-options.md) for details.
