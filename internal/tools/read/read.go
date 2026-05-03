@@ -8,15 +8,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	shelltool "github.com/opencto/opencto/internal/tools/shell"
 )
 
 const defaultLineLimit = 2000
 
 var (
-	ErrFilePathRequired    = errors.New("file_path is required")
-	ErrFilePathNotAbsolute = errors.New("file_path must be absolute")
-	ErrOffsetInvalid       = errors.New("offset must be zero or greater")
-	ErrLimitInvalid        = errors.New("limit must be zero or greater")
+	ErrFilePathRequired = errors.New("file_path is required")
+	ErrOffsetInvalid    = errors.New("offset must be zero or greater")
+	ErrLimitInvalid     = errors.New("limit must be zero or greater")
 )
 
 type Request struct {
@@ -111,9 +112,11 @@ func validateRequest(req Request) (Request, error) {
 	if req.FilePath == "." {
 		return Request{}, ErrFilePathRequired
 	}
-	if !filepath.IsAbs(req.FilePath) {
-		return Request{}, fmt.Errorf("%w: %s", ErrFilePathNotAbsolute, req.FilePath)
+	filePath, err := shelltool.ResolvePath("", req.FilePath)
+	if err != nil {
+		return Request{}, err
 	}
+	req.FilePath = filePath
 	if req.Offset < 0 {
 		return Request{}, fmt.Errorf("%w: %d", ErrOffsetInvalid, req.Offset)
 	}

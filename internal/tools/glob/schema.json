@@ -5,7 +5,7 @@
     "properties": {
         "path": {
             "type": ["string", "null"],
-            "description": "The directory to search in. Use null for the current working directory. Must be a valid directory path if provided. Matching file paths are returned as absolute paths."
+            "description": "The absolute directory path to search in. Use null for the tool's configured working directory. Matching file paths are returned as absolute paths."
         },
         "pattern": {
             "type": "string",

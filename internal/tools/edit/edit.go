@@ -7,16 +7,17 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	shelltool "github.com/opencto/opencto/internal/tools/shell"
 )
 
 var (
-	ErrFilePathRequired    = errors.New("file_path is required")
-	ErrFilePathNotAbsolute = errors.New("file_path must be absolute")
-	ErrOldStringRequired   = errors.New("old_string is required")
-	ErrStringsMatch        = errors.New("new_string must be different from old_string")
-	ErrOldStringNotFound   = errors.New("old_string was not found")
-	ErrOldStringNotUnique  = errors.New("old_string is not unique")
-	ErrFileNotRead         = errors.New("file must be read before editing")
+	ErrFilePathRequired   = errors.New("file_path is required")
+	ErrOldStringRequired  = errors.New("old_string is required")
+	ErrStringsMatch       = errors.New("new_string must be different from old_string")
+	ErrOldStringNotFound  = errors.New("old_string was not found")
+	ErrOldStringNotUnique = errors.New("old_string is not unique")
+	ErrFileNotRead        = errors.New("file must be read before editing")
 )
 
 type Request struct {
@@ -128,9 +129,11 @@ func validateRequest(req Request) (Request, error) {
 	if req.FilePath == "." {
 		return Request{}, ErrFilePathRequired
 	}
-	if !filepath.IsAbs(req.FilePath) {
-		return Request{}, fmt.Errorf("%w: %s", ErrFilePathNotAbsolute, req.FilePath)
+	filePath, err := shelltool.ResolvePath("", req.FilePath)
+	if err != nil {
+		return Request{}, err
 	}
+	req.FilePath = filePath
 	if req.OldString == "" {
 		return Request{}, ErrOldStringRequired
 	}

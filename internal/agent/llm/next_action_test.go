@@ -117,9 +117,9 @@ func TestBuildNextActionMessagesUsesOpenAIToolTranscript(t *testing.T) {
 		"Architecture: arm64",
 		"Shell: /bin/zsh",
 		"`$OPENCTO_ROOT`: /home/luka/projects/opencto",
-		"Meaning: the OpenCTO source repository",
+		"Meaning: READ ONLY! The OpenCTO source repository",
 		"`$OPENCTO_WORKSPACE`: /tmp/opencto",
-		"Meaning: the .opencto data and artifact directory",
+		"Meaning: Stores projects, artifacts, data, screenshots, logs, and related files.",
 		"PATH: /usr/bin:/bin",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -602,6 +602,9 @@ func TestToolChoiceSplitsPlainCommandStringWithoutShell(t *testing.T) {
 	}
 	if choice.Metadata["model_tool"] != toolregistry.CommandToolName {
 		t.Fatalf("expected canonical model tool, got %#v", choice.Metadata)
+	}
+	if choice.WorkingDir != "/workspace" {
+		t.Fatalf("expected shell choice to default to workspace, got %q", choice.WorkingDir)
 	}
 }
 

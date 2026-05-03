@@ -30,6 +30,7 @@ type Request struct {
 	Command            string
 	Args               []string
 	Actions            []Action
+	WorkingDir         string
 	Timeout            time.Duration
 	Environment        map[string]string
 	FallbackCandidates []domain.ToolType
@@ -48,12 +49,13 @@ type BatchInput struct {
 }
 
 type Result struct {
-	Stdout      string
-	Stderr      string
-	ExitCode    int
-	StartedAt   time.Time
-	CompletedAt time.Time
-	Duration    time.Duration
+	Stdout           string
+	Stderr           string
+	ExitCode         int
+	WorkingDirectory string
+	StartedAt        time.Time
+	CompletedAt      time.Time
+	Duration         time.Duration
 }
 
 type Executor interface {
@@ -96,6 +98,12 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 
 func (e *SafeExecutor) runBatch(ctx context.Context, req Request) (Result, error) {
 	startedAt := time.Now()
+	workingDir, err := ResolveWorkingDir(req.WorkingDir)
+	if err != nil {
+		return Result{}, err
+	}
+	req.WorkingDir = workingDir
+
 	runCtx, cancel := commandContext(ctx, req.Timeout)
 	if cancel != nil {
 		defer cancel()
@@ -114,24 +122,26 @@ func (e *SafeExecutor) runBatch(ctx context.Context, req Request) (Result, error
 		if err != nil {
 			completedAt := time.Now()
 			return Result{
-				Stdout:      stdout.String(),
-				Stderr:      stderr.String(),
-				ExitCode:    exitCode,
-				StartedAt:   startedAt,
-				CompletedAt: completedAt,
-				Duration:    completedAt.Sub(startedAt),
+				Stdout:           stdout.String(),
+				Stderr:           stderr.String(),
+				ExitCode:         exitCode,
+				WorkingDirectory: req.WorkingDir,
+				StartedAt:        startedAt,
+				CompletedAt:      completedAt,
+				Duration:         completedAt.Sub(startedAt),
 			}, err
 		}
 	}
 
 	completedAt := time.Now()
 	return Result{
-		Stdout:      stdout.String(),
-		Stderr:      stderr.String(),
-		ExitCode:    exitCode,
-		StartedAt:   startedAt,
-		CompletedAt: completedAt,
-		Duration:    completedAt.Sub(startedAt),
+		Stdout:           stdout.String(),
+		Stderr:           stderr.String(),
+		ExitCode:         exitCode,
+		WorkingDirectory: req.WorkingDir,
+		StartedAt:        startedAt,
+		CompletedAt:      completedAt,
+		Duration:         completedAt.Sub(startedAt),
 	}, nil
 }
 
@@ -142,7 +152,7 @@ func (e *SafeExecutor) runSingle(ctx context.Context, req Request) (Result, erro
 
 	startedAt := time.Now()
 
-	workingDir, err := resolveWorkingDir()
+	workingDir, err := ResolveWorkingDir(req.WorkingDir)
 	if err != nil {
 		return Result{}, err
 	}
@@ -166,12 +176,13 @@ func (e *SafeExecutor) runSingle(ctx context.Context, req Request) (Result, erro
 	completedAt := time.Now()
 
 	result := Result{
-		Stdout:      stdout.String(),
-		Stderr:      stderr.String(),
-		ExitCode:    exitCode(err),
-		StartedAt:   startedAt,
-		CompletedAt: completedAt,
-		Duration:    completedAt.Sub(startedAt),
+		Stdout:           stdout.String(),
+		Stderr:           stderr.String(),
+		ExitCode:         exitCode(err),
+		WorkingDirectory: workingDir,
+		StartedAt:        startedAt,
+		CompletedAt:      completedAt,
+		Duration:         completedAt.Sub(startedAt),
 	}
 
 	e.logger.Info("command executed",
@@ -205,6 +216,7 @@ func shellRequestForAction(parent Request, action Action) Request {
 		Intent:             firstNonEmpty(action.Intent, parent.Intent),
 		Command:            action.Command,
 		Args:               append([]string(nil), action.Args...),
+		WorkingDir:         parent.WorkingDir,
 		Timeout:            timeout,
 		Environment:        mergeStringMaps(parent.Environment, action.Environment),
 		FallbackCandidates: append([]domain.ToolType(nil), parent.FallbackCandidates...),
@@ -277,16 +289,40 @@ func runCommandWithContext(ctx context.Context, cmd *exec.Cmd) error {
 	}
 }
 
-func resolveWorkingDir() (string, error) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("resolve current working dir: %w", err)
+func ResolveWorkingDir(dir string) (string, error) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		dir = strings.TrimSpace(os.Getenv("OPENCTO_WORKSPACE"))
+	}
+	if dir == "" {
+		return "", fmt.Errorf("working dir is required")
 	}
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return "", fmt.Errorf("resolve working dir: %w", err)
 	}
 	return absDir, nil
+}
+
+func ResolvePath(baseDir, path string) (string, error) {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if filepath.IsAbs(path) {
+		absPath, err := filepath.Abs(path)
+		if err != nil {
+			return "", fmt.Errorf("resolve path: %w", err)
+		}
+		return absPath, nil
+	}
+
+	workingDir, err := ResolveWorkingDir(baseDir)
+	if err != nil {
+		return "", err
+	}
+	absPath, err := filepath.Abs(filepath.Join(workingDir, path))
+	if err != nil {
+		return "", fmt.Errorf("resolve path: %w", err)
+	}
+	return absPath, nil
 }
 
 func mergeEnv(overrides map[string]string) []string {

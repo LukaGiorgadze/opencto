@@ -10,7 +10,7 @@
     "properties": {
       "file_path": {
         "type": "string",
-        "description": "The absolute path to the file to modify"
+        "description": "The absolute path to the file to modify."
       },
       "new_string": {
         "type": "string",

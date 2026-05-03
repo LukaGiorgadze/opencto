@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/opencto/opencto/internal/domain"
+	shelltool "github.com/opencto/opencto/internal/tools/shell"
 	"github.com/opencto/opencto/internal/workspace"
 )
 
@@ -30,11 +31,10 @@ const (
 )
 
 var (
-	ErrWorkingDirectoryEscape = errors.New("working directory escapes workspace root")
-	ErrSearchPathEscape       = errors.New("search path escapes workspace root")
-	ErrPatternRequired        = errors.New("pattern is required")
-	ErrInvalidOutputMode      = errors.New("invalid output_mode")
-	ErrInvalidLimit           = errors.New("grep limits must be non-negative")
+	ErrSearchPathEscape  = errors.New("search path escapes workspace root")
+	ErrPatternRequired   = errors.New("pattern is required")
+	ErrInvalidOutputMode = errors.New("invalid output_mode")
+	ErrInvalidLimit      = errors.New("grep limits must be non-negative")
 )
 
 type Request struct {
@@ -66,12 +66,13 @@ type Request struct {
 }
 
 type Result struct {
-	Stdout      string
-	Stderr      string
-	ExitCode    int
-	StartedAt   time.Time
-	CompletedAt time.Time
-	Duration    time.Duration
+	Stdout           string
+	Stderr           string
+	ExitCode         int
+	WorkingDirectory string
+	StartedAt        time.Time
+	CompletedAt      time.Time
+	Duration         time.Duration
 }
 
 type Executor interface {
@@ -121,7 +122,7 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 
 	startedAt := time.Now()
 
-	workingDir, err := secureWorkingDir(normalized.WorkspaceRoot, normalized.WorkingDir, normalized.AllowOutsideWorkspace)
+	workingDir, err := shelltool.ResolveWorkingDir(firstNonEmpty(normalized.WorkingDir, normalized.WorkspaceRoot))
 	if err != nil {
 		return Result{}, err
 	}
@@ -153,12 +154,13 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 	code := exitCode(err)
 
 	result := Result{
-		Stdout:      limitOutput(stdout.String(), normalized.Offset, normalized.HeadLimit),
-		Stderr:      stderr.String(),
-		ExitCode:    code,
-		StartedAt:   startedAt,
-		CompletedAt: completedAt,
-		Duration:    completedAt.Sub(startedAt),
+		Stdout:           limitOutput(stdout.String(), normalized.Offset, normalized.HeadLimit),
+		Stderr:           stderr.String(),
+		ExitCode:         code,
+		WorkingDirectory: workingDir,
+		StartedAt:        startedAt,
+		CompletedAt:      completedAt,
+		Duration:         completedAt.Sub(startedAt),
 	}
 
 	e.logger.Info("grep executed",
@@ -280,35 +282,12 @@ func ripgrepArgs(req Request) []string {
 	return args
 }
 
-func secureWorkingDir(workspaceRoot, workingDir string, allowOutside bool) (string, error) {
-	absRoot, err := workspace.ResolveRoot(workspaceRoot)
-	if err != nil {
-		return "", err
-	}
-
-	dir := workingDir
-	if dir == "" {
-		dir = absRoot
-	}
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		return "", fmt.Errorf("resolve working dir: %w", err)
-	}
-
-	if allowOutside {
-		return absDir, nil
-	}
-	if absDir != absRoot && !strings.HasPrefix(absDir, absRoot+string(os.PathSeparator)) {
-		return "", ErrWorkingDirectoryEscape
-	}
-	return absDir, nil
-}
-
 func secureSearchPath(workspaceRoot, workingDir, searchPath string, allowOutside bool) (string, error) {
 	if allowOutside {
 		return searchPath, nil
 	}
 
+	workspaceRoot = firstNonEmpty(workspaceRoot, os.Getenv("OPENCTO_WORKSPACE"))
 	absRoot, err := workspace.ResolveRoot(workspaceRoot)
 	if err != nil {
 		return "", err
@@ -327,6 +306,16 @@ func secureSearchPath(workspaceRoot, workingDir, searchPath string, allowOutside
 		return "", ErrSearchPathEscape
 	}
 	return searchPath, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func limitOutput(output string, offset int, headLimit int) string {

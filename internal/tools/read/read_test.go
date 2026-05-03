@@ -54,15 +54,25 @@ func TestReadAppliesOffsetAndLimit(t *testing.T) {
 }
 
 func TestReadValidatesRequest(t *testing.T) {
-	t.Parallel()
-
 	executor := newReadTestExecutor()
 	if _, err := executor.Run(context.Background(), Request{}); !errors.Is(err, ErrFilePathRequired) {
 		t.Fatalf("expected ErrFilePathRequired, got %v", err)
 	}
-	if _, err := executor.Run(context.Background(), Request{FilePath: "relative.txt"}); !errors.Is(err, ErrFilePathNotAbsolute) {
-		t.Fatalf("expected ErrFilePathNotAbsolute, got %v", err)
+
+	workspaceRoot := t.TempDir()
+	t.Setenv("OPENCTO_WORKSPACE", workspaceRoot)
+	relativePath := filepath.Join(workspaceRoot, "relative.txt")
+	if err := os.WriteFile(relativePath, []byte("relative\n"), 0o644); err != nil {
+		t.Fatalf("write relative fixture: %v", err)
 	}
+	result, err := executor.Run(context.Background(), Request{FilePath: "relative.txt"})
+	if err != nil {
+		t.Fatalf("read relative file: %v", err)
+	}
+	if result.FilePath != relativePath {
+		t.Fatalf("expected resolved path %q, got %q", relativePath, result.FilePath)
+	}
+
 	path := filepath.Join(t.TempDir(), "file.txt")
 	if _, err := executor.Run(context.Background(), Request{FilePath: path, Offset: -1}); !errors.Is(err, ErrOffsetInvalid) {
 		t.Fatalf("expected ErrOffsetInvalid, got %v", err)

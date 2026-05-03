@@ -16,18 +16,20 @@ import (
 	"github.com/opencto/opencto/internal/domain"
 )
 
-func TestSafeExecutorRunsCommandFromProcessWorkingDirectory(t *testing.T) {
+func TestSafeExecutorRunsCommandFromConfiguredWorkspace(t *testing.T) {
 	t.Parallel()
 
+	workspaceRoot := t.TempDir()
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatalf("resolve test executable: %v", err)
 	}
 	executor := NewSafeExecutor(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	result, err := executor.Run(context.Background(), Request{
-		Command: executable,
-		Args:    []string{"-test.run=TestHelperProcess", "--", "pwd"},
-		Timeout: time.Second,
+		Command:    executable,
+		Args:       []string{"-test.run=TestHelperProcess", "--", "pwd"},
+		WorkingDir: workspaceRoot,
+		Timeout:    time.Second,
 		Environment: map[string]string{
 			"GO_WANT_HELPER_PROCESS": "1",
 		},
@@ -35,11 +37,7 @@ func TestSafeExecutorRunsCommandFromProcessWorkingDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run command: %v", err)
 	}
-	current, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("resolve current working directory: %v", err)
-	}
-	want, err := filepath.EvalSymlinks(current)
+	want, err := filepath.EvalSymlinks(workspaceRoot)
 	if err != nil {
 		t.Fatalf("resolve expected working directory: %v", err)
 	}
@@ -49,6 +47,9 @@ func TestSafeExecutorRunsCommandFromProcessWorkingDirectory(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("expected command to run in %q, got %q", want, got)
+	}
+	if result.WorkingDirectory != workspaceRoot {
+		t.Fatalf("expected result working directory %q, got %q", workspaceRoot, result.WorkingDirectory)
 	}
 }
 
@@ -61,9 +62,10 @@ func TestSafeExecutorRunsCommand(t *testing.T) {
 	}
 	executor := NewSafeExecutor(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	result, err := executor.Run(context.Background(), Request{
-		Command: executable,
-		Args:    []string{"-test.run=TestHelperProcess", "--", "hello"},
-		Timeout: time.Second,
+		Command:    executable,
+		Args:       []string{"-test.run=TestHelperProcess", "--", "hello"},
+		WorkingDir: t.TempDir(),
+		Timeout:    time.Second,
 		Environment: map[string]string{
 			"GO_WANT_HELPER_PROCESS": "1",
 		},
@@ -85,9 +87,10 @@ func TestSafeExecutorRunsBatchActions(t *testing.T) {
 	}
 	executor := NewSafeExecutor(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	result, err := executor.Run(context.Background(), Request{
-		ProjectID: "project-1",
-		Intent:    "inspect system",
-		Timeout:   time.Second,
+		ProjectID:  "project-1",
+		Intent:     "inspect system",
+		WorkingDir: t.TempDir(),
+		Timeout:    time.Second,
 		Environment: map[string]string{
 			"GO_WANT_HELPER_PROCESS": "1",
 		},
@@ -119,9 +122,10 @@ func TestSafeExecutorTimeoutKillsCommand(t *testing.T) {
 	}
 	executor := NewSafeExecutor(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	result, err := executor.Run(context.Background(), Request{
-		Command: executable,
-		Args:    []string{"-test.run=TestHelperProcess", "--", "block"},
-		Timeout: 50 * time.Millisecond,
+		Command:    executable,
+		Args:       []string{"-test.run=TestHelperProcess", "--", "block"},
+		WorkingDir: t.TempDir(),
+		Timeout:    50 * time.Millisecond,
 		Environment: map[string]string{
 			"GO_WANT_HELPER_PROCESS": "1",
 		},
@@ -144,12 +148,13 @@ func TestProcessManagerStartStatusLogsStop(t *testing.T) {
 	}
 	manager := NewProcessManager(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	process, err := manager.Start(context.Background(), StartProcessRequest{
-		ProcessID: "proc-1",
-		ProjectID: "project-1",
-		Command:   executable,
-		Args:      []string{"-test.run=TestHelperProcess", "--", "block"},
-		StateDir:  stateDir,
-		Timeout:   time.Second,
+		ProcessID:  "proc-1",
+		ProjectID:  "project-1",
+		Command:    executable,
+		Args:       []string{"-test.run=TestHelperProcess", "--", "block"},
+		WorkingDir: t.TempDir(),
+		StateDir:   stateDir,
+		Timeout:    time.Second,
 		Environment: map[string]string{
 			"GO_WANT_HELPER_PROCESS": "1",
 		},
@@ -207,12 +212,13 @@ func TestProcessManagerReportsImmediateExit(t *testing.T) {
 	}
 	manager := NewProcessManager(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	process, err := manager.Start(context.Background(), StartProcessRequest{
-		ProcessID: "proc-fail",
-		ProjectID: "project-1",
-		Command:   executable,
-		Args:      []string{"-test.run=TestHelperProcess", "--", "fail"},
-		StateDir:  stateDir,
-		Timeout:   time.Second,
+		ProcessID:  "proc-fail",
+		ProjectID:  "project-1",
+		Command:    executable,
+		Args:       []string{"-test.run=TestHelperProcess", "--", "fail"},
+		WorkingDir: t.TempDir(),
+		StateDir:   stateDir,
+		Timeout:    time.Second,
 		Environment: map[string]string{
 			"GO_WANT_HELPER_PROCESS": "1",
 		},
@@ -281,19 +287,16 @@ func TestProcessManagerStopUsesStoredProcessGroup(t *testing.T) {
 	}
 }
 
-func TestResolveWorkingDirDefaultsToProcessWorkingDirectory(t *testing.T) {
-	t.Parallel()
+func TestResolveWorkingDirUsesOpenCTOWorkspace(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	t.Setenv("OPENCTO_WORKSPACE", workspaceRoot)
 
-	workingDir, err := resolveWorkingDir()
+	workingDir, err := ResolveWorkingDir("")
 	if err != nil {
 		t.Fatalf("resolve working directory: %v", err)
 	}
-	want, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("resolve current working directory: %v", err)
-	}
-	if workingDir != want {
-		t.Fatalf("expected %q, got %q", want, workingDir)
+	if workingDir != workspaceRoot {
+		t.Fatalf("expected %q, got %q", workspaceRoot, workingDir)
 	}
 }
 

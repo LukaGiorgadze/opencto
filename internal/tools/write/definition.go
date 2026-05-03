@@ -10,6 +10,7 @@ const (
 	WriteToolDescription = `Writes a new file to the local filesystem.
 
 Usage:
+- The file_path parameter must be an absolute path, not a relative path
 - Use this tool ONLY to create new files or perform complete rewrites of existing files. For partial modifications, use the "Edit" tool instead.
 - This tool will overwrite the existing file if there is one at the provided path.
 - If this is an existing file you intend to fully rewrite, you MUST use the "Read" tool first to read the file's contents. This tool will fail if you did not read the file first.

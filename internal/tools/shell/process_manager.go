@@ -25,6 +25,7 @@ type StartProcessRequest struct {
 	ProcessScope domain.ProcessScope
 	Command      string
 	Args         []string
+	WorkingDir   string
 	StateDir     string
 	Timeout      time.Duration
 	Environment  map[string]string
@@ -75,7 +76,7 @@ func (m *ProcessManager) Start(ctx context.Context, req StartProcessRequest) (do
 	if strings.TrimSpace(req.Command) == "" {
 		return domain.ManagedProcess{}, ErrEmptyCommand
 	}
-	workingDir, err := resolveWorkingDir()
+	workingDir, err := ResolveWorkingDir(req.WorkingDir)
 	if err != nil {
 		return domain.ManagedProcess{}, err
 	}

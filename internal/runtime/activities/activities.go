@@ -1060,6 +1060,7 @@ func (a *Activities) startShellProcess(ctx context.Context, request ExecuteToolR
 		ProcessScope: processScope,
 		Command:      choice.Command,
 		Args:         choice.Args,
+		WorkingDir:   firstNonEmpty(choice.WorkingDir, a.WorkspaceRoot),
 		StateDir:     a.runtimeStateDir(),
 		Timeout:      execution.Timeout,
 	})
@@ -1180,11 +1181,13 @@ func (a *Activities) runShellTool(ctx context.Context, choice agent.ToolChoice, 
 	if a.Shell == nil {
 		return toolRunResult{ResultCode: "1"}, fmt.Errorf("shell executor is not configured")
 	}
+	workingDir := firstNonEmpty(choice.WorkingDir, a.WorkspaceRoot)
 	req := shelltool.Request{
 		ProjectID:          execution.ProjectID,
 		Intent:             choice.Intent,
 		Command:            choice.Command,
 		Args:               choice.Args,
+		WorkingDir:         workingDir,
 		Timeout:            execution.Timeout,
 		FallbackCandidates: execution.FallbackCandidates,
 	}
@@ -1222,7 +1225,7 @@ func (a *Activities) runShellTool(ctx context.Context, choice agent.ToolChoice, 
 	return toolRunResult{
 		Observation:      shellObservation(result, err),
 		ResultCode:       resultCode,
-		WorkingDirectory: choice.WorkingDir,
+		WorkingDirectory: result.WorkingDirectory,
 		Metadata:         metadata,
 	}, err
 }
@@ -1382,7 +1385,7 @@ func (a *Activities) runGrepTool(ctx context.Context, choice agent.ToolChoice, e
 	}
 	req.ProjectID = execution.ProjectID
 	req.Intent = choice.Intent
-	req.WorkingDir = choice.WorkingDir
+	req.WorkingDir = firstNonEmpty(choice.WorkingDir, a.WorkspaceRoot)
 	req.WorkspaceRoot = a.WorkspaceRoot
 	req.Timeout = execution.Timeout
 	req.FallbackCandidates = execution.FallbackCandidates
@@ -1405,7 +1408,7 @@ func (a *Activities) runGrepTool(ctx context.Context, choice agent.ToolChoice, e
 	return toolRunResult{
 		Observation:      grepObservation(result, err),
 		ResultCode:       code,
-		WorkingDirectory: choice.WorkingDir,
+		WorkingDirectory: result.WorkingDirectory,
 		Metadata:         metadata,
 	}, err
 }

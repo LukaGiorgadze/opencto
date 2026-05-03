@@ -47,7 +47,7 @@
         },
         "path": {
             "type": ["string", "null"],
-            "description": "File or directory to search in (rg PATH). Use null for the current working directory."
+            "description": "Absolute file or directory path to search in (rg PATH). Use null for the tool's configured working directory."
         },
         "type": {
             "type": ["string", "null"],

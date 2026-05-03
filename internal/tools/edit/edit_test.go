@@ -76,10 +76,18 @@ func TestEditReplacesAllOccurrences(t *testing.T) {
 }
 
 func TestEditValidatesRequest(t *testing.T) {
-	t.Parallel()
-
-	if _, err := Edit(Request{FilePath: "relative.txt", OldString: "a", NewString: "b"}); !errors.Is(err, ErrFilePathNotAbsolute) {
-		t.Fatalf("expected ErrFilePathNotAbsolute, got %v", err)
+	workspaceRoot := t.TempDir()
+	t.Setenv("OPENCTO_WORKSPACE", workspaceRoot)
+	relativePath := filepath.Join(workspaceRoot, "relative.txt")
+	if err := os.WriteFile(relativePath, []byte("a\n"), 0o644); err != nil {
+		t.Fatalf("write relative fixture: %v", err)
+	}
+	result, err := Edit(Request{FilePath: "relative.txt", OldString: "a", NewString: "b"})
+	if err != nil {
+		t.Fatalf("edit relative file: %v", err)
+	}
+	if result.FilePath != relativePath {
+		t.Fatalf("expected resolved path %q, got %q", relativePath, result.FilePath)
 	}
 
 	path := filepath.Join(t.TempDir(), "file.txt")

@@ -99,15 +99,22 @@ func TestWriteAllowsReadAwareOverwriteAfterRead(t *testing.T) {
 }
 
 func TestWriteValidatesRequest(t *testing.T) {
-	t.Parallel()
-
 	executor := NewSafeExecutor(nil)
 	if _, err := executor.Run(context.Background(), Request{}); !errors.Is(err, ErrFilePathRequired) {
 		t.Fatalf("expected ErrFilePathRequired, got %v", err)
 	}
-	if _, err := executor.Run(context.Background(), Request{FilePath: "relative.txt", Content: "x"}); !errors.Is(err, ErrFilePathNotAbsolute) {
-		t.Fatalf("expected ErrFilePathNotAbsolute, got %v", err)
+
+	workspaceRoot := t.TempDir()
+	t.Setenv("OPENCTO_WORKSPACE", workspaceRoot)
+	result, err := executor.Run(context.Background(), Request{FilePath: "relative.txt", Content: "x"})
+	if err != nil {
+		t.Fatalf("write relative file: %v", err)
 	}
+	want := filepath.Join(workspaceRoot, "relative.txt")
+	if result.FilePath != want {
+		t.Fatalf("expected resolved path %q, got %q", want, result.FilePath)
+	}
+	assertFileContents(t, want, "x")
 }
 
 func TestWriteRejectsWorkspaceEscape(t *testing.T) {

@@ -21,7 +21,7 @@
         },
         "file_path": {
             "type": "string",
-            "description": "The absolute path to the file to read"
+            "description": "The absolute path to the file to read."
         }
     },
     "additionalProperties": false

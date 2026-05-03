@@ -9,13 +9,14 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	shelltool "github.com/opencto/opencto/internal/tools/shell"
 )
 
 var (
-	ErrFilePathRequired    = errors.New("file_path is required")
-	ErrFilePathNotAbsolute = errors.New("file_path must be absolute")
-	ErrFilePathEscape      = errors.New("file_path escapes workspace root")
-	ErrFileNotRead         = errors.New("file must be read before rewriting")
+	ErrFilePathRequired = errors.New("file_path is required")
+	ErrFilePathEscape   = errors.New("file_path escapes workspace root")
+	ErrFileNotRead      = errors.New("file must be read before rewriting")
 )
 
 type Request struct {
@@ -122,9 +123,15 @@ func secureFilePath(filePath, workspaceRoot string, allowOutside bool) (string, 
 	if path == "." {
 		return "", ErrFilePathRequired
 	}
-	if !filepath.IsAbs(path) {
-		return "", fmt.Errorf("%w: %s", ErrFilePathNotAbsolute, path)
+	baseDir := workspaceRoot
+	if baseDir == "" {
+		baseDir = os.Getenv("OPENCTO_WORKSPACE")
 	}
+	resolvedPath, err := shelltool.ResolvePath(baseDir, path)
+	if err != nil {
+		return "", err
+	}
+	path = resolvedPath
 
 	if strings.TrimSpace(workspaceRoot) == "" || allowOutside {
 		return path, nil

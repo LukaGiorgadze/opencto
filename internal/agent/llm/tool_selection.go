@@ -271,6 +271,7 @@ func shellToolChoiceFromInput(definition toolregistry.Definition, call llms.Tool
 		Command:      command,
 		Args:         commandArgs,
 		Input:        cloneRawMessage(raw),
+		WorkingDir:   strings.TrimSpace(input.Runtime.WorkspaceRoot),
 		TimeoutMs:    clampToolTimeoutMs(args.TimeoutMs),
 		RunMode:      runMode,
 		Idempotency:  idempotency,

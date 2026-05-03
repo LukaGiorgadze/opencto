@@ -1,7 +1,11 @@
 package grep
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -40,15 +44,25 @@ func TestRequestUnmarshalTreatsNullableDefaultsAsUnset(t *testing.T) {
 	}
 }
 
-func TestSecureWorkingDirUsesConfiguredWorkspace(t *testing.T) {
+func TestRunDefaultsToConfiguredWorkspace(t *testing.T) {
 	t.Parallel()
 
 	workspaceRoot := t.TempDir()
-	workingDir, err := secureWorkingDir(workspaceRoot, "", false)
-	if err != nil {
-		t.Fatalf("resolve working directory: %v", err)
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "example.txt"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
 	}
-	if workingDir != workspaceRoot {
-		t.Fatalf("expected %q, got %q", workspaceRoot, workingDir)
+	result, err := NewSafeExecutor(nil).Run(context.Background(), Request{
+		Pattern:       "needle",
+		WorkspaceRoot: workspaceRoot,
+		OutputMode:    OutputModeContent,
+	})
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	if result.WorkingDirectory != workspaceRoot {
+		t.Fatalf("expected working directory %q, got %q", workspaceRoot, result.WorkingDirectory)
+	}
+	if !strings.Contains(result.Stdout, "needle") {
+		t.Fatalf("expected grep output to contain fixture, got %q", result.Stdout)
 	}
 }

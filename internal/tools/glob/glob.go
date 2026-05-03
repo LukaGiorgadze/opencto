@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	shelltool "github.com/opencto/opencto/internal/tools/shell"
 )
 
 var (
@@ -156,17 +158,18 @@ func validateRequest(req Request) (string, string, error) {
 	root := strings.TrimSpace(req.Path)
 	if root == "" {
 		var err error
-		root, err = os.Getwd()
+		root, err = shelltool.ResolveWorkingDir("")
 		if err != nil {
-			return "", "", fmt.Errorf("resolve current directory: %w", err)
+			return "", "", fmt.Errorf("resolve working directory: %w", err)
 		}
 	} else if strings.EqualFold(root, "undefined") || strings.EqualFold(root, "null") {
 		return "", "", fmt.Errorf("%w: %q", ErrPathRequired, root)
-	}
-
-	root, err := filepath.Abs(root)
-	if err != nil {
-		return "", "", fmt.Errorf("resolve path: %w", err)
+	} else {
+		var err error
+		root, err = shelltool.ResolvePath("", root)
+		if err != nil {
+			return "", "", fmt.Errorf("resolve path: %w", err)
+		}
 	}
 	info, err := os.Stat(root)
 	if err != nil {
