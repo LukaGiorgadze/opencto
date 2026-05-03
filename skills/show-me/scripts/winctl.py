@@ -45,8 +45,8 @@ Commands:
   screenshot [--front] <AppName> [output.png]
       Capture the first matching window. With --front, restore/activate the
       window before capturing. If output.png is omitted, save under
-      $OPENCTO_WORKSPACE/screenshots, or ~/.opencto/screenshots when the
-      environment variable is not set.
+      $OPENCTO_WORKSPACE/screenshots. OPENCTO_WORKSPACE must be set by the
+      OpenCTO runtime from config.json.
       Aliases: snap, shot.
 """
 
@@ -148,9 +148,9 @@ def applescript_string(value: str) -> str:
 def default_screenshot_output(app_name: str) -> str:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{app_name.replace(' ', '_')}_{timestamp}.png"
-    workspace = os.environ.get("OPENCTO_WORKSPACE")
+    workspace = os.environ.get("OPENCTO_WORKSPACE", "").strip()
     if not workspace:
-        workspace = os.path.join(os.path.expanduser("~"), ".opencto")
+        die("OPENCTO_WORKSPACE is required when screenshot output is omitted")
     return os.path.join(workspace, "screenshots", filename)
 
 # ─── Commands ─────────────────────────────────────────────────────────────────

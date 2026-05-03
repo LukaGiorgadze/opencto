@@ -6,22 +6,12 @@ import (
 	"testing"
 )
 
-func TestResolveRootDefaultsToOpenCTOInUserHome(t *testing.T) {
+func TestResolveRootRequiresConfiguredWorkspace(t *testing.T) {
 	t.Parallel()
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("resolve user home: %v", err)
-	}
-
-	root, err := ResolveRoot("")
-	if err != nil {
-		t.Fatalf("resolve root: %v", err)
-	}
-
-	want := filepath.Join(home, ".opencto")
-	if root != want {
-		t.Fatalf("expected %q, got %q", want, root)
+	_, err := ResolveRoot("")
+	if err == nil {
+		t.Fatal("expected missing workspace root error")
 	}
 }
 
@@ -51,7 +41,7 @@ func TestResolveRootExpandsHomeReferences(t *testing.T) {
 	}
 }
 
-func TestDefaultStateRootUsesOpenCTOWorkingDir(t *testing.T) {
+func TestResolveStateDirUsesConfiguredWorkspace(t *testing.T) {
 	t.Parallel()
 
 	home, err := os.UserHomeDir()
@@ -59,26 +49,7 @@ func TestDefaultStateRootUsesOpenCTOWorkingDir(t *testing.T) {
 		t.Fatalf("resolve user home: %v", err)
 	}
 
-	root, err := DefaultStateRoot()
-	if err != nil {
-		t.Fatalf("resolve default state root: %v", err)
-	}
-
-	want := filepath.Join(home, ".opencto", ".state")
-	if root != want {
-		t.Fatalf("expected %q, got %q", want, root)
-	}
-}
-
-func TestResolveStateDirDefaultsToOpenCTOState(t *testing.T) {
-	t.Parallel()
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("resolve user home: %v", err)
-	}
-
-	stateDir, err := ResolveStateDir("", "project-1")
+	stateDir, err := ResolveStateDir("", "$HOME/.opencto")
 	if err != nil {
 		t.Fatalf("resolve state dir: %v", err)
 	}
@@ -97,7 +68,7 @@ func TestResolveStateDirExpandsConfiguredPath(t *testing.T) {
 		t.Fatalf("resolve user home: %v", err)
 	}
 
-	stateDir, err := ResolveStateDir("$HOME/.opencto/.state/custom", "project-1")
+	stateDir, err := ResolveStateDir("$HOME/.opencto/.state/custom", "$HOME/.opencto")
 	if err != nil {
 		t.Fatalf("resolve state dir: %v", err)
 	}

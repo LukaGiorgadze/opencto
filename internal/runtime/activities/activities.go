@@ -710,7 +710,7 @@ func (a *Activities) cleanupTaskProcesses(ctx context.Context, projectID string,
 		if process.Scope == domain.ProcessScopeProject || process.Status != domain.ProcessStatusRunning {
 			continue
 		}
-		stopped, err := manager.Stop(ctx, a.runtimeStateDir(projectID), process.ID)
+		stopped, err := manager.Stop(ctx, a.runtimeStateDir(), process.ID)
 		if err != nil {
 			failed = true
 			continue
@@ -1060,7 +1060,7 @@ func (a *Activities) startShellProcess(ctx context.Context, request ExecuteToolR
 		ProcessScope: processScope,
 		Command:      choice.Command,
 		Args:         choice.Args,
-		StateDir:     a.runtimeStateDir(execution.ProjectID),
+		StateDir:     a.runtimeStateDir(),
 		Timeout:      execution.Timeout,
 	})
 	metadata := map[string]string{
@@ -1915,8 +1915,8 @@ func toolChoiceTimeout(choice agent.ToolChoice) time.Duration {
 	return 60 * time.Second
 }
 
-func (a *Activities) runtimeStateDir(projectID string) string {
-	stateDir, err := workspace.ResolveStateDir(a.StateDir, projectID)
+func (a *Activities) runtimeStateDir() string {
+	stateDir, err := workspace.ResolveStateDir(a.StateDir, a.WorkspaceRoot)
 	if err != nil {
 		return ""
 	}

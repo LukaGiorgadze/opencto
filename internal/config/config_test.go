@@ -14,9 +14,7 @@ func TestLoadRequiresExplicitConfigValues(t *testing.T) {
 	path := filepath.Join(dir, "config.json")
 	data := []byte(`
 {
-  "project": {
-    "workspace_root": "."
-  }
+  "project": {}
 }
 `)
 	if err := os.WriteFile(path, data, 0o644); err != nil {
@@ -31,6 +29,7 @@ func TestLoadRequiresExplicitConfigValues(t *testing.T) {
 	for _, field := range []string{
 		"project.id",
 		"project.name",
+		"project.workspace_root",
 		"llm.provider",
 		"llm.base_url",
 		"llm.model_reasoning",
@@ -47,7 +46,7 @@ func TestLoadRequiresExplicitConfigValues(t *testing.T) {
 	}
 }
 
-func TestLoadDefaultsWorkspaceRootToOpenCTOInUserHome(t *testing.T) {
+func TestLoadDerivesRuntimeStateDirFromConfiguredWorkspace(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -56,54 +55,8 @@ func TestLoadDefaultsWorkspaceRootToOpenCTOInUserHome(t *testing.T) {
 {
   "project": {
     "id": "default",
-    "name": "OpenCTO"
-  },
-  "llm": {
-    "provider": "openai",
-    "base_url": "http://127.0.0.1:4000",
-    "model_reasoning": "gpt-5.4",
-    "model_fast": "gpt-5.4-mini",
-    "transcription_model": "gpt-4o-mini-transcribe"
-  },
-  "temporal": {
-    "host_port": "127.0.0.1:7233",
-    "namespace": "default",
-    "task_queue": "opencto",
-    "continue_as_new_after_events": 1000
-  },
-  "observability": {
-    "log_level": "INFO"
-  }
-}
-`)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("resolve user home: %v", err)
-	}
-	want := filepath.Join(home, ".opencto")
-	if cfg.Project.WorkspaceRoot != want {
-		t.Fatalf("expected workspace root %q, got %q", want, cfg.Project.WorkspaceRoot)
-	}
-}
-
-func TestLoadDefaultsRuntimeStateDirToOpenCTOState(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
-	data := []byte(`
-{
-  "project": {
-    "id": "default",
-    "name": "OpenCTO"
+    "name": "OpenCTO",
+    "workspace_root": "$HOME/.opencto"
   },
   "llm": {
     "provider": "openai",

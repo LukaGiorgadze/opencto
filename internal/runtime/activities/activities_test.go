@@ -88,15 +88,12 @@ func TestFullObservationIncludesAllStreamsAndError(t *testing.T) {
 	}
 }
 
-func TestRuntimeStateDirDefaultsToOpenCTOState(t *testing.T) {
+func TestRuntimeStateDirUsesConfiguredWorkspace(t *testing.T) {
 	t.Parallel()
 
-	got := (&Activities{}).runtimeStateDir("project-1")
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("resolve user home: %v", err)
-	}
-	want := filepath.Join(home, ".opencto", ".state")
+	workspaceRoot := t.TempDir()
+	got := (&Activities{WorkspaceRoot: workspaceRoot}).runtimeStateDir()
+	want := filepath.Join(workspaceRoot, ".state")
 	if got != want {
 		t.Fatalf("expected %q, got %q", want, got)
 	}

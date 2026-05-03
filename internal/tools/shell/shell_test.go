@@ -297,20 +297,12 @@ func TestResolveWorkingDirDefaultsToProcessWorkingDirectory(t *testing.T) {
 	}
 }
 
-func TestProcessStateDirDefaultsToOpenCTOState(t *testing.T) {
+func TestProcessStateDirRequiresConfiguredStateDir(t *testing.T) {
 	t.Parallel()
 
-	stateDir, err := processStateDir("")
-	if err != nil {
-		t.Fatalf("resolve process state dir: %v", err)
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("resolve user home: %v", err)
-	}
-	want := filepath.Join(home, ".opencto", ".state")
-	if stateDir != want {
-		t.Fatalf("expected %q, got %q", want, stateDir)
+	_, err := processStateDir("")
+	if err == nil {
+		t.Fatal("expected missing state dir error")
 	}
 }
 

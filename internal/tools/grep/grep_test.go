@@ -2,8 +2,6 @@ package grep
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -42,19 +40,15 @@ func TestRequestUnmarshalTreatsNullableDefaultsAsUnset(t *testing.T) {
 	}
 }
 
-func TestSecureWorkingDirDefaultsToOpenCTOInUserHome(t *testing.T) {
+func TestSecureWorkingDirUsesConfiguredWorkspace(t *testing.T) {
 	t.Parallel()
 
-	workingDir, err := secureWorkingDir("", "", false)
+	workspaceRoot := t.TempDir()
+	workingDir, err := secureWorkingDir(workspaceRoot, "", false)
 	if err != nil {
 		t.Fatalf("resolve working directory: %v", err)
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("resolve user home: %v", err)
-	}
-	want := filepath.Join(home, ".opencto")
-	if workingDir != want {
-		t.Fatalf("expected %q, got %q", want, workingDir)
+	if workingDir != workspaceRoot {
+		t.Fatalf("expected %q, got %q", workspaceRoot, workingDir)
 	}
 }

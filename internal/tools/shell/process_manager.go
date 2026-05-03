@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/opencto/opencto/internal/domain"
-	"github.com/opencto/opencto/internal/workspace"
 )
 
 type StartProcessRequest struct {
@@ -273,7 +272,15 @@ func (m *ProcessManager) Logs(ctx context.Context, stateDir, processID string, l
 }
 
 func processStateDir(stateDir string) (string, error) {
-	return workspace.ResolveStateDir(stateDir, "default")
+	stateDir = strings.TrimSpace(stateDir)
+	if stateDir == "" {
+		return "", fmt.Errorf("state dir is required")
+	}
+	absPath, err := filepath.Abs(stateDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve state dir: %w", err)
+	}
+	return absPath, nil
 }
 
 func processPath(stateDir, processID string) string {

@@ -7,38 +7,27 @@ import (
 	"strings"
 )
 
-const defaultStateDirName = ".state"
-
-func DefaultRoot() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve user home: %w", err)
-	}
-	return filepath.Join(home, ".opencto"), nil
-}
-
-func DefaultStateRoot() (string, error) {
-	root, err := DefaultRoot()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(root, defaultStateDirName), nil
-}
+const stateDirName = ".state"
 
 func ResolveRoot(root string) (string, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
-		return DefaultRoot()
+		return "", fmt.Errorf("workspace root is required")
 	}
 	return resolvePath(root, "workspace root")
 }
 
-func ResolveStateDir(stateDir, projectID string) (string, error) {
+func ResolveStateDir(stateDir, workspaceRoot string) (string, error) {
 	stateDir = strings.TrimSpace(stateDir)
-	if stateDir == "" {
-		return DefaultStateRoot()
+	if stateDir != "" {
+		return resolvePath(stateDir, "state dir")
 	}
-	return resolvePath(stateDir, "state dir")
+
+	root, err := ResolveRoot(workspaceRoot)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, stateDirName), nil
 }
 
 func resolvePath(path, label string) (string, error) {

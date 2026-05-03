@@ -6,6 +6,7 @@ Read this file from `$OPENCTO_ROOT/skills/show-me/references/terminal.md`.
 Run terminal commands in `PROJECT_ROOT` unless the command is explicitly reading
 OpenCTO skill references or helper scripts from `OPENCTO_ROOT`. Store terminal
 proof artifacts under `$OPENCTO_WORKSPACE/screenshots/` unless the user asks for
+another location. `$OPENCTO_WORKSPACE` is required and comes from `config.json`.
 
 Good fits:
 

@@ -102,16 +102,16 @@ func Load(path string) (Config, error) {
 		Observability: raw.Observability,
 	}
 
+	if err := cfg.validate(); err != nil {
+		return Config{}, err
+	}
+
 	cfg.Project.WorkspaceRoot, err = workspace.ResolveRoot(cfg.Project.WorkspaceRoot)
 	if err != nil {
 		return Config{}, err
 	}
-	cfg.Runtime.StateDir, err = resolveRuntimeStateDir(cfg.Runtime.StateDir, cfg.Project.ID)
+	cfg.Runtime.StateDir, err = workspace.ResolveStateDir(cfg.Runtime.StateDir, cfg.Project.WorkspaceRoot)
 	if err != nil {
-		return Config{}, err
-	}
-
-	if err := cfg.validate(); err != nil {
 		return Config{}, err
 	}
 
@@ -129,6 +129,7 @@ func (c *Config) validate() error {
 
 	requireString(c.Project.ID, "project.id")
 	requireString(c.Project.Name, "project.name")
+	requireString(c.Project.WorkspaceRoot, "project.workspace_root")
 	requireString(c.LLM.Provider, "llm.provider")
 	requireString(c.LLM.BaseURL, "llm.base_url")
 	requireString(c.LLM.ModelReasoning, "llm.model_reasoning")
@@ -148,8 +149,4 @@ func (c *Config) validate() error {
 	}
 
 	return errors.Join(errs...)
-}
-
-func resolveRuntimeStateDir(stateDir, projectID string) (string, error) {
-	return workspace.ResolveStateDir(stateDir, projectID)
 }
