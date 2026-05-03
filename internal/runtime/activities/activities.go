@@ -60,6 +60,7 @@ type Activities struct {
 	Reporter      Reporter
 	Project       domain.Project
 	WorkspaceRoot string
+	OpenCTORoot   string
 	SkillsRoot    string
 	StateDir      string
 	Logger        *slog.Logger
@@ -438,7 +439,7 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		ProjectID:          projectID,
 		Context:            loaded,
 		NextAction:         nextAction,
-		Runtime:            buildRuntimeContext(a.WorkspaceRoot),
+		Runtime:            buildRuntimeContext(a.WorkspaceRoot, a.OpenCTORoot),
 		ExecutionCycle:     request.ExecutionCycle,
 		ForceFinal:         request.ForceFinal,
 		ResumedFromPause:   request.ResumedFromPause,
@@ -1051,18 +1052,16 @@ func (a *Activities) startShellProcess(ctx context.Context, request ExecuteToolR
 	processID := stableActivityID("managed-process", execution.ProjectID, execution.WorkItemID, execution.ToolCallID)
 	manager := shelltool.NewProcessManager(a.activityLogger())
 	process, runErr := manager.Start(ctx, shelltool.StartProcessRequest{
-		ProcessID:     processID,
-		ProjectID:     execution.ProjectID,
-		WorkItemID:    execution.WorkItemID,
-		ToolCallID:    execution.ToolCallID,
-		Intent:        choice.Intent,
-		ProcessScope:  processScope,
-		Command:       choice.Command,
-		Args:          choice.Args,
-		WorkingDir:    choice.WorkingDir,
-		WorkspaceRoot: a.WorkspaceRoot,
-		StateDir:      a.runtimeStateDir(execution.ProjectID),
-		Timeout:       execution.Timeout,
+		ProcessID:    processID,
+		ProjectID:    execution.ProjectID,
+		WorkItemID:   execution.WorkItemID,
+		ToolCallID:   execution.ToolCallID,
+		Intent:       choice.Intent,
+		ProcessScope: processScope,
+		Command:      choice.Command,
+		Args:         choice.Args,
+		StateDir:     a.runtimeStateDir(execution.ProjectID),
+		Timeout:      execution.Timeout,
 	})
 	metadata := map[string]string{
 		"tool_call_id":                  execution.ToolCallID,
@@ -1110,7 +1109,7 @@ func (a *Activities) startShellProcess(ctx context.Context, request ExecuteToolR
 		RequestedIntent:    choice.Intent,
 		ChosenTool:         choice.Type,
 		FallbackCandidates: execution.FallbackCandidates,
-		WorkingDirectory:   firstNonEmpty(process.WorkingDirectory, choice.WorkingDir),
+		WorkingDirectory:   process.WorkingDirectory,
 		TimeoutSeconds:     int(execution.Timeout.Seconds()),
 		InputSummary:       choice.InputSummary,
 		OutputSummary:      observation,
@@ -1186,8 +1185,6 @@ func (a *Activities) runShellTool(ctx context.Context, choice agent.ToolChoice, 
 		Intent:             choice.Intent,
 		Command:            choice.Command,
 		Args:               choice.Args,
-		WorkingDir:         choice.WorkingDir,
-		WorkspaceRoot:      a.WorkspaceRoot,
 		Timeout:            execution.Timeout,
 		FallbackCandidates: execution.FallbackCandidates,
 	}
@@ -1960,7 +1957,7 @@ func processStartObservation(process domain.ManagedProcess) string {
 	return builder.String()
 }
 
-func buildRuntimeContext(workspaceRoot string) agent.RuntimeContext {
+func buildRuntimeContext(workspaceRoot, openCTORoot string) agent.RuntimeContext {
 	shellPath := strings.TrimSpace(os.Getenv("SHELL"))
 	return agent.RuntimeContext{
 		OS:            goruntime.GOOS,
@@ -1968,6 +1965,7 @@ func buildRuntimeContext(workspaceRoot string) agent.RuntimeContext {
 		Shell:         shellPath,
 		Path:          os.Getenv("PATH"),
 		WorkspaceRoot: workspaceRoot,
+		OpenCTORoot:   openCTORoot,
 	}
 }
 

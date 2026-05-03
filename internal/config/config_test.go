@@ -88,7 +88,7 @@ func TestLoadDefaultsWorkspaceRootToOpenCTOInUserHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve user home: %v", err)
 	}
-	want := filepath.Join(home, "opencto")
+	want := filepath.Join(home, ".opencto")
 	if cfg.Project.WorkspaceRoot != want {
 		t.Fatalf("expected workspace root %q, got %q", want, cfg.Project.WorkspaceRoot)
 	}
@@ -135,7 +135,7 @@ func TestLoadDefaultsRuntimeStateDirToOpenCTOState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve user home: %v", err)
 	}
-	want := filepath.Join(home, "opencto", ".state")
+	want := filepath.Join(home, ".opencto", ".state")
 	if cfg.Runtime.StateDir != want {
 		t.Fatalf("expected runtime state dir %q, got %q", want, cfg.Runtime.StateDir)
 	}
@@ -151,7 +151,7 @@ func TestLoadExpandsWorkspaceRootHome(t *testing.T) {
   "project": {
     "id": "default",
     "name": "OpenCTO",
-    "workspace_root": "$HOME/opencto"
+    "workspace_root": "$HOME/.opencto"
   },
   "llm": {
     "provider": "openai",
@@ -183,7 +183,7 @@ func TestLoadExpandsWorkspaceRootHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve user home: %v", err)
 	}
-	want := filepath.Join(home, "opencto")
+	want := filepath.Join(home, ".opencto")
 	if cfg.Project.WorkspaceRoot != want {
 		t.Fatalf("expected workspace root %q, got %q", want, cfg.Project.WorkspaceRoot)
 	}

@@ -18,36 +18,29 @@ import (
 	"time"
 
 	"github.com/opencto/opencto/internal/domain"
-	"github.com/opencto/opencto/internal/workspace"
 )
 
 var (
-	ErrWorkingDirectoryEscape = errors.New("working directory escapes workspace root")
-	ErrEmptyCommand           = errors.New("command is required")
+	ErrEmptyCommand = errors.New("command is required")
 )
 
 type Request struct {
-	ProjectID             string
-	Intent                string
-	Command               string
-	Args                  []string
-	Actions               []Action
-	WorkingDir            string
-	WorkspaceRoot         string
-	Timeout               time.Duration
-	Environment           map[string]string
-	AllowOutsideWorkspace bool
-	FallbackCandidates    []domain.ToolType
+	ProjectID          string
+	Intent             string
+	Command            string
+	Args               []string
+	Actions            []Action
+	Timeout            time.Duration
+	Environment        map[string]string
+	FallbackCandidates []domain.ToolType
 }
 
 type Action struct {
-	Intent                string            `json:"intent,omitempty"`
-	Command               string            `json:"command"`
-	Args                  []string          `json:"args,omitempty"`
-	WorkingDir            string            `json:"working_dir,omitempty"`
-	TimeoutMs             int               `json:"timeout_ms,omitempty"`
-	Environment           map[string]string `json:"environment,omitempty"`
-	AllowOutsideWorkspace bool              `json:"allow_outside_workspace,omitempty"`
+	Intent      string            `json:"intent,omitempty"`
+	Command     string            `json:"command"`
+	Args        []string          `json:"args,omitempty"`
+	TimeoutMs   int               `json:"timeout_ms,omitempty"`
+	Environment map[string]string `json:"environment,omitempty"`
 }
 
 type BatchInput struct {
@@ -149,7 +142,7 @@ func (e *SafeExecutor) runSingle(ctx context.Context, req Request) (Result, erro
 
 	startedAt := time.Now()
 
-	workingDir, err := secureWorkingDir(req.WorkspaceRoot, req.WorkingDir, req.AllowOutsideWorkspace)
+	workingDir, err := resolveWorkingDir()
 	if err != nil {
 		return Result{}, err
 	}
@@ -186,7 +179,7 @@ func (e *SafeExecutor) runSingle(ctx context.Context, req Request) (Result, erro
 		slog.String("intent", req.Intent),
 		slog.String("command", req.Command),
 		slog.Any("args", req.Args),
-		slog.String("working_dir", workingDir),
+		slog.String("cwd", workingDir),
 		slog.Duration("duration", result.Duration),
 		slog.Int("exit_code", result.ExitCode),
 	)
@@ -208,16 +201,13 @@ func commandContext(ctx context.Context, timeout time.Duration) (context.Context
 func shellRequestForAction(parent Request, action Action) Request {
 	timeout := time.Duration(action.TimeoutMs) * time.Millisecond
 	return Request{
-		ProjectID:             parent.ProjectID,
-		Intent:                firstNonEmpty(action.Intent, parent.Intent),
-		Command:               action.Command,
-		Args:                  append([]string(nil), action.Args...),
-		WorkingDir:            firstNonEmpty(action.WorkingDir, parent.WorkingDir),
-		WorkspaceRoot:         parent.WorkspaceRoot,
-		Timeout:               timeout,
-		Environment:           mergeStringMaps(parent.Environment, action.Environment),
-		AllowOutsideWorkspace: parent.AllowOutsideWorkspace || action.AllowOutsideWorkspace,
-		FallbackCandidates:    append([]domain.ToolType(nil), parent.FallbackCandidates...),
+		ProjectID:          parent.ProjectID,
+		Intent:             firstNonEmpty(action.Intent, parent.Intent),
+		Command:            action.Command,
+		Args:               append([]string(nil), action.Args...),
+		Timeout:            timeout,
+		Environment:        mergeStringMaps(parent.Environment, action.Environment),
+		FallbackCandidates: append([]domain.ToolType(nil), parent.FallbackCandidates...),
 	}
 }
 
@@ -287,26 +277,14 @@ func runCommandWithContext(ctx context.Context, cmd *exec.Cmd) error {
 	}
 }
 
-func secureWorkingDir(workspaceRoot, workingDir string, allowOutside bool) (string, error) {
-	absRoot, err := workspace.ResolveRoot(workspaceRoot)
+func resolveWorkingDir() (string, error) {
+	dir, err := os.Getwd()
 	if err != nil {
-		return "", err
-	}
-
-	dir := workingDir
-	if dir == "" {
-		dir = absRoot
+		return "", fmt.Errorf("resolve current working dir: %w", err)
 	}
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return "", fmt.Errorf("resolve working dir: %w", err)
-	}
-
-	if allowOutside {
-		return absDir, nil
-	}
-	if absDir != absRoot && !strings.HasPrefix(absDir, absRoot+string(os.PathSeparator)) {
-		return "", ErrWorkingDirectoryEscape
 	}
 	return absDir, nil
 }

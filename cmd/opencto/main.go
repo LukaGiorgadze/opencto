@@ -38,6 +38,17 @@ func main() {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
 		os.Exit(1)
 	}
+	openCTORoot, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "resolve OpenCTO root: %v\n", err)
+		os.Exit(1)
+	}
+	if strings.TrimSpace(os.Getenv("OPENCTO_ROOT")) == "" {
+		if err := os.Setenv("OPENCTO_ROOT", openCTORoot); err != nil {
+			fmt.Fprintf(os.Stderr, "set OPENCTO_ROOT: %v\n", err)
+			os.Exit(1)
+		}
+	}
 
 	logger := observability.NewLogger(cfg.Observability.LogLevel, cfg.Observability.JSONLogs, os.Stdout)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -92,6 +103,7 @@ func main() {
 				Name: cfg.Project.Name,
 			},
 			WorkspaceRoot: cfg.Project.WorkspaceRoot,
+			OpenCTORoot:   openCTORoot,
 			StateDir:      cfg.Runtime.StateDir,
 			Logger:        logger,
 		}

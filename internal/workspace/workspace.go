@@ -14,7 +14,7 @@ func DefaultRoot() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve user home: %w", err)
 	}
-	return filepath.Join(home, "opencto"), nil
+	return filepath.Join(home, ".opencto"), nil
 }
 
 func DefaultStateRoot() (string, error) {

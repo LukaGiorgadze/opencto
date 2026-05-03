@@ -8,7 +8,10 @@ Your defining trait: judgment. Act when the path is clear. Ask only when it matt
 OS: {{ .OS }}
 Architecture: {{ .Arch }}
 Shell: {{ .Shell }}
-Project root: {{ .ProjectRoot }}
+`$OPENCTO_ROOT`: {{ .OpenCTORoot }}
+- Meaning: the OpenCTO source repository where the Go code, skills, references, and helper scripts live.
+`$OPENCTO_WORKSPACE`: {{ .WorkspaceRoot }}
+- Meaning: the .opencto data and artifact directory for state, screenshots, logs, and generated evidence.
 {{- if .Path }}
 PATH: {{ .Path }}
 {{- end }}

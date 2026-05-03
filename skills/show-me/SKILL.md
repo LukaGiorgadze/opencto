@@ -35,8 +35,14 @@ Follow this process:
 6. Navigate to the changed area.
 7. Wait for the target state to render.
 8. Capture focused evidence.
-9. Save evidence under `./screenshots/`.
+9. Save evidence under `$OPENCTO_WORKSPACE/screenshots/`.
 10. Present the artifact and verification result to the user.
+
+This skill's references and scripts live under `$OPENCTO_ROOT/skills/show-me/`.
+Read reference files and run helper scripts from there. Save proof artifacts
+under `$OPENCTO_WORKSPACE/screenshots/` unless the user asks for another
+location. If `$OPENCTO_WORKSPACE` is unavailable, use `$HOME/.opencto` as the
+OpenCTO workspace root.
 
 ## Strategy Selection
 
@@ -44,28 +50,28 @@ Prefer the most domain-native strategy. **Before executing, read the correspondi
 
 | Strategy    | When to use                                                             | Reference               |
 | ----------- | ----------------------------------------------------------------------- | ----------------------- |
-| `web`       | Browser-based app — React, Next.js, Vite, Remix, static site, dashboard | references/web.md       |
-| `simulator` | iOS Simulator, Android emulator, Expo, React Native, native mobile app  | references/simulator.md |
-| `desktop`   | macOS app, Electron app, native desktop UI, visible application window  | references/desktop.md   |
-| `terminal`  | CLI app, script output, server logs, tests, build result                | references/terminal.md  |
-| `fallback`  | No visual runtime detected or required tools are missing                | references/fallback.md  |
+| `web`       | Browser-based app — React, Next.js, Vite, Remix, static site, dashboard | `$OPENCTO_ROOT/skills/show-me/references/web.md`       |
+| `simulator` | iOS Simulator, Android emulator, Expo, React Native, native mobile app  | `$OPENCTO_ROOT/skills/show-me/references/simulator.md` |
+| `desktop`   | macOS app, Electron app, native desktop UI, visible application window  | `$OPENCTO_ROOT/skills/show-me/references/desktop.md`   |
+| `terminal`  | CLI app, script output, server logs, tests, build result                | `$OPENCTO_ROOT/skills/show-me/references/terminal.md`  |
+| `fallback`  | No visual runtime detected or required tools are missing                | `$OPENCTO_ROOT/skills/show-me/references/fallback.md`  |
 
 Do not use a full-desktop screenshot when a more focused capture method exists.
 Do not proceed with a strategy if its reference file does not exist — notify the user and fall back to the next viable strategy.
 
 ## Window Control Helper
 
-Use `scripts/winctl.py` for desktop app window discovery, app launching, focusing, and focused app-window screenshots.
+Use `$OPENCTO_ROOT/skills/show-me/scripts/winctl.py` for desktop app window discovery, app launching, focusing, and focused app-window screenshots.
 
 Command reference:
 
-- `python scripts/winctl.py list` — list running apps and visible/minimized/maximized/hidden windows detected by PyWinCtl.
-- `python scripts/winctl.py open <AppName>` — launch the app if closed, or reopen it if it is running with no visible windows. On macOS this handles the red-window-button state by sending a `reopen` event. Aliases: `launch`, `start`.
-- `python scripts/winctl.py focus <AppName>` — bring an already-running app/window to the front. Use this when a window already exists.
-- `python scripts/winctl.py restore <AppName>` — restore and focus an existing minimized/non-normal window. This does not launch an app or create a window.
-- `python scripts/winctl.py minimize <AppName>` — minimize the first matching window. Alias: `min`.
-- `python scripts/winctl.py maximize <AppName>` — restore if needed, then maximize the first matching window. Alias: `max`.
-- `python scripts/winctl.py screenshot [--front] <AppName> [output.png]` — capture the first matching app window. Use `--front` to restore/activate before capture.
+- `python "$OPENCTO_ROOT/skills/show-me/scripts/winctl.py" list` — list running apps and visible/minimized/maximized/hidden windows detected by PyWinCtl.
+- `python "$OPENCTO_ROOT/skills/show-me/scripts/winctl.py" open <AppName>` — launch the app if closed, or reopen it if it is running with no visible windows. On macOS this handles the red-window-button state by sending a `reopen` event. Aliases: `launch`, `start`.
+- `python "$OPENCTO_ROOT/skills/show-me/scripts/winctl.py" focus <AppName>` — bring an already-running app/window to the front. Use this when a window already exists.
+- `python "$OPENCTO_ROOT/skills/show-me/scripts/winctl.py" restore <AppName>` — restore and focus an existing minimized/non-normal window. This does not launch an app or create a window.
+- `python "$OPENCTO_ROOT/skills/show-me/scripts/winctl.py" minimize <AppName>` — minimize the first matching window. Alias: `min`.
+- `python "$OPENCTO_ROOT/skills/show-me/scripts/winctl.py" maximize <AppName>` — restore if needed, then maximize the first matching window. Alias: `max`.
+- `python "$OPENCTO_ROOT/skills/show-me/scripts/winctl.py" screenshot [--front] <AppName> [output.png]` — capture the first matching app window. Use `--front` to restore/activate before capture.
 
 Prefer `open` when the app may be closed or may be running without visible windows. Prefer `focus` when the app already has a visible window and you only need to focus it. Prefer `restore` when the window exists but is minimized.
 

@@ -24,7 +24,6 @@ import (
 type shellToolInput struct {
 	Command      string   `json:"command"`
 	Args         []string `json:"args,omitempty"`
-	WorkingDir   string   `json:"working_dir,omitempty"`
 	TimeoutMs    int      `json:"timeout_ms,omitempty"`
 	RunMode      string   `json:"run_mode,omitempty"`
 	Idempotency  string   `json:"idempotency,omitempty"`
@@ -143,11 +142,10 @@ func multiShellToolChoice(choices []agent.ToolChoice) (agent.ToolChoice, error) 
 
 	for _, choice := range choices {
 		actions = append(actions, shelltool.Action{
-			Intent:     choice.Intent,
-			Command:    choice.Command,
-			Args:       append([]string(nil), choice.Args...),
-			WorkingDir: choice.WorkingDir,
-			TimeoutMs:  choice.TimeoutMs,
+			Intent:    choice.Intent,
+			Command:   choice.Command,
+			Args:      append([]string(nil), choice.Args...),
+			TimeoutMs: choice.TimeoutMs,
 		})
 		ids = append(ids, strings.TrimSpace(choice.ToolCallID))
 		intents = append(intents, strings.TrimSpace(firstNonEmpty(choice.Intent, choice.Command)))
@@ -184,7 +182,6 @@ func multiShellToolChoice(choices []agent.ToolChoice) (agent.ToolChoice, error) 
 		Intent:       fmt.Sprintf("run %d shell commands", len(actions)),
 		Command:      "shell-batch",
 		Input:        json.RawMessage(raw),
-		WorkingDir:   choices[0].WorkingDir,
 		TimeoutMs:    clampToolTimeoutMs(timeoutMs),
 		RunMode:      domain.ToolRunModeWaitForExit,
 		Idempotency:  idempotency,
@@ -274,7 +271,6 @@ func shellToolChoiceFromInput(definition toolregistry.Definition, call llms.Tool
 		Command:      command,
 		Args:         commandArgs,
 		Input:        cloneRawMessage(raw),
-		WorkingDir:   firstNonEmpty(strings.TrimSpace(args.WorkingDir), strings.TrimSpace(input.Runtime.WorkspaceRoot)),
 		TimeoutMs:    clampToolTimeoutMs(args.TimeoutMs),
 		RunMode:      runMode,
 		Idempotency:  idempotency,

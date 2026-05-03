@@ -73,6 +73,7 @@ func TestBuildNextActionMessagesUsesOpenAIToolTranscript(t *testing.T) {
 			Shell:         "/bin/zsh",
 			Path:          "/usr/bin:/bin",
 			WorkspaceRoot: "/tmp/opencto",
+			OpenCTORoot:   "/home/luka/projects/opencto",
 		},
 		ExecutionCycle: 2,
 		ObservationHistory: []agent.ExecutionFeedback{{
@@ -115,7 +116,10 @@ func TestBuildNextActionMessagesUsesOpenAIToolTranscript(t *testing.T) {
 		"OS: darwin",
 		"Architecture: arm64",
 		"Shell: /bin/zsh",
-		"Project root: /tmp/opencto",
+		"`$OPENCTO_ROOT`: /home/luka/projects/opencto",
+		"Meaning: the OpenCTO source repository",
+		"`$OPENCTO_WORKSPACE`: /tmp/opencto",
+		"Meaning: the .opencto data and artifact directory",
 		"PATH: /usr/bin:/bin",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -363,7 +367,6 @@ func TestNextActionReturnsSingleToolChoice(t *testing.T) {
 						Arguments: `{
 							"command":"pwd",
 							"args":[],
-							"working_dir":null,
 							"timeout_ms":120000,
 							"run_mode":"wait_for_exit",
 							"idempotency":"read_only",
@@ -421,7 +424,6 @@ func TestNextActionCombinesMultipleShellToolCalls(t *testing.T) {
 							Arguments: `{
 								"command":"pwd",
 								"args":[],
-								"working_dir":null,
 								"timeout_ms":10000,
 								"run_mode":"wait_for_exit",
 								"idempotency":"read_only",
@@ -440,7 +442,6 @@ func TestNextActionCombinesMultipleShellToolCalls(t *testing.T) {
 							Arguments: `{
 								"command":"uname",
 								"args":["-a"],
-								"working_dir":null,
 								"timeout_ms":10000,
 								"run_mode":"wait_for_exit",
 								"idempotency":"read_only",
@@ -494,7 +495,6 @@ func TestToolChoicePreservesCommandAndArgsForDirectExecution(t *testing.T) {
 			Arguments: `{
 				"command":"go",
 				"args":["test","./..."],
-				"working_dir":null,
 				"timeout_ms":120000,
 				"run_mode":"wait_for_exit",
 				"idempotency":"idempotent",

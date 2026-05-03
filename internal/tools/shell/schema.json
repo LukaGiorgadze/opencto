@@ -4,7 +4,6 @@
     "required": [
         "command",
         "args",
-        "working_dir",
         "timeout_ms",
         "run_mode",
         "idempotency",
@@ -17,18 +16,14 @@
     "properties": {
         "command": {
             "type": "string",
-            "description": "The executable to run for the next execution step. Prefer cross-platform tools when possible. Do not assume Bash, sh, cmd, or PowerShell."
+            "description": "The executable to run for the next execution step, for example \"python\", \"go\", or \"npm\". Do not include arguments, quoted paths, or a full command line here. Do not assume Bash, sh, cmd, or PowerShell."
         },
         "args": {
             "type": "array",
             "items": {
                 "type": "string"
             },
-            "description": "Arguments for the executable. Use an empty array when there are no arguments."
-        },
-        "working_dir": {
-            "type": ["string", "null"],
-            "description": "Working directory for the command. Use null to use the configured workspace root, which defaults to $HOME/opencto."
+            "description": "Arguments for the executable. Put script paths, flags, and command arguments here. Use an empty array when there are no arguments."
         },
         "timeout_ms": {
             "type": ["integer", "null"],

@@ -44,7 +44,9 @@ Commands:
 
   screenshot [--front] <AppName> [output.png]
       Capture the first matching window. With --front, restore/activate the
-      window before capturing.
+      window before capturing. If output.png is omitted, save under
+      $OPENCTO_WORKSPACE/screenshots, or ~/.opencto/screenshots when the
+      environment variable is not set.
       Aliases: snap, shot.
 """
 
@@ -142,6 +144,14 @@ def get_first_window(app_name: str):
 def applescript_string(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+def default_screenshot_output(app_name: str) -> str:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{app_name.replace(' ', '_')}_{timestamp}.png"
+    workspace = os.environ.get("OPENCTO_WORKSPACE")
+    if not workspace:
+        workspace = os.path.join(os.path.expanduser("~"), ".opencto")
+    return os.path.join(workspace, "screenshots", filename)
 
 # ─── Commands ─────────────────────────────────────────────────────────────────
 
@@ -313,9 +323,11 @@ def cmd_screenshot(args):
         die("Usage: winctl.py screenshot [--front] <AppName> [output.png]")
 
     app_name = args[0]
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output = args[1] if len(args) > 1 else f"{app_name.replace(' ', '_')}_{timestamp}.png"
+    output = args[1] if len(args) > 1 else default_screenshot_output(app_name)
     output = os.path.expanduser(output)
+    parent = os.path.dirname(output)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
 
     win = get_first_window(app_name)
 
@@ -339,16 +351,82 @@ def _take_screenshot(win, app_name: str, output: str):
         die(f"Screenshot not supported on {OS}")
 
 def _screenshot_macos(win, app_name: str, output: str):
-    # PyWinCtl's getHandle() returns CGWindowID on macOS
-    wid = win.getHandle()
-    if wid:
-        subprocess.run(["screencapture", "-l", str(wid), "-x", output], check=True)
-        ok(f"Screenshot of '{app_name}' (window ID: {wid}) → {output}")
-    else:
-        # Fallback: capture frontmost window
-        info("Could not get window ID, capturing frontmost...")
-        subprocess.run(["screencapture", "-x", output], check=True)
-        ok(f"Screenshot (frontmost) → {output}")
+    window_id = _mac_window_id(win.getHandle())
+    if window_id:
+        result = subprocess.run(
+            ["screencapture", "-l", window_id, "-x", output],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            ok(f"Screenshot of '{app_name}' (window ID: {window_id}) → {output}")
+            return
+        info("Window ID capture failed; trying window bounds...")
+
+    region = _window_region(win)
+    if not region:
+        die(f"Could not determine a screenshot region for '{app_name}'")
+
+    result = subprocess.run(
+        ["screencapture", "-R", region, "-x", output],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        if detail:
+            die(f"Could not capture '{app_name}' region {region}: {detail}")
+        die(f"Could not capture '{app_name}' region {region}")
+
+    ok(f"Screenshot of '{app_name}' (region: {region}) → {output}")
+
+def _mac_window_id(handle):
+    if isinstance(handle, bool):
+        return None
+    if isinstance(handle, int):
+        return str(handle)
+    if isinstance(handle, str) and handle.isdigit():
+        return handle
+    if isinstance(handle, (list, tuple)):
+        for item in handle:
+            window_id = _mac_window_id(item)
+            if window_id:
+                return window_id
+    return None
+
+def _window_region(win):
+    left = _window_number(win, "left")
+    top = _window_number(win, "top")
+    width = _window_number(win, "width")
+    height = _window_number(win, "height")
+
+    if width is None or height is None:
+        right = _window_number(win, "right")
+        bottom = _window_number(win, "bottom")
+        if left is not None and right is not None:
+            width = right - left
+        if top is not None and bottom is not None:
+            height = bottom - top
+
+    if None in (left, top, width, height):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+
+    return f"{left},{top},{width},{height}"
+
+def _window_number(win, attr: str):
+    try:
+        value = getattr(win, attr)
+        if callable(value):
+            value = value()
+    except Exception:
+        return None
+
+    try:
+        return int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
 
 def _screenshot_linux(win, app_name: str, output: str):
     wid = win.getHandle()

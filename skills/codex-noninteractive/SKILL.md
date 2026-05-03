@@ -14,6 +14,11 @@ goes to `stdout`.
 Use the target project path explicitly. In examples below, `PROJECT_ROOT` is the
 repository OpenCTO should operate on.
 
+Skill references and helper files for this skill live under
+`$OPENCTO_ROOT/skills/codex-noninteractive/`. Do not confuse `OPENCTO_ROOT` or
+`OPENCTO_WORKSPACE` with `PROJECT_ROOT`, which is the repository Codex should
+inspect or modify.
+
 ## Basic Invocation
 
 ```bash
@@ -127,8 +132,8 @@ resuming a session started from a different project root.
 ## Key Flags
 
 For the fuller `codex exec`, `resume`, and `review` option reference, read
-[command-line-options.md](references/command-line-options.md) when adding or
-debugging CLI flags.
+`$OPENCTO_ROOT/skills/codex-noninteractive/references/command-line-options.md`
+when adding or debugging CLI flags.
 
 | Flag | Effect |
 |---|---|
@@ -148,6 +153,10 @@ debugging CLI flags.
 
 - Always use `--sandbox workspace-write` for code-changing tasks.
 - Use `--cd "$PROJECT_ROOT"` so Codex does not operate on OpenCTO's process cwd.
+- Use `OPENCTO_ROOT` only for this skill's references, helper files, or when the
+  user explicitly asks to work on OpenCTO's own code.
+- Use `OPENCTO_WORKSPACE` only for OpenCTO data/artifacts. Do not pass it to
+  `--cd` for repository code work.
 - Pass user-controlled prompts through argv or stdin, not shell interpolation.
 - `danger-full-access` removes the important guardrails; require explicit
   approval and isolation before using it.
@@ -158,4 +167,5 @@ debugging CLI flags.
 
 ## Command line options
 
-See [options and flags for the Codex terminal client](references/command-line-options.md) for details.
+See `$OPENCTO_ROOT/skills/codex-noninteractive/references/command-line-options.md`
+for options and flags for the Codex terminal client.

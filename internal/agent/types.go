@@ -87,6 +87,7 @@ type RuntimeContext struct {
 	Shell         string `json:"shell,omitempty"`
 	Path          string `json:"path,omitempty"`
 	WorkspaceRoot string `json:"workspace_root,omitempty"`
+	OpenCTORoot   string `json:"opencto_root"`
 }
 
 type ToolSelectionInput struct {

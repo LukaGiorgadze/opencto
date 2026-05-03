@@ -18,19 +18,17 @@ import (
 )
 
 type StartProcessRequest struct {
-	ProcessID     string
-	ProjectID     string
-	WorkItemID    string
-	ToolCallID    string
-	Intent        string
-	ProcessScope  domain.ProcessScope
-	Command       string
-	Args          []string
-	WorkingDir    string
-	WorkspaceRoot string
-	StateDir      string
-	Timeout       time.Duration
-	Environment   map[string]string
+	ProcessID    string
+	ProjectID    string
+	WorkItemID   string
+	ToolCallID   string
+	Intent       string
+	ProcessScope domain.ProcessScope
+	Command      string
+	Args         []string
+	StateDir     string
+	Timeout      time.Duration
+	Environment  map[string]string
 }
 
 type ProcessLogResult struct {
@@ -78,7 +76,7 @@ func (m *ProcessManager) Start(ctx context.Context, req StartProcessRequest) (do
 	if strings.TrimSpace(req.Command) == "" {
 		return domain.ManagedProcess{}, ErrEmptyCommand
 	}
-	workingDir, err := secureWorkingDir(req.WorkspaceRoot, req.WorkingDir, false)
+	workingDir, err := resolveWorkingDir()
 	if err != nil {
 		return domain.ManagedProcess{}, err
 	}

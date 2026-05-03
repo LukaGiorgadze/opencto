@@ -2,7 +2,7 @@
   "project": {
     "id": "default",
     "name": "OpenCTO",
-    "workspace_root": "$HOME/opencto"
+    "workspace_root": "$HOME/.opencto"
   },
   "llm": {
     "provider": "openai",

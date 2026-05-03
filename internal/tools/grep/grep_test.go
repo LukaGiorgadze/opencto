@@ -53,7 +53,7 @@ func TestSecureWorkingDirDefaultsToOpenCTOInUserHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve user home: %v", err)
 	}
-	want := filepath.Join(home, "opencto")
+	want := filepath.Join(home, ".opencto")
 	if workingDir != want {
 		t.Fatalf("expected %q, got %q", want, workingDir)
 	}

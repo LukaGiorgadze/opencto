@@ -96,7 +96,7 @@ func TestRuntimeStateDirDefaultsToOpenCTOState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve user home: %v", err)
 	}
-	want := filepath.Join(home, "opencto", ".state")
+	want := filepath.Join(home, ".opencto", ".state")
 	if got != want {
 		t.Fatalf("expected %q, got %q", want, got)
 	}

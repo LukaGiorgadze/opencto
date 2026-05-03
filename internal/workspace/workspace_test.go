@@ -19,7 +19,7 @@ func TestResolveRootDefaultsToOpenCTOInUserHome(t *testing.T) {
 		t.Fatalf("resolve root: %v", err)
 	}
 
-	want := filepath.Join(home, "opencto")
+	want := filepath.Join(home, ".opencto")
 	if root != want {
 		t.Fatalf("expected %q, got %q", want, root)
 	}
@@ -33,14 +33,20 @@ func TestResolveRootExpandsHomeReferences(t *testing.T) {
 		t.Fatalf("resolve user home: %v", err)
 	}
 
-	for _, input := range []string{"~/opencto", "$HOME/opencto", "$USERPROFILE/opencto"} {
-		root, err := ResolveRoot(input)
+	for _, tc := range []struct {
+		input string
+		want  string
+	}{
+		{input: "~/opencto", want: filepath.Join(home, "opencto")},
+		{input: "$HOME/.opencto", want: filepath.Join(home, ".opencto")},
+		{input: "$USERPROFILE/.opencto", want: filepath.Join(home, ".opencto")},
+	} {
+		root, err := ResolveRoot(tc.input)
 		if err != nil {
-			t.Fatalf("resolve %q: %v", input, err)
+			t.Fatalf("resolve %q: %v", tc.input, err)
 		}
-		want := filepath.Join(home, "opencto")
-		if root != want {
-			t.Fatalf("expected %q for %q, got %q", want, input, root)
+		if root != tc.want {
+			t.Fatalf("expected %q for %q, got %q", tc.want, tc.input, root)
 		}
 	}
 }
@@ -58,7 +64,7 @@ func TestDefaultStateRootUsesOpenCTOWorkingDir(t *testing.T) {
 		t.Fatalf("resolve default state root: %v", err)
 	}
 
-	want := filepath.Join(home, "opencto", ".state")
+	want := filepath.Join(home, ".opencto", ".state")
 	if root != want {
 		t.Fatalf("expected %q, got %q", want, root)
 	}
@@ -77,7 +83,7 @@ func TestResolveStateDirDefaultsToOpenCTOState(t *testing.T) {
 		t.Fatalf("resolve state dir: %v", err)
 	}
 
-	want := filepath.Join(home, "opencto", ".state")
+	want := filepath.Join(home, ".opencto", ".state")
 	if stateDir != want {
 		t.Fatalf("expected %q, got %q", want, stateDir)
 	}
@@ -91,12 +97,12 @@ func TestResolveStateDirExpandsConfiguredPath(t *testing.T) {
 		t.Fatalf("resolve user home: %v", err)
 	}
 
-	stateDir, err := ResolveStateDir("$HOME/opencto/.state/custom", "project-1")
+	stateDir, err := ResolveStateDir("$HOME/.opencto/.state/custom", "project-1")
 	if err != nil {
 		t.Fatalf("resolve state dir: %v", err)
 	}
 
-	want := filepath.Join(home, "opencto", ".state", "custom")
+	want := filepath.Join(home, ".opencto", ".state", "custom")
 	if stateDir != want {
 		t.Fatalf("expected %q, got %q", want, stateDir)
 	}

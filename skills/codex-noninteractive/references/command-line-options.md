@@ -862,6 +862,12 @@ export const marketplaceCommands = [
 
 This page catalogs every documented Codex CLI command and flag. Use the interactive tables to search by key or description. Each section indicates whether the option is stable or experimental and calls out risky combinations.
 
+Read this file from
+`$OPENCTO_ROOT/skills/codex-noninteractive/references/command-line-options.md`.
+Use `PROJECT_ROOT` for the repository passed to `codex exec --cd`; use
+`OPENCTO_ROOT` to locate this reference or modify OpenCTO's own code, and use
+`OPENCTO_WORKSPACE` only for OpenCTO data/artifacts.
+
 The CLI inherits most defaults from <code>~/.codex/config.toml</code>. Any
   <code>-c key=value</code> overrides you pass at the command line take
   precedence for that invocation. See [Config
