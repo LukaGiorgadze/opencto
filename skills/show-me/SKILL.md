@@ -1,5 +1,5 @@
 ---
-name: demo
+name: show-me
 description: Show visual proof of a change, feature, or bug fix by detecting the environment, launching the app if needed, capturing a screenshot, and storing it.
 allowed-tools: Glob Grep Read Shell
 compatibility: Requires Codex CLI
@@ -52,6 +52,22 @@ Prefer the most domain-native strategy. **Before executing, read the correspondi
 
 Do not use a full-desktop screenshot when a more focused capture method exists.
 Do not proceed with a strategy if its reference file does not exist — notify the user and fall back to the next viable strategy.
+
+## Window Control Helper
+
+Use `scripts/winctl.py` for desktop app window discovery, app launching, focusing, and focused app-window screenshots.
+
+Command reference:
+
+- `python scripts/winctl.py list` — list running apps and visible/minimized/maximized/hidden windows detected by PyWinCtl.
+- `python scripts/winctl.py open <AppName>` — launch the app if closed, or reopen it if it is running with no visible windows. On macOS this handles the red-window-button state by sending a `reopen` event. Aliases: `launch`, `start`.
+- `python scripts/winctl.py focus <AppName>` — bring an already-running app/window to the front. Use this when a window already exists.
+- `python scripts/winctl.py restore <AppName>` — restore and focus an existing minimized/non-normal window. This does not launch an app or create a window.
+- `python scripts/winctl.py minimize <AppName>` — minimize the first matching window. Alias: `min`.
+- `python scripts/winctl.py maximize <AppName>` — restore if needed, then maximize the first matching window. Alias: `max`.
+- `python scripts/winctl.py screenshot [--front] <AppName> [output.png]` — capture the first matching app window. Use `--front` to restore/activate before capture.
+
+Prefer `open` when the app may be closed or may be running without visible windows. Prefer `focus` when the app already has a visible window and you only need to focus it. Prefer `restore` when the window exists but is minimized.
 
 ---
 

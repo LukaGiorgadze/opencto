@@ -9,3 +9,4 @@
 /dist/
 /.gocache/
 /.gomodcache/
+__pycache__/
