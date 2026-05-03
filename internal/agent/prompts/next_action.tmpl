@@ -9,9 +9,9 @@ OS: {{ .OS }}
 Architecture: {{ .Arch }}
 Shell: {{ .Shell }}
 `$OPENCTO_ROOT`: {{ .OpenCTORoot }}
-- Meaning: the OpenCTO source repository where the Go code, skills, references, and helper scripts live.
+- Meaning: READ ONLY! The OpenCTO source repository where the Go code, skills, references, and helper scripts live.
 `$OPENCTO_WORKSPACE`: {{ .WorkspaceRoot }}
-- Meaning: the .opencto data and artifact directory for state, screenshots, logs, and generated evidence.
+- Meaning: Stores projects, artifacts, data, screenshots, logs, and related files.
 {{- if .Path }}
 PATH: {{ .Path }}
 {{- end }}
