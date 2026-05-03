@@ -5,14 +5,9 @@ allowed-tools: Glob Grep Read Shell
 compatibility: Requires Codex CLI
 ---
 
-# Demo Proof Skill
+# Core Rule
 
-Use this skill to produce concrete proof of work after a user asks to see, verify, preview, demo, or capture the result of a change.
-
-The goal is not just to take a screenshot. The goal is to capture focused evidence that shows the requested change, feature, bug fix, app state, or output.
-
-## Core Rule
-
+The goal is to capture focused evidence that shows the requested change, feature, bug fix, app state, or output.
 Do not claim a visual or runtime change is verified unless the captured artifact clearly proves it.
 
 Every proof attempt must produce one of:
@@ -45,31 +40,18 @@ Follow this process:
 
 ## Strategy Selection
 
-Prefer the most domain-native strategy.
+Prefer the most domain-native strategy. **Before executing, read the corresponding reference file — it contains required tools, setup steps, commands, and capture instructions for that environment.**
 
-Use this priority order:
-
-1. `web` — browser-based app, such as React, Next.js, Vite, Remix, static site, dashboard, web UI etc.
-2. `simulator` — iOS Simulator, Android emulator, Expo, React Native, native mobile app
-3. `desktop` — macOS app, Electron app, native desktop UI, visible application window
-4. `terminal` — CLI app, script output, server logs, tests, build result
-5. `fallback` — when no visual runtime can be detected or required tools are missing
+| Strategy    | When to use                                                             | Reference               |
+| ----------- | ----------------------------------------------------------------------- | ----------------------- |
+| `web`       | Browser-based app — React, Next.js, Vite, Remix, static site, dashboard | references/web.md       |
+| `simulator` | iOS Simulator, Android emulator, Expo, React Native, native mobile app  | references/simulator.md |
+| `desktop`   | macOS app, Electron app, native desktop UI, visible application window  | references/desktop.md   |
+| `terminal`  | CLI app, script output, server logs, tests, build result                | references/terminal.md  |
+| `fallback`  | No visual runtime detected or required tools are missing                | references/fallback.md  |
 
 Do not use a full-desktop screenshot when a more focused capture method exists.
-
-## Strategy References
-
-Each strategy has a dedicated reference file. Before executing a strategy, read the corresponding file — it contains required tools, setup steps, commands, and capture instructions specific to that environment.
-
-| Strategy  | Reference               |
-| --------- | ----------------------- |
-| web       | references/web.md       |
-| simulator | references/simulator.md |
-| desktop   | references/desktop.md   |
-| terminal  | references/terminal.md  |
-| fallback  | references/fallback.md  |
-
-Do not proceed with a strategy if its reference file does not exist. Notify the user and fall back to the next viable strategy.
+Do not proceed with a strategy if its reference file does not exist — notify the user and fall back to the next viable strategy.
 
 ---
 
