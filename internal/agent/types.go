@@ -106,6 +106,7 @@ type NextActionInput struct {
 	ResumedFromPause   bool
 	LastObservation    *ExecutionFeedback
 	ObservationHistory []ExecutionFeedback
+	ChannelType        domain.ChannelType
 }
 
 type Engine interface {

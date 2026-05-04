@@ -447,6 +447,7 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		ResumedFromPause:   request.ResumedFromPause,
 		LastObservation:    observation,
 		ObservationHistory: history,
+		ChannelType:        event.ChannelType,
 	})
 	if err != nil {
 		a.logActivityStep("NextAction", "engine_next_action_error",

@@ -27,6 +27,7 @@ type nextActionPromptData struct {
 	Path               string
 	WorkspaceRoot      string
 	OpenCTORoot        string
+	ChannelType        domain.ChannelType
 }
 
 type toolResultEnvelope struct {
@@ -122,6 +123,7 @@ func renderNextActionPrompt(input agent.NextActionInput) (string, error) {
 		Path:               strings.TrimSpace(input.Runtime.Path),
 		WorkspaceRoot:      firstNonEmpty(strings.TrimSpace(input.Runtime.WorkspaceRoot), "."),
 		OpenCTORoot:        firstNonEmpty(strings.TrimSpace(input.Runtime.OpenCTORoot), "."),
+		ChannelType:        input.ChannelType,
 	}
 
 	return prompts.Render("next_action.tmpl", data)

@@ -26,9 +26,13 @@ type stubProjectStore struct {
 type stubEngine struct {
 	output agent.NextActionOutput
 	err    error
+	input  *agent.NextActionInput
 }
 
-func (e stubEngine) NextAction(context.Context, agent.NextActionInput) (agent.NextActionOutput, error) {
+func (e stubEngine) NextAction(_ context.Context, input agent.NextActionInput) (agent.NextActionOutput, error) {
+	if e.input != nil {
+		*e.input = input
+	}
 	return e.output, e.err
 }
 
@@ -344,6 +348,39 @@ func TestNextActionAssignsWorkItemInternallyForToolChoice(t *testing.T) {
 	}
 	if result.ToolChoice == nil || result.ToolChoice.Metadata["work_item_id"] != wantWorkItemID {
 		t.Fatalf("expected internal work item metadata, got %#v", result.ToolChoice)
+	}
+}
+
+func TestNextActionPassesEventChannelToEngine(t *testing.T) {
+	t.Parallel()
+
+	var input agent.NextActionInput
+	activities := Activities{
+		Engine: stubEngine{
+			output: agent.NextActionOutput{
+				NextAction: agent.NextAction{ResponseMessage: "done"},
+				Status:     NextActionStatusCompleted,
+			},
+			input: &input,
+		},
+	}
+
+	event := domain.Event{
+		ID:          "event-1",
+		ProjectID:   "project-1",
+		ChannelType: domain.ChannelTypeLocal,
+		Body:        "inspect workspace",
+	}
+	_, err := activities.NextAction(context.Background(), NextActionRequest{
+		ProjectID:      "project-1",
+		Event:          event,
+		ExecutionCycle: 1,
+	})
+	if err != nil {
+		t.Fatalf("next action: %v", err)
+	}
+	if input.ChannelType != domain.ChannelTypeLocal {
+		t.Fatalf("expected local channel, got %q", input.ChannelType)
 	}
 }
 
