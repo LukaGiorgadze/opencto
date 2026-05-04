@@ -167,7 +167,9 @@ func Reminder(summaries []Summary) string {
 			description = strings.TrimSpace(summary.Name)
 		}
 		builder.WriteString("- ")
+		builder.WriteString("`")
 		builder.WriteString(summary.ID)
+		builder.WriteString("`")
 		if description != "" {
 			builder.WriteString(": ")
 			builder.WriteString(description)
