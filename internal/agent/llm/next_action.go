@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"strconv"
 	"strings"
 
@@ -30,9 +29,10 @@ type nextActionPromptData struct {
 	OpenCTORoot        string
 }
 
-type nextActionTerminalOutput struct {
-	Status      string `json:"status,omitempty"`
-	FinalAnswer string `json:"final_answer,omitempty"`
+type toolResultEnvelope struct {
+	ToolUseID string `json:"tool_use_id"`
+	IsError   bool   `json:"is_error"`
+	Content   string `json:"content"`
 }
 
 func (e *OpenAIEngine) NextAction(ctx context.Context, input agent.NextActionInput) (agent.NextActionOutput, error) {
@@ -100,7 +100,7 @@ func buildNextActionMessages(input agent.NextActionInput) ([]llms.MessageContent
 	}
 	messages = append(messages, additionalMessages...)
 	if input.ForceFinal {
-		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, "Execution cycle limit reached. Do not call tools. Return a final JSON answer with status blocked or failed explaining the cycle limit."))
+		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, "Execution cycle limit reached. Do not call tools. Respond naturally with a concise summary of what happened and what remains."))
 	}
 	return messages, nil
 }
@@ -194,7 +194,7 @@ func nextActionTranscriptMessages(feedback agent.ExecutionFeedback) (llms.Messag
 		Parts: []llms.ContentPart{llms.ToolCallResponse{
 			ToolCallID: toolCallID,
 			Name:       toolName,
-			Content:    formatToolResultContent(feedback),
+			Content:    formatToolResultContent(toolCallID, feedback),
 		}},
 	}
 	return assistant, result, nil
@@ -228,61 +228,16 @@ func nextActionToolOutput(choice *llms.ContentChoice, input agent.NextActionInpu
 }
 
 func nextActionTerminalFromContent(content string, input agent.NextActionInput) (agent.NextActionOutput, error) {
-	var parsed nextActionTerminalOutput
-	if err := decodeIntoJSONOutput(content, &parsed); err != nil {
-		return agent.NextActionOutput{}, err
-	}
-
-	status, finalStatus, err := normalizeNextActionTerminalStatus(parsed)
-	if err != nil {
-		return agent.NextActionOutput{}, err
-	}
-	answer := strings.TrimSpace(parsed.FinalAnswer)
+	answer := strings.TrimSpace(content)
 	if answer == "" {
-		return agent.NextActionOutput{}, fmt.Errorf("%w: final answer is empty", agent.ErrInvalidNextAction)
+		return agent.NextActionOutput{}, fmt.Errorf("%w: terminal response is empty", agent.ErrInvalidNextAction)
 	}
-	_ = finalStatus
+	nextAction := input.NextAction
+	nextAction.ResponseMessage = answer
 	return agent.NextActionOutput{
-		NextAction:  input.NextAction,
-		FinalAnswer: answer,
-		Status:      status,
+		NextAction: nextAction,
+		Status:     "completed",
 	}, nil
-}
-
-func decodeIntoJSONOutput(raw string, output any) error {
-	decoder := json.NewDecoder(strings.NewReader(extractJSON(raw)))
-	if err := decoder.Decode(output); err != nil {
-		return err
-	}
-	var extra json.RawMessage
-	switch err := decoder.Decode(&extra); err {
-	case nil:
-		return fmt.Errorf("model returned multiple JSON values")
-	case io.EOF:
-		return nil
-	default:
-		return err
-	}
-}
-
-func normalizeNextActionTerminalStatus(output nextActionTerminalOutput) (string, domain.WorkItemStatus, error) {
-	status := strings.ToLower(strings.TrimSpace(output.Status))
-	if status == "" {
-		return "", "", fmt.Errorf("%w: final status is empty", agent.ErrInvalidNextAction)
-	}
-
-	switch status {
-	case "completed", "complete", "final", "succeeded", "success", "finished", "finish":
-		return "completed", domain.WorkItemStatusCompleted, nil
-	case "blocked", "block":
-		return "blocked", domain.WorkItemStatusBlocked, nil
-	case "failed", "failure", "fail":
-		return "failed", domain.WorkItemStatusFailed, nil
-	case "ignored", "ignore", "skip", "skipped":
-		return "ignored", domain.WorkItemStatusCompleted, nil
-	default:
-		return "", "", fmt.Errorf("%w: unsupported final status %q", agent.ErrInvalidNextAction, status)
-	}
 }
 
 func executionFeedbackToolCallID(feedback agent.ExecutionFeedback) string {
@@ -382,7 +337,20 @@ func stripHiddenToolInputFields(raw json.RawMessage) string {
 	return string(encoded)
 }
 
-func formatToolResultContent(feedback agent.ExecutionFeedback) string {
+func formatToolResultContent(toolUseID string, feedback agent.ExecutionFeedback) string {
+	envelope := toolResultEnvelope{
+		ToolUseID: strings.TrimSpace(toolUseID),
+		IsError:   toolResultIsError(feedback),
+		Content:   formatToolResultDetails(feedback),
+	}
+	encoded, err := json.Marshal(envelope)
+	if err != nil {
+		return envelope.Content
+	}
+	return string(encoded)
+}
+
+func formatToolResultDetails(feedback agent.ExecutionFeedback) string {
 	lines := make([]string, 0, 3)
 	if code := strings.TrimSpace(feedback.Metadata["result_code"]); code != "" {
 		lines = append(lines, "exit_code: "+code)
@@ -394,4 +362,16 @@ func formatToolResultContent(feedback agent.ExecutionFeedback) string {
 		lines = append(lines, "error:\n"+errMsg)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func toolResultIsError(feedback agent.ExecutionFeedback) bool {
+	if strings.TrimSpace(feedback.Error) != "" {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(feedback.Status)) {
+	case string(domain.ExecutionStatusFailed), string(domain.ExecutionStatusCanceled):
+		return true
+	}
+	code := strings.TrimSpace(feedback.Metadata["result_code"])
+	return code != "" && code != "0"
 }

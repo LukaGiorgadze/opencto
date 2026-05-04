@@ -162,10 +162,17 @@ func TestBuildNextActionMessagesUsesOpenAIToolTranscript(t *testing.T) {
 	if toolResult.ToolCallID != "toolu_abc123" {
 		t.Fatalf("tool result id %q did not match tool call", toolResult.ToolCallID)
 	}
-	if !strings.Contains(toolResult.Content, "exit_code: 1") ||
-		!strings.Contains(toolResult.Content, "output:\nstaging target not found") ||
-		!strings.Contains(toolResult.Content, "error:\nexit status 1") {
-		t.Fatalf("tool result should include failure status and exit code: %q", toolResult.Content)
+	var envelope toolResultEnvelope
+	if err := json.Unmarshal([]byte(toolResult.Content), &envelope); err != nil {
+		t.Fatalf("tool result should be a JSON envelope: %v\n%s", err, toolResult.Content)
+	}
+	if envelope.ToolUseID != "toolu_abc123" || !envelope.IsError {
+		t.Fatalf("unexpected tool result envelope metadata: %#v", envelope)
+	}
+	if !strings.Contains(envelope.Content, "exit_code: 1") ||
+		!strings.Contains(envelope.Content, "output:\nstaging target not found") ||
+		!strings.Contains(envelope.Content, "error:\nexit status 1") {
+		t.Fatalf("tool result envelope content should include failure details: %q", envelope.Content)
 	}
 }
 
@@ -218,6 +225,20 @@ func TestBuildNextActionMessagesAppendsAdditionalEventsAsUserMessages(t *testing
 	if got := messageText(messages[4]); got != "tell me my public ip" {
 		t.Fatalf("unexpected additional user message: %q", got)
 	}
+	toolResult, ok := messages[3].Parts[0].(llms.ToolCallResponse)
+	if !ok {
+		t.Fatalf("expected tool result part, got %T", messages[3].Parts[0])
+	}
+	var envelope toolResultEnvelope
+	if err := json.Unmarshal([]byte(toolResult.Content), &envelope); err != nil {
+		t.Fatalf("tool result should be a JSON envelope: %v\n%s", err, toolResult.Content)
+	}
+	if envelope.ToolUseID != "toolu_abc123" || envelope.IsError {
+		t.Fatalf("unexpected successful tool result envelope: %#v", envelope)
+	}
+	if !strings.Contains(envelope.Content, "exit_code: 0") || !strings.Contains(envelope.Content, "output:\ncreated") {
+		t.Fatalf("tool result envelope content should include success details: %q", envelope.Content)
+	}
 
 	systemPrompt := messageText(messages[0])
 	for _, removed := range []string{"create a folder", "tell me my public ip", "Additional user context"} {
@@ -267,7 +288,7 @@ func TestBuildNextActionMessagesAddsSkillReminderAsUserMessage(t *testing.T) {
 	}
 	reminder := messageText(messages[1])
 	if !strings.Contains(reminder, "<system-reminder>") ||
-		!strings.Contains(reminder, "- go-testing: Use when adding or fixing Go tests.") {
+		!strings.Contains(reminder, "- `go-testing`: Use when adding or fixing Go tests.") {
 		t.Fatalf("unexpected skill reminder:\n%s", reminder)
 	}
 	if got := messageText(messages[2]); got != "add test coverage" {
@@ -670,7 +691,7 @@ func TestNextActionTranscribesAudioAttachmentsBeforePlanning(t *testing.T) {
 	model := &recordingToolModel{
 		response: &llms.ContentResponse{
 			Choices: []*llms.ContentChoice{{
-				Content: `{"status":"completed","final_answer":"I heard: run tests."}`,
+				Content: "I heard: run tests.",
 			}},
 		},
 	}
@@ -726,7 +747,7 @@ func TestNextActionReturnsTerminalAnswer(t *testing.T) {
 		reasoningModel: &recordingToolModel{
 			response: &llms.ContentResponse{
 				Choices: []*llms.ContentChoice{{
-					Content: `{"status":"completed","final_answer":"Report created."}`,
+					Content: "Report created.",
 				}},
 			},
 		},
@@ -738,7 +759,7 @@ func TestNextActionReturnsTerminalAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NextAction final: %v", err)
 	}
-	if output.Status != "completed" || output.FinalAnswer != "Report created." {
+	if output.Status != "completed" || output.NextAction.ResponseMessage != "Report created." {
 		t.Fatalf("unexpected final output: %#v", output)
 	}
 }

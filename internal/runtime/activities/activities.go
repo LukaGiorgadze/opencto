@@ -480,14 +480,16 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		slog.Int("work_items", len(nextAction.WorkItems)),
 	)
 
-	if request.ForceFinal && engineOutput.Status == NextActionStatusTool {
-		a.logActivityStep("NextAction", "force_final_override_tool_status",
+	if request.ForceFinal {
+		a.logActivityStep("NextAction", "force_final_override_status",
 			slog.String("project_id", projectID),
 			slog.String("event_id", event.ID),
 		)
 		engineOutput.Status = NextActionStatusBlocked
-		engineOutput.NextAction.ResponseMessage = cycleLimitFinalAnswer(history)
 		engineOutput.ToolChoice = nil
+		if strings.TrimSpace(engineOutput.NextAction.ResponseMessage) == "" {
+			engineOutput.NextAction.ResponseMessage = cycleLimitResponseMessage(history)
+		}
 	}
 
 	a.logActivityStep("NextAction", "dispatch_status",
@@ -597,17 +599,14 @@ func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, n
 		slog.String("status", output.Status),
 		slog.Bool("has_observation", observation != nil),
 	)
-	message := strings.TrimSpace(output.FinalAnswer)
+	message := strings.TrimSpace(output.NextAction.ResponseMessage)
 	if message == "" {
-		message = strings.TrimSpace(output.NextAction.ResponseMessage)
-	}
-	if message == "" {
-		a.logActivityStep("NextAction", "finish_missing_final_answer",
+		a.logActivityStep("NextAction", "finish_missing_response_message",
 			slog.String("project_id", event.ProjectID),
 			slog.String("event_id", event.ID),
 			slog.String("status", output.Status),
 		)
-		return NextActionResult{}, fmt.Errorf("%w: terminal next action is missing final answer", agent.ErrInvalidNextAction)
+		return NextActionResult{}, fmt.Errorf("%w: terminal next action is missing response message", agent.ErrInvalidNextAction)
 	}
 
 	nextAction.ToolChoice = agent.ToolChoice{}
@@ -1841,9 +1840,9 @@ func terminalWorkItemStatus(status string) domain.WorkItemStatus {
 	}
 }
 
-func cycleLimitFinalAnswer(history []agent.ExecutionFeedback) string {
+func cycleLimitResponseMessage(history []agent.ExecutionFeedback) string {
 	if len(history) == 0 {
-		return "Stopped after reaching the execution cycle limit before a final answer was produced."
+		return "Stopped after reaching the execution cycle limit before a response was produced."
 	}
 
 	var builder strings.Builder

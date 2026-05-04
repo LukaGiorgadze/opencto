@@ -70,7 +70,6 @@ type NextActionOutput struct {
 	ToolChoice    *ToolChoice        `json:"tool_choice,omitempty"`
 	WorkItemID    string             `json:"work_item_id,omitempty"`
 	Observation   *ExecutionFeedback `json:"observation,omitempty"`
-	FinalAnswer   string             `json:"final_answer,omitempty"`
 	Status        string             `json:"status"`
 	AssistantText string             `json:"assistant_text,omitempty"`
 }
