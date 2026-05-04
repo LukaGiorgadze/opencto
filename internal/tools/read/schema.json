@@ -4,20 +4,20 @@
     "required": ["limit", "pages", "offset", "file_path"],
     "properties": {
         "limit": {
-            "type": ["integer", "null"],
+            "type": "integer",
             "maximum": 9007199254740991,
-            "description": "The number of lines to read. Use null to use the default limit.",
-            "exclusiveMinimum": 0
+            "description": "The number of lines to read. Use 0 to use the default limit.",
+            "minimum": 0
         },
         "pages": {
-            "type": ["string", "null"],
-            "description": "Page range for PDF files (e.g., \"1-5\", \"3\", \"10-20\"). Use null for non-PDF files. Maximum 20 pages per request."
+            "type": "string",
+            "description": "Page range for PDF files (e.g., \"1-5\", \"3\", \"10-20\"). Use an empty string for non-PDF files. Maximum 20 pages per request."
         },
         "offset": {
-            "type": ["integer", "null"],
+            "type": "integer",
             "maximum": 9007199254740991,
             "minimum": 0,
-            "description": "The line number to start reading from. Use null to start at the beginning."
+            "description": "The line number to start reading from. Use 0 to start at the beginning."
         },
         "file_path": {
             "type": "string",

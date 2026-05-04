@@ -12,6 +12,7 @@ import (
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
 	toolregistry "github.com/opencto/opencto/internal/tools"
+	browsertool "github.com/opencto/opencto/internal/tools/browser"
 	edittool "github.com/opencto/opencto/internal/tools/edit"
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
@@ -82,6 +83,12 @@ func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) 
 			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
 		}
 		return shellToolChoiceFromInput(definition, call, raw, args, input)
+	case domain.ToolTypeBrowser:
+		var args browsertool.Request
+		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
+			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
+		}
+		return browserToolChoiceFromInput(definition, call, raw, args, input), nil
 	case domain.ToolTypeRead:
 		var args readtool.Request
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
@@ -271,7 +278,6 @@ func shellToolChoiceFromInput(definition toolregistry.Definition, call llms.Tool
 		Command:      command,
 		Args:         commandArgs,
 		Input:        cloneRawMessage(raw),
-		WorkingDir:   strings.TrimSpace(input.Runtime.WorkspaceRoot),
 		TimeoutMs:    clampToolTimeoutMs(args.TimeoutMs),
 		RunMode:      runMode,
 		Idempotency:  idempotency,
@@ -280,6 +286,45 @@ func shellToolChoiceFromInput(definition toolregistry.Definition, call llms.Tool
 		Destructive:  args.Destructive,
 		Metadata:     metadata,
 	}, nil
+}
+
+func browserToolChoiceFromInput(definition toolregistry.Definition, call llms.ToolCall, raw json.RawMessage, args browsertool.Request, input agent.ToolSelectionInput) agent.ToolChoice {
+	command := strings.TrimSpace(args.Command)
+	description := strings.TrimSpace(args.Description)
+	summary := firstNonEmpty(description, "browser "+command, strings.TrimSpace(input.Context.Event.Body))
+	metadata := map[string]string{
+		"model_tool":   definition.Name,
+		"tool_call_id": call.ID,
+	}
+	if workItemID := strings.TrimSpace(args.WorkItemID); workItemID != "" {
+		metadata["work_item_id"] = workItemID
+	}
+	if session := strings.TrimSpace(args.Session); session != "" {
+		metadata["browser_session"] = session
+	}
+	runMode := domain.ToolRunModeWaitForExit
+	idempotency := normalizeToolIdempotency(args.Idempotency)
+	processScope := domain.ProcessScopeTask
+	metadata["run_mode"] = string(runMode)
+	metadata["idempotency"] = string(idempotency)
+	metadata["process_scope"] = string(processScope)
+
+	return agent.ToolChoice{
+		ToolCallID:   call.ID,
+		Type:         definition.Type,
+		Intent:       summary,
+		Command:      command,
+		Args:         trimStringList(args.Args, 100),
+		Input:        cloneRawMessage(raw),
+		WorkingDir:   strings.TrimSpace(input.Runtime.WorkspaceRoot),
+		TimeoutMs:    clampToolTimeoutMs(args.TimeoutMs),
+		RunMode:      runMode,
+		Idempotency:  idempotency,
+		ProcessScope: processScope,
+		InputSummary: summary,
+		Destructive:  args.Destructive,
+		Metadata:     metadata,
+	}
 }
 
 func structuredToolChoiceFromInput(definition toolregistry.Definition, call llms.ToolCall, raw json.RawMessage, input agent.ToolSelectionInput, summary string) agent.ToolChoice {

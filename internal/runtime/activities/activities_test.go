@@ -14,6 +14,7 @@ import (
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
 	skillcatalog "github.com/opencto/opencto/internal/skills"
+	browsertool "github.com/opencto/opencto/internal/tools/browser"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	shelltool "github.com/opencto/opencto/internal/tools/shell"
 )
@@ -198,6 +199,15 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 	activities := Activities{
 		WorkspaceRoot: dir,
 		SkillsRoot:    skillsRoot,
+		Browser: fakeBrowserExecutor{result: browsertool.Result{
+			Stdout:           "### Page\n- Page URL: http://localhost:3000\n",
+			ExitCode:         0,
+			WorkingDirectory: dir,
+			Executable:       "agent-browser",
+			Session:          "opencto-project-1-work-item-1",
+			Command:          "snapshot",
+			ArtifactPaths:    []string{filepath.Join(dir, ".agent-browser", "page.yml")},
+		}},
 		Grep: fakeGrepExecutor{result: greptool.Result{
 			Stdout:   filePath + ":hi\n",
 			ExitCode: 0,
@@ -267,6 +277,26 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 	}
 	if grepResult.Status != domain.ExecutionStatusSucceeded || !strings.Contains(grepResult.Observation, filePath+":hi") {
 		t.Fatalf("unexpected grep result: %#v", grepResult)
+	}
+
+	browserResult, err := activities.ExecuteTool(ctx, executeRequest(domain.ToolTypeBrowser, "browser-1", map[string]any{
+		"command":      "snapshot",
+		"args":         []string{},
+		"session":      "",
+		"timeout_ms":   0,
+		"idempotency":  "read_only",
+		"description":  "capture browser snapshot",
+		"destructive":  false,
+		"work_item_id": "",
+	}))
+	if err != nil {
+		t.Fatalf("browser tool: %v", err)
+	}
+	if browserResult.Status != domain.ExecutionStatusSucceeded ||
+		!strings.Contains(browserResult.Observation, "Page URL") ||
+		browserResult.Metadata["browser_session"] != "opencto-project-1-work-item-1" ||
+		!strings.Contains(browserResult.Metadata["artifact_paths"], ".agent-browser") {
+		t.Fatalf("unexpected browser result: %#v", browserResult)
 	}
 
 	skillResult, err := activities.ExecuteTool(ctx, executeRequest(domain.ToolTypeSkill, "skill-1", map[string]any{
@@ -455,5 +485,14 @@ type fakeGrepExecutor struct {
 }
 
 func (f fakeGrepExecutor) Run(context.Context, greptool.Request) (greptool.Result, error) {
+	return f.result, f.err
+}
+
+type fakeBrowserExecutor struct {
+	result browsertool.Result
+	err    error
+}
+
+func (f fakeBrowserExecutor) Run(context.Context, browsertool.Request) (browsertool.Result, error) {
 	return f.result, f.err
 }

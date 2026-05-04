@@ -13,6 +13,7 @@ import (
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/skills"
 	toolregistry "github.com/opencto/opencto/internal/tools"
+	browsertool "github.com/opencto/opencto/internal/tools/browser"
 	readtool "github.com/opencto/opencto/internal/tools/read"
 	shelltool "github.com/opencto/opencto/internal/tools/shell"
 	skilltool "github.com/opencto/opencto/internal/tools/skill"
@@ -404,7 +405,7 @@ func TestNextActionReturnsSingleToolChoice(t *testing.T) {
 	if output.ToolChoice.RunMode != domain.ToolRunModeWaitForExit || output.ToolChoice.Idempotency != domain.ToolIdempotencyReadOnly || output.ToolChoice.ProcessScope != domain.ProcessScopeTask {
 		t.Fatalf("tool execution metadata was not preserved: %#v", output.ToolChoice)
 	}
-	if len(model.options.Tools) != 7 {
+	if len(model.options.Tools) != 8 {
 		t.Fatalf("expected all tool schemas, got %#v", model.options.Tools)
 	}
 }
@@ -551,6 +552,51 @@ func TestToolChoiceCapturesStructuredReadInput(t *testing.T) {
 	}
 }
 
+func TestToolChoiceCapturesBrowserInputAndMetadata(t *testing.T) {
+	t.Parallel()
+
+	choice, err := toolChoiceFromToolCall(llms.ToolCall{
+		ID:   "toolu_browser",
+		Type: "function",
+		FunctionCall: &llms.FunctionCall{
+			Name: browsertool.BrowserToolName,
+			Arguments: `{
+				"command":"goto",
+				"args":["--save-session","http://localhost:3000"],
+				"session":"",
+				"timeout_ms":5000,
+				"idempotency":"read_only",
+				"description":"open the local app",
+				"destructive":true,
+				"work_item_id":"wi-1"
+			}`,
+		},
+	}, agent.ToolSelectionInput{
+		Runtime: agent.RuntimeContext{WorkspaceRoot: "/workspace"},
+	})
+	if err != nil {
+		t.Fatalf("tool choice: %v", err)
+	}
+	if choice.Type != domain.ToolTypeBrowser {
+		t.Fatalf("expected browser tool type, got %q", choice.Type)
+	}
+	if choice.Command != "goto" {
+		t.Fatalf("expected browser command, got %q", choice.Command)
+	}
+	if got := strings.Join(choice.Args, "\x00"); got != "--save-session\x00http://localhost:3000" {
+		t.Fatalf("unexpected browser args: %#v", choice.Args)
+	}
+	if choice.TimeoutMs != 5000 || choice.Idempotency != domain.ToolIdempotencyReadOnly || !choice.Destructive {
+		t.Fatalf("expected browser execution metadata, got %#v", choice)
+	}
+	if choice.Metadata["model_tool"] != browsertool.BrowserToolName || choice.Metadata["work_item_id"] != "wi-1" {
+		t.Fatalf("expected browser metadata, got %#v", choice.Metadata)
+	}
+	if !strings.Contains(string(choice.Input), `"command":"goto"`) {
+		t.Fatalf("expected raw browser input to be preserved, got %s", choice.Input)
+	}
+}
+
 func TestToolChoiceCapturesSkillInput(t *testing.T) {
 	t.Parallel()
 
@@ -602,9 +648,6 @@ func TestToolChoiceSplitsPlainCommandStringWithoutShell(t *testing.T) {
 	}
 	if choice.Metadata["model_tool"] != toolregistry.CommandToolName {
 		t.Fatalf("expected canonical model tool, got %#v", choice.Metadata)
-	}
-	if choice.WorkingDir != "/workspace" {
-		t.Fatalf("expected shell choice to default to workspace, got %q", choice.WorkingDir)
 	}
 }
 

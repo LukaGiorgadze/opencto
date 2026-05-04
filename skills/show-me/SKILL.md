@@ -1,8 +1,7 @@
 ---
 name: show-me
 description: Show visual proof of a change, feature, or bug fix by detecting the environment, launching the app if needed, capturing a screenshot, and storing it.
-allowed-tools: Glob Grep Read Shell
-compatibility: Requires Codex CLI
+allowed-tools: Shell Glob Grep Read Browser
 ---
 
 # Core Rule
@@ -49,7 +48,7 @@ Prefer the most domain-native strategy. **Before executing, read the correspondi
 
 | Strategy    | When to use                                                             | Reference               |
 | ----------- | ----------------------------------------------------------------------- | ----------------------- |
-| `web`       | Browser-based app — React, Next.js, Vite, Remix, static site, dashboard | `$OPENCTO_ROOT/skills/show-me/references/web.md`       |
+| `web`       | Browser-based app — React, Next.js, Vite, Remix, static site, dashboard | `$OPENCTO_ROOT/skills/agent-browser/SKILL.md`       |
 | `simulator` | iOS Simulator, Android emulator, Expo, React Native, native mobile app  | `$OPENCTO_ROOT/skills/show-me/references/simulator.md` |
 | `desktop`   | macOS app, Electron app, native desktop UI, visible application window  | `$OPENCTO_ROOT/skills/show-me/references/desktop.md`   |
 | `terminal`  | CLI app, script output, server logs, tests, build result                | `$OPENCTO_ROOT/skills/show-me/references/terminal.md`  |
@@ -78,6 +77,6 @@ Prefer `open` when the app may be closed or may be running without visible windo
 
 ## Notes
 
-- Always wait for the app to fully render before screenshotting (add delay or poll for element if using Playwright)
+- Always wait for the app to fully render before screenshotting (add delay or poll for element if using Web/Browser)
 - Never take a full-desktop screenshot — always target the specific app window or viewport
 - If multiple windows of the same app are open, prefer the frontmost one

@@ -94,12 +94,19 @@ func TestGlobValidatesRequest(t *testing.T) {
 	if _, err := executor.Run(context.Background(), Request{Pattern: "*.go", Path: "undefined"}); !errors.Is(err, ErrPathRequired) {
 		t.Fatalf("expected ErrPathRequired, got %v", err)
 	}
+}
+
+func TestGlobCanUseFilePath(t *testing.T) {
+	t.Parallel()
 
 	file := filepath.Join(t.TempDir(), "file.txt")
 	writeFile(t, file, "", time.Unix(100, 0))
-	if _, err := executor.Run(context.Background(), Request{Pattern: "*.txt", Path: file}); !errors.Is(err, ErrPathNotDir) {
-		t.Fatalf("expected ErrPathNotDir, got %v", err)
+	executor := NewSafeExecutor(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	result, err := executor.Run(context.Background(), Request{Pattern: "*.txt", Path: file})
+	if err != nil {
+		t.Fatalf("glob file path: %v", err)
 	}
+	assertMatches(t, result.Matches, []string{file})
 }
 
 func TestGlobRejectsInvalidPattern(t *testing.T) {

@@ -21,8 +21,8 @@
         "description": "The text to replace"
       },
       "replace_all": {
-        "type": ["boolean", "null"],
-        "description": "Replace all occurrences of old_string. Use null for the default false behavior."
+        "type": "boolean",
+        "description": "Replace all occurrences of old_string. Use false for the default behavior."
       }
     },
     "additionalProperties": false

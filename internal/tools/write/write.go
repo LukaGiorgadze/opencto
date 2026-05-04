@@ -15,17 +15,14 @@ import (
 
 var (
 	ErrFilePathRequired = errors.New("file_path is required")
-	ErrFilePathEscape   = errors.New("file_path escapes workspace root")
 	ErrFileNotRead      = errors.New("file must be read before rewriting")
 )
 
 type Request struct {
-	ProjectID             string
-	Intent                string
-	FilePath              string `json:"file_path"`
-	Content               string `json:"content"`
-	WorkspaceRoot         string
-	AllowOutsideWorkspace bool
+	ProjectID string
+	Intent    string
+	FilePath  string `json:"file_path"`
+	Content   string `json:"content"`
 }
 
 type Result struct {
@@ -73,7 +70,7 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 
 	startedAt := time.Now()
 
-	filePath, err := secureFilePath(req.FilePath, req.WorkspaceRoot, req.AllowOutsideWorkspace)
+	filePath, err := resolveFilePath(req.FilePath)
 	if err != nil {
 		return Result{}, err
 	}
@@ -118,37 +115,16 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 	return result, nil
 }
 
-func secureFilePath(filePath, workspaceRoot string, allowOutside bool) (string, error) {
+func resolveFilePath(filePath string) (string, error) {
 	path := filepath.Clean(strings.TrimSpace(filePath))
 	if path == "." {
 		return "", ErrFilePathRequired
 	}
-	baseDir := workspaceRoot
-	if baseDir == "" {
-		baseDir = os.Getenv("OPENCTO_WORKSPACE")
-	}
-	resolvedPath, err := shelltool.ResolvePath(baseDir, path)
+	resolvedPath, err := shelltool.ResolvePath("", path)
 	if err != nil {
 		return "", err
 	}
-	path = resolvedPath
-
-	if strings.TrimSpace(workspaceRoot) == "" || allowOutside {
-		return path, nil
-	}
-
-	absRoot, err := filepath.Abs(workspaceRoot)
-	if err != nil {
-		return "", fmt.Errorf("resolve workspace root: %w", err)
-	}
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("resolve file path: %w", err)
-	}
-	if absPath != absRoot && !strings.HasPrefix(absPath, absRoot+string(os.PathSeparator)) {
-		return "", ErrFilePathEscape
-	}
-	return absPath, nil
+	return resolvedPath, nil
 }
 
 func fileExists(filePath string) (bool, error) {

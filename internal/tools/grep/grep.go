@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,7 +17,6 @@ import (
 
 	"github.com/opencto/opencto/internal/domain"
 	shelltool "github.com/opencto/opencto/internal/tools/shell"
-	"github.com/opencto/opencto/internal/workspace"
 )
 
 const (
@@ -31,35 +29,32 @@ const (
 )
 
 var (
-	ErrSearchPathEscape  = errors.New("search path escapes workspace root")
 	ErrPatternRequired   = errors.New("pattern is required")
 	ErrInvalidOutputMode = errors.New("invalid output_mode")
 	ErrInvalidLimit      = errors.New("grep limits must be non-negative")
 )
 
 type Request struct {
-	ProjectID             string
-	Intent                string
-	Pattern               string `json:"pattern"`
-	Path                  string `json:"path,omitempty"`
-	Glob                  string `json:"glob,omitempty"`
-	Type                  string `json:"type,omitempty"`
-	OutputMode            string `json:"output_mode,omitempty"`
-	After                 int    `json:"-A,omitempty"`
-	Before                int    `json:"-B,omitempty"`
-	ContextAlias          int    `json:"-C,omitempty"`
-	Context               int    `json:"context,omitempty"`
-	CaseInsensitive       bool   `json:"-i,omitempty"`
-	LineNumbers           bool   `json:"-n,omitempty"`
-	Multiline             bool   `json:"multiline,omitempty"`
-	HeadLimit             int    `json:"head_limit,omitempty"`
-	Offset                int    `json:"offset,omitempty"`
-	WorkingDir            string
-	WorkspaceRoot         string
-	Timeout               time.Duration
-	Environment           map[string]string
-	AllowOutsideWorkspace bool
-	FallbackCandidates    []domain.ToolType
+	ProjectID          string
+	Intent             string
+	Pattern            string `json:"pattern"`
+	Path               string `json:"path,omitempty"`
+	Glob               string `json:"glob,omitempty"`
+	Type               string `json:"type,omitempty"`
+	OutputMode         string `json:"output_mode,omitempty"`
+	After              int    `json:"-A,omitempty"`
+	Before             int    `json:"-B,omitempty"`
+	ContextAlias       int    `json:"-C,omitempty"`
+	Context            int    `json:"context,omitempty"`
+	CaseInsensitive    bool   `json:"-i,omitempty"`
+	LineNumbers        bool   `json:"-n,omitempty"`
+	Multiline          bool   `json:"multiline,omitempty"`
+	HeadLimit          int    `json:"head_limit,omitempty"`
+	Offset             int    `json:"offset,omitempty"`
+	WorkingDir         string
+	Timeout            time.Duration
+	Environment        map[string]string
+	FallbackCandidates []domain.ToolType
 
 	lineNumbersSet bool
 	headLimitSet   bool
@@ -122,11 +117,11 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 
 	startedAt := time.Now()
 
-	workingDir, err := shelltool.ResolveWorkingDir(firstNonEmpty(normalized.WorkingDir, normalized.WorkspaceRoot))
+	workingDir, err := shelltool.ResolveWorkingDir(normalized.WorkingDir)
 	if err != nil {
 		return Result{}, err
 	}
-	searchPath, err := secureSearchPath(normalized.WorkspaceRoot, workingDir, normalized.Path, normalized.AllowOutsideWorkspace)
+	searchPath, err := resolveSearchPath(workingDir, normalized.Path)
 	if err != nil {
 		return Result{}, err
 	}
@@ -282,30 +277,12 @@ func ripgrepArgs(req Request) []string {
 	return args
 }
 
-func secureSearchPath(workspaceRoot, workingDir, searchPath string, allowOutside bool) (string, error) {
-	if allowOutside {
-		return searchPath, nil
-	}
-
-	workspaceRoot = firstNonEmpty(workspaceRoot, os.Getenv("OPENCTO_WORKSPACE"))
-	absRoot, err := workspace.ResolveRoot(workspaceRoot)
-	if err != nil {
-		return "", err
-	}
-
-	candidate := searchPath
-	if !filepath.IsAbs(candidate) {
-		candidate = filepath.Join(workingDir, candidate)
-	}
-	absPath, err := filepath.Abs(candidate)
+func resolveSearchPath(workingDir, searchPath string) (string, error) {
+	path, err := shelltool.ResolvePath(workingDir, searchPath)
 	if err != nil {
 		return "", fmt.Errorf("resolve search path: %w", err)
 	}
-
-	if absPath != absRoot && !strings.HasPrefix(absPath, absRoot+string(os.PathSeparator)) {
-		return "", ErrSearchPathEscape
-	}
-	return searchPath, nil
+	return path, nil
 }
 
 func firstNonEmpty(values ...string) string {

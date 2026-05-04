@@ -179,7 +179,7 @@ func TestTaskWorkflowPassesProcessesReturnedByExecuteToolToNextAction(t *testing
 		ToolCallID:  "toolu_bg",
 		Type:        domain.ToolTypeShell,
 		Intent:      "start dev server",
-		Command:     "npm",
+		Command:     "pnpm",
 		Args:        []string{"run", "dev"},
 		RunMode:     domain.ToolRunModeStartBackground,
 		Idempotency: domain.ToolIdempotencyNonIdempotent,
@@ -208,7 +208,7 @@ func TestTaskWorkflowPassesProcessesReturnedByExecuteToolToNextAction(t *testing
 		Tool:            domain.ToolTypeShell,
 		Status:          domain.ExecutionStatusSucceeded,
 		RequestedAction: "start dev server",
-		Command:         "npm",
+		Command:         "pnpm",
 		Args:            []string{"run", "dev"},
 		Observation:     "Started background process.",
 		Metadata: map[string]string{

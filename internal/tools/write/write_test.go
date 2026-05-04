@@ -105,32 +105,49 @@ func TestWriteValidatesRequest(t *testing.T) {
 	}
 
 	workspaceRoot := t.TempDir()
-	t.Setenv("OPENCTO_WORKSPACE", workspaceRoot)
+	oldCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("resolve cwd: %v", err)
+	}
+	if err := os.Chdir(workspaceRoot); err != nil {
+		t.Fatalf("change cwd: %v", err)
+	}
+	defer func() {
+		if err := os.Chdir(oldCwd); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	}()
 	result, err := executor.Run(context.Background(), Request{FilePath: "relative.txt", Content: "x"})
 	if err != nil {
 		t.Fatalf("write relative file: %v", err)
 	}
 	want := filepath.Join(workspaceRoot, "relative.txt")
-	if result.FilePath != want {
-		t.Fatalf("expected resolved path %q, got %q", want, result.FilePath)
+	wantPath, err := filepath.EvalSymlinks(want)
+	if err != nil {
+		t.Fatalf("resolve expected path: %v", err)
+	}
+	gotPath, err := filepath.EvalSymlinks(result.FilePath)
+	if err != nil {
+		t.Fatalf("resolve actual path: %v", err)
+	}
+	if gotPath != wantPath {
+		t.Fatalf("expected resolved path %q, got %q", wantPath, gotPath)
 	}
 	assertFileContents(t, want, "x")
 }
 
-func TestWriteRejectsWorkspaceEscape(t *testing.T) {
+func TestWriteAllowsAbsolutePathOutsideWorkspace(t *testing.T) {
 	t.Parallel()
 
-	workspace := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.txt")
 	executor := NewSafeExecutor(nil)
-	_, err := executor.Run(context.Background(), Request{
-		FilePath:      outside,
-		Content:       "outside\n",
-		WorkspaceRoot: workspace,
-	})
-	if !errors.Is(err, ErrFilePathEscape) {
-		t.Fatalf("expected ErrFilePathEscape, got %v", err)
+	if _, err := executor.Run(context.Background(), Request{
+		FilePath: outside,
+		Content:  "outside\n",
+	}); err != nil {
+		t.Fatalf("write outside workspace: %v", err)
 	}
+	assertFileContents(t, outside, "outside\n")
 }
 
 func TestWriteRejectsDirectoryPath(t *testing.T) {

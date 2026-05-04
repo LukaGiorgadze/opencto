@@ -21,6 +21,7 @@ import (
 	"github.com/opencto/opencto/internal/domain"
 	skillcatalog "github.com/opencto/opencto/internal/skills"
 	toolregistry "github.com/opencto/opencto/internal/tools"
+	browsertool "github.com/opencto/opencto/internal/tools/browser"
 	edittool "github.com/opencto/opencto/internal/tools/edit"
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
@@ -51,6 +52,7 @@ type Activities struct {
 	Store         ProjectStore
 	Engine        agent.Engine
 	Shell         shelltool.Executor
+	Browser       browsertool.Executor
 	Edit          edittool.Executor
 	Glob          globtool.Executor
 	Grep          greptool.Executor
@@ -1060,7 +1062,6 @@ func (a *Activities) startShellProcess(ctx context.Context, request ExecuteToolR
 		ProcessScope: processScope,
 		Command:      choice.Command,
 		Args:         choice.Args,
-		WorkingDir:   firstNonEmpty(choice.WorkingDir, a.WorkspaceRoot),
 		StateDir:     a.runtimeStateDir(),
 		Timeout:      execution.Timeout,
 	})
@@ -1160,6 +1161,8 @@ func (a *Activities) runChosenTool(ctx context.Context, choice agent.ToolChoice,
 	switch choice.Type {
 	case domain.ToolTypeShell:
 		return a.runShellTool(ctx, choice, execution)
+	case domain.ToolTypeBrowser:
+		return a.runBrowserTool(ctx, choice, execution)
 	case domain.ToolTypeRead:
 		return a.runReadTool(ctx, choice)
 	case domain.ToolTypeEdit:
@@ -1177,17 +1180,66 @@ func (a *Activities) runChosenTool(ctx context.Context, choice agent.ToolChoice,
 	}
 }
 
+func (a *Activities) runBrowserTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
+	var req browsertool.Request
+	if err := decodeChoiceInput(choice, &req); err != nil {
+		return toolRunResult{ResultCode: "1"}, err
+	}
+	req.ProjectID = execution.ProjectID
+	req.WorkItemID = execution.WorkItemID
+	req.Intent = choice.Intent
+	req.WorkingDir = firstNonEmpty(choice.WorkingDir, a.WorkspaceRoot)
+	req.WorkspaceRoot = a.WorkspaceRoot
+	req.Timeout = execution.Timeout
+
+	executor := a.Browser
+	if executor == nil {
+		executor = browsertool.NewSafeExecutor(a.activityLogger())
+	}
+	result, err := executor.Run(ctx, req)
+	code := strconv.Itoa(result.ExitCode)
+	if err != nil && result.ExitCode == 0 && result.StartedAt.IsZero() {
+		code = "1"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		code = "timeout"
+	}
+	metadata := map[string]string{
+		"browser_exit_status": strconv.Itoa(result.ExitCode),
+		"browser_session":     result.Session,
+		"browser_command":     result.Command,
+		"browser_executable":  result.Executable,
+	}
+	if len(result.HoistedArgs) > 0 {
+		metadata["browser_hoisted_args"] = strings.Join(result.HoistedArgs, "\n")
+	}
+	if len(result.Args) > 0 {
+		metadata["browser_args"] = strings.Join(result.Args, "\n")
+	}
+	if len(result.ArtifactPaths) > 0 {
+		metadata["artifact_count"] = strconv.Itoa(len(result.ArtifactPaths))
+		metadata["artifact_paths"] = strings.Join(result.ArtifactPaths, "\n")
+	}
+	if result.Duration > 0 {
+		metadata["duration_ms"] = strconv.FormatInt(result.Duration.Milliseconds(), 10)
+	}
+	return toolRunResult{
+		Observation:      browserObservation(result, err),
+		ResultCode:       code,
+		WorkingDirectory: result.WorkingDirectory,
+		Metadata:         metadata,
+	}, err
+}
+
 func (a *Activities) runShellTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
 	if a.Shell == nil {
 		return toolRunResult{ResultCode: "1"}, fmt.Errorf("shell executor is not configured")
 	}
-	workingDir := firstNonEmpty(choice.WorkingDir, a.WorkspaceRoot)
 	req := shelltool.Request{
 		ProjectID:          execution.ProjectID,
 		Intent:             choice.Intent,
 		Command:            choice.Command,
 		Args:               choice.Args,
-		WorkingDir:         workingDir,
 		Timeout:            execution.Timeout,
 		FallbackCandidates: execution.FallbackCandidates,
 	}
@@ -1272,6 +1324,14 @@ func shellObservation(result shelltool.Result, err error) string {
 	return fullObservation(result.Stdout, result.Stderr, err)
 }
 
+func browserObservation(result browsertool.Result, err error) string {
+	observation := fullObservation(result.Stdout, result.Stderr, err)
+	if len(result.ArtifactPaths) == 0 {
+		return observation
+	}
+	return observation + "\n\nartifacts:\n" + strings.Join(result.ArtifactPaths, "\n")
+}
+
 func (a *Activities) runReadTool(ctx context.Context, choice agent.ToolChoice) (toolRunResult, error) {
 	var req readtool.Request
 	if err := decodeChoiceInput(choice, &req); err != nil {
@@ -1323,7 +1383,6 @@ func (a *Activities) runWriteTool(ctx context.Context, choice agent.ToolChoice, 
 	}
 	req.ProjectID = execution.ProjectID
 	req.Intent = choice.Intent
-	req.WorkspaceRoot = a.WorkspaceRoot
 
 	executor := a.Write
 	if executor == nil {
@@ -1386,7 +1445,6 @@ func (a *Activities) runGrepTool(ctx context.Context, choice agent.ToolChoice, e
 	req.ProjectID = execution.ProjectID
 	req.Intent = choice.Intent
 	req.WorkingDir = firstNonEmpty(choice.WorkingDir, a.WorkspaceRoot)
-	req.WorkspaceRoot = a.WorkspaceRoot
 	req.Timeout = execution.Timeout
 	req.FallbackCandidates = execution.FallbackCandidates
 

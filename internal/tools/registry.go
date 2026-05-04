@@ -6,6 +6,7 @@ import (
 	"github.com/tmc/langchaingo/llms"
 
 	"github.com/opencto/opencto/internal/domain"
+	browsertool "github.com/opencto/opencto/internal/tools/browser"
 	edittool "github.com/opencto/opencto/internal/tools/edit"
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
@@ -32,6 +33,12 @@ var definitions = []Definition{
 		Type:        domain.ToolTypeShell,
 		Description: shelltool.ShellToolDescription,
 		Schema:      shelltool.ShellToolSchema(),
+	},
+	{
+		Name:        browsertool.BrowserToolName,
+		Type:        domain.ToolTypeBrowser,
+		Description: browsertool.BrowserToolDescription,
+		Schema:      browsertool.BrowserToolSchema(),
 	},
 	{
 		Name:        readtool.ReadToolName,

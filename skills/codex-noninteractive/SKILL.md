@@ -1,7 +1,7 @@
 ---
 name: codex-noninteractive
 description: Use this skill when a user asks OpenCTO to do repository code work through Codex CLI non-interactive mode: implement, edit, fix, refactor, debug, review code, run code-task tests, or resume a Codex exec session. Prefer it for hands-on project changes; do not use it for non-code research or generic shell commands.
-allowed-tools: Glob Grep Read Shell
+allowed-tools: Shell Glob Grep Read
 compatibility: Requires Codex CLI
 ---
 

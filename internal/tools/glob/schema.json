@@ -4,8 +4,8 @@
     "required": ["path", "pattern"],
     "properties": {
         "path": {
-            "type": ["string", "null"],
-            "description": "The absolute directory path to search in. Use null for the tool's configured working directory. Matching file paths are returned as absolute paths."
+            "type": "string",
+            "description": "The absolute directory path to search in. Use an empty string for the tool's configured working directory. Matching file paths are returned as absolute paths."
         },
         "pattern": {
             "type": "string",

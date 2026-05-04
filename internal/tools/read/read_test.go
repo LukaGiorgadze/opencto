@@ -60,7 +60,18 @@ func TestReadValidatesRequest(t *testing.T) {
 	}
 
 	workspaceRoot := t.TempDir()
-	t.Setenv("OPENCTO_WORKSPACE", workspaceRoot)
+	oldCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("resolve cwd: %v", err)
+	}
+	if err := os.Chdir(workspaceRoot); err != nil {
+		t.Fatalf("change cwd: %v", err)
+	}
+	defer func() {
+		if err := os.Chdir(oldCwd); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	}()
 	relativePath := filepath.Join(workspaceRoot, "relative.txt")
 	if err := os.WriteFile(relativePath, []byte("relative\n"), 0o644); err != nil {
 		t.Fatalf("write relative fixture: %v", err)
@@ -69,8 +80,16 @@ func TestReadValidatesRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read relative file: %v", err)
 	}
-	if result.FilePath != relativePath {
-		t.Fatalf("expected resolved path %q, got %q", relativePath, result.FilePath)
+	wantPath, err := filepath.EvalSymlinks(relativePath)
+	if err != nil {
+		t.Fatalf("resolve expected path: %v", err)
+	}
+	gotPath, err := filepath.EvalSymlinks(result.FilePath)
+	if err != nil {
+		t.Fatalf("resolve actual path: %v", err)
+	}
+	if gotPath != wantPath {
+		t.Fatalf("expected resolved path %q, got %q", wantPath, gotPath)
 	}
 
 	path := filepath.Join(t.TempDir(), "file.txt")

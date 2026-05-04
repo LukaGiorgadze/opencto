@@ -16,7 +16,7 @@
     "properties": {
         "command": {
             "type": "string",
-            "description": "The executable to run for the next execution step, for example \"python\", \"go\", or \"npm\". Do not include arguments, quoted paths, or a full command line here. Do not assume Bash, sh, cmd, or PowerShell."
+            "description": "The executable to run for the next execution step, for example \"python\", \"go\", or \"pnpm\". Do not include arguments, quoted paths, or a full command line here. Do not assume Bash, sh, cmd, or PowerShell."
         },
         "args": {
             "type": "array",
@@ -26,36 +26,36 @@
             "description": "Arguments for the executable. Put script paths, flags, and command arguments here. Use an empty array when there are no arguments."
         },
         "timeout_ms": {
-            "type": ["integer", "null"],
-            "description": "Maximum runtime for this execution step in milliseconds. Use null to accept the runtime default. For start_background, this is only the startup window before OpenCTO returns control.",
+            "type": "integer",
+            "description": "Maximum runtime for this execution step in milliseconds. Use 0 to accept the runtime default. For start_background, this is only the startup window before OpenCTO returns control.",
             "maximum": 600000
         },
         "run_mode": {
-            "type": ["string", "null"],
-            "enum": ["wait_for_exit", "start_background", null],
+            "type": "string",
+            "enum": ["wait_for_exit", "start_background"],
             "description": "Use wait_for_exit for commands expected to finish. Use start_background for servers, watchers, dev processes, or any command expected to keep running while the user continues chatting."
         },
         "idempotency": {
-            "type": ["string", "null"],
-            "enum": ["read_only", "idempotent", "non_idempotent", "unknown", null],
+            "type": "string",
+            "enum": ["read_only", "idempotent", "non_idempotent", "unknown"],
             "description": "Classify whether rerunning this command is safe. Use read_only for inspection, idempotent for safe repeatable actions, non_idempotent for one-shot/mutating actions, and unknown when unsure."
         },
         "process_scope": {
-            "type": ["string", "null"],
-            "enum": ["task", "project", null],
+            "type": "string",
+            "enum": ["task", "project"],
       "description": "For start_background only. Select the intended owner lifetime: task means the process belongs to the current task and is stopped when that task finishes, so do not use it when the final outcome requires the process to remain available after the response; project means the process belongs to the project and remains running until an explicit stop, so use it when ongoing availability is part of the requested outcome."
         },
         "description": {
-            "type": ["string", "null"],
-            "description": "One sentence describing what this command achieves. Use null when the command itself is self-explanatory."
+            "type": "string",
+            "description": "One sentence describing what this command achieves. Use an empty string when the command itself is self-explanatory."
         },
         "destructive": {
-            "type": ["boolean", "null"],
-            "description": "Set true when the command mutates state in a risky or hard-to-reverse way. Use null when unknown."
+            "type": "boolean",
+            "description": "Set true when the command mutates state in a risky or hard-to-reverse way. Use false otherwise."
         },
         "work_item_id": {
-            "type": ["string", "null"],
-            "description": "The work item this command advances. Use null only when no work item is available."
+            "type": "string",
+            "description": "The work item this command advances. Use an empty string only when no work item is available."
         }
     }
 }

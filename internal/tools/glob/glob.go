@@ -19,7 +19,6 @@ import (
 var (
 	ErrPatternRequired = errors.New("pattern is required")
 	ErrPathRequired    = errors.New("path must be omitted or a valid directory path")
-	ErrPathNotDir      = errors.New("path is not a directory")
 )
 
 type Request struct {
@@ -55,7 +54,7 @@ func NewSafeExecutor(logger *slog.Logger) *SafeExecutor {
 }
 
 func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
-	pattern, root, err := validateRequest(req)
+	pattern, root, rootIsFile, err := validateRequest(req)
 	if err != nil {
 		return Result{}, err
 	}
@@ -74,35 +73,43 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 	}
 
 	var matches []match
-	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
+	if rootIsFile {
+		var info os.FileInfo
+		info, err = os.Stat(root)
+		if err == nil && matcher(filepath.ToSlash(filepath.Base(root))) {
+			matches = append(matches, match{path: root, modTime: info.ModTime()})
 		}
-		if err := runCtx.Err(); err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			return nil
-		}
+	} else {
+		err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if err := runCtx.Err(); err != nil {
+				return err
+			}
+			if entry.IsDir() {
+				return nil
+			}
 
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		if !matcher(filepath.ToSlash(rel)) {
-			return nil
-		}
+			rel, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+			if !matcher(filepath.ToSlash(rel)) {
+				return nil
+			}
 
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		matches = append(matches, match{
-			path:    path,
-			modTime: info.ModTime(),
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			matches = append(matches, match{
+				path:    path,
+				modTime: info.ModTime(),
+			})
+			return nil
 		})
-		return nil
-	})
+	}
 	completedAt := time.Now()
 
 	result := Result{
@@ -149,10 +156,10 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 	return result, nil
 }
 
-func validateRequest(req Request) (string, string, error) {
+func validateRequest(req Request) (string, string, bool, error) {
 	pattern := strings.TrimSpace(req.Pattern)
 	if pattern == "" {
-		return "", "", ErrPatternRequired
+		return "", "", false, ErrPatternRequired
 	}
 
 	root := strings.TrimSpace(req.Path)
@@ -160,25 +167,22 @@ func validateRequest(req Request) (string, string, error) {
 		var err error
 		root, err = shelltool.ResolveWorkingDir("")
 		if err != nil {
-			return "", "", fmt.Errorf("resolve working directory: %w", err)
+			return "", "", false, fmt.Errorf("resolve working directory: %w", err)
 		}
 	} else if strings.EqualFold(root, "undefined") || strings.EqualFold(root, "null") {
-		return "", "", fmt.Errorf("%w: %q", ErrPathRequired, root)
+		return "", "", false, fmt.Errorf("%w: %q", ErrPathRequired, root)
 	} else {
 		var err error
 		root, err = shelltool.ResolvePath("", root)
 		if err != nil {
-			return "", "", fmt.Errorf("resolve path: %w", err)
+			return "", "", false, fmt.Errorf("resolve path: %w", err)
 		}
 	}
 	info, err := os.Stat(root)
 	if err != nil {
-		return "", "", fmt.Errorf("stat path: %w", err)
+		return "", "", false, fmt.Errorf("stat path: %w", err)
 	}
-	if !info.IsDir() {
-		return "", "", fmt.Errorf("%w: %s", ErrPathNotDir, root)
-	}
-	return filepath.ToSlash(pattern), root, nil
+	return filepath.ToSlash(pattern), root, !info.IsDir(), nil
 }
 
 func newMatcher(pattern string) (func(string) bool, error) {
