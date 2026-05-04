@@ -87,7 +87,7 @@ func TestReminderFormatsSkillList(t *testing.T) {
 		Description: "Use when adding or fixing Go tests.",
 	}})
 	if !strings.Contains(reminder, "<system-reminder>") ||
-		!strings.Contains(reminder, "- go-testing: Use when adding or fixing Go tests.") ||
+		!strings.Contains(reminder, "- `go-testing`: Use when adding or fixing Go tests.") ||
 		strings.Contains(reminder, "SKILL.md") {
 		t.Fatalf("unexpected reminder:\n%s", reminder)
 	}
