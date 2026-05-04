@@ -144,8 +144,8 @@ func TestBuildNextActionMessagesUsesOpenAIToolTranscript(t *testing.T) {
 	if toolCall.ID != "toolu_abc123" || toolCall.FunctionCall == nil || toolCall.FunctionCall.Name != toolregistry.CommandToolName {
 		t.Fatalf("unexpected tool call: %#v", toolCall)
 	}
-	if !strings.Contains(toolCall.FunctionCall.Arguments, `"work_item_id":"wi-1"`) {
-		t.Fatalf("tool call arguments missing work item id: %s", toolCall.FunctionCall.Arguments)
+	if strings.Contains(toolCall.FunctionCall.Arguments, "work_item_id") {
+		t.Fatalf("tool call arguments should not expose work item id: %s", toolCall.FunctionCall.Arguments)
 	}
 	if !strings.Contains(toolCall.FunctionCall.Arguments, `"command":"deploy --target staging"`) {
 		t.Fatalf("tool call arguments should use original command: %s", toolCall.FunctionCall.Arguments)
@@ -364,18 +364,8 @@ func TestNextActionReturnsSingleToolChoice(t *testing.T) {
 					ID:   "toolu_next",
 					Type: "function",
 					FunctionCall: &llms.FunctionCall{
-						Name: toolregistry.CommandToolName,
-						Arguments: `{
-							"command":"pwd",
-							"args":[],
-							"timeout_ms":120000,
-							"run_mode":"wait_for_exit",
-							"idempotency":"read_only",
-							"process_scope":"task",
-							"description":"inspect workspace",
-							"destructive":false,
-							"work_item_id":"wi-1"
-						}`,
+						Name:      toolregistry.CommandToolName,
+						Arguments: `{"command":"pwd","args":[],"timeout_ms":120000,"run_mode":"wait_for_exit","idempotency":"read_only","process_scope":"task","description":"inspect workspace","destructive":false}`,
 					},
 				}},
 			}},
@@ -399,7 +389,7 @@ func TestNextActionReturnsSingleToolChoice(t *testing.T) {
 	if output.ToolChoice.ToolCallID != "toolu_next" || output.ToolChoice.Metadata["tool_call_id"] != "toolu_next" {
 		t.Fatalf("tool call id was not preserved: %#v", output.ToolChoice)
 	}
-	if output.WorkItemID != "wi-1" {
+	if output.WorkItemID != "" {
 		t.Fatalf("unexpected work item id: %q", output.WorkItemID)
 	}
 	if output.ToolChoice.RunMode != domain.ToolRunModeWaitForExit || output.ToolChoice.Idempotency != domain.ToolIdempotencyReadOnly || output.ToolChoice.ProcessScope != domain.ProcessScopeTask {
@@ -421,36 +411,16 @@ func TestNextActionCombinesMultipleShellToolCalls(t *testing.T) {
 						ID:   "toolu_pwd",
 						Type: "function",
 						FunctionCall: &llms.FunctionCall{
-							Name: toolregistry.CommandToolName,
-							Arguments: `{
-								"command":"pwd",
-								"args":[],
-								"timeout_ms":10000,
-								"run_mode":"wait_for_exit",
-								"idempotency":"read_only",
-								"process_scope":"task",
-								"description":"confirm workspace",
-								"destructive":false,
-								"work_item_id":"wi-1"
-							}`,
+							Name:      toolregistry.CommandToolName,
+							Arguments: `{"command":"pwd","args":[],"timeout_ms":10000,"run_mode":"wait_for_exit","idempotency":"read_only","process_scope":"task","description":"confirm workspace","destructive":false}`,
 						},
 					},
 					{
 						ID:   "toolu_uname",
 						Type: "function",
 						FunctionCall: &llms.FunctionCall{
-							Name: toolregistry.CommandToolName,
-							Arguments: `{
-								"command":"uname",
-								"args":["-a"],
-								"timeout_ms":10000,
-								"run_mode":"wait_for_exit",
-								"idempotency":"read_only",
-								"process_scope":"task",
-								"description":"capture platform",
-								"destructive":false,
-								"work_item_id":"wi-1"
-							}`,
+							Name:      toolregistry.CommandToolName,
+							Arguments: `{"command":"uname","args":["-a"],"timeout_ms":10000,"run_mode":"wait_for_exit","idempotency":"read_only","process_scope":"task","description":"capture platform","destructive":false}`,
 						},
 					},
 				},
@@ -480,7 +450,7 @@ func TestNextActionCombinesMultipleShellToolCalls(t *testing.T) {
 	if len(batch.Actions) != 2 || batch.Actions[0].Command != "pwd" || batch.Actions[1].Command != "uname" {
 		t.Fatalf("unexpected batch actions: %#v", batch.Actions)
 	}
-	if output.WorkItemID != "wi-1" {
+	if output.WorkItemID != "" {
 		t.Fatalf("unexpected work item id: %q", output.WorkItemID)
 	}
 }
@@ -492,18 +462,8 @@ func TestToolChoicePreservesCommandAndArgsForDirectExecution(t *testing.T) {
 		ID:   "toolu_direct",
 		Type: "function",
 		FunctionCall: &llms.FunctionCall{
-			Name: toolregistry.CommandToolName,
-			Arguments: `{
-				"command":"go",
-				"args":["test","./..."],
-				"timeout_ms":120000,
-				"run_mode":"wait_for_exit",
-				"idempotency":"idempotent",
-				"process_scope":"task",
-				"description":"run tests",
-				"destructive":false,
-				"work_item_id":"wi-1"
-			}`,
+			Name:      toolregistry.CommandToolName,
+			Arguments: `{"command":"go","args":["test","./..."],"timeout_ms":120000,"run_mode":"wait_for_exit","idempotency":"idempotent","process_scope":"task","description":"run tests","destructive":false}`,
 		},
 	}, agent.ToolSelectionInput{
 		Runtime: agent.RuntimeContext{OS: "linux", Shell: "/bin/bash", WorkspaceRoot: "/workspace"},
@@ -522,6 +482,22 @@ func TestToolChoicePreservesCommandAndArgsForDirectExecution(t *testing.T) {
 	}
 	if choice.RunMode != domain.ToolRunModeWaitForExit || choice.Idempotency != domain.ToolIdempotencyIdempotent || choice.ProcessScope != domain.ProcessScopeTask {
 		t.Fatalf("expected execution metadata to be preserved, got %#v", choice)
+	}
+}
+
+func TestToolChoiceRejectsModelSuppliedWorkItemID(t *testing.T) {
+	t.Parallel()
+
+	_, err := toolChoiceFromToolCall(llms.ToolCall{
+		ID:   "toolu_hidden",
+		Type: "function",
+		FunctionCall: &llms.FunctionCall{
+			Name:      toolregistry.CommandToolName,
+			Arguments: `{"command":"pwd","args":[],"timeout_ms":1000,"run_mode":"wait_for_exit","idempotency":"read_only","process_scope":"task","description":"inspect workspace","destructive":false,"work_item_id":"wi-1"}`,
+		},
+	}, agent.ToolSelectionInput{})
+	if err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("expected hidden work item id to be rejected, got %v", err)
 	}
 }
 
@@ -559,17 +535,8 @@ func TestToolChoiceCapturesBrowserInputAndMetadata(t *testing.T) {
 		ID:   "toolu_browser",
 		Type: "function",
 		FunctionCall: &llms.FunctionCall{
-			Name: browsertool.BrowserToolName,
-			Arguments: `{
-				"command":"goto",
-				"args":["--save-session","http://localhost:3000"],
-				"session":"",
-				"timeout_ms":5000,
-				"idempotency":"read_only",
-				"description":"open the local app",
-				"destructive":true,
-				"work_item_id":"wi-1"
-			}`,
+			Name:      browsertool.BrowserToolName,
+			Arguments: `{"command":"goto","args":["--save-session","http://localhost:3000"],"session":"","timeout_ms":5000,"idempotency":"read_only","description":"open the local app","destructive":true}`,
 		},
 	}, agent.ToolSelectionInput{
 		Runtime: agent.RuntimeContext{WorkspaceRoot: "/workspace"},
@@ -589,8 +556,11 @@ func TestToolChoiceCapturesBrowserInputAndMetadata(t *testing.T) {
 	if choice.TimeoutMs != 5000 || choice.Idempotency != domain.ToolIdempotencyReadOnly || !choice.Destructive {
 		t.Fatalf("expected browser execution metadata, got %#v", choice)
 	}
-	if choice.Metadata["model_tool"] != browsertool.BrowserToolName || choice.Metadata["work_item_id"] != "wi-1" {
+	if choice.Metadata["model_tool"] != browsertool.BrowserToolName {
 		t.Fatalf("expected browser metadata, got %#v", choice.Metadata)
+	}
+	if _, ok := choice.Metadata["work_item_id"]; ok {
+		t.Fatalf("browser metadata should not include model-supplied work item id: %#v", choice.Metadata)
 	}
 	if !strings.Contains(string(choice.Input), `"command":"goto"`) {
 		t.Fatalf("expected raw browser input to be preserved, got %s", choice.Input)

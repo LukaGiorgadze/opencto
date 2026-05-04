@@ -42,7 +42,7 @@ type Request struct {
 	Idempotency   string            `json:"idempotency,omitempty"`
 	Description   string            `json:"description,omitempty"`
 	Destructive   bool              `json:"destructive,omitempty"`
-	WorkItemID    string            `json:"work_item_id,omitempty"`
+	WorkItemID    string            `json:"-"`
 }
 
 type Result struct {

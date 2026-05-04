@@ -211,14 +211,10 @@ func nextActionToolOutput(choice *llms.ContentChoice, input agent.NextActionInpu
 	if err != nil {
 		return agent.NextActionOutput{}, err
 	}
-	workItemID := strings.TrimSpace(toolChoice.Metadata["work_item_id"])
 	if toolChoice.Metadata == nil {
 		toolChoice.Metadata = map[string]string{}
 	}
 	toolChoice.Metadata["tool_call_id"] = toolChoice.ToolCallID
-	if workItemID != "" {
-		toolChoice.Metadata["work_item_id"] = workItemID
-	}
 	assistantText := strings.TrimSpace(choice.Content)
 	if assistantText == "" {
 		assistantText = strings.TrimSpace(toolChoice.Intent)
@@ -226,7 +222,6 @@ func nextActionToolOutput(choice *llms.ContentChoice, input agent.NextActionInpu
 	return agent.NextActionOutput{
 		NextAction:    input.NextAction,
 		ToolChoice:    &toolChoice,
-		WorkItemID:    workItemID,
 		Status:        "tool",
 		AssistantText: assistantText,
 	}, nil
@@ -351,7 +346,6 @@ func transcriptToolCall(feedback agent.ExecutionFeedback) (string, string, error
 			ProcessScope: transcriptProcessScope(feedback),
 			Description:  strings.TrimSpace(feedback.RequestedAction),
 			Destructive:  feedback.Metadata["destructive"] == "true",
-			WorkItemID:   strings.TrimSpace(feedback.WorkItemID),
 		}
 		encoded, err := json.Marshal(args)
 		if err != nil {
@@ -364,11 +358,28 @@ func transcriptToolCall(feedback agent.ExecutionFeedback) (string, string, error
 	if !ok {
 		return "", "", fmt.Errorf("%w: unsupported previous tool type %q", agent.ErrInvalidNextAction, feedback.Tool)
 	}
-	input := strings.TrimSpace(string(feedback.Input))
+	input := stripHiddenToolInputFields(feedback.Input)
 	if input == "" {
 		input = "{}"
 	}
 	return definition.Name, input, nil
+}
+
+func stripHiddenToolInputFields(raw json.RawMessage) string {
+	input := strings.TrimSpace(string(raw))
+	if input == "" {
+		return ""
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return input
+	}
+	delete(object, "work_item_id")
+	encoded, err := json.Marshal(object)
+	if err != nil {
+		return input
+	}
+	return string(encoded)
 }
 
 func formatToolResultContent(feedback agent.ExecutionFeedback) string {

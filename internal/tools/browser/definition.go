@@ -30,7 +30,7 @@ This tool runs Vercel's agent-browser directly (not through a shell). Provide on
 - Use React inspection and Web Vitals commands after launching with --enable react-devtools
 
 ## Instructions
-- Use an empty session for the default work-item session. Never pass --session or --session=... in args.
+- Use an empty session for the default task session. Never pass --session or --session=... in args.
 - All schema fields are required; use empty strings, empty arrays, 0, or false when a field is not applicable.
 - The session field maps to agent-browser's isolated --session value. For persistent saved auth state, pass --session-name in args or configure sessionName in agent-browser.json.
 - Configuration fields such as headed, json, debug, profile, state, proxy, userAgent, provider, device, engine, screenshotDir, allowedDomains, maxOutput, and noAutoDialog are agent-browser config settings, not top-level OpenCTO tool fields. Pass the equivalent CLI flags in args or use an agent-browser config file.

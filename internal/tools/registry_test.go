@@ -161,6 +161,9 @@ func TestLLMDefinitionSchemasAreStrictToolCompatible(t *testing.T) {
 		if len(missing) > 0 {
 			t.Fatalf("%s schema required array is missing properties: %s", definition.Function.Name, strings.Join(missing, ", "))
 		}
+		if _, ok := schema.Properties["work_item_id"]; ok {
+			t.Fatalf("%s schema should not expose internal work item ids", definition.Function.Name)
+		}
 		var extra []string
 		for field := range required {
 			if _, ok := schema.Properties[field]; !ok {

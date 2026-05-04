@@ -280,14 +280,13 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 	}
 
 	browserResult, err := activities.ExecuteTool(ctx, executeRequest(domain.ToolTypeBrowser, "browser-1", map[string]any{
-		"command":      "snapshot",
-		"args":         []string{},
-		"session":      "",
-		"timeout_ms":   0,
-		"idempotency":  "read_only",
-		"description":  "capture browser snapshot",
-		"destructive":  false,
-		"work_item_id": "",
+		"command":     "snapshot",
+		"args":        []string{},
+		"session":     "",
+		"timeout_ms":  0,
+		"idempotency": "read_only",
+		"description": "capture browser snapshot",
+		"destructive": false,
 	}))
 	if err != nil {
 		t.Fatalf("browser tool: %v", err)
@@ -307,6 +306,44 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 	}
 	if skillResult.Status != domain.ExecutionStatusSucceeded || !strings.Contains(skillResult.Observation, "# Go Testing") {
 		t.Fatalf("unexpected skill result: %#v", skillResult)
+	}
+}
+
+func TestNextActionAssignsWorkItemInternallyForToolChoice(t *testing.T) {
+	t.Parallel()
+
+	activities := Activities{
+		Engine: stubEngine{output: agent.NextActionOutput{
+			ToolChoice: &agent.ToolChoice{
+				ToolCallID: "toolu_next",
+				Type:       domain.ToolTypeShell,
+				Intent:     "inspect workspace",
+				Command:    "pwd",
+				Metadata: map[string]string{
+					"tool_call_id": "toolu_next",
+					"work_item_id": "model-supplied-work-item",
+				},
+			},
+			WorkItemID: "model-supplied-work-item",
+			Status:     NextActionStatusTool,
+		}},
+	}
+
+	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "inspect workspace"}
+	result, err := activities.NextAction(context.Background(), NextActionRequest{
+		ProjectID:      "project-1",
+		Event:          event,
+		ExecutionCycle: 1,
+	})
+	if err != nil {
+		t.Fatalf("next action: %v", err)
+	}
+	wantWorkItemID := stableActivityID("work-item", "project-1", "event-1", "1")
+	if result.WorkItemID != wantWorkItemID {
+		t.Fatalf("expected runtime-assigned work item %q, got %q", wantWorkItemID, result.WorkItemID)
+	}
+	if result.ToolChoice == nil || result.ToolChoice.Metadata["work_item_id"] != wantWorkItemID {
+		t.Fatalf("expected internal work item metadata, got %#v", result.ToolChoice)
 	}
 }
 

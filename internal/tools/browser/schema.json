@@ -9,8 +9,7 @@
         "timeout_ms",
         "idempotency",
         "description",
-        "destructive",
-        "work_item_id"
+        "destructive"
     ],
     "properties": {
         "command": {
@@ -27,7 +26,7 @@
         },
         "session": {
             "type": "string",
-            "description": "agent-browser isolated session name passed as --session by OpenCTO. Use an empty string for OpenCTO's default per-work-item session. For persistent saved auth state, use --session-name in args or configure sessionName in agent-browser.json."
+            "description": "agent-browser isolated session name passed as --session by OpenCTO. Use an empty string for OpenCTO's default task session. For persistent saved auth state, use --session-name in args or configure sessionName in agent-browser.json."
         },
         "timeout_ms": {
             "type": "integer",
@@ -47,10 +46,6 @@
         "destructive": {
             "type": "boolean",
             "description": "Set true when the browser action mutates state in a risky or hard-to-reverse way. Use false otherwise."
-        },
-        "work_item_id": {
-            "type": "string",
-            "description": "The work item this browser action advances. Use an empty string only when no work item is available."
         }
     },
     "additionalProperties": false

@@ -518,7 +518,7 @@ func (a *Activities) prepareToolNextAction(ctx context.Context, nextAction agent
 	}
 
 	choice := *output.ToolChoice
-	workItemID := nextActionToolWorkItemID(output, choice, nextAction)
+	workItemID := nextActionToolWorkItemID(nextAction, observation)
 	if strings.TrimSpace(workItemID) == "" {
 		a.logActivityStep("NextAction", "prepare_tool_missing_work_item_id",
 			slog.String("tool_call_id", choice.ToolCallID),
@@ -1741,14 +1741,8 @@ func currentNextActionWorkItemID(nextAction agent.NextAction, observation *agent
 	return ""
 }
 
-func nextActionToolWorkItemID(output agent.NextActionOutput, choice agent.ToolChoice, nextAction agent.NextAction) string {
-	if strings.TrimSpace(output.WorkItemID) != "" {
-		return strings.TrimSpace(output.WorkItemID)
-	}
-	if strings.TrimSpace(choice.Metadata["work_item_id"]) != "" {
-		return strings.TrimSpace(choice.Metadata["work_item_id"])
-	}
-	return currentNextActionWorkItemID(nextAction, nil)
+func nextActionToolWorkItemID(nextAction agent.NextAction, observation *agent.ExecutionFeedback) string {
+	return currentNextActionWorkItemID(nextAction, observation)
 }
 
 func completePreviousWorkItemForNextAction(nextAction *agent.NextAction, nextWorkItemID string, observation *agent.ExecutionFeedback, now time.Time) error {

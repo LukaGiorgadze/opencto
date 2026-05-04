@@ -31,7 +31,6 @@ type shellToolInput struct {
 	ProcessScope string   `json:"process_scope,omitempty"`
 	Description  string   `json:"description,omitempty"`
 	Destructive  bool     `json:"destructive,omitempty"`
-	WorkItemID   string   `json:"work_item_id,omitempty"`
 }
 
 func toolChoiceFromToolCalls(calls []llms.ToolCall, input agent.ToolSelectionInput) (agent.ToolChoice, error) {
@@ -145,8 +144,6 @@ func multiShellToolChoice(choices []agent.ToolChoice) (agent.ToolChoice, error) 
 	timeoutMs := 0
 	destructive := false
 	idempotency := domain.ToolIdempotencyReadOnly
-	workItemID := ""
-
 	for _, choice := range choices {
 		actions = append(actions, shelltool.Action{
 			Intent:    choice.Intent,
@@ -159,9 +156,6 @@ func multiShellToolChoice(choices []agent.ToolChoice) (agent.ToolChoice, error) 
 		timeoutMs += clampToolTimeoutMs(choice.TimeoutMs)
 		destructive = destructive || choice.Destructive
 		idempotency = combineToolIdempotency(idempotency, choice.Idempotency)
-		if workItemID == "" && choice.Metadata != nil {
-			workItemID = strings.TrimSpace(choice.Metadata["work_item_id"])
-		}
 	}
 
 	raw, err := json.Marshal(shelltool.BatchInput{Actions: actions})
@@ -179,10 +173,6 @@ func multiShellToolChoice(choices []agent.ToolChoice) (agent.ToolChoice, error) 
 		"idempotency":       string(idempotency),
 		"process_scope":     string(domain.ProcessScopeTask),
 	}
-	if workItemID != "" {
-		metadata["work_item_id"] = workItemID
-	}
-
 	return agent.ToolChoice{
 		ToolCallID:   firstNonEmpty(ids...),
 		Type:         domain.ToolTypeShell,
@@ -257,9 +247,6 @@ func shellToolChoiceFromInput(definition toolregistry.Definition, call llms.Tool
 		"model_tool":   definition.Name,
 		"tool_call_id": call.ID,
 	}
-	if workItemID := strings.TrimSpace(args.WorkItemID); workItemID != "" {
-		metadata["work_item_id"] = workItemID
-	}
 	if wrapped {
 		metadata["wrapped_shell_command"] = "true"
 		metadata["original_command"] = commandText
@@ -295,9 +282,6 @@ func browserToolChoiceFromInput(definition toolregistry.Definition, call llms.To
 	metadata := map[string]string{
 		"model_tool":   definition.Name,
 		"tool_call_id": call.ID,
-	}
-	if workItemID := strings.TrimSpace(args.WorkItemID); workItemID != "" {
-		metadata["work_item_id"] = workItemID
 	}
 	if session := strings.TrimSpace(args.Session); session != "" {
 		metadata["browser_session"] = session

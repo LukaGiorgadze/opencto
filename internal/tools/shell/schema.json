@@ -9,8 +9,7 @@
         "idempotency",
         "process_scope",
         "description",
-        "destructive",
-        "work_item_id"
+        "destructive"
     ],
     "additionalProperties": false,
     "properties": {
@@ -43,7 +42,7 @@
         "process_scope": {
             "type": "string",
             "enum": ["task", "project"],
-      "description": "For start_background only. Select the intended owner lifetime: task means the process belongs to the current task and is stopped when that task finishes, so do not use it when the final outcome requires the process to remain available after the response; project means the process belongs to the project and remains running until an explicit stop, so use it when ongoing availability is part of the requested outcome."
+            "description": "For start_background only. Select the intended owner lifetime: task means the process belongs to the current task and is stopped when that task finishes, so do not use it when the final outcome requires the process to remain available after the response; project means the process belongs to the project and remains running until an explicit stop, so use it when ongoing availability is part of the requested outcome."
         },
         "description": {
             "type": "string",
@@ -52,10 +51,6 @@
         "destructive": {
             "type": "boolean",
             "description": "Set true when the command mutates state in a risky or hard-to-reverse way. Use false otherwise."
-        },
-        "work_item_id": {
-            "type": "string",
-            "description": "The work item this command advances. Use an empty string only when no work item is available."
         }
     }
 }
