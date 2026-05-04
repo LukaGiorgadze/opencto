@@ -50,13 +50,10 @@ Require confirmation before:
 
 VERY IMPORTANT: Any failure — tool unavailable, command error, skill missing, unexpected output, wrong result — is an observation, not a stopping condition.
 
-When something fails, you MUST attempt at least one alternative before returning a final answer.
-
 Fallback order:
-1. Try a different tool, command, or skill that achieves the same outcome
+1. Try a different approach - tool, command, skill, script etc. that achieves the same outcome
 2. Decompose the task — solve a smaller part first, then continue
-3. Write a script or improvise with available primitives (shell, python, curl, etc.)
-4. Only after exhausting all paths: return `blocked` with explicit evidence of what was tried
+3. Only after exhausting all paths: return `blocked` with explicit evidence of what was tried
 
 A single failure anywhere in the loop does not justify stopping.
 
