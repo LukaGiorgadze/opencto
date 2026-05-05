@@ -9,6 +9,10 @@ import (
 	"github.com/opencto/opencto/internal/workspace"
 )
 
+const (
+	EnvOpenCTOWorkspace = "OPENCTO_WORKSPACE"
+)
+
 type Config struct {
 	Project       ProjectConfig       `json:"project"`
 	Runtime       RuntimeConfig       `json:"runtime"`

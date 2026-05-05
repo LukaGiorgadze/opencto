@@ -30,6 +30,7 @@ type Request struct {
 	Command            string
 	Args               []string
 	Actions            []Action
+	WorkingDir         string
 	Timeout            time.Duration
 	Environment        map[string]string
 	FallbackCandidates []domain.ToolType
@@ -39,6 +40,7 @@ type Action struct {
 	Intent      string            `json:"intent,omitempty"`
 	Command     string            `json:"command"`
 	Args        []string          `json:"args,omitempty"`
+	WorkingDir  string            `json:"working_dir,omitempty"`
 	TimeoutMs   int               `json:"timeout_ms,omitempty"`
 	Environment map[string]string `json:"environment,omitempty"`
 }
@@ -97,7 +99,7 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 
 func (e *SafeExecutor) runBatch(ctx context.Context, req Request) (Result, error) {
 	startedAt := time.Now()
-	workingDir, err := ResolveWorkingDir("")
+	workingDir, err := ResolveWorkingDir(req.WorkingDir)
 	if err != nil {
 		return Result{}, err
 	}
@@ -150,7 +152,7 @@ func (e *SafeExecutor) runSingle(ctx context.Context, req Request) (Result, erro
 
 	startedAt := time.Now()
 
-	workingDir, err := ResolveWorkingDir("")
+	workingDir, err := ResolveWorkingDir(req.WorkingDir)
 	if err != nil {
 		return Result{}, err
 	}
@@ -214,6 +216,7 @@ func shellRequestForAction(parent Request, action Action) Request {
 		Intent:             firstNonEmpty(action.Intent, parent.Intent),
 		Command:            action.Command,
 		Args:               append([]string(nil), action.Args...),
+		WorkingDir:         firstNonEmpty(action.WorkingDir, parent.WorkingDir),
 		Timeout:            timeout,
 		Environment:        mergeStringMaps(parent.Environment, action.Environment),
 		FallbackCandidates: append([]domain.ToolType(nil), parent.FallbackCandidates...),

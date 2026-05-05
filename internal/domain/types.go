@@ -66,8 +66,8 @@ const (
 type ProcessScope string
 
 const (
-	ProcessScopeTask    ProcessScope = "task"
-	ProcessScopeProject ProcessScope = "project"
+	ProcessScopeStopOnFinish ProcessScope = "stop_on_finish"
+	ProcessScopeProject      ProcessScope = "project"
 )
 
 type ToolType string

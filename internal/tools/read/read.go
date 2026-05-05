@@ -21,6 +21,14 @@ var (
 )
 
 type Request struct {
+	FilePath string   `json:"file_path,omitempty"`
+	Offset   int      `json:"offset,omitempty"`
+	Limit    int      `json:"limit,omitempty"`
+	Pages    string   `json:"pages,omitempty"`
+	Actions  []Action `json:"actions,omitempty"`
+}
+
+type Action struct {
 	FilePath string `json:"file_path"`
 	Offset   int    `json:"offset,omitempty"`
 	Limit    int    `json:"limit,omitempty"`
@@ -28,6 +36,18 @@ type Request struct {
 }
 
 type Result struct {
+	FilePath   string         `json:"file_path"`
+	Content    string         `json:"content"`
+	Offset     int            `json:"offset"`
+	Limit      int            `json:"limit"`
+	LinesRead  int            `json:"lines_read"`
+	TotalLines int            `json:"total_lines"`
+	Truncated  bool           `json:"truncated"`
+	BytesRead  int            `json:"bytes_read"`
+	Actions    []ActionResult `json:"actions,omitempty"`
+}
+
+type ActionResult struct {
 	FilePath   string `json:"file_path"`
 	Content    string `json:"content"`
 	Offset     int    `json:"offset"`
@@ -54,6 +74,63 @@ func NewSafeExecutor(logger *slog.Logger) *SafeExecutor {
 }
 
 func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
+	if len(req.Actions) > 0 {
+		return e.runBatch(ctx, req)
+	}
+	return e.runSingle(ctx, req)
+}
+
+func (e *SafeExecutor) runBatch(ctx context.Context, req Request) (Result, error) {
+	actions := make([]ActionResult, 0, len(req.Actions))
+	var content strings.Builder
+	totalLines := 0
+	linesRead := 0
+	bytesRead := 0
+	truncated := false
+
+	for index, action := range req.Actions {
+		result, err := e.runSingle(ctx, requestForAction(action))
+		actionResult := ActionResult{
+			FilePath:   result.FilePath,
+			Content:    result.Content,
+			Offset:     result.Offset,
+			Limit:      result.Limit,
+			LinesRead:  result.LinesRead,
+			TotalLines: result.TotalLines,
+			Truncated:  result.Truncated,
+			BytesRead:  result.BytesRead,
+		}
+		actions = append(actions, actionResult)
+		appendActionContent(&content, index, actionResult)
+		totalLines += result.TotalLines
+		linesRead += result.LinesRead
+		bytesRead += result.BytesRead
+		truncated = truncated || result.Truncated
+		if err != nil {
+			return Result{
+				FilePath:   "batch",
+				Content:    content.String(),
+				LinesRead:  linesRead,
+				TotalLines: totalLines,
+				Truncated:  truncated,
+				BytesRead:  bytesRead,
+				Actions:    actions,
+			}, fmt.Errorf("read action %d: %w", index+1, err)
+		}
+	}
+
+	return Result{
+		FilePath:   "batch",
+		Content:    content.String(),
+		LinesRead:  linesRead,
+		TotalLines: totalLines,
+		Truncated:  truncated,
+		BytesRead:  bytesRead,
+		Actions:    actions,
+	}, nil
+}
+
+func (e *SafeExecutor) runSingle(ctx context.Context, req Request) (Result, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -105,6 +182,25 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 	)
 
 	return result, nil
+}
+
+func requestForAction(action Action) Request {
+	return Request{
+		FilePath: action.FilePath,
+		Offset:   action.Offset,
+		Limit:    action.Limit,
+		Pages:    action.Pages,
+	}
+}
+
+func appendActionContent(builder *strings.Builder, index int, result ActionResult) {
+	if index > 0 {
+		builder.WriteString("\n")
+	}
+	_, _ = fmt.Fprintf(builder, "file: %s\n", result.FilePath)
+	if result.Content != "" {
+		builder.WriteString(result.Content)
+	}
 }
 
 func validateRequest(req Request) (Request, error) {

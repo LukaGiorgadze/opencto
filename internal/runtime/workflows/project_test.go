@@ -214,14 +214,14 @@ func TestTaskWorkflowPassesProcessesReturnedByExecuteToolToNextAction(t *testing
 		Metadata: map[string]string{
 			"tool_call_id":  "toolu_bg",
 			"process_id":    "proc-1",
-			"process_scope": string(domain.ProcessScopeTask),
+			"process_scope": string(domain.ProcessScopeStopOnFinish),
 			"run_mode":      string(domain.ToolRunModeStartBackground),
 		},
 		Processes: []domain.ProcessReference{{
 			ID:          "proc-1",
 			Description: "start dev server",
 			Status:      domain.ProcessStatusRunning,
-			Scope:       domain.ProcessScopeTask,
+			Scope:       domain.ProcessScopeStopOnFinish,
 		}},
 	}, nil).Once()
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
@@ -235,7 +235,7 @@ func TestTaskWorkflowPassesProcessesReturnedByExecuteToolToNextAction(t *testing
 			ID:          "proc-1",
 			Description: "start dev server",
 			Status:      domain.ProcessStatusStopped,
-			Scope:       domain.ProcessScopeTask,
+			Scope:       domain.ProcessScopeStopOnFinish,
 		}},
 	}, nil).Once()
 
@@ -363,14 +363,14 @@ func TestTaskWorkflowMarksIncompleteWhenTaskProcessCleanupFails(t *testing.T) {
 		Command:         "server",
 		Metadata: map[string]string{
 			"process_id":    "proc-1",
-			"process_scope": string(domain.ProcessScopeTask),
+			"process_scope": string(domain.ProcessScopeStopOnFinish),
 			"run_mode":      string(domain.ToolRunModeStartBackground),
 		},
 		Processes: []domain.ProcessReference{{
 			ID:          "proc-1",
 			Description: "start task server",
 			Status:      domain.ProcessStatusRunning,
-			Scope:       domain.ProcessScopeTask,
+			Scope:       domain.ProcessScopeStopOnFinish,
 		}},
 	}, nil).Once()
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{
@@ -379,7 +379,7 @@ func TestTaskWorkflowMarksIncompleteWhenTaskProcessCleanupFails(t *testing.T) {
 			ID:          "proc-1",
 			Description: "start task server",
 			Status:      domain.ProcessStatusRunning,
-			Scope:       domain.ProcessScopeTask,
+			Scope:       domain.ProcessScopeStopOnFinish,
 		}},
 	}, nil).Once()
 

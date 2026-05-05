@@ -22,20 +22,35 @@ var (
 )
 
 type Request struct {
-	ProjectID string
-	Intent    string
-	Pattern   string
-	Path      string
+	ProjectID string   `json:"-"`
+	Intent    string   `json:"-"`
+	Cwd       string   `json:"cwd,omitempty"`
+	Pattern   string   `json:"pattern,omitempty"`
+	Path      string   `json:"path,omitempty"`
+	Actions   []Action `json:"actions,omitempty"`
 	Timeout   time.Duration
+}
+
+type Action struct {
+	Pattern string `json:"pattern"`
+	Cwd     string `json:"cwd,omitempty"`
+	Path    string `json:"path,omitempty"`
 }
 
 type Result struct {
 	Pattern     string
 	Root        string
 	Matches     []string
+	Actions     []ActionResult
 	StartedAt   time.Time
 	CompletedAt time.Time
 	Duration    time.Duration
+}
+
+type ActionResult struct {
+	Pattern string
+	Root    string
+	Matches []string
 }
 
 type Executor interface {
@@ -54,6 +69,53 @@ func NewSafeExecutor(logger *slog.Logger) *SafeExecutor {
 }
 
 func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if len(req.Actions) > 0 {
+		return e.runBatch(ctx, req)
+	}
+	return e.runSingle(ctx, req)
+}
+
+func (e *SafeExecutor) runBatch(ctx context.Context, req Request) (Result, error) {
+	startedAt := time.Now()
+	results := make([]ActionResult, 0, len(req.Actions))
+	var matches []string
+
+	for index, action := range req.Actions {
+		result, err := e.runSingle(ctx, requestForAction(req, action))
+		results = append(results, ActionResult{
+			Pattern: result.Pattern,
+			Root:    result.Root,
+			Matches: append([]string(nil), result.Matches...),
+		})
+		matches = append(matches, result.Matches...)
+		if err != nil {
+			completedAt := time.Now()
+			return Result{
+				Pattern:     "batch",
+				Matches:     matches,
+				Actions:     results,
+				StartedAt:   startedAt,
+				CompletedAt: completedAt,
+				Duration:    completedAt.Sub(startedAt),
+			}, fmt.Errorf("glob action %d: %w", index+1, err)
+		}
+	}
+
+	completedAt := time.Now()
+	return Result{
+		Pattern:     "batch",
+		Matches:     matches,
+		Actions:     results,
+		StartedAt:   startedAt,
+		CompletedAt: completedAt,
+		Duration:    completedAt.Sub(startedAt),
+	}, nil
+}
+
+func (e *SafeExecutor) runSingle(ctx context.Context, req Request) (Result, error) {
 	pattern, root, rootIsFile, err := validateRequest(req)
 	if err != nil {
 		return Result{}, err
@@ -156,24 +218,48 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 	return result, nil
 }
 
+func requestForAction(parent Request, action Action) Request {
+	cwd := strings.TrimSpace(action.Cwd)
+	if cwd == "" {
+		cwd = parent.Cwd
+	}
+	path := strings.TrimSpace(action.Path)
+	if path == "" {
+		path = parent.Path
+	}
+	return Request{
+		ProjectID: parent.ProjectID,
+		Intent:    parent.Intent,
+		Cwd:       cwd,
+		Pattern:   action.Pattern,
+		Path:      path,
+		Timeout:   parent.Timeout,
+	}
+}
+
 func validateRequest(req Request) (string, string, bool, error) {
 	pattern := strings.TrimSpace(req.Pattern)
 	if pattern == "" {
 		return "", "", false, ErrPatternRequired
 	}
 
+	workingDir := strings.TrimSpace(req.Cwd)
+	if strings.EqualFold(workingDir, "undefined") || strings.EqualFold(workingDir, "null") {
+		return "", "", false, fmt.Errorf("%w: cwd %q", ErrPathRequired, workingDir)
+	}
+	var err error
+	workingDir, err = shelltool.ResolveWorkingDir(workingDir)
+	if err != nil {
+		return "", "", false, fmt.Errorf("resolve cwd: %w", err)
+	}
+
 	root := strings.TrimSpace(req.Path)
 	if root == "" {
-		var err error
-		root, err = shelltool.ResolveWorkingDir("")
-		if err != nil {
-			return "", "", false, fmt.Errorf("resolve working directory: %w", err)
-		}
+		root = workingDir
 	} else if strings.EqualFold(root, "undefined") || strings.EqualFold(root, "null") {
 		return "", "", false, fmt.Errorf("%w: %q", ErrPathRequired, root)
 	} else {
-		var err error
-		root, err = shelltool.ResolvePath("", root)
+		root, err = shelltool.ResolvePath(workingDir, root)
 		if err != nil {
 			return "", "", false, fmt.Errorf("resolve path: %w", err)
 		}

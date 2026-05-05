@@ -2,6 +2,7 @@ package shell
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -31,10 +32,32 @@ func TestShellToolSchemaIsValidJSON(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected properties object, got %#v", schema["properties"])
 	}
-	for _, field := range []string{"run_mode", "idempotency", "process_scope"} {
+	for _, field := range []string{"cwd", "run_mode", "idempotency", "process_scope"} {
 		if _, ok := properties[field]; !ok {
 			t.Fatalf("expected %q property in schema", field)
 		}
+	}
+}
+
+func TestShellToolSchemaUsesStopOnFinishProcessScope(t *testing.T) {
+	t.Parallel()
+
+	var schema map[string]any
+	if err := json.Unmarshal(ShellToolSchema(), &schema); err != nil {
+		t.Fatalf("decode shell tool schema: %v", err)
+	}
+	properties := schema["properties"].(map[string]any)
+	processScope := properties["process_scope"].(map[string]any)
+	values := processScope["enum"].([]any)
+	if !containsRequiredField(values, "stop_on_finish") {
+		t.Fatalf("expected stop_on_finish process scope, got %#v", values)
+	}
+	if containsRequiredField(values, "task") {
+		t.Fatalf("process scope should not expose ambiguous task value: %#v", values)
+	}
+	description := processScope["description"].(string)
+	if !containsText(description, "stops it when the task finishes") || !containsText(description, "Do not use it") || !containsText(description, "after your response") {
+		t.Fatalf("expected explicit lifetime guidance, got %q", description)
 	}
 }
 
@@ -61,4 +84,8 @@ func containsRequiredField(required []any, field string) bool {
 		}
 	}
 	return false
+}
+
+func containsText(value, needle string) bool {
+	return strings.Contains(value, needle)
 }

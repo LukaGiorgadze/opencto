@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/opencto/opencto/internal/config"
 	shelltool "github.com/opencto/opencto/internal/tools/shell"
 )
 
@@ -43,6 +44,17 @@ type Request struct {
 	Description   string            `json:"description,omitempty"`
 	Destructive   bool              `json:"destructive,omitempty"`
 	WorkItemID    string            `json:"-"`
+	Actions       []Action          `json:"actions,omitempty"`
+}
+
+type Action struct {
+	Command     string   `json:"command"`
+	Args        []string `json:"args"`
+	Session     string   `json:"session,omitempty"`
+	TimeoutMs   int      `json:"timeout_ms,omitempty"`
+	Idempotency string   `json:"idempotency,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Destructive bool     `json:"destructive,omitempty"`
 }
 
 type Result struct {
@@ -60,6 +72,18 @@ type Result struct {
 	StartedAt        time.Time
 	CompletedAt      time.Time
 	Duration         time.Duration
+	Actions          []ActionResult
+}
+
+type ActionResult struct {
+	Stdout        string
+	Stderr        string
+	ExitCode      int
+	Session       string
+	Command       string
+	HoistedArgs   []string
+	Args          []string
+	ArtifactPaths []string
 }
 
 type Executor interface {
@@ -114,7 +138,91 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 	if e.runner == nil {
 		e.runner = runCommand
 	}
+	if len(req.Actions) > 0 {
+		return e.runBatch(ctx, req)
+	}
+	return e.runSingle(ctx, req)
+}
 
+func (e *SafeExecutor) runBatch(ctx context.Context, req Request) (Result, error) {
+	startedAt := time.Now()
+	workingDir, err := shelltool.ResolveWorkingDir(firstNonEmpty(req.WorkspaceRoot, req.WorkingDir))
+	if err != nil {
+		return Result{}, err
+	}
+
+	runCtx := ctx
+	var cancel context.CancelFunc
+	if req.Timeout > 0 {
+		runCtx, cancel = context.WithTimeout(ctx, req.Timeout)
+		defer cancel()
+	}
+
+	var stdout strings.Builder
+	var stderr strings.Builder
+	results := make([]ActionResult, 0, len(req.Actions))
+	var artifactPaths []string
+	exitCode := 0
+	session := "batch"
+
+	for index, action := range req.Actions {
+		result, err := e.runSingle(runCtx, requestForAction(req, action))
+		appendActionOutput(&stdout, index, actionSummary(result.Command, result.Args), result.Stdout)
+		appendActionOutput(&stderr, index, actionSummary(result.Command, result.Args), result.Stderr)
+		exitCode = result.ExitCode
+		if index == 0 {
+			session = result.Session
+		} else if session != result.Session {
+			session = "batch"
+		}
+		artifactPaths = append(artifactPaths, result.ArtifactPaths...)
+		results = append(results, ActionResult{
+			Stdout:        result.Stdout,
+			Stderr:        result.Stderr,
+			ExitCode:      result.ExitCode,
+			Session:       result.Session,
+			Command:       result.Command,
+			HoistedArgs:   append([]string(nil), result.HoistedArgs...),
+			Args:          append([]string(nil), result.Args...),
+			ArtifactPaths: append([]string(nil), result.ArtifactPaths...),
+		})
+		if err != nil {
+			completedAt := time.Now()
+			return Result{
+				Stdout:           stdout.String(),
+				Stderr:           stderr.String(),
+				ExitCode:         exitCode,
+				WorkingDirectory: workingDir,
+				Executable:       agentBrowserExecutable,
+				Session:          session,
+				Command:          "batch",
+				ArtifactPaths:    uniqueArtifactPaths(artifactPaths),
+				StartedAt:        startedAt,
+				CompletedAt:      completedAt,
+				Duration:         completedAt.Sub(startedAt),
+				Actions:          results,
+			}, fmt.Errorf("browser action %d: %w", index+1, err)
+		}
+	}
+
+	completedAt := time.Now()
+	return Result{
+		Stdout:           stdout.String(),
+		Stderr:           stderr.String(),
+		ExitCode:         exitCode,
+		WorkingDirectory: workingDir,
+		Executable:       agentBrowserExecutable,
+		Session:          session,
+		Command:          "batch",
+		ArtifactPaths:    uniqueArtifactPaths(artifactPaths),
+		StartedAt:        startedAt,
+		CompletedAt:      completedAt,
+		Duration:         completedAt.Sub(startedAt),
+		Actions:          results,
+	}, nil
+}
+
+func (e *SafeExecutor) runSingle(ctx context.Context, req Request) (Result, error) {
 	normalized, err := normalizeRequest(req)
 	if err != nil {
 		return Result{}, err
@@ -139,7 +247,7 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 		executable: agentBrowserExecutable,
 		args:       finalArgs,
 		dir:        workingDir,
-		env:        mergeEnv(map[string]string{"OPENCTO_WORKSPACE": workingDir}, normalized.Environment),
+		env:        mergeEnv(map[string]string{config.EnvOpenCTOWorkspace: workingDir}, normalized.Environment),
 	}
 	output, runErr := e.runner(runCtx, invocation)
 	completedAt := time.Now()
@@ -178,6 +286,24 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 	return result, runErr
 }
 
+func requestForAction(parent Request, action Action) Request {
+	return Request{
+		ProjectID:     parent.ProjectID,
+		Intent:        firstNonEmpty(action.Description, parent.Intent),
+		WorkingDir:    parent.WorkingDir,
+		WorkspaceRoot: parent.WorkspaceRoot,
+		Environment:   parent.Environment,
+		Command:       action.Command,
+		Args:          append([]string(nil), action.Args...),
+		Session:       action.Session,
+		TimeoutMs:     action.TimeoutMs,
+		Idempotency:   action.Idempotency,
+		Description:   action.Description,
+		Destructive:   action.Destructive,
+		WorkItemID:    parent.WorkItemID,
+	}
+}
+
 func normalizeRequest(req Request) (Request, error) {
 	req.Command = strings.TrimSpace(req.Command)
 	if req.Command == "" {
@@ -204,6 +330,42 @@ func normalizeRequest(req Request) (Request, error) {
 	}
 	req.Args = append([]string(nil), req.Args...)
 	return req, nil
+}
+
+func appendActionOutput(builder *strings.Builder, index int, summary string, output string) {
+	if strings.TrimSpace(output) == "" {
+		return
+	}
+	if builder.Len() > 0 {
+		builder.WriteString("\n")
+	}
+	_, _ = fmt.Fprintf(builder, "action %d: %s\n", index+1, summary)
+	builder.WriteString(output)
+	if !strings.HasSuffix(output, "\n") {
+		builder.WriteString("\n")
+	}
+}
+
+func actionSummary(command string, args []string) string {
+	command = strings.TrimSpace(command)
+	if len(args) == 0 {
+		return command
+	}
+	return command + " " + strings.Join(args, " ")
+}
+
+func uniqueArtifactPaths(paths []string) []string {
+	seen := map[string]bool{}
+	unique := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if strings.TrimSpace(path) == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		unique = append(unique, path)
+	}
+	sort.Strings(unique)
+	return unique
 }
 
 func agentBrowserArgs(req Request, globalArgs []string, commandArgs []string) []string {

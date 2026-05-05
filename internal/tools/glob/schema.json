@@ -1,11 +1,15 @@
 {
     "type": "object",
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "required": ["path", "pattern"],
+    "required": ["cwd", "path", "pattern"],
     "properties": {
+        "cwd": {
+            "type": "string",
+            "description": "Optional working directory used when path is empty or relative. Relative cwd values are resolved from the configured workspace; absolute cwd values are used as provided. Use an empty string for the configured workspace."
+        },
         "path": {
             "type": "string",
-            "description": "The absolute directory path to search in. Use an empty string for the tool's configured working directory. Matching file paths are returned as absolute paths."
+            "description": "The directory or file path to search in. Relative paths are resolved from cwd. Use an empty string to search cwd. Matching file paths are returned as absolute paths."
         },
         "pattern": {
             "type": "string",

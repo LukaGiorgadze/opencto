@@ -14,6 +14,8 @@ import (
 	"github.com/opencto/opencto/internal/skills"
 	toolregistry "github.com/opencto/opencto/internal/tools"
 	browsertool "github.com/opencto/opencto/internal/tools/browser"
+	globtool "github.com/opencto/opencto/internal/tools/glob"
+	greptool "github.com/opencto/opencto/internal/tools/grep"
 	readtool "github.com/opencto/opencto/internal/tools/read"
 	shelltool "github.com/opencto/opencto/internal/tools/shell"
 	skilltool "github.com/opencto/opencto/internal/tools/skill"
@@ -118,9 +120,13 @@ func TestBuildNextActionMessagesUsesOpenAIToolTranscript(t *testing.T) {
 		"Architecture: arm64",
 		"Shell: /bin/zsh",
 		"`$OPENCTO_ROOT`: /home/luka/projects/opencto",
-		"Meaning: READ ONLY! The OpenCTO source repository",
+		"Shell environment variable for the current OpenCTO repository root",
+		"Use `$OPENCTO_ROOT` only to read OpenCTO internals",
+		"It is not the default working directory for user project work.",
 		"`$OPENCTO_WORKSPACE`: /tmp/opencto",
 		"Meaning: Stores projects, artifacts, data, screenshots, logs, and related files.",
+		"Shell, browser, and runtime tool commands operate from `$OPENCTO_WORKSPACE` by default.",
+		"Treat this as the current project workspace for user work",
 		"PATH: /usr/bin:/bin",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -386,7 +392,7 @@ func TestNextActionReturnsSingleToolChoice(t *testing.T) {
 					Type: "function",
 					FunctionCall: &llms.FunctionCall{
 						Name:      toolregistry.CommandToolName,
-						Arguments: `{"command":"pwd","args":[],"timeout_ms":120000,"run_mode":"wait_for_exit","idempotency":"read_only","process_scope":"task","description":"inspect workspace","destructive":false}`,
+						Arguments: `{"command":"pwd","args":[],"timeout_ms":120000,"run_mode":"wait_for_exit","idempotency":"read_only","process_scope":"stop_on_finish","description":"inspect workspace","destructive":false}`,
 					},
 				}},
 			}},
@@ -413,7 +419,7 @@ func TestNextActionReturnsSingleToolChoice(t *testing.T) {
 	if output.WorkItemID != "" {
 		t.Fatalf("unexpected work item id: %q", output.WorkItemID)
 	}
-	if output.ToolChoice.RunMode != domain.ToolRunModeWaitForExit || output.ToolChoice.Idempotency != domain.ToolIdempotencyReadOnly || output.ToolChoice.ProcessScope != domain.ProcessScopeTask {
+	if output.ToolChoice.RunMode != domain.ToolRunModeWaitForExit || output.ToolChoice.Idempotency != domain.ToolIdempotencyReadOnly || output.ToolChoice.ProcessScope != domain.ProcessScopeStopOnFinish {
 		t.Fatalf("tool execution metadata was not preserved: %#v", output.ToolChoice)
 	}
 	if len(model.options.Tools) != 8 {
@@ -433,7 +439,7 @@ func TestNextActionCombinesMultipleShellToolCalls(t *testing.T) {
 						Type: "function",
 						FunctionCall: &llms.FunctionCall{
 							Name:      toolregistry.CommandToolName,
-							Arguments: `{"command":"pwd","args":[],"timeout_ms":10000,"run_mode":"wait_for_exit","idempotency":"read_only","process_scope":"task","description":"confirm workspace","destructive":false}`,
+							Arguments: `{"command":"pwd","args":[],"timeout_ms":10000,"run_mode":"wait_for_exit","idempotency":"read_only","process_scope":"stop_on_finish","description":"confirm workspace","destructive":false}`,
 						},
 					},
 					{
@@ -441,7 +447,7 @@ func TestNextActionCombinesMultipleShellToolCalls(t *testing.T) {
 						Type: "function",
 						FunctionCall: &llms.FunctionCall{
 							Name:      toolregistry.CommandToolName,
-							Arguments: `{"command":"uname","args":["-a"],"timeout_ms":10000,"run_mode":"wait_for_exit","idempotency":"read_only","process_scope":"task","description":"capture platform","destructive":false}`,
+							Arguments: `{"command":"uname","args":["-a"],"timeout_ms":10000,"run_mode":"wait_for_exit","idempotency":"read_only","process_scope":"stop_on_finish","description":"capture platform","destructive":false}`,
 						},
 					},
 				},
@@ -464,6 +470,9 @@ func TestNextActionCombinesMultipleShellToolCalls(t *testing.T) {
 	if output.ToolChoice == nil || output.ToolChoice.Metadata["multi_action"] != "true" {
 		t.Fatalf("expected multi-action shell choice, got %#v", output.ToolChoice)
 	}
+	if output.ToolChoice.WorkingDir != "/workspace" {
+		t.Fatalf("expected multi-action shell choice working directory to use runtime workspace, got %q", output.ToolChoice.WorkingDir)
+	}
 	var batch shelltool.BatchInput
 	if err := json.Unmarshal(output.ToolChoice.Input, &batch); err != nil {
 		t.Fatalf("decode batch input: %v", err)
@@ -471,8 +480,111 @@ func TestNextActionCombinesMultipleShellToolCalls(t *testing.T) {
 	if len(batch.Actions) != 2 || batch.Actions[0].Command != "pwd" || batch.Actions[1].Command != "uname" {
 		t.Fatalf("unexpected batch actions: %#v", batch.Actions)
 	}
+	for _, action := range batch.Actions {
+		if action.WorkingDir != "/workspace" {
+			t.Fatalf("expected batch action working directory to use runtime workspace, got %#v", batch.Actions)
+		}
+	}
 	if output.WorkItemID != "" {
 		t.Fatalf("unexpected work item id: %q", output.WorkItemID)
+	}
+}
+
+func TestNextActionCombinesMultipleStructuredReadOnlyToolCalls(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		toolName  string
+		toolType  domain.ToolType
+		firstArgs string
+		nextArgs  string
+	}{
+		{
+			name:      "browser",
+			toolName:  browsertool.BrowserToolName,
+			toolType:  domain.ToolTypeBrowser,
+			firstArgs: `{"command":"goto","args":["https://example.com"],"session":"","timeout_ms":5000,"idempotency":"read_only","description":"open example","destructive":false}`,
+			nextArgs:  `{"command":"snapshot","args":["-i","--json"],"session":"","timeout_ms":5000,"idempotency":"read_only","description":"inspect page","destructive":false}`,
+		},
+		{
+			name:      "read",
+			toolName:  readtool.ReadToolName,
+			toolType:  domain.ToolTypeRead,
+			firstArgs: `{"file_path":"/workspace/a.go","offset":0,"limit":0,"pages":""}`,
+			nextArgs:  `{"file_path":"/workspace/b.go","offset":0,"limit":0,"pages":""}`,
+		},
+		{
+			name:      "glob",
+			toolName:  globtool.GlobToolName,
+			toolType:  domain.ToolTypeGlob,
+			firstArgs: `{"pattern":"*.go","path":"/workspace"}`,
+			nextArgs:  `{"pattern":"*.md","path":"/workspace"}`,
+		},
+		{
+			name:      "grep",
+			toolName:  greptool.GrepToolName,
+			toolType:  domain.ToolTypeGrep,
+			firstArgs: `{"pattern":"needle","path":"/workspace","glob":"","type":"","output_mode":"content","-A":0,"-B":0,"-C":0,"context":0,"-i":false,"-n":true,"multiline":false,"head_limit":250,"offset":0}`,
+			nextArgs:  `{"pattern":"thread","path":"/workspace","glob":"","type":"","output_mode":"content","-A":0,"-B":0,"-C":0,"context":0,"-i":false,"-n":true,"multiline":false,"head_limit":250,"offset":0}`,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			model := &recordingToolModel{
+				response: &llms.ContentResponse{
+					Choices: []*llms.ContentChoice{{
+						ToolCalls: []llms.ToolCall{
+							{
+								ID:   "toolu_first",
+								Type: "function",
+								FunctionCall: &llms.FunctionCall{
+									Name:      test.toolName,
+									Arguments: test.firstArgs,
+								},
+							},
+							{
+								ID:   "toolu_next",
+								Type: "function",
+								FunctionCall: &llms.FunctionCall{
+									Name:      test.toolName,
+									Arguments: test.nextArgs,
+								},
+							},
+						},
+					}},
+				},
+			}
+
+			engine := &OpenAIEngine{reasoningModel: model}
+			output, err := engine.NextAction(context.Background(), agent.NextActionInput{
+				ProjectID: "project-1",
+				Context: agent.Context{
+					Project: domain.Project{ID: "project-1"},
+					Event:   domain.Event{Body: "inspect workspace"},
+				},
+				Runtime: agent.RuntimeContext{WorkspaceRoot: "/workspace"},
+			})
+			if err != nil {
+				t.Fatalf("NextAction: %v", err)
+			}
+			if output.ToolChoice == nil || output.ToolChoice.Type != test.toolType || output.ToolChoice.Metadata["multi_action"] != "true" {
+				t.Fatalf("expected multi-action %s choice, got %#v", test.toolType, output.ToolChoice)
+			}
+			var batch struct {
+				Actions []json.RawMessage `json:"actions"`
+			}
+			if err := json.Unmarshal(output.ToolChoice.Input, &batch); err != nil {
+				t.Fatalf("decode batch input: %v", err)
+			}
+			if len(batch.Actions) != 2 {
+				t.Fatalf("expected two actions, got %#v", batch.Actions)
+			}
+		})
 	}
 }
 
@@ -484,7 +596,7 @@ func TestToolChoicePreservesCommandAndArgsForDirectExecution(t *testing.T) {
 		Type: "function",
 		FunctionCall: &llms.FunctionCall{
 			Name:      toolregistry.CommandToolName,
-			Arguments: `{"command":"go","args":["test","./..."],"timeout_ms":120000,"run_mode":"wait_for_exit","idempotency":"idempotent","process_scope":"task","description":"run tests","destructive":false}`,
+			Arguments: `{"command":"go","args":["test","./..."],"timeout_ms":120000,"run_mode":"wait_for_exit","idempotency":"idempotent","process_scope":"stop_on_finish","description":"run tests","destructive":false}`,
 		},
 	}, agent.ToolSelectionInput{
 		Runtime: agent.RuntimeContext{OS: "linux", Shell: "/bin/bash", WorkspaceRoot: "/workspace"},
@@ -501,8 +613,32 @@ func TestToolChoicePreservesCommandAndArgsForDirectExecution(t *testing.T) {
 	if choice.Metadata["wrapped_shell_command"] == "true" {
 		t.Fatalf("direct command should not be shell wrapped: %#v", choice.Metadata)
 	}
-	if choice.RunMode != domain.ToolRunModeWaitForExit || choice.Idempotency != domain.ToolIdempotencyIdempotent || choice.ProcessScope != domain.ProcessScopeTask {
+	if choice.WorkingDir != "/workspace" {
+		t.Fatalf("expected shell choice working directory to use runtime workspace, got %q", choice.WorkingDir)
+	}
+	if choice.RunMode != domain.ToolRunModeWaitForExit || choice.Idempotency != domain.ToolIdempotencyIdempotent || choice.ProcessScope != domain.ProcessScopeStopOnFinish {
 		t.Fatalf("expected execution metadata to be preserved, got %#v", choice)
+	}
+}
+
+func TestToolChoiceUsesShellCwd(t *testing.T) {
+	t.Parallel()
+
+	choice, err := toolChoiceFromToolCall(llms.ToolCall{
+		ID:   "toolu_cwd",
+		Type: "function",
+		FunctionCall: &llms.FunctionCall{
+			Name:      toolregistry.CommandToolName,
+			Arguments: `{"command":"pnpm","args":["run","dev"],"cwd":"/workspace/example-app","timeout_ms":1000,"run_mode":"start_background","idempotency":"idempotent","process_scope":"project","description":"start app","destructive":false}`,
+		},
+	}, agent.ToolSelectionInput{
+		Runtime: agent.RuntimeContext{WorkspaceRoot: "/workspace"},
+	})
+	if err != nil {
+		t.Fatalf("tool choice: %v", err)
+	}
+	if choice.WorkingDir != "/workspace/example-app" {
+		t.Fatalf("expected shell cwd to become working directory, got %q", choice.WorkingDir)
 	}
 }
 
@@ -514,11 +650,35 @@ func TestToolChoiceRejectsModelSuppliedWorkItemID(t *testing.T) {
 		Type: "function",
 		FunctionCall: &llms.FunctionCall{
 			Name:      toolregistry.CommandToolName,
-			Arguments: `{"command":"pwd","args":[],"timeout_ms":1000,"run_mode":"wait_for_exit","idempotency":"read_only","process_scope":"task","description":"inspect workspace","destructive":false,"work_item_id":"wi-1"}`,
+			Arguments: `{"command":"pwd","args":[],"timeout_ms":1000,"run_mode":"wait_for_exit","idempotency":"read_only","process_scope":"stop_on_finish","description":"inspect workspace","destructive":false,"work_item_id":"wi-1"}`,
 		},
 	}, agent.ToolSelectionInput{})
 	if err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("expected hidden work item id to be rejected, got %v", err)
+	}
+}
+
+func TestToolChoiceUsesGlobCwd(t *testing.T) {
+	t.Parallel()
+
+	choice, err := toolChoiceFromToolCall(llms.ToolCall{
+		ID:   "toolu_glob_cwd",
+		Type: "function",
+		FunctionCall: &llms.FunctionCall{
+			Name:      globtool.GlobToolName,
+			Arguments: `{"cwd":"/workspace/example-app","path":"","pattern":"package.json"}`,
+		},
+	}, agent.ToolSelectionInput{
+		Runtime: agent.RuntimeContext{WorkspaceRoot: "/workspace"},
+	})
+	if err != nil {
+		t.Fatalf("tool choice: %v", err)
+	}
+	if choice.WorkingDir != "/workspace/example-app" {
+		t.Fatalf("expected glob cwd to become working directory, got %q", choice.WorkingDir)
+	}
+	if !strings.Contains(string(choice.Input), `"cwd":"/workspace/example-app"`) {
+		t.Fatalf("expected raw glob input to preserve cwd, got %s", choice.Input)
 	}
 }
 
@@ -661,6 +821,9 @@ func TestToolChoiceUsesOSAwareShellOnlyForShellSyntax(t *testing.T) {
 	if linuxChoice.Command != "/bin/bash" || strings.Join(linuxChoice.Args, "\x00") != "-c\x00printf hi | wc -c" {
 		t.Fatalf("expected OS shell for shell syntax, got %q %#v", linuxChoice.Command, linuxChoice.Args)
 	}
+	if linuxChoice.WorkingDir != "/workspace" {
+		t.Fatalf("expected shell syntax choice working directory to use runtime workspace, got %q", linuxChoice.WorkingDir)
+	}
 
 	windowsChoice, err := toolChoiceFromToolCall(llms.ToolCall{
 		ID:   "toolu_windows_shell",
@@ -677,6 +840,9 @@ func TestToolChoiceUsesOSAwareShellOnlyForShellSyntax(t *testing.T) {
 	}
 	if windowsChoice.Command != "cmd" || strings.Join(windowsChoice.Args, "\x00") != "/C\x00dir | findstr go.mod" {
 		t.Fatalf("expected Windows shell for shell syntax, got %q %#v", windowsChoice.Command, windowsChoice.Args)
+	}
+	if windowsChoice.WorkingDir != `C:\workspace` {
+		t.Fatalf("expected Windows shell choice working directory to use runtime workspace, got %q", windowsChoice.WorkingDir)
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"go.temporal.io/sdk/activity"
 
 	"github.com/opencto/opencto/internal/agent"
+	"github.com/opencto/opencto/internal/config"
 	"github.com/opencto/opencto/internal/domain"
 	skillcatalog "github.com/opencto/opencto/internal/skills"
 	toolregistry "github.com/opencto/opencto/internal/tools"
@@ -730,10 +731,10 @@ func (a *Activities) cleanupTaskProcesses(ctx context.Context, projectID string,
 func appendProcessCleanupNotice(message string, processes []domain.ProcessReference, stopped bool, failed bool) string {
 	var notes []string
 	if stopped {
-		notes = append(notes, "OpenCTO stopped task-scoped background process(es) at task completion: "+processRefs(processes, false))
+		notes = append(notes, "OpenCTO stopped stop-on-finish background process(es) at task completion: "+processRefs(processes, false))
 	}
 	if failed {
-		notes = append(notes, "OpenCTO could not stop one or more task-scoped background process(es); they may still be running: "+processRefs(processes, true))
+		notes = append(notes, "OpenCTO could not stop one or more stop-on-finish background process(es); they may still be running: "+processRefs(processes, true))
 	}
 	note := strings.Join(notes, " ")
 	if note == "" {
@@ -1052,6 +1053,7 @@ func (a *Activities) startShellProcess(ctx context.Context, request ExecuteToolR
 		}
 	}
 	processID := stableActivityID("managed-process", execution.ProjectID, execution.WorkItemID, execution.ToolCallID)
+	stateDir := a.runtimeStateDir()
 	manager := shelltool.NewProcessManager(a.activityLogger())
 	process, runErr := manager.Start(ctx, shelltool.StartProcessRequest{
 		ProcessID:    processID,
@@ -1062,8 +1064,10 @@ func (a *Activities) startShellProcess(ctx context.Context, request ExecuteToolR
 		ProcessScope: processScope,
 		Command:      choice.Command,
 		Args:         choice.Args,
-		StateDir:     a.runtimeStateDir(),
+		WorkingDir:   resolveRelativeToolPath(firstNonEmpty(choice.WorkingDir, a.WorkspaceRoot), a.WorkspaceRoot),
+		StateDir:     stateDir,
 		Timeout:      execution.Timeout,
+		Environment:  workspaceEnvironment(a.WorkspaceRoot, a.OpenCTORoot),
 	})
 	metadata := map[string]string{
 		"tool_call_id":                  execution.ToolCallID,
@@ -1098,7 +1102,7 @@ func (a *Activities) startShellProcess(ctx context.Context, request ExecuteToolR
 		status = domain.ExecutionStatusFailed
 		resultCode = "1"
 		errorMessage = runErr.Error()
-		observation = fullObservation("", "", runErr)
+		observation = backgroundStartFailureObservation(ctx, manager, stateDir, process, runErr)
 	}
 	completedAt := time.Now().UTC()
 	attempt.Status = status
@@ -1191,6 +1195,7 @@ func (a *Activities) runBrowserTool(ctx context.Context, choice agent.ToolChoice
 	req.WorkingDir = firstNonEmpty(choice.WorkingDir, a.WorkspaceRoot)
 	req.WorkspaceRoot = a.WorkspaceRoot
 	req.Timeout = execution.Timeout
+	req.Environment = workspaceEnvironment(a.WorkspaceRoot, a.OpenCTORoot)
 
 	executor := a.Browser
 	if executor == nil {
@@ -1220,6 +1225,9 @@ func (a *Activities) runBrowserTool(ctx context.Context, choice agent.ToolChoice
 		metadata["artifact_count"] = strconv.Itoa(len(result.ArtifactPaths))
 		metadata["artifact_paths"] = strings.Join(result.ArtifactPaths, "\n")
 	}
+	if len(result.Actions) > 0 {
+		metadata["action_count"] = strconv.Itoa(len(result.Actions))
+	}
 	if result.Duration > 0 {
 		metadata["duration_ms"] = strconv.FormatInt(result.Duration.Milliseconds(), 10)
 	}
@@ -1240,13 +1248,18 @@ func (a *Activities) runShellTool(ctx context.Context, choice agent.ToolChoice, 
 		Intent:             choice.Intent,
 		Command:            choice.Command,
 		Args:               choice.Args,
+		WorkingDir:         resolveRelativeToolPath(firstNonEmpty(choice.WorkingDir, a.WorkspaceRoot), a.WorkspaceRoot),
 		Timeout:            execution.Timeout,
+		Environment:        workspaceEnvironment(a.WorkspaceRoot, a.OpenCTORoot),
 		FallbackCandidates: execution.FallbackCandidates,
 	}
 	if choice.Metadata["multi_action"] == "true" {
 		input, err := shelltool.DecodeBatchInput(choice.Input)
 		if err != nil {
 			return toolRunResult{ResultCode: "1"}, fmt.Errorf("decode shell batch input: %w", err)
+		}
+		for index := range input.Actions {
+			input.Actions[index].WorkingDir = resolveRelativeToolPath(firstNonEmpty(input.Actions[index].WorkingDir, req.WorkingDir), a.WorkspaceRoot)
 		}
 		req.Command = ""
 		req.Args = nil
@@ -1342,16 +1355,20 @@ func (a *Activities) runReadTool(ctx context.Context, choice agent.ToolChoice) (
 		executor = readtool.NewSafeExecutor(a.activityLogger())
 	}
 	result, err := executor.Run(ctx, req)
+	metadata := map[string]string{
+		"file_path":   result.FilePath,
+		"lines_read":  strconv.Itoa(result.LinesRead),
+		"total_lines": strconv.Itoa(result.TotalLines),
+		"bytes_read":  strconv.Itoa(result.BytesRead),
+		"truncated":   strconv.FormatBool(result.Truncated),
+	}
+	if len(result.Actions) > 0 {
+		metadata["action_count"] = strconv.Itoa(len(result.Actions))
+	}
 	return toolRunResult{
 		Observation: readObservation(result, err),
 		ResultCode:  resultCodeForError(err),
-		Metadata: map[string]string{
-			"file_path":   result.FilePath,
-			"lines_read":  strconv.Itoa(result.LinesRead),
-			"total_lines": strconv.Itoa(result.TotalLines),
-			"bytes_read":  strconv.Itoa(result.BytesRead),
-			"truncated":   strconv.FormatBool(result.Truncated),
-		},
+		Metadata:    metadata,
 	}, err
 }
 
@@ -1411,9 +1428,11 @@ func (a *Activities) runGlobTool(ctx context.Context, choice agent.ToolChoice, e
 	}
 	req.ProjectID = execution.ProjectID
 	req.Intent = choice.Intent
-	req.Path = resolveRelativeToolPath(req.Path, firstNonEmpty(choice.WorkingDir, a.WorkspaceRoot))
-	if strings.TrimSpace(req.Path) == "" {
-		req.Path = firstNonEmpty(choice.WorkingDir, a.WorkspaceRoot)
+	req.Cwd = resolveRelativeToolPath(firstNonEmpty(req.Cwd, choice.WorkingDir, a.WorkspaceRoot), a.WorkspaceRoot)
+	req.Path = resolveRelativeToolPath(req.Path, req.Cwd)
+	for index := range req.Actions {
+		req.Actions[index].Cwd = resolveRelativeToolPath(firstNonEmpty(req.Actions[index].Cwd, req.Cwd), a.WorkspaceRoot)
+		req.Actions[index].Path = resolveRelativeToolPath(req.Actions[index].Path, req.Actions[index].Cwd)
 	}
 	req.Timeout = execution.Timeout
 
@@ -1425,15 +1444,20 @@ func (a *Activities) runGlobTool(ctx context.Context, choice agent.ToolChoice, e
 	metadata := map[string]string{
 		"pattern":     result.Pattern,
 		"path":        result.Root,
+		"cwd":         req.Cwd,
 		"match_count": strconv.Itoa(len(result.Matches)),
+	}
+	if len(result.Actions) > 0 {
+		metadata["action_count"] = strconv.Itoa(len(result.Actions))
 	}
 	if result.Duration > 0 {
 		metadata["duration_ms"] = strconv.FormatInt(result.Duration.Milliseconds(), 10)
 	}
 	return toolRunResult{
-		Observation: globObservation(result, err),
-		ResultCode:  resultCodeForError(err),
-		Metadata:    metadata,
+		Observation:      globObservation(result, err),
+		ResultCode:       resultCodeForError(err),
+		WorkingDirectory: req.Cwd,
+		Metadata:         metadata,
 	}, err
 }
 
@@ -1459,6 +1483,9 @@ func (a *Activities) runGrepTool(ctx context.Context, choice agent.ToolChoice, e
 	}
 	metadata := map[string]string{
 		"grep_exit_status": strconv.Itoa(result.ExitCode),
+	}
+	if len(result.Actions) > 0 {
+		metadata["action_count"] = strconv.Itoa(len(result.Actions))
 	}
 	if result.Duration > 0 {
 		metadata["duration_ms"] = strconv.FormatInt(result.Duration.Milliseconds(), 10)
@@ -1520,6 +1547,9 @@ func resultCodeForError(err error) string {
 }
 
 func readObservation(result readtool.Result, err error) string {
+	if len(result.Actions) > 0 {
+		return readBatchObservation(result, err)
+	}
 	if err != nil {
 		return fullObservation("", "", err)
 	}
@@ -1534,6 +1564,35 @@ func readObservation(result readtool.Result, err error) string {
 	if result.Content != "" {
 		builder.WriteString("\ncontent:\n")
 		builder.WriteString(result.Content)
+	}
+	return builder.String()
+}
+
+func readBatchObservation(result readtool.Result, err error) string {
+	var builder strings.Builder
+	_, _ = fmt.Fprintf(&builder, "files: %d\nlines: %d/%d\nbytes: %d\ntruncated: %t",
+		len(result.Actions),
+		result.LinesRead,
+		result.TotalLines,
+		result.BytesRead,
+		result.Truncated,
+	)
+	for _, action := range result.Actions {
+		_, _ = fmt.Fprintf(&builder, "\n\nfile: %s\nlines: %d/%d\nbytes: %d\ntruncated: %t",
+			action.FilePath,
+			action.LinesRead,
+			action.TotalLines,
+			action.BytesRead,
+			action.Truncated,
+		)
+		if action.Content != "" {
+			builder.WriteString("\ncontent:\n")
+			builder.WriteString(action.Content)
+		}
+	}
+	if err != nil {
+		builder.WriteString("\n\nerror:\n")
+		builder.WriteString(err.Error())
 	}
 	return builder.String()
 }
@@ -1553,6 +1612,9 @@ func writeObservation(result writetool.Result, err error) string {
 }
 
 func globObservation(result globtool.Result, err error) string {
+	if len(result.Actions) > 0 {
+		return globBatchObservation(result, err)
+	}
 	if err != nil {
 		return fullObservation("", "", err)
 	}
@@ -1565,6 +1627,27 @@ func globObservation(result globtool.Result, err error) string {
 		len(result.Matches),
 		strings.Join(result.Matches, "\n"),
 	)
+}
+
+func globBatchObservation(result globtool.Result, err error) string {
+	var builder strings.Builder
+	_, _ = fmt.Fprintf(&builder, "patterns: %d\nmatches: %d", len(result.Actions), len(result.Matches))
+	for _, action := range result.Actions {
+		_, _ = fmt.Fprintf(&builder, "\n\npattern: %s\npath: %s\nmatches: %d",
+			action.Pattern,
+			action.Root,
+			len(action.Matches),
+		)
+		if len(action.Matches) > 0 {
+			builder.WriteString("\n")
+			builder.WriteString(strings.Join(action.Matches, "\n"))
+		}
+	}
+	if err != nil {
+		builder.WriteString("\n\nerror:\n")
+		builder.WriteString(err.Error())
+	}
+	return builder.String()
 }
 
 func grepObservation(result greptool.Result, err error) string {
@@ -1796,7 +1879,7 @@ func ensureToolChoiceMetadata(choice *agent.ToolChoice, workItemID string, cycle
 		choice.Idempotency = domain.ToolIdempotencyUnknown
 	}
 	if choice.ProcessScope == "" {
-		choice.ProcessScope = domain.ProcessScopeTask
+		choice.ProcessScope = domain.ProcessScopeStopOnFinish
 	}
 	choice.Metadata["run_mode"] = string(choice.RunMode)
 	choice.Metadata["idempotency"] = string(choice.Idempotency)
@@ -1807,7 +1890,7 @@ func toolProcessScope(scope domain.ProcessScope) domain.ProcessScope {
 	if scope == domain.ProcessScopeProject {
 		return domain.ProcessScopeProject
 	}
-	return domain.ProcessScopeTask
+	return domain.ProcessScopeStopOnFinish
 }
 
 func markFinalNextActionWorkItems(nextAction *agent.NextAction, status domain.WorkItemStatus, observation *agent.ExecutionFeedback, now time.Time) {
@@ -2012,6 +2095,17 @@ func processStartObservation(process domain.ManagedProcess) string {
 	return builder.String()
 }
 
+func backgroundStartFailureObservation(ctx context.Context, manager *shelltool.ProcessManager, stateDir string, process domain.ManagedProcess, runErr error) string {
+	if manager == nil || strings.TrimSpace(process.ID) == "" {
+		return fullObservation("", "", runErr)
+	}
+	logs, err := manager.Logs(ctx, stateDir, process.ID, 0)
+	if err != nil {
+		return fullObservation("", "", runErr)
+	}
+	return fullObservation(logs.StdoutTail, logs.StderrTail, runErr)
+}
+
 func buildRuntimeContext(workspaceRoot, openCTORoot string) agent.RuntimeContext {
 	shellPath := strings.TrimSpace(os.Getenv("SHELL"))
 	return agent.RuntimeContext{
@@ -2022,6 +2116,20 @@ func buildRuntimeContext(workspaceRoot, openCTORoot string) agent.RuntimeContext
 		WorkspaceRoot: workspaceRoot,
 		OpenCTORoot:   openCTORoot,
 	}
+}
+
+func workspaceEnvironment(workspaceRoot, openCTORoot string) map[string]string {
+	env := map[string]string{}
+	if workspaceRoot = strings.TrimSpace(workspaceRoot); workspaceRoot != "" {
+		env[config.EnvOpenCTOWorkspace] = workspaceRoot
+	}
+	if openCTORoot = strings.TrimSpace(openCTORoot); openCTORoot != "" {
+		env["OPENCTO_ROOT"] = openCTORoot
+	}
+	if len(env) == 0 {
+		return nil
+	}
+	return env
 }
 
 func firstNonEmpty(values ...string) string {

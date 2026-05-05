@@ -287,7 +287,7 @@ func transcriptIdempotency(feedback agent.ExecutionFeedback) string {
 func transcriptProcessScope(feedback agent.ExecutionFeedback) string {
 	value := strings.TrimSpace(feedback.Metadata["process_scope"])
 	if value == "" {
-		return string(domain.ProcessScopeTask)
+		return string(domain.ProcessScopeStopOnFinish)
 	}
 	return value
 }
