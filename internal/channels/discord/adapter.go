@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -19,7 +18,7 @@ import (
 	"github.com/opencto/opencto/internal/runtime"
 )
 
-const discordMessageMaxLength = 2000
+const discordOutboundMessageMaxChars = 2000
 const discordAttachmentMaxBytes int64 = 20 << 20
 const discordOutboundAttachmentMaxFiles = 10
 const discordDefaultOutboundMaxFileBytes int64 = 10 << 20
@@ -28,9 +27,11 @@ const discordDefaultOutboundMaxTotalBytes int64 = 25 << 20
 const discordAttachmentPayloadKey = "attachments"
 
 type AttachmentLimits = channels.AttachmentLimits
+type MessageLimits = channels.MessageLimits
 
 type Options struct {
 	WorkspaceRoot    string
+	MessageLimits    MessageLimits
 	AttachmentLimits AttachmentLimits
 }
 
@@ -42,6 +43,7 @@ type Adapter struct {
 	attachmentDir    string
 	httpClient       *http.Client
 	workspaceRoot    string
+	messageLimits    MessageLimits
 	attachmentLimits AttachmentLimits
 }
 
@@ -66,6 +68,7 @@ func New(projectID, token, _ string, dispatcher *runtime.Dispatcher, logger *slo
 	options := defaultOptions()
 	if len(opts) > 0 {
 		options = opts[0]
+		options.MessageLimits = normalizeMessageLimits(options.MessageLimits)
 		options.AttachmentLimits = normalizeAttachmentLimits(options.AttachmentLimits)
 	}
 	return &Adapter{
@@ -76,18 +79,29 @@ func New(projectID, token, _ string, dispatcher *runtime.Dispatcher, logger *slo
 		attachmentDir:    attachmentDir,
 		httpClient:       &http.Client{Timeout: 30 * time.Second},
 		workspaceRoot:    options.WorkspaceRoot,
+		messageLimits:    options.MessageLimits,
 		attachmentLimits: options.AttachmentLimits,
 	}, nil
 }
 
 func defaultOptions() Options {
 	return Options{
+		MessageLimits: MessageLimits{
+			MaxChars: discordOutboundMessageMaxChars,
+		},
 		AttachmentLimits: AttachmentLimits{
 			MaxFiles:      discordOutboundAttachmentMaxFiles,
 			MaxFileBytes:  discordDefaultOutboundMaxFileBytes,
 			MaxTotalBytes: discordDefaultOutboundMaxTotalBytes,
 		},
 	}
+}
+
+func normalizeMessageLimits(limits MessageLimits) MessageLimits {
+	if limits.MaxChars == 0 {
+		limits.MaxChars = discordOutboundMessageMaxChars
+	}
+	return limits
 }
 
 func normalizeAttachmentLimits(limits AttachmentLimits) AttachmentLimits {
@@ -367,7 +381,7 @@ func (a *Adapter) Report(ctx context.Context, event domain.Event, report domain.
 	}
 
 	attachments := report.Attachments
-	chunks := splitDiscordMessage(report.Text, discordMessageMaxLength)
+	chunks := channels.SplitText(report.Text, a.messageLimits.MaxChars)
 	for i, chunk := range chunks {
 		var files []*discordgo.File
 		var closers []io.Closer
@@ -441,68 +455,4 @@ func (a *Adapter) NotifyTyping(ctx context.Context, event domain.Event) error {
 	default:
 	}
 	return a.session.ChannelTyping(event.ChannelID)
-}
-
-func splitDiscordMessage(message string, limit int) []string {
-	message = strings.TrimSpace(message)
-	if message == "" {
-		return []string{""}
-	}
-	if limit <= 0 {
-		limit = discordMessageMaxLength
-	}
-
-	var chunks []string
-	remaining := message
-	for len(remaining) > 0 {
-		if utf8.RuneCountInString(remaining) <= limit {
-			chunks = append(chunks, remaining)
-			break
-		}
-
-		cut := longestPrefixByRunes(remaining, limit)
-		prefix := remaining[:cut]
-		splitAt := bestDiscordSplit(prefix)
-		if splitAt <= 0 {
-			splitAt = cut
-		}
-
-		chunk := strings.TrimSpace(remaining[:splitAt])
-		if chunk == "" {
-			chunk = strings.TrimSpace(prefix)
-			splitAt = len(prefix)
-		}
-		chunks = append(chunks, chunk)
-		remaining = strings.TrimSpace(remaining[splitAt:])
-	}
-
-	return chunks
-}
-
-func longestPrefixByRunes(text string, limit int) int {
-	if limit <= 0 {
-		return 0
-	}
-	runes := 0
-	for idx := range text {
-		if runes == limit {
-			return idx
-		}
-		runes++
-	}
-	return len(text)
-}
-
-func bestDiscordSplit(text string) int {
-	for i := len(text) - 1; i >= 0; i-- {
-		switch text[i] {
-		case '\n':
-			return i + 1
-		case ' ', '\t':
-			if i > 0 {
-				return i + 1
-			}
-		}
-	}
-	return 0
 }

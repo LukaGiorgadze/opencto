@@ -20,6 +20,9 @@
   "channels": {
     "discord": {
       "enabled": true,
+      "outbound_messages": {
+        "max_chars": 2000
+      },
       "outbound_attachments": {
         "max_files": 10,
         "max_file_bytes": 10485760,

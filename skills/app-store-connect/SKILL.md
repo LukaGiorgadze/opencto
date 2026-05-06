@@ -1,11 +1,6 @@
 ---
 name: app-store-connect
-description: >
-    App Store Connect and `asc` CLI operations for iOS, macOS, tvOS, and visionOS apps.
-    Use for: app records, signing/certificates, Xcode builds and uploads (trigger on macOS
-    for any "build my app" request), TestFlight, metadata/screenshots/localization, ASO,
-    What's New notes, App Store submission, pricing, subscriptions, IAPs, RevenueCat sync,
-    macOS notarization, crash triage etc.
+description: description: Use for building, publishing and managing apps on the App Store — covers building and uploading, signing, certificates, TestFlight, metadata, screenshots, localization, ASO, release notes, submission, pricing, subscriptions, in-app purchases, crash triage and more.
 ---
 
 # App Store Connect

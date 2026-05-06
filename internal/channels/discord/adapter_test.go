@@ -2,55 +2,87 @@ package discord
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
-	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/opencto/opencto/internal/domain"
 )
 
-func TestSplitDiscordMessageByLines(t *testing.T) {
-	message := strings.Repeat("a", discordMessageMaxLength-10) + "\n" + strings.Repeat("b", 50)
-
-	chunks := splitDiscordMessage(message, discordMessageMaxLength)
-	if len(chunks) != 2 {
-		t.Fatalf("expected 2 chunks, got %d", len(chunks))
-	}
-	for i, chunk := range chunks {
-		if utf8.RuneCountInString(chunk) > discordMessageMaxLength {
-			t.Fatalf("chunk %d exceeds limit: %d", i, utf8.RuneCountInString(chunk))
+func TestReportSplitsMessagesByConfiguredLimit(t *testing.T) {
+	var mu sync.Mutex
+	var contents []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("unexpected method: %s", r.Method)
 		}
-	}
-	if chunks[0] != strings.Repeat("a", discordMessageMaxLength-10) {
-		t.Fatalf("unexpected first chunk length/content")
-	}
-	if chunks[1] != strings.Repeat("b", 50) {
-		t.Fatalf("unexpected second chunk length/content")
-	}
-}
+		if r.URL.Path != "/channels/channel-1/messages" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
 
-func TestSplitDiscordMessageFallsBackToHardSplit(t *testing.T) {
-	message := strings.Repeat("x", discordMessageMaxLength+25)
+		var payload struct {
+			Content string `json:"content"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
 
-	chunks := splitDiscordMessage(message, discordMessageMaxLength)
-	if len(chunks) != 2 {
-		t.Fatalf("expected 2 chunks, got %d", len(chunks))
+		mu.Lock()
+		contents = append(contents, payload.Content)
+		id := len(contents)
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"id":         strconv.Itoa(id),
+			"channel_id": "channel-1",
+			"content":    payload.Content,
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointChannels := discordgo.EndpointChannels
+	discordgo.EndpointChannels = server.URL + "/channels/"
+	t.Cleanup(func() {
+		discordgo.EndpointChannels = oldEndpointChannels
+	})
+
+	session, err := discordgo.New("Bot test-token")
+	if err != nil {
+		t.Fatalf("new discord session: %v", err)
 	}
-	if utf8.RuneCountInString(chunks[0]) != discordMessageMaxLength {
-		t.Fatalf("unexpected first chunk size: %d", utf8.RuneCountInString(chunks[0]))
+	session.Client = server.Client()
+
+	adapter := &Adapter{
+		session:       session,
+		messageLimits: MessageLimits{MaxChars: 10},
 	}
-	if utf8.RuneCountInString(chunks[1]) != 25 {
-		t.Fatalf("unexpected second chunk size: %d", utf8.RuneCountInString(chunks[1]))
+	err = adapter.Report(context.Background(), domain.Event{ChannelID: "channel-1"}, domain.ReportMessage{
+		Text: "hello world. done",
+	})
+	if err != nil {
+		t.Fatalf("report: %v", err)
 	}
-	if strings.Join(chunks, "") != message {
-		t.Fatalf("split/join did not preserve content")
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"hello", "world.", "done"}
+	if len(contents) != len(want) {
+		t.Fatalf("expected %d messages, got %d: %#v", len(want), len(contents), contents)
+	}
+	for i := range want {
+		if contents[i] != want[i] {
+			t.Fatalf("message %d: expected %q, got %q", i, want[i], contents[i])
+		}
 	}
 }
 

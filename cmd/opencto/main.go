@@ -80,6 +80,9 @@ func main() {
 			}
 			discordAdapter, err = discord.New(cfg.Project.ID, token, appID, dispatcher, logger, discord.Options{
 				WorkspaceRoot: cfg.Project.WorkspaceRoot,
+				MessageLimits: discord.MessageLimits{
+					MaxChars: cfg.Channels.Discord.OutboundMessages.MaxChars,
+				},
 				AttachmentLimits: discord.AttachmentLimits{
 					MaxFiles:      cfg.Channels.Discord.OutboundAttachments.MaxFiles,
 					MaxFileBytes:  cfg.Channels.Discord.OutboundAttachments.MaxFileBytes,

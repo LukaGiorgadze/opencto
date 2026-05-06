@@ -12,6 +12,7 @@ import (
 const (
 	EnvOpenCTOWorkspace = "OPENCTO_WORKSPACE"
 
+	defaultDiscordOutboundMaxChars      = 2000
 	defaultDiscordOutboundMaxFiles      = 10
 	defaultDiscordOutboundMaxFileBytes  = 10 << 20
 	defaultDiscordOutboundMaxTotalBytes = 25 << 20
@@ -76,7 +77,12 @@ type ChannelsConfig struct {
 
 type DiscordConfig struct {
 	Enabled             bool                   `json:"enabled"`
+	OutboundMessages    MessageLimitsConfig    `json:"outbound_messages"`
 	OutboundAttachments AttachmentLimitsConfig `json:"outbound_attachments"`
+}
+
+type MessageLimitsConfig struct {
+	MaxChars int `json:"max_chars"`
 }
 
 type AttachmentLimitsConfig struct {
@@ -116,6 +122,9 @@ func Load(path string) (Config, error) {
 		Channels:      raw.Channels,
 		Observability: raw.Observability,
 	}
+	cfg.Channels.Discord.OutboundMessages = normalizeMessageLimits(cfg.Channels.Discord.OutboundMessages, MessageLimitsConfig{
+		MaxChars: defaultDiscordOutboundMaxChars,
+	})
 	cfg.Channels.Discord.OutboundAttachments = normalizeAttachmentLimits(cfg.Channels.Discord.OutboundAttachments, AttachmentLimitsConfig{
 		MaxFiles:      defaultDiscordOutboundMaxFiles,
 		MaxFileBytes:  defaultDiscordOutboundMaxFileBytes,
@@ -167,11 +176,21 @@ func (c *Config) validate() error {
 	if c.Temporal.ContinueAsNewAfterEvents <= 0 {
 		errs = append(errs, errors.New("temporal.continue_as_new_after_events must be greater than 0"))
 	}
+	if err := validateDiscordMessageLimits(c.Channels.Discord.OutboundMessages); err != nil {
+		errs = append(errs, err)
+	}
 	if err := validateDiscordAttachmentLimits(c.Channels.Discord.OutboundAttachments); err != nil {
 		errs = append(errs, err)
 	}
 
 	return errors.Join(errs...)
+}
+
+func normalizeMessageLimits(value, defaults MessageLimitsConfig) MessageLimitsConfig {
+	if value.MaxChars == 0 {
+		value.MaxChars = defaults.MaxChars
+	}
+	return value
 }
 
 func normalizeAttachmentLimits(value, defaults AttachmentLimitsConfig) AttachmentLimitsConfig {
@@ -185,6 +204,13 @@ func normalizeAttachmentLimits(value, defaults AttachmentLimitsConfig) Attachmen
 		value.MaxTotalBytes = defaults.MaxTotalBytes
 	}
 	return value
+}
+
+func validateDiscordMessageLimits(value MessageLimitsConfig) error {
+	if value.MaxChars < 1 || value.MaxChars > defaultDiscordOutboundMaxChars {
+		return errors.New("channels.discord.outbound_messages.max_chars must be between 1 and 2000")
+	}
+	return nil
 }
 
 func validateDiscordAttachmentLimits(value AttachmentLimitsConfig) error {

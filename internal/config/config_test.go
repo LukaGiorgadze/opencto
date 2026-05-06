@@ -221,6 +221,9 @@ func TestLoadParsesDiscordOutboundAttachmentLimits(t *testing.T) {
 	  "channels": {
 	    "discord": {
 	      "enabled": true,
+	      "outbound_messages": {
+	        "max_chars": 1500
+	      },
 	      "outbound_attachments": {
 	        "max_files": 4,
 	        "max_file_bytes": 1024,
@@ -241,9 +244,106 @@ func TestLoadParsesDiscordOutboundAttachmentLimits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
+	messageLimits := cfg.Channels.Discord.OutboundMessages
+	if messageLimits.MaxChars != 1500 {
+		t.Fatalf("unexpected message limits: %#v", messageLimits)
+	}
 	limits := cfg.Channels.Discord.OutboundAttachments
 	if limits.MaxFiles != 4 || limits.MaxFileBytes != 1024 || limits.MaxTotalBytes != 4096 {
 		t.Fatalf("unexpected limits: %#v", limits)
+	}
+}
+
+func TestLoadDefaultsDiscordOutboundMessageLimits(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	data := []byte(`
+{
+  "project": {
+    "id": "default",
+    "name": "OpenCTO",
+    "workspace_root": "."
+  },
+  "llm": {
+    "provider": "openai",
+    "base_url": "http://127.0.0.1:4000",
+    "model_reasoning": "gpt-5.4",
+    "model_fast": "gpt-5.4-mini",
+    "transcription_model": "gpt-4o-mini-transcribe"
+  },
+  "temporal": {
+    "host_port": "127.0.0.1:7233",
+    "namespace": "default",
+    "task_queue": "opencto",
+    "continue_as_new_after_events": 1000
+  },
+  "observability": {
+    "log_level": "INFO"
+  }
+}
+`)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Channels.Discord.OutboundMessages.MaxChars != 2000 {
+		t.Fatalf("unexpected message limits: %#v", cfg.Channels.Discord.OutboundMessages)
+	}
+}
+
+func TestLoadRejectsInvalidDiscordOutboundMessageLimits(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	data := []byte(`
+{
+  "project": {
+    "id": "default",
+    "name": "OpenCTO",
+    "workspace_root": "."
+  },
+  "llm": {
+    "provider": "openai",
+    "base_url": "http://127.0.0.1:4000",
+    "model_reasoning": "gpt-5.4",
+    "model_fast": "gpt-5.4-mini",
+    "transcription_model": "gpt-4o-mini-transcribe"
+  },
+  "temporal": {
+    "host_port": "127.0.0.1:7233",
+    "namespace": "default",
+    "task_queue": "opencto",
+    "continue_as_new_after_events": 1000
+  },
+  "channels": {
+    "discord": {
+      "outbound_messages": {
+        "max_chars": 2001
+      }
+    }
+  },
+  "observability": {
+    "log_level": "INFO"
+  }
+}
+`)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected message limit validation error")
+	}
+	if !strings.Contains(err.Error(), "channels.discord.outbound_messages.max_chars must be between 1 and 2000") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
