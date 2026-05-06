@@ -248,6 +248,8 @@ func scheduleToolChoiceFromInput(definition toolregistry.Definition, call llms.T
 	}
 	if task := strings.TrimSpace(args.Task); task != "" {
 		summary += ": " + task
+	} else if description := strings.TrimSpace(args.Description); description != "" {
+		summary += ": " + description
 	}
 	idempotency := domain.ToolIdempotencyNonIdempotent
 	if operation == scheduletool.OperationList || operation == scheduletool.OperationDescribe {

@@ -1688,10 +1688,12 @@ func (a *Activities) runScheduleTool(ctx context.Context, choice agent.ToolChoic
 	}
 	result, err := executor.Run(ctx, req)
 	metadata := map[string]string{
-		"schedule_operation": result.Operation,
-		"schedule_id":        result.ScheduleID,
-		"schedule_kind":      result.Kind,
-		"schedule_time_zone": result.TimeZone,
+		"schedule_operation":   result.Operation,
+		"schedule_id":          result.ScheduleID,
+		"schedule_name":        result.Name,
+		"schedule_description": result.Description,
+		"schedule_kind":        result.Kind,
+		"schedule_time_zone":   result.TimeZone,
 	}
 	if result.OneShotAt != "" {
 		metadata["one_shot_at"] = result.OneShotAt

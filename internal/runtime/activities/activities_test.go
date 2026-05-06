@@ -353,15 +353,17 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 	}}
 	activities.Schedule = scheduleExecutor
 	scheduleResult, err := activities.ExecuteTool(ctx, executeRequest(domain.ToolTypeSchedule, "schedule-1", map[string]any{
-		"operation":   "create",
-		"schedule_id": "",
-		"name":        "daily hello",
-		"task":        "send hello",
-		"one_shot_at": "",
-		"cron":        "0 9 * * *",
-		"paused":      false,
-		"note":        "",
-		"limit":       0,
+		"operation":         "create",
+		"schedule_id":       "",
+		"name":              "daily hello",
+		"description":       "",
+		"task":              "send hello",
+		"one_shot_at":       "",
+		"cron":              "0 9 * * *",
+		"paused":            false,
+		"note":              "",
+		"limit":             0,
+		"include_completed": false,
 	}))
 	if err != nil {
 		t.Fatalf("schedule tool: %v", err)

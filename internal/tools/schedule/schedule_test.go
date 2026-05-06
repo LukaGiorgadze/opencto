@@ -3,11 +3,14 @@ package schedule
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	temporalclient "go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/runtime/scheduled"
@@ -41,10 +44,11 @@ func TestCreateOneShotScheduleBuildsTemporalSchedule(t *testing.T) {
 			ChannelType: domain.ChannelTypeDiscord,
 			ActorName:   "luka",
 		},
-		Operation: "create",
-		Name:      "deploy app",
-		Task:      "deploy this app",
-		OneShotAt: "2026-05-07T09:00:00+04:00",
+		Operation:   "create",
+		Name:        "deploy app",
+		Task:        "deploy this app",
+		OneShotAt:   "2026-05-07T09:00:00+04:00",
+		Description: "deploy the app once",
 	})
 	if err != nil {
 		t.Fatalf("create schedule: %v", err)
@@ -79,6 +83,12 @@ func TestCreateOneShotScheduleBuildsTemporalSchedule(t *testing.T) {
 	}
 	if input.Task != "deploy this app" || input.SourceEvent.ChannelID != "channel-1" || input.CreatedByEventID != "event-1" {
 		t.Fatalf("unexpected dispatch input: %#v", input)
+	}
+	if options.Memo[memoScheduleName] != "deploy app" || options.Memo[memoScheduleDescription] != "deploy the app once" {
+		t.Fatalf("expected human schedule metadata, got %#v", options.Memo)
+	}
+	if action.StaticSummary != "deploy app" || action.StaticDetails != "deploy the app once" {
+		t.Fatalf("expected human workflow metadata, got %#v", action)
 	}
 }
 
@@ -151,15 +161,41 @@ func TestCreateScheduleReturnsHostTimezoneResolutionError(t *testing.T) {
 func TestScheduleCRUDOperationsUseProjectScopedIDs(t *testing.T) {
 	t.Parallel()
 
-	location := time.FixedZone("UTC", 0)
-	handle := &fakeScheduleHandle{}
+	location := time.FixedZone("Asia/Tbilisi", 4*60*60)
+	handle := &fakeScheduleHandle{
+		descriptions: map[string]*temporalclient.ScheduleDescription{
+			"opencto:project-1:schedule:daily": {
+				Schedule: temporalclient.Schedule{
+					Spec:  &temporalclient.ScheduleSpec{CronExpressions: []string{"0 9 * * *"}, TimeZoneName: "Asia/Tbilisi"},
+					State: &temporalclient.ScheduleState{},
+				},
+				Info: temporalclient.ScheduleInfo{
+					NextActionTimes: []time.Time{time.Date(2026, 5, 7, 9, 0, 0, 0, time.UTC)},
+				},
+			},
+			"opencto:project-1:schedule:completed-once": {
+				Schedule: temporalclient.Schedule{
+					Spec: &temporalclient.ScheduleSpec{
+						EndAt: time.Date(2026, 5, 6, 9, 0, 1, 0, time.UTC),
+					},
+					State: &temporalclient.ScheduleState{LimitedActions: true, RemainingActions: 0},
+				},
+			},
+		},
+	}
 	client := &fakeScheduleClient{
 		handle: handle,
 		entries: []*temporalclient.ScheduleListEntry{
 			{
 				ID:              "opencto:project-1:schedule:daily",
 				Note:            "daily note",
+				Memo:            testMemo(t, map[string]string{memoScheduleName: "daily hello", memoScheduleDescription: "sends hello every morning"}),
 				NextActionTimes: []time.Time{time.Date(2026, 5, 7, 9, 0, 0, 0, time.UTC)},
+			},
+			{
+				ID:   "opencto:project-1:schedule:completed-once",
+				Note: "completed once",
+				Memo: testMemo(t, map[string]string{memoScheduleName: "completed once", memoScheduleDescription: "already ran"}),
 			},
 			{ID: "opencto:other:schedule:daily"},
 		},
@@ -171,7 +207,7 @@ func TestScheduleCRUDOperationsUseProjectScopedIDs(t *testing.T) {
 			return time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC)
 		},
 		ResolveTimeZone: func() (*time.Location, string, error) {
-			return location, "UTC", nil
+			return location, "Asia/Tbilisi", nil
 		},
 	}
 
@@ -182,12 +218,33 @@ func TestScheduleCRUDOperationsUseProjectScopedIDs(t *testing.T) {
 	if len(list.Schedules) != 1 || list.Schedules[0].ID != "opencto:project-1:schedule:daily" {
 		t.Fatalf("unexpected list result: %#v", list)
 	}
+	if list.TimeZone != "Asia/Tbilisi" || list.Schedules[0].Name != "daily hello" || list.Schedules[0].Description != "sends hello every morning" {
+		t.Fatalf("expected human list metadata, got %#v", list)
+	}
+	observation := list.Observation()
+	if strings.Contains(observation, "opencto:project-1:schedule:daily") || !strings.Contains(observation, "daily hello") || !strings.Contains(observation, "2026-05-07 13:00:00") {
+		t.Fatalf("unexpected list observation: %q", observation)
+	}
+	if strings.Contains(observation, "completed once") {
+		t.Fatalf("default list should hide completed schedules: %q", observation)
+	}
+
+	all, err := executor.Run(context.Background(), Request{ProjectID: "project-1", Operation: "list", IncludeCompleted: true})
+	if err != nil {
+		t.Fatalf("list all schedules: %v", err)
+	}
+	if len(all.Schedules) != 2 || !all.Schedules[1].Completed {
+		t.Fatalf("expected completed schedule when include_completed is true: %#v", all)
+	}
+	if allObservation := all.Observation(); !strings.Contains(allObservation, "completed once (completed)") || strings.Contains(allObservation, "completed once (completed)\n   next_action_times: none") {
+		t.Fatalf("expected completed schedule observation, got %q", allObservation)
+	}
 
 	for _, operation := range []string{"pause", "resume", "trigger", "delete"} {
 		_, err := executor.Run(context.Background(), Request{
 			ProjectID:   "project-1",
 			Operation:   operation,
-			ScheduleID:  "daily",
+			ScheduleID:  "daily hello",
 			SourceEvent: domain.Event{ProjectID: "project-1"},
 		})
 		if err != nil {
@@ -201,8 +258,9 @@ func TestScheduleCRUDOperationsUseProjectScopedIDs(t *testing.T) {
 	_, err = executor.Run(context.Background(), Request{
 		ProjectID:   "project-1",
 		Operation:   "update",
-		ScheduleID:  "daily",
+		ScheduleID:  "daily hello",
 		Name:        "daily updated",
+		Description: "send an updated hello every day",
 		Task:        "send updated hello",
 		Cron:        "@every 24h",
 		SourceEvent: domain.Event{ID: "event-1", ProjectID: "project-1"},
@@ -247,12 +305,13 @@ func (f *fakeScheduleClient) GetHandle(_ context.Context, id string) temporalcli
 }
 
 type fakeScheduleHandle struct {
-	id        string
-	deleted   int
-	updated   int
-	triggered int
-	paused    int
-	unpaused  int
+	id           string
+	deleted      int
+	updated      int
+	triggered    int
+	paused       int
+	unpaused     int
+	descriptions map[string]*temporalclient.ScheduleDescription
 }
 
 func (f *fakeScheduleHandle) GetID() string {
@@ -278,6 +337,11 @@ func (f *fakeScheduleHandle) Update(_ context.Context, options temporalclient.Sc
 }
 
 func (f *fakeScheduleHandle) Describe(context.Context) (*temporalclient.ScheduleDescription, error) {
+	if f.descriptions != nil {
+		if description := f.descriptions[f.id]; description != nil {
+			return description, nil
+		}
+	}
 	return &temporalclient.ScheduleDescription{
 		Schedule: temporalclient.Schedule{
 			Spec: &temporalclient.ScheduleSpec{
@@ -320,4 +384,18 @@ func (f *fakeScheduleIterator) Next() (*temporalclient.ScheduleListEntry, error)
 	entry := f.entries[f.index]
 	f.index++
 	return entry, nil
+}
+
+func testMemo(t *testing.T, values map[string]string) *commonpb.Memo {
+	t.Helper()
+
+	fields := map[string]*commonpb.Payload{}
+	for key, value := range values {
+		payload, err := converter.GetDefaultDataConverter().ToPayload(value)
+		if err != nil {
+			t.Fatalf("encode memo %q: %v", key, err)
+		}
+		fields[key] = payload
+	}
+	return &commonpb.Memo{Fields: fields}
 }

@@ -5,12 +5,14 @@
         "operation",
         "schedule_id",
         "name",
+        "description",
         "task",
         "one_shot_at",
         "cron",
         "paused",
         "note",
-        "limit"
+        "limit",
+        "include_completed"
     ],
     "additionalProperties": false,
     "properties": {
@@ -21,11 +23,15 @@
         },
         "schedule_id": {
             "type": "string",
-            "description": "Existing schedule ID for describe/update/delete/pause/resume/trigger. For create, pass an empty string to let OpenCTO generate a project-scoped ID, or a short stable slug like \"daily-hello\"."
+            "description": "Existing schedule ID or human-readable schedule name for describe/update/delete/pause/resume/trigger. For create, pass an empty string to let OpenCTO generate a project-scoped ID, or a short stable slug like \"daily-hello\"."
         },
         "name": {
             "type": "string",
-            "description": "Short human-readable schedule name. Use an empty string for operations that do not need a name."
+            "description": "Short human-readable schedule name shown to the user in schedule lists. Use a concise name such as \"daily hello\" or \"deploy app today\". Use an empty string for operations that do not need a name."
+        },
+        "description": {
+            "type": "string",
+            "description": "Optional human-readable description shown to the user in schedule lists. Use an empty string when unnecessary."
         },
         "task": {
             "type": "string",
@@ -45,13 +51,17 @@
         },
         "note": {
             "type": "string",
-            "description": "Optional short note explaining the schedule or management action. Use an empty string when unnecessary."
+            "description": "Optional Temporal operation note. For create/update, prefer description for user-facing text. Use an empty string when unnecessary."
         },
         "limit": {
             "type": "integer",
             "minimum": 0,
             "maximum": 100,
             "description": "Maximum schedules to list. Use 0 for the default. Ignored for operations other than list."
+        },
+        "include_completed": {
+            "type": "boolean",
+            "description": "For list only. Set false by default so completed/exhausted schedules are hidden. Set true only when the user explicitly asks to include completed, exhausted, past, no-upcoming-run, or all schedules."
         }
     }
 }

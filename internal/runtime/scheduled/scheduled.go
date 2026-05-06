@@ -1,6 +1,8 @@
 package scheduled
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"time"
 
@@ -64,15 +66,25 @@ func EventFromDispatch(input DispatchWorkflowInput, eventID string, scheduledAt 
 }
 
 func EventID(scheduleID, workflowID string, scheduledAt time.Time) string {
-	parts := []string{"scheduled"}
-	if value := strings.TrimSpace(scheduleID); value != "" {
-		parts = append(parts, value)
+	return strings.Join([]string{
+		"scheduled",
+		shortStableID(scheduleID, workflowID),
+		scheduledAt.UTC().Format("20060102T150405.000000000Z"),
+	}, ":")
+}
+
+func shortStableID(values ...string) string {
+	var input []string
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			input = append(input, value)
+		}
 	}
-	if value := strings.TrimSpace(workflowID); value != "" {
-		parts = append(parts, value)
+	if len(input) == 0 {
+		input = []string{"schedule"}
 	}
-	parts = append(parts, scheduledAt.UTC().Format("20060102T150405.000000000Z"))
-	return strings.Join(parts, ":")
+	sum := sha256.Sum256([]byte(strings.Join(input, "\x00")))
+	return hex.EncodeToString(sum[:])[:12]
 }
 
 func IsScheduledTaskEvent(event domain.Event) bool {

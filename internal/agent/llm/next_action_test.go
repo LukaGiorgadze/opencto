@@ -906,7 +906,7 @@ func TestToolChoiceCapturesScheduleInput(t *testing.T) {
 		Type: "function",
 		FunctionCall: &llms.FunctionCall{
 			Name:      scheduletool.ToolName,
-			Arguments: `{"operation":"create","schedule_id":"","name":"daily hello","task":"send hello","one_shot_at":"","cron":"0 9 * * *","paused":false,"note":"","limit":0}`,
+			Arguments: `{"operation":"create","schedule_id":"","name":"daily hello","description":"","task":"send hello","one_shot_at":"","cron":"0 9 * * *","paused":false,"note":"","limit":0,"include_completed":false}`,
 		},
 	}, agent.ToolSelectionInput{
 		Context: agent.Context{Event: domain.Event{Body: "every morning send hello"}},
