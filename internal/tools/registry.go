@@ -12,6 +12,7 @@ import (
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	readtool "github.com/opencto/opencto/internal/tools/read"
+	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
 	skilltool "github.com/opencto/opencto/internal/tools/skill"
 	writetool "github.com/opencto/opencto/internal/tools/write"
 )
@@ -69,6 +70,12 @@ var definitions = []Definition{
 		Type:        domain.ToolTypeGrep,
 		Description: greptool.GrepToolDescription,
 		Schema:      greptool.GrepToolSchema(),
+	},
+	{
+		Name:        scheduletool.ToolName,
+		Type:        domain.ToolTypeSchedule,
+		Description: scheduletool.ToolDescription,
+		Schema:      scheduletool.ToolSchema(),
 	},
 	{
 		Name:        skilltool.SkillToolName,

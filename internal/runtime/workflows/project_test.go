@@ -14,6 +14,7 @@ import (
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/runtime/activities"
+	"github.com/opencto/opencto/internal/runtime/scheduled"
 	"github.com/opencto/opencto/internal/runtime/workflows"
 )
 
@@ -22,6 +23,7 @@ func registerTaskWorkflowActivities(env *testsuite.TestWorkflowEnvironment) {
 	env.RegisterActivityWithOptions((&activities.Activities{}).ExecuteTool, activity.RegisterOptions{Name: "Activities.ExecuteTool"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).ResponseSession, activity.RegisterOptions{Name: "Activities.ResponseSession"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).ReportResponse, activity.RegisterOptions{Name: "Activities.ReportResponse"})
+	env.RegisterActivityWithOptions((&activities.Activities{}).EnqueueScheduledEvent, activity.RegisterOptions{Name: scheduled.EnqueueScheduledEventName})
 }
 
 func TestTaskWorkflowAlternatesNextActionAndExecuteTool(t *testing.T) {
@@ -725,4 +727,126 @@ func TestProjectWorkflowReportsAfterTaskWorkflowFails(t *testing.T) {
 		t.Fatalf("expected project workflow to report after child task failure")
 	}
 	env.AssertExpectations(t)
+}
+
+func TestScheduledDispatchWorkflowEnqueuesSyntheticEvent(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ScheduledDispatchWorkflow)
+	env.RegisterActivityWithOptions((&activities.Activities{}).EnqueueScheduledEvent, activity.RegisterOptions{Name: scheduled.EnqueueScheduledEventName})
+
+	enqueued := false
+	env.OnActivity(scheduled.EnqueueScheduledEventName, mock.Anything, mock.MatchedBy(func(request scheduled.EnqueueScheduledEventRequest) bool {
+		event := request.Event
+		enqueued = event.ProjectID == "project-1" &&
+			event.Body == "send hello" &&
+			event.ChannelID == "channel-1" &&
+			event.Metadata[scheduled.EventMetadataScheduleID] == "schedule-1" &&
+			event.Metadata[scheduled.EventMetadataQueuePolicy] == scheduled.QueuePolicyScheduledTask &&
+			event.Provenance.Source == "schedule"
+		return enqueued
+	})).Return(nil).Once()
+
+	env.ExecuteWorkflow(workflows.ScheduledDispatchWorkflow, scheduled.DispatchWorkflowInput{
+		ProjectID:        "project-1",
+		ScheduleID:       "schedule-1",
+		ScheduleName:     "daily hello",
+		Task:             "send hello",
+		CreatedByEventID: "event-creator",
+		SourceEvent: domain.Event{
+			ID:          "event-creator",
+			ProjectID:   "project-1",
+			ChannelID:   "channel-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ActorName:   "luka",
+		},
+	})
+
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("scheduled dispatch workflow failed: %v", err)
+	}
+	if !enqueued {
+		t.Fatalf("expected scheduled event to be enqueued")
+	}
+	env.AssertExpectations(t)
+}
+
+func TestProjectWorkflowQueuesScheduledEventAsNewTaskWhileActive(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ProjectWorkflow)
+	var seen []string
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context, input workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		seen = append(seen, input.Event.ID)
+		if input.Event.ID == "event-1" {
+			_ = workflow.Sleep(ctx, 5*time.Millisecond)
+		}
+		return workflows.TaskWorkflowResult{Completed: true}, nil
+	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{ID: "event-1", ProjectID: "project-1", Body: "do work"}})
+	}, 0)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: scheduledEvent("event-2", "schedule-1")})
+	}, time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.CancelWorkflow()
+	}, 20*time.Millisecond)
+
+	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	if strings.Join(seen, ",") != "event-1,event-2" {
+		t.Fatalf("expected scheduled event to run as a queued task, got %#v", seen)
+	}
+}
+
+func TestProjectWorkflowSkipsOverlappingScheduledEvent(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ProjectWorkflow)
+	var seen []string
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context, input workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		seen = append(seen, input.Event.ID)
+		_ = workflow.Sleep(ctx, 5*time.Millisecond)
+		return workflows.TaskWorkflowResult{Completed: true}, nil
+	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: scheduledEvent("event-1", "schedule-1")})
+	}, 0)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: scheduledEvent("event-2", "schedule-1")})
+	}, time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.CancelWorkflow()
+	}, 20*time.Millisecond)
+
+	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	if strings.Join(seen, ",") != "event-1" {
+		t.Fatalf("expected overlapping scheduled event to be skipped, got %#v", seen)
+	}
+}
+
+func scheduledEvent(eventID, scheduleID string) domain.Event {
+	return domain.Event{
+		ID:        eventID,
+		ProjectID: "project-1",
+		Body:      "scheduled task",
+		Metadata: domain.Metadata{
+			scheduled.EventMetadataScheduleID:  scheduleID,
+			scheduled.EventMetadataQueuePolicy: scheduled.QueuePolicyScheduledTask,
+		},
+	}
 }

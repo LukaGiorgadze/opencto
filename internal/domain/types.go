@@ -76,14 +76,15 @@ const (
 type ToolType string
 
 const (
-	ToolTypeExec    ToolType = "exec"
-	ToolTypeBrowser ToolType = "browser"
-	ToolTypeEdit    ToolType = "edit"
-	ToolTypeGlob    ToolType = "glob"
-	ToolTypeGrep    ToolType = "grep"
-	ToolTypeRead    ToolType = "read"
-	ToolTypeSkill   ToolType = "skill"
-	ToolTypeWrite   ToolType = "write"
+	ToolTypeExec     ToolType = "exec"
+	ToolTypeBrowser  ToolType = "browser"
+	ToolTypeEdit     ToolType = "edit"
+	ToolTypeGlob     ToolType = "glob"
+	ToolTypeGrep     ToolType = "grep"
+	ToolTypeRead     ToolType = "read"
+	ToolTypeSchedule ToolType = "schedule"
+	ToolTypeSkill    ToolType = "skill"
+	ToolTypeWrite    ToolType = "write"
 )
 
 type Project struct {

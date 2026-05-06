@@ -3,12 +3,14 @@ package workflows
 import (
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
+	"github.com/opencto/opencto/internal/runtime/scheduled"
 	"github.com/opencto/opencto/internal/runtime/signals"
 )
 
 const (
-	ProjectWorkflowName = "ProjectWorkflow"
-	TaskWorkflowName    = "TaskWorkflow"
+	ProjectWorkflowName           = "ProjectWorkflow"
+	TaskWorkflowName              = "TaskWorkflow"
+	ScheduledDispatchWorkflowName = scheduled.DispatchWorkflowName
 
 	SignalEnqueueEvent          = "enqueue-event"
 	SignalTaskCancel            = "task-cancel"

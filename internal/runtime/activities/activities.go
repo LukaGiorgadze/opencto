@@ -20,6 +20,7 @@ import (
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/config"
 	"github.com/opencto/opencto/internal/domain"
+	"github.com/opencto/opencto/internal/runtime/scheduled"
 	skillcatalog "github.com/opencto/opencto/internal/skills"
 	toolregistry "github.com/opencto/opencto/internal/tools"
 	browsertool "github.com/opencto/opencto/internal/tools/browser"
@@ -28,6 +29,7 @@ import (
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	readtool "github.com/opencto/opencto/internal/tools/read"
+	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
 	skilltool "github.com/opencto/opencto/internal/tools/skill"
 	writetool "github.com/opencto/opencto/internal/tools/write"
 	"github.com/opencto/opencto/internal/workspace"
@@ -45,6 +47,10 @@ type Reporter interface {
 	Report(context.Context, domain.Event, domain.ReportMessage) error
 }
 
+type EventEnqueuer interface {
+	EnqueueEvent(context.Context, domain.Event) error
+}
+
 type TypingReporter interface {
 	NotifyTyping(context.Context, domain.Event) error
 }
@@ -58,9 +64,11 @@ type Activities struct {
 	Glob          globtool.Executor
 	Grep          greptool.Executor
 	Read          readtool.Executor
+	Schedule      scheduletool.Executor
 	Skill         skilltool.Executor
 	Write         writetool.Executor
 	Reporter      Reporter
+	EventEnqueuer EventEnqueuer
 	Project       domain.Project
 	WorkspaceRoot string
 	OpenCTORoot   string
@@ -101,6 +109,7 @@ type NextActionResult struct {
 type ExecuteToolRequest struct {
 	ProjectID  string           `json:"project_id"`
 	WorkItemID string           `json:"work_item_id"`
+	Event      domain.Event     `json:"event"`
 	ToolChoice agent.ToolChoice `json:"tool_choice"`
 }
 
@@ -162,6 +171,7 @@ type toolExecutionContext struct {
 	ProjectID          string
 	WorkItemID         string
 	ToolCallID         string
+	SourceEvent        domain.Event
 	Cycle              int
 	StartedAt          time.Time
 	ExecutionAttemptID string
@@ -320,6 +330,40 @@ func (a *Activities) ReportResponse(ctx context.Context, request ReportResponseR
 	a.logActivityStep("ReportResponse", "done",
 		slog.String("project_id", request.Event.ProjectID),
 		slog.String("event_id", request.Event.ID),
+	)
+	return nil
+}
+
+func (a *Activities) EnqueueScheduledEvent(ctx context.Context, request scheduled.EnqueueScheduledEventRequest) error {
+	if a.EventEnqueuer == nil {
+		return fmt.Errorf("event enqueuer is not configured")
+	}
+	event := request.Event
+	if strings.TrimSpace(event.ProjectID) == "" {
+		event.ProjectID = strings.TrimSpace(a.Project.ID)
+	}
+	if strings.TrimSpace(event.ProjectID) == "" {
+		return fmt.Errorf("project_id is required")
+	}
+	if strings.TrimSpace(event.ID) == "" {
+		return fmt.Errorf("scheduled event id is required")
+	}
+	a.logActivityStep("EnqueueScheduledEvent", "start",
+		slog.String("project_id", event.ProjectID),
+		slog.String("event_id", event.ID),
+		slog.String("schedule_id", scheduled.ScheduleID(event)),
+	)
+	if err := a.EventEnqueuer.EnqueueEvent(ctx, event); err != nil {
+		a.logActivityStep("EnqueueScheduledEvent", "error",
+			slog.String("project_id", event.ProjectID),
+			slog.String("event_id", event.ID),
+			slog.String("error", err.Error()),
+		)
+		return err
+	}
+	a.logActivityStep("EnqueueScheduledEvent", "done",
+		slog.String("project_id", event.ProjectID),
+		slog.String("event_id", event.ID),
 	)
 	return nil
 }
@@ -1260,6 +1304,8 @@ func (a *Activities) runChosenTool(ctx context.Context, choice agent.ToolChoice,
 		return a.runGlobTool(ctx, choice, execution)
 	case domain.ToolTypeGrep:
 		return a.runGrepTool(ctx, choice, execution)
+	case domain.ToolTypeSchedule:
+		return a.runScheduleTool(ctx, choice, execution)
 	case domain.ToolTypeSkill:
 		return a.runSkillTool(ctx, choice)
 	default:
@@ -1625,6 +1671,44 @@ func (a *Activities) runGrepTool(ctx context.Context, choice agent.ToolChoice, e
 	}, err
 }
 
+func (a *Activities) runScheduleTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
+	var req scheduletool.Request
+	if err := decodeChoiceInput(choice, &req); err != nil {
+		return toolRunResult{ResultCode: "1"}, err
+	}
+	req.ProjectID = execution.ProjectID
+	req.WorkItemID = execution.WorkItemID
+	req.ToolCallID = execution.ToolCallID
+	req.Intent = choice.Intent
+	req.SourceEvent = execution.SourceEvent
+
+	executor := a.Schedule
+	if executor == nil {
+		return toolRunResult{ResultCode: "1"}, fmt.Errorf("schedule executor is not configured")
+	}
+	result, err := executor.Run(ctx, req)
+	metadata := map[string]string{
+		"schedule_operation": result.Operation,
+		"schedule_id":        result.ScheduleID,
+		"schedule_kind":      result.Kind,
+		"schedule_time_zone": result.TimeZone,
+	}
+	if result.OneShotAt != "" {
+		metadata["one_shot_at"] = result.OneShotAt
+	}
+	if result.Cron != "" {
+		metadata["cron"] = result.Cron
+	}
+	if len(result.NextActionTimes) > 0 {
+		metadata["next_action_times"] = strings.Join(result.NextActionTimes, "\n")
+	}
+	return toolRunResult{
+		Observation: result.Observation(),
+		ResultCode:  resultCodeForError(err),
+		Metadata:    metadata,
+	}, err
+}
+
 func (a *Activities) runSkillTool(ctx context.Context, choice agent.ToolChoice) (toolRunResult, error) {
 	var req skilltool.Request
 	if err := decodeChoiceInput(choice, &req); err != nil {
@@ -1835,6 +1919,7 @@ func newToolExecutionContext(request ExecuteToolRequest) (toolExecutionContext, 
 		ProjectID:          projectID,
 		WorkItemID:         workItemID,
 		ToolCallID:         toolCallID,
+		SourceEvent:        request.Event,
 		Cycle:              executionCycle(request.ToolChoice.Metadata),
 		StartedAt:          time.Now().UTC(),
 		ExecutionAttemptID: executionID,
@@ -2259,13 +2344,26 @@ func backgroundStartFailureObservation(ctx context.Context, manager *exectool.Pr
 
 func buildRuntimeContext(workspaceRoot, openCTORoot string) agent.RuntimeContext {
 	execPath := strings.TrimSpace(os.Getenv("SHELL"))
+	now := time.Now()
+	location, timeZone, timeZoneErr := scheduletool.ResolveHostTimeZone()
+	localNow := now
+	timeZoneError := ""
+	if timeZoneErr != nil {
+		timeZoneError = timeZoneErr.Error()
+	} else if location != nil {
+		localNow = now.In(location)
+	}
 	return agent.RuntimeContext{
-		OS:            goruntime.GOOS,
-		Arch:          goruntime.GOARCH,
-		Exec:          execPath,
-		Path:          os.Getenv("PATH"),
-		WorkspaceRoot: workspaceRoot,
-		OpenCTORoot:   openCTORoot,
+		OS:                goruntime.GOOS,
+		Arch:              goruntime.GOARCH,
+		Exec:              execPath,
+		Path:              os.Getenv("PATH"),
+		WorkspaceRoot:     workspaceRoot,
+		OpenCTORoot:       openCTORoot,
+		CurrentLocalTime:  localNow.Format(time.RFC3339),
+		CurrentUTCTime:    now.UTC().Format(time.RFC3339),
+		HostTimeZone:      timeZone,
+		HostTimeZoneError: timeZoneError,
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	readtool "github.com/opencto/opencto/internal/tools/read"
+	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
 	skilltool "github.com/opencto/opencto/internal/tools/skill"
 )
 
@@ -493,7 +494,7 @@ func TestNextActionReturnsSingleToolChoice(t *testing.T) {
 	if output.ToolChoice.RunMode != domain.ToolRunModeWaitForExit || output.ToolChoice.Idempotency != domain.ToolIdempotencyReadOnly || output.ToolChoice.ProcessScope != domain.ProcessScopeStopOnFinish {
 		t.Fatalf("tool execution metadata was not preserved: %#v", output.ToolChoice)
 	}
-	if len(model.options.Tools) != 8 {
+	if len(model.options.Tools) != 9 {
 		t.Fatalf("expected all tool schemas, got %#v", model.options.Tools)
 	}
 }
@@ -894,6 +895,37 @@ func TestToolChoiceCapturesSkillInput(t *testing.T) {
 	}
 	if choice.Metadata["model_tool"] != skilltool.SkillToolName {
 		t.Fatalf("expected model tool metadata, got %#v", choice.Metadata)
+	}
+}
+
+func TestToolChoiceCapturesScheduleInput(t *testing.T) {
+	t.Parallel()
+
+	choice, err := toolChoiceFromToolCall(llms.ToolCall{
+		ID:   "toolu_schedule",
+		Type: "function",
+		FunctionCall: &llms.FunctionCall{
+			Name:      scheduletool.ToolName,
+			Arguments: `{"operation":"create","schedule_id":"","name":"daily hello","task":"send hello","one_shot_at":"","cron":"0 9 * * *","paused":false,"note":"","limit":0}`,
+		},
+	}, agent.ToolSelectionInput{
+		Context: agent.Context{Event: domain.Event{Body: "every morning send hello"}},
+		Runtime: agent.RuntimeContext{WorkspaceRoot: "/workspace"},
+	})
+	if err != nil {
+		t.Fatalf("tool choice: %v", err)
+	}
+	if choice.Type != domain.ToolTypeSchedule {
+		t.Fatalf("expected schedule tool type, got %q", choice.Type)
+	}
+	if choice.Idempotency != domain.ToolIdempotencyNonIdempotent || choice.RunMode != domain.ToolRunModeWaitForExit {
+		t.Fatalf("expected schedule execution metadata, got %#v", choice)
+	}
+	if choice.Metadata["model_tool"] != scheduletool.ToolName {
+		t.Fatalf("expected schedule metadata, got %#v", choice.Metadata)
+	}
+	if !strings.Contains(string(choice.Input), `"cron":"0 9 * * *"`) {
+		t.Fatalf("expected raw schedule input to be preserved, got %s", choice.Input)
 	}
 }
 

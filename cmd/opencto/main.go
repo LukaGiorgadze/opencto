@@ -22,6 +22,7 @@ import (
 	"github.com/opencto/opencto/internal/runtime"
 	"github.com/opencto/opencto/internal/runtime/activities"
 	"github.com/opencto/opencto/internal/tools/exec"
+	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
 )
 
 func main() {
@@ -98,9 +99,11 @@ func main() {
 		}
 
 		activitySet := &activities.Activities{
-			Engine:   engine,
-			Exec:     exec.NewSafeExecutor(logger),
-			Reporter: reporter,
+			Engine:        engine,
+			Exec:          exec.NewSafeExecutor(logger),
+			Schedule:      scheduletool.NewTemporalExecutor(temporalClient.ScheduleClient(), cfg.Temporal.TaskQueue, logger),
+			Reporter:      reporter,
+			EventEnqueuer: dispatcher,
 			Project: domain.Project{
 				ID:   cfg.Project.ID,
 				Name: cfg.Project.Name,

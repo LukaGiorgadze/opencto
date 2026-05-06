@@ -27,6 +27,10 @@ type nextActionPromptData struct {
 	Path               string
 	WorkspaceRoot      string
 	OpenCTORoot        string
+	CurrentLocalTime   string
+	CurrentUTCTime     string
+	HostTimeZone       string
+	HostTimeZoneError  string
 	ChannelType        domain.ChannelType
 }
 
@@ -141,6 +145,10 @@ func renderNextActionPrompt(input agent.NextActionInput) (string, error) {
 		Path:               strings.TrimSpace(input.Runtime.Path),
 		WorkspaceRoot:      firstNonEmpty(strings.TrimSpace(input.Runtime.WorkspaceRoot), "."),
 		OpenCTORoot:        firstNonEmpty(strings.TrimSpace(input.Runtime.OpenCTORoot), "."),
+		CurrentLocalTime:   strings.TrimSpace(input.Runtime.CurrentLocalTime),
+		CurrentUTCTime:     strings.TrimSpace(input.Runtime.CurrentUTCTime),
+		HostTimeZone:       strings.TrimSpace(input.Runtime.HostTimeZone),
+		HostTimeZoneError:  strings.TrimSpace(input.Runtime.HostTimeZoneError),
 		ChannelType:        input.ChannelType,
 	}
 

@@ -83,12 +83,16 @@ type NextAction struct {
 }
 
 type RuntimeContext struct {
-	OS            string `json:"os"`
-	Arch          string `json:"arch"`
-	Exec          string `json:"exec,omitempty"`
-	Path          string `json:"path,omitempty"`
-	WorkspaceRoot string `json:"workspace_root,omitempty"`
-	OpenCTORoot   string `json:"opencto_root"`
+	OS                string `json:"os"`
+	Arch              string `json:"arch"`
+	Exec              string `json:"exec,omitempty"`
+	Path              string `json:"path,omitempty"`
+	WorkspaceRoot     string `json:"workspace_root,omitempty"`
+	OpenCTORoot       string `json:"opencto_root"`
+	CurrentLocalTime  string `json:"current_local_time,omitempty"`
+	CurrentUTCTime    string `json:"current_utc_time,omitempty"`
+	HostTimeZone      string `json:"host_time_zone,omitempty"`
+	HostTimeZoneError string `json:"host_time_zone_error,omitempty"`
 }
 
 type ToolSelectionInput struct {

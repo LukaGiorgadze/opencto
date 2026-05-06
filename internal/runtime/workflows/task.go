@@ -102,7 +102,7 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 
 		lastResults = nil
 		for _, choice := range toolChoices {
-			execResult, canceled, interrupted, err := executeToolStep(ctx, toolCtx, input.ProjectID, next.WorkItemID, choice, cycle, &additionalEvents)
+			execResult, canceled, interrupted, err := executeToolStep(ctx, toolCtx, input.ProjectID, next.WorkItemID, input.Event, choice, cycle, &additionalEvents)
 			mergeTaskProcesses(&processes, execResult.Processes)
 			if canceled {
 				return completeIncompleteTask(nextActionCtx, input.ProjectID, input.Event, processes)
@@ -149,12 +149,13 @@ func nextAction(ctx workflow.Context, request activities.NextActionRequest) (act
 	return result, err
 }
 
-func executeToolStep(ctx workflow.Context, toolCtx workflow.Context, projectID, workItemID string, choice agent.ToolChoice, cycle int, additionalEvents *[]domain.Event) (activities.ExecuteToolResult, bool, bool, error) {
+func executeToolStep(ctx workflow.Context, toolCtx workflow.Context, projectID, workItemID string, event domain.Event, choice agent.ToolChoice, cycle int, additionalEvents *[]domain.Event) (activities.ExecuteToolResult, bool, bool, error) {
 	activityCtx, cancelActivity := workflow.WithCancel(toolCtx)
 	defer cancelActivity()
 	future := workflow.ExecuteActivity(activityCtx, "Activities.ExecuteTool", activities.ExecuteToolRequest{
 		ProjectID:  projectID,
 		WorkItemID: workItemID,
+		Event:      event,
 		ToolChoice: choice,
 	})
 

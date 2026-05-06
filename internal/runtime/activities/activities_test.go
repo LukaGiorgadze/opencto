@@ -17,6 +17,7 @@ import (
 	browsertool "github.com/opencto/opencto/internal/tools/browser"
 	exectool "github.com/opencto/opencto/internal/tools/exec"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
+	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
 )
 
 type stubProjectStore struct {
@@ -340,6 +341,36 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 	if skillResult.Status != domain.ExecutionStatusSucceeded || !strings.Contains(skillResult.Observation, "# Go Testing") {
 		t.Fatalf("unexpected skill result: %#v", skillResult)
 	}
+
+	scheduleExecutor := &fakeScheduleExecutor{result: scheduletool.Result{
+		Operation:  scheduletool.OperationCreate,
+		ScheduleID: "opencto:project-1:schedule:daily-hello",
+		Name:       "daily hello",
+		Kind:       "recurring",
+		TimeZone:   "Asia/Tbilisi",
+		Cron:       "0 9 * * *",
+		Message:    "schedule created",
+	}}
+	activities.Schedule = scheduleExecutor
+	scheduleResult, err := activities.ExecuteTool(ctx, executeRequest(domain.ToolTypeSchedule, "schedule-1", map[string]any{
+		"operation":   "create",
+		"schedule_id": "",
+		"name":        "daily hello",
+		"task":        "send hello",
+		"one_shot_at": "",
+		"cron":        "0 9 * * *",
+		"paused":      false,
+		"note":        "",
+		"limit":       0,
+	}))
+	if err != nil {
+		t.Fatalf("schedule tool: %v", err)
+	}
+	if scheduleResult.Status != domain.ExecutionStatusSucceeded ||
+		scheduleResult.Metadata["schedule_id"] != "opencto:project-1:schedule:daily-hello" ||
+		scheduleExecutor.request.SourceEvent.ChannelID != "channel-1" {
+		t.Fatalf("unexpected schedule result: %#v request=%#v", scheduleResult, scheduleExecutor.request)
+	}
 }
 
 func TestExecuteGlobUsesCwdForRelativePath(t *testing.T) {
@@ -469,6 +500,14 @@ func TestExecuteToolReturnsManagedProcessMetadata(t *testing.T) {
 	request := ExecuteToolRequest{
 		ProjectID:  "project-1",
 		WorkItemID: "work-item-1",
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "project-1",
+			ChannelID:   "channel-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ActorName:   "luka",
+			Body:        "schedule something",
+		},
 		ToolChoice: agent.ToolChoice{
 			ToolCallID:  "toolu_bg",
 			Type:        domain.ToolTypeExec,
@@ -818,6 +857,14 @@ func executeRequest(toolType domain.ToolType, callID string, input map[string]an
 	return ExecuteToolRequest{
 		ProjectID:  "project-1",
 		WorkItemID: "work-item-1",
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "project-1",
+			ChannelID:   "channel-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ActorName:   "luka",
+			Body:        "schedule something",
+		},
 		ToolChoice: agent.ToolChoice{
 			ToolCallID:   callID,
 			Type:         toolType,
@@ -851,5 +898,16 @@ func (f fakeBrowserExecutor) Run(_ context.Context, req browsertool.Request) (br
 	if f.request != nil {
 		*f.request = req
 	}
+	return f.result, f.err
+}
+
+type fakeScheduleExecutor struct {
+	result  scheduletool.Result
+	err     error
+	request scheduletool.Request
+}
+
+func (f *fakeScheduleExecutor) Run(_ context.Context, req scheduletool.Request) (scheduletool.Result, error) {
+	f.request = req
 	return f.result, f.err
 }
