@@ -3,6 +3,7 @@ package discord
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -83,6 +85,59 @@ func TestReportSplitsMessagesByConfiguredLimit(t *testing.T) {
 		if contents[i] != want[i] {
 			t.Fatalf("message %d: expected %q, got %q", i, want[i], contents[i])
 		}
+	}
+}
+
+func TestNotifyTypingUsesContext(t *testing.T) {
+	var once sync.Once
+	var cancel context.CancelFunc
+	started := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+		if r.URL.Path != "/channels/channel-1/typing" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		once.Do(func() { close(started) })
+		cancel()
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointChannels := discordgo.EndpointChannels
+	discordgo.EndpointChannels = server.URL + "/channels/"
+	t.Cleanup(func() {
+		discordgo.EndpointChannels = oldEndpointChannels
+	})
+
+	session, err := discordgo.New("Bot test-token")
+	if err != nil {
+		t.Fatalf("new discord session: %v", err)
+	}
+	client := server.Client()
+	client.Timeout = 200 * time.Millisecond
+	session.Client = client
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	adapter := &Adapter{session: session}
+	startedAt := time.Now()
+	err = adapter.NotifyTyping(ctx, domain.Event{ChannelID: "channel-1"})
+	if err == nil {
+		t.Fatalf("expected context cancellation error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context error, got %v", err)
+	}
+	if time.Since(startedAt) >= client.Timeout {
+		t.Fatalf("notify typing was not bounded by context")
+	}
+	select {
+	case <-started:
+	default:
+		t.Fatalf("expected typing request to reach server")
 	}
 }
 

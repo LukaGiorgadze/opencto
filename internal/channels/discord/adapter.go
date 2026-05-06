@@ -25,6 +25,7 @@ const discordDefaultOutboundMaxFileBytes int64 = 10 << 20
 const discordDefaultOutboundMaxTotalBytes int64 = 25 << 20
 
 const discordAttachmentPayloadKey = "attachments"
+const discordTypingTimeout = 3 * time.Second
 
 type AttachmentLimits = channels.AttachmentLimits
 type MessageLimits = channels.MessageLimits
@@ -454,5 +455,12 @@ func (a *Adapter) NotifyTyping(ctx context.Context, event domain.Event) error {
 		return ctx.Err()
 	default:
 	}
-	return a.session.ChannelTyping(event.ChannelID)
+	typingCtx, cancel := context.WithTimeout(ctx, discordTypingTimeout)
+	defer cancel()
+	return a.session.ChannelTyping(
+		event.ChannelID,
+		discordgo.WithContext(typingCtx),
+		discordgo.WithRetryOnRatelimit(false),
+		discordgo.WithRestRetries(0),
+	)
 }

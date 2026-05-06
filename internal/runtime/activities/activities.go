@@ -157,6 +157,7 @@ const (
 	NextActionStatusIgnored   = "ignored"
 
 	defaultResponseSessionRefresh = 4 * time.Second
+	defaultResponseSessionTimeout = 3 * time.Second
 	defaultResponseSessionMaxAge  = 30 * time.Minute
 	defaultToolHeartbeatGap       = 2 * time.Second
 	defaultExecGrace              = 2 * time.Minute
@@ -263,13 +264,18 @@ func (a *Activities) ResponseSession(ctx context.Context, request ResponseSessio
 		maxAge = time.Duration(request.MaxDurationSeconds) * time.Second
 	}
 
+	heartbeatDetails := map[string]string{
+		"project_id":   projectID,
+		"event_id":     event.ID,
+		"channel_type": string(event.ChannelType),
+	}
+	stopHeartbeat := startResponseSessionHeartbeat(ctx, defaultResponseSessionRefresh, heartbeatDetails)
+	defer stopHeartbeat()
+
 	refresh := func() {
-		recordResponseSessionHeartbeat(ctx, map[string]string{
-			"project_id":   projectID,
-			"event_id":     event.ID,
-			"channel_type": string(event.ChannelType),
-		})
-		if err := reporter.NotifyTyping(ctx, event); err != nil && ctx.Err() == nil {
+		typingCtx, cancel := context.WithTimeout(ctx, defaultResponseSessionTimeout)
+		defer cancel()
+		if err := reporter.NotifyTyping(typingCtx, event); err != nil && ctx.Err() == nil {
 			a.logActivityStep("ResponseSession", "indicator_error",
 				slog.String("project_id", projectID),
 				slog.String("event_id", event.ID),
@@ -366,6 +372,34 @@ func (a *Activities) EnqueueScheduledEvent(ctx context.Context, request schedule
 		slog.String("event_id", event.ID),
 	)
 	return nil
+}
+
+func startResponseSessionHeartbeat(ctx context.Context, gap time.Duration, details any) func() {
+	if !activity.IsActivity(ctx) {
+		return func() {}
+	}
+	if gap <= 0 {
+		gap = defaultResponseSessionRefresh
+	}
+	recordResponseSessionHeartbeat(ctx, details)
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(gap)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				recordResponseSessionHeartbeat(ctx, details)
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return func() {
+		close(done)
+	}
 }
 
 func recordResponseSessionHeartbeat(ctx context.Context, details any) {

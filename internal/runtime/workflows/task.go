@@ -21,6 +21,7 @@ const (
 	responseSessionGracePeriod   = 5 * time.Minute
 	responseSessionMaxDuration   = maxExecutionCycles*(nextActionActivityTimeout+toolActivityTimeout) + nextActionActivityTimeout + responseSessionGracePeriod
 	responseSessionHeartbeatGap  = 30 * time.Second
+	responseSessionRetryInitial  = responseSessionHeartbeatGap + 5*time.Second
 )
 
 func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowResult, error) {
@@ -45,7 +46,8 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 		HeartbeatTimeout:    responseSessionHeartbeatGap,
 		WaitForCancellation: true,
 		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: 1,
+			InitialInterval: responseSessionRetryInitial,
+			MaximumAttempts: 3,
 		},
 	}
 	nextActionCtx := workflow.WithActivityOptions(ctx, nextActionAO)

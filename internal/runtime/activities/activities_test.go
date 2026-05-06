@@ -212,6 +212,30 @@ func TestResponseSessionUsesOptionalReporter(t *testing.T) {
 	}
 }
 
+func TestResponseSessionIgnoresTypingErrors(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	reporter := &captureReporter{
+		typingErr: errors.New("discord unavailable"),
+		onTyping:  cancel,
+	}
+	activities := Activities{Reporter: reporter}
+	event := domain.Event{
+		ID:          "event-1",
+		ProjectID:   "project-1",
+		ChannelID:   "channel-1",
+		ChannelType: domain.ChannelTypeDiscord,
+	}
+
+	if err := activities.ResponseSession(ctx, ResponseSessionRequest{ProjectID: "project-1", Event: event}); err != nil {
+		t.Fatalf("response session should be best-effort, got %v", err)
+	}
+	if len(reporter.typingEvents) != 1 {
+		t.Fatalf("expected one typing attempt, got %#v", reporter.typingEvents)
+	}
+}
+
 func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 	t.Parallel()
 
