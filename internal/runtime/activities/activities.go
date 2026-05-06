@@ -66,6 +66,9 @@ type Activities struct {
 	OpenCTORoot   string
 	SkillsRoot    string
 	StateDir      string
+	ExecTailBytes int64
+	ExecGrace     time.Duration
+	HeartbeatGap  time.Duration
 	Logger        *slog.Logger
 }
 
@@ -146,6 +149,9 @@ const (
 
 	defaultResponseSessionRefresh = 4 * time.Second
 	defaultResponseSessionMaxAge  = 30 * time.Minute
+	defaultToolHeartbeatGap       = 2 * time.Second
+	defaultExecGrace              = 2 * time.Minute
+	defaultExecTailBytes          = 16 << 10
 )
 
 func (r NextActionResult) IsTerminal() bool {
@@ -169,6 +175,7 @@ type toolRunResult struct {
 	ResultCode       string
 	WorkingDirectory string
 	Metadata         map[string]string
+	Processes        []domain.ProcessReference
 }
 
 func (a *Activities) LoadContext(ctx context.Context, event domain.Event) (agent.Context, error) {
@@ -318,6 +325,47 @@ func (a *Activities) ReportResponse(ctx context.Context, request ReportResponseR
 }
 
 func recordResponseSessionHeartbeat(ctx context.Context, details any) {
+	defer func() {
+		_ = recover()
+	}()
+	activity.RecordHeartbeat(ctx, details)
+}
+
+func (a *Activities) startToolActivityHeartbeat(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) func() {
+	if !activity.IsActivity(ctx) {
+		return func() {}
+	}
+	gap := a.HeartbeatGap
+	if gap <= 0 {
+		gap = defaultToolHeartbeatGap
+	}
+	details := map[string]string{
+		"command":      choice.Command,
+		"intent":       choice.Intent,
+		"tool_call_id": execution.ToolCallID,
+	}
+	recordToolHeartbeat(ctx, details)
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(gap)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				recordToolHeartbeat(ctx, details)
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return func() {
+		close(done)
+	}
+}
+
+func recordToolHeartbeat(ctx context.Context, details any) {
 	defer func() {
 		_ = recover()
 	}()
@@ -871,6 +919,8 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 		slog.Duration("timeout", execution.Timeout),
 		slog.Any("fallback_candidates", execution.FallbackCandidates),
 	)
+	stopHeartbeat := a.startToolActivityHeartbeat(ctx, request.ToolChoice, execution)
+	defer stopHeartbeat()
 
 	attempt := domain.ExecutionAttempt{
 		ID:         execution.ExecutionAttemptID,
@@ -1050,6 +1100,7 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 		WorkingDirectory: invocation.WorkingDirectory,
 		ResultCode:       invocation.ResultCode,
 		Metadata:         invocation.Metadata,
+		Processes:        toolResult.Processes,
 	}, nil
 }
 
@@ -1226,7 +1277,9 @@ func (a *Activities) runBrowserTool(ctx context.Context, choice agent.ToolChoice
 	req.Intent = choice.Intent
 	req.WorkingDir = firstNonEmpty(choice.WorkingDir, a.WorkspaceRoot)
 	req.WorkspaceRoot = a.WorkspaceRoot
+	req.StateDir = a.runtimeStateDir()
 	req.Timeout = execution.Timeout
+	req.TailBytes = a.execTailBytes()
 	req.Environment = workspaceEnvironment(a.WorkspaceRoot, a.OpenCTORoot)
 
 	executor := a.Browser
@@ -1257,6 +1310,18 @@ func (a *Activities) runBrowserTool(ctx context.Context, choice agent.ToolChoice
 		metadata["artifact_count"] = strconv.Itoa(len(result.ArtifactPaths))
 		metadata["artifact_paths"] = strings.Join(result.ArtifactPaths, "\n")
 	}
+	if result.StdoutLogPath != "" {
+		metadata["stdout_log_path"] = result.StdoutLogPath
+	}
+	if result.StderrLogPath != "" {
+		metadata["stderr_log_path"] = result.StderrLogPath
+	}
+	if result.StdoutTruncated {
+		metadata["stdout_truncated"] = "true"
+	}
+	if result.StderrTruncated {
+		metadata["stderr_truncated"] = "true"
+	}
 	if len(result.Actions) > 0 {
 		metadata["action_count"] = strconv.Itoa(len(result.Actions))
 	}
@@ -1277,26 +1342,64 @@ func (a *Activities) runExecTool(ctx context.Context, choice agent.ToolChoice, e
 	}
 	req := exectool.Request{
 		ProjectID:          execution.ProjectID,
+		WorkItemID:         execution.WorkItemID,
+		ToolCallID:         execution.ToolCallID,
+		ProcessID:          stableActivityID("managed-process", execution.ProjectID, execution.WorkItemID, execution.ToolCallID),
 		Intent:             choice.Intent,
 		Command:            choice.Command,
 		Args:               choice.Args,
 		WorkingDir:         resolveRelativeToolPath(firstNonEmpty(choice.WorkingDir, a.WorkspaceRoot), a.WorkspaceRoot),
+		StateDir:           a.runtimeStateDir(),
 		Timeout:            execution.Timeout,
+		GracePeriod:        a.execGrace(execution.Timeout),
+		TailBytes:          a.execTailBytes(),
+		ProcessScope:       toolProcessScope(choice.ProcessScope),
 		Environment:        workspaceEnvironment(a.WorkspaceRoot, a.OpenCTORoot),
 		FallbackCandidates: execution.FallbackCandidates,
 	}
-	result, err := a.runExecWithHeartbeats(ctx, req)
+	result, err := a.Exec.Run(ctx, req)
 	metadata := map[string]string{
 		"exec_exit_status": strconv.Itoa(result.ExitCode),
 		"run_mode":         string(firstNonEmpty(string(choice.RunMode), string(domain.ToolRunModeWaitForExit))),
 		"idempotency":      string(firstNonEmpty(string(choice.Idempotency), string(domain.ToolIdempotencyUnknown))),
 		"process_scope":    string(toolProcessScope(choice.ProcessScope)),
 	}
+	if result.StdoutLogPath != "" {
+		metadata["stdout_log_path"] = result.StdoutLogPath
+	}
+	if result.StderrLogPath != "" {
+		metadata["stderr_log_path"] = result.StderrLogPath
+	}
+	if result.StdoutTruncated {
+		metadata["stdout_truncated"] = "true"
+	}
+	if result.StderrTruncated {
+		metadata["stderr_truncated"] = "true"
+	}
 	resultCode := strconv.Itoa(result.ExitCode)
 	if errors.Is(err, context.DeadlineExceeded) {
 		resultCode = "timeout"
 		metadata["possible_long_running_process"] = "true"
 		metadata["timeout"] = "true"
+	}
+	var processes []domain.ProcessReference
+	if result.ManagedProcess != nil {
+		process := *result.ManagedProcess
+		metadata["process_id"] = process.ID
+		metadata["possible_long_running_process"] = "true"
+		metadata["promoted_to_managed_process"] = "true"
+		if process.PID > 0 {
+			metadata["pid"] = strconv.Itoa(process.PID)
+		}
+		if process.PGID > 0 {
+			metadata["pgid"] = strconv.Itoa(process.PGID)
+		}
+		processes = []domain.ProcessReference{{
+			ID:          process.ID,
+			Description: firstNonEmpty(choice.Intent, choice.Command),
+			Status:      process.Status,
+			Scope:       toolProcessScope(choice.ProcessScope),
+		}}
 	}
 	if !result.StartedAt.IsZero() {
 		metadata["tool_started_at"] = result.StartedAt.UTC().Format(time.RFC3339Nano)
@@ -1312,57 +1415,61 @@ func (a *Activities) runExecTool(ctx context.Context, choice agent.ToolChoice, e
 		ResultCode:       resultCode,
 		WorkingDirectory: result.WorkingDirectory,
 		Metadata:         metadata,
+		Processes:        processes,
 	}, err
 }
 
-func (a *Activities) runExecWithHeartbeats(ctx context.Context, req exectool.Request) (exectool.Result, error) {
-	type execRun struct {
-		result exectool.Result
-		err    error
-	}
-	done := make(chan execRun, 1)
-	go func() {
-		result, err := a.Exec.Run(ctx, req)
-		done <- execRun{result: result, err: err}
-	}()
-
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case run := <-done:
-			return run.result, run.err
-		case <-ticker.C:
-			if activity.IsActivity(ctx) {
-				activity.RecordHeartbeat(ctx, map[string]string{
-					"command": req.Command,
-					"intent":  req.Intent,
-				})
-			}
-		case <-ctx.Done():
-			run := <-done
-			if run.err != nil {
-				return run.result, run.err
-			}
-			return run.result, ctx.Err()
-		}
-	}
-}
-
 func execObservation(result exectool.Result, err error) string {
-	if errors.Is(err, context.DeadlineExceeded) {
-		observation := fullObservation(result.Stdout, result.Stderr, err)
-		return observation + "\n\nresult_code: timeout\npossible_long_running_process: true\nsuggestion: retry this command with run_mode=start_background if it is expected to keep running."
+	observation := fullObservation(result.Stdout, result.Stderr, err)
+	var notes []string
+	if result.ManagedProcess != nil {
+		notes = append(notes,
+			"status: running",
+			"process_id: "+result.ManagedProcess.ID,
+			"possible_long_running_process: true",
+		)
 	}
-	return fullObservation(result.Stdout, result.Stderr, err)
+	if result.StdoutTruncated || result.StderrTruncated {
+		notes = append(notes, "output_truncated: true")
+	}
+	if result.StdoutLogPath != "" {
+		notes = append(notes, "stdout_log_path: "+result.StdoutLogPath)
+	}
+	if result.StderrLogPath != "" {
+		notes = append(notes, "stderr_log_path: "+result.StderrLogPath)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		notes = append(notes, "result_code: timeout", "possible_long_running_process: true")
+	}
+	if len(notes) == 0 {
+		return observation
+	}
+	return observation + "\n\n" + strings.Join(notes, "\n")
 }
 
 func browserObservation(result browsertool.Result, err error) string {
 	observation := fullObservation(result.Stdout, result.Stderr, err)
-	if len(result.ArtifactPaths) == 0 {
+	var sections []string
+	if len(result.ArtifactPaths) > 0 {
+		sections = append(sections, "artifacts:\n"+strings.Join(result.ArtifactPaths, "\n"))
+	}
+	var notes []string
+	if result.StdoutTruncated || result.StderrTruncated {
+		notes = append(notes, "output_truncated: true")
+	}
+	if result.StdoutLogPath != "" {
+		notes = append(notes, "stdout_log_path: "+result.StdoutLogPath)
+	}
+	if result.StderrLogPath != "" {
+		notes = append(notes, "stderr_log_path: "+result.StderrLogPath)
+	}
+	if len(notes) > 0 {
+		sections = append(sections, strings.Join(notes, "\n"))
+	}
+	if len(sections) == 0 {
 		return observation
 	}
-	return observation + "\n\nartifacts:\n" + strings.Join(result.ArtifactPaths, "\n")
+	return observation + "\n\n" + strings.Join(sections, "\n\n")
 }
 
 func (a *Activities) runReadTool(ctx context.Context, choice agent.ToolChoice) (toolRunResult, error) {
@@ -2078,6 +2185,23 @@ func toolChoiceTimeout(choice agent.ToolChoice) time.Duration {
 		return time.Duration(choice.TimeoutMs) * time.Millisecond
 	}
 	return 60 * time.Second
+}
+
+func (a *Activities) execGrace(timeout time.Duration) time.Duration {
+	if a.ExecGrace > 0 {
+		return a.ExecGrace
+	}
+	if timeout > 0 && timeout < 2*defaultExecGrace {
+		return timeout / 2
+	}
+	return defaultExecGrace
+}
+
+func (a *Activities) execTailBytes() int64 {
+	if a.ExecTailBytes > 0 {
+		return a.ExecTailBytes
+	}
+	return defaultExecTailBytes
 }
 
 func (a *Activities) runtimeStateDir() string {

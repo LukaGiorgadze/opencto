@@ -1,10 +1,10 @@
 package browser
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -21,6 +21,7 @@ import (
 
 const (
 	agentBrowserExecutable = "agent-browser"
+	defaultTailBytes       = 16 << 10
 )
 
 var (
@@ -35,6 +36,8 @@ type Request struct {
 	WorkingDir    string            `json:"-"`
 	WorkspaceRoot string            `json:"-"`
 	Timeout       time.Duration     `json:"-"`
+	TailBytes     int64             `json:"-"`
+	StateDir      string            `json:"-"`
 	Environment   map[string]string `json:"-"`
 	Command       string            `json:"command"`
 	Args          []string          `json:"args"`
@@ -69,6 +72,10 @@ type Result struct {
 	HoistedArgs      []string
 	Args             []string
 	ArtifactPaths    []string
+	StdoutLogPath    string
+	StderrLogPath    string
+	StdoutTruncated  bool
+	StderrTruncated  bool
 	StartedAt        time.Time
 	CompletedAt      time.Time
 	Duration         time.Duration
@@ -76,14 +83,18 @@ type Result struct {
 }
 
 type ActionResult struct {
-	Stdout        string
-	Stderr        string
-	ExitCode      int
-	Session       string
-	Command       string
-	HoistedArgs   []string
-	Args          []string
-	ArtifactPaths []string
+	Stdout          string
+	Stderr          string
+	ExitCode        int
+	Session         string
+	Command         string
+	HoistedArgs     []string
+	Args            []string
+	ArtifactPaths   []string
+	StdoutLogPath   string
+	StderrLogPath   string
+	StdoutTruncated bool
+	StderrTruncated bool
 }
 
 type Executor interface {
@@ -100,11 +111,18 @@ type commandInvocation struct {
 	args       []string
 	dir        string
 	env        []string
+	stateDir   string
+	tailBytes  int64
+	logName    string
 }
 
 type commandOutput struct {
-	stdout string
-	stderr string
+	stdout          string
+	stderr          string
+	stdoutLogPath   string
+	stderrLogPath   string
+	stdoutTruncated bool
+	stderrTruncated bool
 }
 
 type commandRunner func(context.Context, commandInvocation) (commandOutput, error)
@@ -164,12 +182,16 @@ func (e *SafeExecutor) runBatch(ctx context.Context, req Request) (Result, error
 	var artifactPaths []string
 	exitCode := 0
 	session := "batch"
+	stdoutTruncated := false
+	stderrTruncated := false
 
 	for index, action := range req.Actions {
 		result, err := e.runSingle(runCtx, requestForAction(req, action))
 		appendActionOutput(&stdout, index, actionSummary(result.Command, result.Args), result.Stdout)
 		appendActionOutput(&stderr, index, actionSummary(result.Command, result.Args), result.Stderr)
 		exitCode = result.ExitCode
+		stdoutTruncated = stdoutTruncated || result.StdoutTruncated
+		stderrTruncated = stderrTruncated || result.StderrTruncated
 		if index == 0 {
 			session = result.Session
 		} else if session != result.Session {
@@ -177,14 +199,18 @@ func (e *SafeExecutor) runBatch(ctx context.Context, req Request) (Result, error
 		}
 		artifactPaths = append(artifactPaths, result.ArtifactPaths...)
 		results = append(results, ActionResult{
-			Stdout:        result.Stdout,
-			Stderr:        result.Stderr,
-			ExitCode:      result.ExitCode,
-			Session:       result.Session,
-			Command:       result.Command,
-			HoistedArgs:   append([]string(nil), result.HoistedArgs...),
-			Args:          append([]string(nil), result.Args...),
-			ArtifactPaths: append([]string(nil), result.ArtifactPaths...),
+			Stdout:          result.Stdout,
+			Stderr:          result.Stderr,
+			ExitCode:        result.ExitCode,
+			Session:         result.Session,
+			Command:         result.Command,
+			HoistedArgs:     append([]string(nil), result.HoistedArgs...),
+			Args:            append([]string(nil), result.Args...),
+			ArtifactPaths:   append([]string(nil), result.ArtifactPaths...),
+			StdoutLogPath:   result.StdoutLogPath,
+			StderrLogPath:   result.StderrLogPath,
+			StdoutTruncated: result.StdoutTruncated,
+			StderrTruncated: result.StderrTruncated,
 		})
 		if err != nil {
 			completedAt := time.Now()
@@ -197,6 +223,10 @@ func (e *SafeExecutor) runBatch(ctx context.Context, req Request) (Result, error
 				Session:          session,
 				Command:          "batch",
 				ArtifactPaths:    uniqueArtifactPaths(artifactPaths),
+				StdoutLogPath:    result.StdoutLogPath,
+				StderrLogPath:    result.StderrLogPath,
+				StdoutTruncated:  result.StdoutTruncated,
+				StderrTruncated:  result.StderrTruncated,
 				StartedAt:        startedAt,
 				CompletedAt:      completedAt,
 				Duration:         completedAt.Sub(startedAt),
@@ -215,6 +245,10 @@ func (e *SafeExecutor) runBatch(ctx context.Context, req Request) (Result, error
 		Session:          session,
 		Command:          "batch",
 		ArtifactPaths:    uniqueArtifactPaths(artifactPaths),
+		StdoutLogPath:    firstActionLogPath(results, true),
+		StderrLogPath:    firstActionLogPath(results, false),
+		StdoutTruncated:  stdoutTruncated,
+		StderrTruncated:  stderrTruncated,
 		StartedAt:        startedAt,
 		CompletedAt:      completedAt,
 		Duration:         completedAt.Sub(startedAt),
@@ -248,6 +282,9 @@ func (e *SafeExecutor) runSingle(ctx context.Context, req Request) (Result, erro
 		args:       finalArgs,
 		dir:        workingDir,
 		env:        mergeEnv(map[string]string{config.EnvOpenCTOWorkspace: workingDir}, normalized.Environment),
+		stateDir:   normalized.StateDir,
+		tailBytes:  normalized.TailBytes,
+		logName:    browserLogName(normalized.ProjectID, normalized.WorkItemID, normalized.Session, normalized.Command),
 	}
 	output, runErr := e.runner(runCtx, invocation)
 	completedAt := time.Now()
@@ -263,6 +300,10 @@ func (e *SafeExecutor) runSingle(ctx context.Context, req Request) (Result, erro
 		Command:          normalized.Command,
 		HoistedArgs:      append([]string(nil), hoistedArgs...),
 		Args:             append([]string(nil), commandArgs...),
+		StdoutLogPath:    output.stdoutLogPath,
+		StderrLogPath:    output.stderrLogPath,
+		StdoutTruncated:  output.stdoutTruncated,
+		StderrTruncated:  output.stderrTruncated,
 		StartedAt:        startedAt,
 		CompletedAt:      completedAt,
 		Duration:         completedAt.Sub(startedAt),
@@ -292,6 +333,8 @@ func requestForAction(parent Request, action Action) Request {
 		Intent:        firstNonEmpty(action.Description, parent.Intent),
 		WorkingDir:    parent.WorkingDir,
 		WorkspaceRoot: parent.WorkspaceRoot,
+		StateDir:      parent.StateDir,
+		TailBytes:     parent.TailBytes,
 		Environment:   parent.Environment,
 		Command:       action.Command,
 		Args:          append([]string(nil), action.Args...),
@@ -366,6 +409,19 @@ func uniqueArtifactPaths(paths []string) []string {
 	}
 	sort.Strings(unique)
 	return unique
+}
+
+func firstActionLogPath(results []ActionResult, stdout bool) string {
+	for _, result := range results {
+		value := result.StderrLogPath
+		if stdout {
+			value = result.StdoutLogPath
+		}
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func agentBrowserArgs(req Request, globalArgs []string, commandArgs []string) []string {
@@ -480,16 +536,102 @@ func runCommand(ctx context.Context, invocation commandInvocation) (commandOutpu
 	cmd.Dir = invocation.dir
 	cmd.Env = invocation.env
 
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdoutFile, stderrFile, stdoutPath, stderrPath, err := browserLogFiles(invocation)
+	if err != nil {
+		return commandOutput{}, err
+	}
+	defer stdoutFile.Close()
+	defer stderrFile.Close()
+	cmd.Stdout = stdoutFile
+	cmd.Stderr = stderrFile
 
-	err := cmd.Run()
+	err = cmd.Run()
 	if ctx.Err() != nil {
 		err = ctx.Err()
 	}
-	return commandOutput{stdout: stdout.String(), stderr: stderr.String()}, err
+	stdout, stdoutTruncated := tailFile(stdoutPath, invocation.tailBytes)
+	stderr, stderrTruncated := tailFile(stderrPath, invocation.tailBytes)
+	return commandOutput{
+		stdout:          stdout,
+		stderr:          stderr,
+		stdoutLogPath:   stdoutPath,
+		stderrLogPath:   stderrPath,
+		stdoutTruncated: stdoutTruncated,
+		stderrTruncated: stderrTruncated,
+	}, err
+}
+
+func browserLogFiles(invocation commandInvocation) (*os.File, *os.File, string, string, error) {
+	dir, err := browserLogDir(invocation.stateDir)
+	if err != nil {
+		return nil, nil, "", "", err
+	}
+	name := strings.TrimSpace(invocation.logName)
+	if name == "" {
+		name = "browser"
+	}
+	name = name + "-" + fmt.Sprint(time.Now().UnixNano())
+	stdoutPath := filepath.Join(dir, name+".stdout.log")
+	stderrPath := filepath.Join(dir, name+".stderr.log")
+	stdoutFile, err := os.OpenFile(stdoutPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return nil, nil, "", "", err
+	}
+	stderrFile, err := os.OpenFile(stderrPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		_ = stdoutFile.Close()
+		return nil, nil, "", "", err
+	}
+	return stdoutFile, stderrFile, stdoutPath, stderrPath, nil
+}
+
+func browserLogDir(stateDir string) (string, error) {
+	if strings.TrimSpace(stateDir) == "" {
+		dir := filepath.Join(os.TempDir(), "opencto-browser-logs")
+		return dir, os.MkdirAll(dir, 0o755)
+	}
+	dir := filepath.Join(stateDir, "logs")
+	return dir, os.MkdirAll(dir, 0o755)
+}
+
+func tailFile(path string, limit int64) (string, bool) {
+	if limit <= 0 {
+		limit = defaultTailBytes
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", false
+	}
+	data, err := readTail(path, limit)
+	if err != nil {
+		return "", false
+	}
+	return data, info.Size() > limit
+}
+
+func readTail(path string, limit int64) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	offset := int64(0)
+	if limit > 0 && info.Size() > limit {
+		offset = info.Size() - limit
+	}
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		return "", err
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 func rejectSessionFlags(args []string) error {
@@ -514,6 +656,17 @@ func defaultSession(projectID, workItemID string) string {
 		return "opencto-default"
 	}
 	return session
+}
+
+func browserLogName(projectID, workItemID, session, command string) string {
+	parts := []string{"browser"}
+	for _, value := range []string{projectID, workItemID, session, command} {
+		part := sanitizeSessionPart(value)
+		if part != "" && part != "default" {
+			parts = append(parts, part)
+		}
+	}
+	return strings.Join(parts, "-")
 }
 
 func sanitizeSessionPart(value string) string {

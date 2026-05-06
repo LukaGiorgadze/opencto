@@ -3,6 +3,7 @@ package exec
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -113,6 +114,98 @@ func TestSafeExecutorRunsCommand(t *testing.T) {
 	}
 	if result.Stdout != "hello" {
 		t.Fatalf("unexpected stdout: %q", result.Stdout)
+	}
+}
+
+func TestSafeExecutorStreamsOutputToLogsAndReturnsTail(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	executor := NewSafeExecutor(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	result, err := executor.Run(context.Background(), Request{
+		Command:   executable,
+		Args:      []string{"-test.run=TestHelperProcess", "--", "spam"},
+		StateDir:  stateDir,
+		Timeout:   time.Second,
+		TailBytes: 64,
+		Environment: map[string]string{
+			"GO_WANT_HELPER_PROCESS": "1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("run command: %v", err)
+	}
+	if result.StdoutLogPath == "" || result.StderrLogPath == "" {
+		t.Fatalf("expected log paths, got %#v", result)
+	}
+	if !result.StdoutTruncated {
+		t.Fatalf("expected stdout to be truncated, got %#v", result)
+	}
+	if strings.Contains(result.Stdout, "line-000") || !strings.Contains(result.Stdout, "line-099") {
+		t.Fatalf("expected stdout result to contain only tail, got %q", result.Stdout)
+	}
+	full, err := os.ReadFile(result.StdoutLogPath)
+	if err != nil {
+		t.Fatalf("read stdout log: %v", err)
+	}
+	if !strings.Contains(string(full), "line-000") || !strings.Contains(string(full), "line-099") {
+		t.Fatalf("expected full stdout log, got %q", string(full))
+	}
+}
+
+func TestSafeExecutorPromotesLongCommandToManagedProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses POSIX exec fixture")
+	}
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	workingDir := t.TempDir()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	executor := NewSafeExecutor(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	result, err := executor.Run(context.Background(), Request{
+		ProjectID:   "project-1",
+		WorkItemID:  "work-item-1",
+		ToolCallID:  "toolu_long",
+		ProcessID:   "proc-long",
+		Command:     executable,
+		Args:        []string{"-test.run=TestHelperProcess", "--", "block"},
+		WorkingDir:  workingDir,
+		StateDir:    stateDir,
+		Timeout:     time.Second,
+		GracePeriod: 20 * time.Millisecond,
+		TailBytes:   1024,
+		Environment: map[string]string{
+			"GO_WANT_HELPER_PROCESS": "1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("run command: %v", err)
+	}
+	if result.ManagedProcess == nil || result.ManagedProcess.ID != "proc-long" {
+		t.Fatalf("expected promoted process, got %#v", result)
+	}
+	if result.ManagedProcess.Status != domain.ProcessStatusRunning {
+		t.Fatalf("expected running process, got %#v", result.ManagedProcess)
+	}
+
+	manager := NewProcessManager(nil)
+	defer func() {
+		_, _ = manager.Stop(context.Background(), stateDir, "proc-long")
+	}()
+	checked, err := manager.Check(context.Background(), stateDir, "proc-long")
+	if err != nil {
+		t.Fatalf("check process: %v", err)
+	}
+	if checked.Status != domain.ProcessStatusRunning || checked.WorkingDirectory != workingDir {
+		t.Fatalf("unexpected process: %#v", checked)
 	}
 }
 
@@ -410,6 +503,10 @@ func TestHelperProcess(t *testing.T) {
 				os.Exit(1)
 			}
 			_, _ = os.Stdout.WriteString(workingDir)
+		case "spam":
+			for i := 0; i < 100; i++ {
+				_, _ = os.Stdout.WriteString(fmt.Sprintf("line-%03d\n", i))
+			}
 		default:
 			_, _ = os.Stdout.WriteString(args[1])
 		}

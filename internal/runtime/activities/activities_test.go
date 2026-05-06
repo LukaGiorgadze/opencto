@@ -620,6 +620,108 @@ func TestExecuteExecUsesToolChoiceWorkingDir(t *testing.T) {
 	if !strings.Contains(result.Observation, workingDir) {
 		t.Fatalf("expected observation to contain working directory %q, got %q", workingDir, result.Observation)
 	}
+	if result.Metadata["stdout_log_path"] == "" || result.Metadata["stderr_log_path"] == "" {
+		t.Fatalf("expected exec log metadata, got %#v", result.Metadata)
+	}
+}
+
+func TestExecuteBrowserUsesStateDirAndLogMetadata(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	stdoutLog := filepath.Join(stateDir, "logs", "browser.stdout.log")
+	stderrLog := filepath.Join(stateDir, "logs", "browser.stderr.log")
+	var captured browsertool.Request
+	activities := Activities{
+		WorkspaceRoot: dir,
+		StateDir:      stateDir,
+		ExecTailBytes: 32,
+		Browser: fakeBrowserExecutor{
+			request: &captured,
+			result: browsertool.Result{
+				Stdout:           "recent browser output",
+				ExitCode:         0,
+				WorkingDirectory: dir,
+				Executable:       "agent-browser",
+				Session:          "opencto-project-1-work-item-1",
+				Command:          "snapshot",
+				StdoutLogPath:    stdoutLog,
+				StderrLogPath:    stderrLog,
+				StdoutTruncated:  true,
+			},
+		},
+	}
+	result, err := activities.ExecuteTool(context.Background(), executeRequest(domain.ToolTypeBrowser, "browser-logs", map[string]any{
+		"command": "snapshot",
+	}))
+	if err != nil {
+		t.Fatalf("browser tool: %v", err)
+	}
+	if captured.StateDir != stateDir || captured.TailBytes != 32 {
+		t.Fatalf("expected browser state dir and tail bytes, got %#v", captured)
+	}
+	if result.Metadata["stdout_log_path"] != stdoutLog || result.Metadata["stderr_log_path"] != stderrLog {
+		t.Fatalf("expected browser log metadata, got %#v", result.Metadata)
+	}
+	if result.Metadata["stdout_truncated"] != "true" || !strings.Contains(result.Observation, "output_truncated: true") {
+		t.Fatalf("expected browser truncation observation, got %#v", result)
+	}
+}
+
+func TestExecuteExecPromotesLongCommandToProcess(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("uses POSIX exec fixture")
+	}
+	t.Parallel()
+
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	activities := Activities{
+		Exec:          exectool.NewSafeExecutor(nil),
+		WorkspaceRoot: dir,
+		StateDir:      stateDir,
+		ExecGrace:     20 * time.Millisecond,
+	}
+	result, err := activities.ExecuteTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "project-1",
+		WorkItemID: "work-item-1",
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_promote",
+			Type:       domain.ToolTypeExec,
+			Intent:     "run long fixture",
+			Command:    "sh",
+			Args:       []string{"-c", "printf 'ready\n'; sleep 30"},
+			WorkingDir: dir,
+			TimeoutMs:  1000,
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+				"tool_call_id":    "toolu_promote",
+				"work_item_id":    "work-item-1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute exec: %v", err)
+	}
+	if result.Status != domain.ExecutionStatusSucceeded || len(result.Processes) != 1 {
+		t.Fatalf("expected promoted process result, got %#v", result)
+	}
+	processID := result.Processes[0].ID
+	manager := exectool.NewProcessManager(nil)
+	defer func() {
+		_, _ = manager.Stop(context.Background(), stateDir, processID)
+	}()
+	checked, err := manager.Check(context.Background(), stateDir, processID)
+	if err != nil {
+		t.Fatalf("check process: %v", err)
+	}
+	if checked.Status != domain.ProcessStatusRunning {
+		t.Fatalf("expected running process, got %#v", checked)
+	}
+	if result.Metadata["promoted_to_managed_process"] != "true" || result.Metadata["process_id"] != processID {
+		t.Fatalf("expected promotion metadata, got %#v", result.Metadata)
+	}
 }
 
 func TestNextActionStopsProcessWithStopOnFinishScopeAtCompletion(t *testing.T) {
@@ -740,10 +842,14 @@ func (f fakeGrepExecutor) Run(context.Context, greptool.Request) (greptool.Resul
 }
 
 type fakeBrowserExecutor struct {
-	result browsertool.Result
-	err    error
+	result  browsertool.Result
+	err     error
+	request *browsertool.Request
 }
 
-func (f fakeBrowserExecutor) Run(context.Context, browsertool.Request) (browsertool.Result, error) {
+func (f fakeBrowserExecutor) Run(_ context.Context, req browsertool.Request) (browsertool.Result, error) {
+	if f.request != nil {
+		*f.request = req
+	}
 	return f.result, f.err
 }

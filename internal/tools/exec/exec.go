@@ -1,7 +1,6 @@
 package exec
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -24,14 +23,23 @@ var (
 	ErrEmptyCommand = errors.New("command is required")
 )
 
+const defaultTailBytes int64 = 16 << 10
+
 type Request struct {
 	ProjectID          string
+	WorkItemID         string
+	ToolCallID         string
+	ProcessID          string
 	Intent             string
 	Command            string
 	Args               []string
 	Actions            []Action
 	WorkingDir         string
+	StateDir           string
 	Timeout            time.Duration
+	GracePeriod        time.Duration
+	TailBytes          int64
+	ProcessScope       domain.ProcessScope
 	Environment        map[string]string
 	FallbackCandidates []domain.ToolType
 }
@@ -54,6 +62,11 @@ type Result struct {
 	Stderr           string
 	ExitCode         int
 	WorkingDirectory string
+	StdoutLogPath    string
+	StderrLogPath    string
+	StdoutTruncated  bool
+	StderrTruncated  bool
+	ManagedProcess   *domain.ManagedProcess
 	StartedAt        time.Time
 	CompletedAt      time.Time
 	Duration         time.Duration
@@ -116,6 +129,9 @@ func (e *SafeExecutor) runBatch(ctx context.Context, req Request) (Result, error
 	for index, action := range req.Actions {
 		subReq := execRequestForAction(req, action)
 		result, err := e.runSingle(runCtx, subReq)
+		if result.ManagedProcess != nil {
+			return result, err
+		}
 		appendActionOutput(&stdout, index, action.Command, action.Args, result.Stdout)
 		appendActionOutput(&stderr, index, action.Command, action.Args, result.Stderr)
 		exitCode = result.ExitCode
@@ -150,16 +166,11 @@ func (e *SafeExecutor) runSingle(ctx context.Context, req Request) (Result, erro
 		return Result{}, ErrEmptyCommand
 	}
 
-	startedAt := time.Now()
+	startedAt := time.Now().UTC()
 
 	workingDir, err := ResolveWorkingDir(req.WorkingDir)
 	if err != nil {
 		return Result{}, err
-	}
-
-	runCtx, cancel := commandContext(ctx, req.Timeout)
-	if cancel != nil {
-		defer cancel()
 	}
 
 	cmd := osexec.Command(req.Command, req.Args...)
@@ -167,39 +178,258 @@ func (e *SafeExecutor) runSingle(ctx context.Context, req Request) (Result, erro
 	cmd.Env = mergeEnv(req.Environment)
 	setProcessGroup(cmd)
 
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdoutFile, stderrFile, stdoutPath, stderrPath, err := commandLogFiles(req)
+	if err != nil {
+		return Result{}, err
+	}
+	defer stdoutFile.Close()
+	defer stderrFile.Close()
+	cmd.Stdout = stdoutFile
+	cmd.Stderr = stderrFile
 
-	err = runCommandWithContext(runCtx, cmd)
-	completedAt := time.Now()
+	if err := cmd.Start(); err != nil {
+		completedAt := time.Now().UTC()
+		result := e.resultFromLogs(req, workingDir, stdoutPath, stderrPath, startedAt, completedAt, err, nil)
+		return result, err
+	}
 
-	result := Result{
-		Stdout:           stdout.String(),
-		Stderr:           stderr.String(),
-		ExitCode:         exitCode(err),
+	process := domain.ManagedProcess{
+		ID:               strings.TrimSpace(req.ProcessID),
+		ProjectID:        req.ProjectID,
+		WorkItemID:       req.WorkItemID,
+		ToolCallID:       req.ToolCallID,
+		Command:          req.Command,
+		Args:             append([]string(nil), req.Args...),
 		WorkingDirectory: workingDir,
+		PID:              cmd.Process.Pid,
+		PGID:             processGroupID(cmd.Process.Pid),
+		Status:           domain.ProcessStatusRunning,
+		StdoutLogPath:    stdoutPath,
+		StderrLogPath:    stderrPath,
+		StartedAt:        startedAt,
+		UpdatedAt:        startedAt,
+		Metadata: domain.Metadata{
+			"intent":        req.Intent,
+			"process_scope": string(startProcessScope(req.ProcessScope)),
+		},
+	}
+
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- cmd.Wait()
+	}()
+
+	timeout := commandTimer(req.Timeout)
+	defer stopTimer(timeout)
+	grace := commandTimer(req.GracePeriod)
+	defer stopTimer(grace)
+	canPromote := req.GracePeriod > 0 && process.ID != "" && strings.TrimSpace(req.StateDir) != ""
+
+	for {
+		select {
+		case waitErr := <-waitCh:
+			completedAt := time.Now().UTC()
+			result := e.resultFromLogs(req, workingDir, stdoutPath, stderrPath, startedAt, completedAt, waitErr, nil)
+			e.logCommand(req, result)
+			return result, waitErr
+		case <-ctx.Done():
+			_ = terminateManagedProcess(process.PID, process.PGID, 2*time.Second)
+			waitErr := <-waitCh
+			if ctx.Err() != nil {
+				waitErr = ctx.Err()
+			}
+			completedAt := time.Now().UTC()
+			result := e.resultFromLogs(req, workingDir, stdoutPath, stderrPath, startedAt, completedAt, waitErr, nil)
+			e.logCommand(req, result)
+			return result, waitErr
+		case <-timerC(timeout):
+			_ = terminateManagedProcess(process.PID, process.PGID, 2*time.Second)
+			<-waitCh
+			waitErr := context.DeadlineExceeded
+			completedAt := time.Now().UTC()
+			result := e.resultFromLogs(req, workingDir, stdoutPath, stderrPath, startedAt, completedAt, waitErr, nil)
+			e.logCommand(req, result)
+			return result, waitErr
+		case <-timerC(grace):
+			if !canPromote {
+				continue
+			}
+			root, err := processStateDir(req.StateDir)
+			if err != nil {
+				_ = terminateManagedProcess(process.PID, process.PGID, 2*time.Second)
+				<-waitCh
+				completedAt := time.Now().UTC()
+				result := e.resultFromLogs(req, workingDir, stdoutPath, stderrPath, startedAt, completedAt, err, nil)
+				e.logCommand(req, result)
+				return result, err
+			}
+			if err := os.MkdirAll(filepath.Join(root, "processes"), 0o755); err != nil {
+				_ = terminateManagedProcess(process.PID, process.PGID, 2*time.Second)
+				<-waitCh
+				completedAt := time.Now().UTC()
+				result := e.resultFromLogs(req, workingDir, stdoutPath, stderrPath, startedAt, completedAt, err, nil)
+				e.logCommand(req, result)
+				return result, err
+			}
+			if err := writeManagedProcess(root, process); err != nil {
+				_ = terminateManagedProcess(process.PID, process.PGID, 2*time.Second)
+				<-waitCh
+				completedAt := time.Now().UTC()
+				result := e.resultFromLogs(req, workingDir, stdoutPath, stderrPath, startedAt, completedAt, err, nil)
+				e.logCommand(req, result)
+				return result, err
+			}
+			e.trackPromotedProcess(waitCh, root, process, time.Until(startedAt.Add(req.Timeout)))
+			completedAt := time.Now().UTC()
+			result := e.resultFromLogs(req, workingDir, stdoutPath, stderrPath, startedAt, completedAt, nil, &process)
+			e.logCommand(req, result)
+			return result, nil
+		}
+	}
+}
+
+func (e *SafeExecutor) resultFromLogs(req Request, workingDir, stdoutPath, stderrPath string, startedAt, completedAt time.Time, err error, process *domain.ManagedProcess) Result {
+	stdout, stdoutTruncated := tailFile(stdoutPath, req.TailBytes)
+	stderr, stderrTruncated := tailFile(stderrPath, req.TailBytes)
+	code := exitCode(err)
+	if process != nil {
+		code = 0
+	}
+	return Result{
+		Stdout:           stdout,
+		Stderr:           stderr,
+		ExitCode:         code,
+		WorkingDirectory: workingDir,
+		StdoutLogPath:    stdoutPath,
+		StderrLogPath:    stderrPath,
+		StdoutTruncated:  stdoutTruncated,
+		StderrTruncated:  stderrTruncated,
+		ManagedProcess:   process,
 		StartedAt:        startedAt,
 		CompletedAt:      completedAt,
 		Duration:         completedAt.Sub(startedAt),
 	}
+}
 
+func (e *SafeExecutor) logCommand(req Request, result Result) {
 	e.logger.Info("command executed",
 		slog.String("project_id", req.ProjectID),
 		slog.String("intent", req.Intent),
 		slog.String("command", req.Command),
 		slog.Any("args", req.Args),
-		slog.String("cwd", workingDir),
+		slog.String("cwd", result.WorkingDirectory),
 		slog.Duration("duration", result.Duration),
 		slog.Int("exit_code", result.ExitCode),
+		slog.String("stdout_log_path", result.StdoutLogPath),
+		slog.String("stderr_log_path", result.StderrLogPath),
 	)
+}
 
+func (e *SafeExecutor) trackPromotedProcess(waitCh <-chan error, stateDir string, process domain.ManagedProcess, timeout time.Duration) {
+	go func() {
+		var err error
+		if timeout > 0 {
+			timer := time.NewTimer(timeout)
+			select {
+			case err = <-waitCh:
+				timer.Stop()
+			case <-timer.C:
+				_ = terminateManagedProcess(process.PID, process.PGID, 2*time.Second)
+				err = <-waitCh
+				if err == nil {
+					err = context.DeadlineExceeded
+				}
+			}
+		} else {
+			err = <-waitCh
+		}
+
+		updated := process
+		if current, readErr := readManagedProcess(stateDir, process.ID); readErr == nil {
+			updated = current
+		}
+		if updated.Status == domain.ProcessStatusRunning {
+			if err != nil {
+				updated.Status = domain.ProcessStatusFailed
+			} else {
+				updated.Status = domain.ProcessStatusExited
+			}
+			updated.UpdatedAt = time.Now().UTC()
+			_ = writeManagedProcess(stateDir, updated)
+		}
+	}()
+}
+
+func commandLogFiles(req Request) (*os.File, *os.File, string, string, error) {
+	logDir, err := commandLogDir(req.StateDir)
 	if err != nil {
-		return result, err
+		return nil, nil, "", "", err
 	}
+	name := strings.TrimSpace(req.ProcessID)
+	if name == "" {
+		name = "exec-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	}
+	stdoutPath := filepath.Join(logDir, name+".stdout.log")
+	stderrPath := filepath.Join(logDir, name+".stderr.log")
+	stdoutFile, err := os.OpenFile(stdoutPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return nil, nil, "", "", err
+	}
+	stderrFile, err := os.OpenFile(stderrPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		_ = stdoutFile.Close()
+		return nil, nil, "", "", err
+	}
+	return stdoutFile, stderrFile, stdoutPath, stderrPath, nil
+}
 
-	return result, nil
+func commandLogDir(stateDir string) (string, error) {
+	stateDir = strings.TrimSpace(stateDir)
+	if stateDir == "" {
+		dir := filepath.Join(os.TempDir(), "opencto-exec-logs")
+		return dir, os.MkdirAll(dir, 0o755)
+	}
+	root, err := processStateDir(stateDir)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(root, "logs")
+	return dir, os.MkdirAll(dir, 0o755)
+}
+
+func tailFile(path string, limit int64) (string, bool) {
+	if limit <= 0 {
+		limit = defaultTailBytes
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", false
+	}
+	tail, err := readTail(path, limit)
+	if err != nil {
+		return "", false
+	}
+	return tail, info.Size() > limit
+}
+
+func commandTimer(timeout time.Duration) *time.Timer {
+	if timeout <= 0 {
+		return nil
+	}
+	return time.NewTimer(timeout)
+}
+
+func timerC(timer *time.Timer) <-chan time.Time {
+	if timer == nil {
+		return nil
+	}
+	return timer.C
+}
+
+func stopTimer(timer *time.Timer) {
+	if timer != nil {
+		timer.Stop()
+	}
 }
 
 func commandContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
@@ -213,11 +443,18 @@ func execRequestForAction(parent Request, action Action) Request {
 	timeout := time.Duration(action.TimeoutMs) * time.Millisecond
 	return Request{
 		ProjectID:          parent.ProjectID,
+		WorkItemID:         parent.WorkItemID,
+		ToolCallID:         parent.ToolCallID,
+		ProcessID:          parent.ProcessID,
 		Intent:             firstNonEmpty(action.Intent, parent.Intent),
 		Command:            action.Command,
 		Args:               append([]string(nil), action.Args...),
 		WorkingDir:         firstNonEmpty(action.WorkingDir, parent.WorkingDir),
+		StateDir:           parent.StateDir,
 		Timeout:            timeout,
+		GracePeriod:        parent.GracePeriod,
+		TailBytes:          parent.TailBytes,
+		ProcessScope:       parent.ProcessScope,
 		Environment:        mergeStringMaps(parent.Environment, action.Environment),
 		FallbackCandidates: append([]domain.ToolType(nil), parent.FallbackCandidates...),
 	}
@@ -262,31 +499,6 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func runCommandWithContext(ctx context.Context, cmd *osexec.Cmd) error {
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-
-	waitCh := make(chan error, 1)
-	go func() {
-		waitCh <- cmd.Wait()
-	}()
-
-	select {
-	case err := <-waitCh:
-		return err
-	case <-ctx.Done():
-		if cmd.Process != nil {
-			_ = terminateProcessGroup(cmd.Process.Pid, 2*time.Second)
-		}
-		err := <-waitCh
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return err
-	}
 }
 
 func ResolveWorkingDir(dir string) (string, error) {

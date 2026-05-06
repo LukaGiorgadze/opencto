@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"time"
+
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
@@ -15,7 +17,9 @@ type Worker struct {
 }
 
 func NewWorker(client client.Client, taskQueue string, activities *activities.Activities) *Worker {
-	w := worker.New(client, taskQueue, worker.Options{})
+	w := worker.New(client, taskQueue, worker.Options{
+		MaxHeartbeatThrottleInterval: 5 * time.Second,
+	})
 	w.RegisterActivityWithOptions(activities.NextAction, activity.RegisterOptions{Name: "Activities.NextAction"})
 	w.RegisterActivityWithOptions(activities.ExecuteTool, activity.RegisterOptions{Name: "Activities.ExecuteTool"})
 	w.RegisterActivityWithOptions(activities.ResponseSession, activity.RegisterOptions{Name: "Activities.ResponseSession"})

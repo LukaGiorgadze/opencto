@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -197,6 +198,67 @@ func TestRunMapsDeadlineExceededToTimeoutExitCode(t *testing.T) {
 	if result.ExitCode != 124 {
 		t.Fatalf("expected timeout exit code 124, got %d", result.ExitCode)
 	}
+}
+
+func TestRunCommandStreamsOutputToLogsAndReturnsTail(t *testing.T) {
+	t.Parallel()
+
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("test executable: %v", err)
+	}
+	stateDir := t.TempDir()
+
+	output, err := runCommand(context.Background(), commandInvocation{
+		executable: executable,
+		args:       []string{"-test.run=TestBrowserHelperProcess", "--", "large-output"},
+		env:        append(os.Environ(), "GO_WANT_BROWSER_HELPER_PROCESS=1"),
+		stateDir:   stateDir,
+		tailBytes:  64,
+		logName:    "browser-stream",
+	})
+	if err != nil {
+		t.Fatalf("run helper command: %v", err)
+	}
+	if output.stdoutLogPath == "" || output.stderrLogPath == "" {
+		t.Fatalf("expected log paths, got %#v", output)
+	}
+	if filepath.Dir(output.stdoutLogPath) != filepath.Join(stateDir, "logs") {
+		t.Fatalf("expected browser logs under state dir, got %q", output.stdoutLogPath)
+	}
+	if !output.stdoutTruncated {
+		t.Fatalf("expected stdout tail to be marked truncated")
+	}
+	if strings.Contains(output.stdout, "line-000") || !strings.Contains(output.stdout, "line-099") {
+		t.Fatalf("expected stdout tail to include only recent output, got %q", output.stdout)
+	}
+
+	fullStdout, err := os.ReadFile(output.stdoutLogPath)
+	if err != nil {
+		t.Fatalf("read stdout log: %v", err)
+	}
+	if !strings.Contains(string(fullStdout), "line-000") || !strings.Contains(string(fullStdout), "line-099") {
+		t.Fatalf("expected full stdout log, got %q", string(fullStdout))
+	}
+}
+
+func TestBrowserHelperProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_BROWSER_HELPER_PROCESS") != "1" {
+		return
+	}
+	for index, arg := range os.Args {
+		if arg != "--" || index+1 >= len(os.Args) {
+			continue
+		}
+		if os.Args[index+1] == "large-output" {
+			for line := 0; line < 100; line++ {
+				fmt.Printf("line-%03d\n", line)
+			}
+			fmt.Fprintln(os.Stderr, "stderr-line")
+			os.Exit(0)
+		}
+	}
+	os.Exit(2)
 }
 
 func TestAgentBrowserE2E(t *testing.T) {

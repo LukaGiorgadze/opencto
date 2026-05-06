@@ -14,12 +14,13 @@ import (
 )
 
 const (
-	maxExecutionCycles          = 20
-	nextActionActivityTimeout   = 2 * time.Minute
-	toolActivityTimeout         = 10 * time.Minute
-	responseSessionGracePeriod  = 5 * time.Minute
-	responseSessionMaxDuration  = maxExecutionCycles*(nextActionActivityTimeout+toolActivityTimeout) + nextActionActivityTimeout + responseSessionGracePeriod
-	responseSessionHeartbeatGap = 30 * time.Second
+	maxExecutionCycles           = 20
+	nextActionActivityTimeout    = 2 * time.Minute
+	toolActivityTimeout          = 10 * time.Minute
+	toolActivityHeartbeatTimeout = 2 * time.Minute
+	responseSessionGracePeriod   = 5 * time.Minute
+	responseSessionMaxDuration   = maxExecutionCycles*(nextActionActivityTimeout+toolActivityTimeout) + nextActionActivityTimeout + responseSessionGracePeriod
+	responseSessionHeartbeatGap  = 30 * time.Second
 )
 
 func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowResult, error) {
@@ -33,7 +34,7 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 	}
 	toolAO := workflow.ActivityOptions{
 		StartToCloseTimeout: toolActivityTimeout,
-		HeartbeatTimeout:    10 * time.Second,
+		HeartbeatTimeout:    toolActivityHeartbeatTimeout,
 		WaitForCancellation: true,
 		RetryPolicy: &temporal.RetryPolicy{
 			MaximumAttempts: 1,
