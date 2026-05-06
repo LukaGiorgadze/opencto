@@ -15,8 +15,8 @@ import (
 	"github.com/opencto/opencto/internal/domain"
 	skillcatalog "github.com/opencto/opencto/internal/skills"
 	browsertool "github.com/opencto/opencto/internal/tools/browser"
+	exectool "github.com/opencto/opencto/internal/tools/exec"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
-	shelltool "github.com/opencto/opencto/internal/tools/shell"
 )
 
 type stubProjectStore struct {
@@ -26,21 +26,27 @@ type stubProjectStore struct {
 type stubEngine struct {
 	output agent.NextActionOutput
 	err    error
+	input  *agent.NextActionInput
 }
 
-func (e stubEngine) NextAction(context.Context, agent.NextActionInput) (agent.NextActionOutput, error) {
+func (e stubEngine) NextAction(_ context.Context, input agent.NextActionInput) (agent.NextActionOutput, error) {
+	if e.input != nil {
+		*e.input = input
+	}
 	return e.output, e.err
 }
 
 type captureReporter struct {
+	reports      []domain.ReportMessage
 	messages     []string
 	typingEvents []domain.Event
 	typingErr    error
 	onTyping     func()
 }
 
-func (r *captureReporter) Report(_ context.Context, _ domain.Event, message string) error {
-	r.messages = append(r.messages, message)
+func (r *captureReporter) Report(_ context.Context, _ domain.Event, report domain.ReportMessage) error {
+	r.reports = append(r.reports, report)
+	r.messages = append(r.messages, report.Text)
 	return nil
 }
 
@@ -70,6 +76,33 @@ func (s stubProjectStore) UpsertExecutionAttempt(context.Context, domain.Executi
 
 func (s stubProjectStore) UpsertToolInvocation(context.Context, domain.ToolInvocation) error {
 	return nil
+}
+
+func TestReportResponseIncludesAttachments(t *testing.T) {
+	t.Parallel()
+
+	reporter := &captureReporter{}
+	activities := Activities{Reporter: reporter}
+	err := activities.ReportResponse(context.Background(), ReportResponseRequest{
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "project-1",
+		},
+		Message: "see attached",
+		Attachments: []domain.ReportAttachment{{
+			Path: "/workspace/screenshot.png",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("report response: %v", err)
+	}
+	if len(reporter.reports) != 1 {
+		t.Fatalf("expected one report, got %d", len(reporter.reports))
+	}
+	report := reporter.reports[0]
+	if report.Text != "see attached" || len(report.Attachments) != 1 || report.Attachments[0].Path != "/workspace/screenshot.png" {
+		t.Fatalf("unexpected report: %#v", report)
+	}
 }
 
 func TestFullObservationKeepsLongStdout(t *testing.T) {
@@ -309,6 +342,46 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 	}
 }
 
+func TestExecuteGlobUsesCwdForRelativePath(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	appDir := filepath.Join(workspace, "example-app")
+	appFile := filepath.Join(appDir, "src", "main.go")
+	otherFile := filepath.Join(workspace, "src", "main.go")
+	if err := os.MkdirAll(filepath.Dir(appFile), 0o755); err != nil {
+		t.Fatalf("create app fixture: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(otherFile), 0o755); err != nil {
+		t.Fatalf("create workspace fixture: %v", err)
+	}
+	if err := os.WriteFile(appFile, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write app fixture: %v", err)
+	}
+	if err := os.WriteFile(otherFile, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write workspace fixture: %v", err)
+	}
+
+	activities := Activities{WorkspaceRoot: workspace}
+	result, err := activities.ExecuteTool(context.Background(), executeRequest(domain.ToolTypeGlob, "glob-cwd", map[string]any{
+		"cwd":     "example-app",
+		"path":    "src",
+		"pattern": "*.go",
+	}))
+	if err != nil {
+		t.Fatalf("glob tool: %v", err)
+	}
+	if result.WorkingDirectory != appDir {
+		t.Fatalf("expected glob working directory %q, got %q", appDir, result.WorkingDirectory)
+	}
+	if !strings.Contains(result.Observation, appFile) {
+		t.Fatalf("expected glob result to include app file %q, got %q", appFile, result.Observation)
+	}
+	if strings.Contains(result.Observation, otherFile) {
+		t.Fatalf("expected glob result not to include workspace file %q, got %q", otherFile, result.Observation)
+	}
+}
+
 func TestNextActionAssignsWorkItemInternallyForToolChoice(t *testing.T) {
 	t.Parallel()
 
@@ -316,7 +389,7 @@ func TestNextActionAssignsWorkItemInternallyForToolChoice(t *testing.T) {
 		Engine: stubEngine{output: agent.NextActionOutput{
 			ToolChoice: &agent.ToolChoice{
 				ToolCallID: "toolu_next",
-				Type:       domain.ToolTypeShell,
+				Type:       domain.ToolTypeExec,
 				Intent:     "inspect workspace",
 				Command:    "pwd",
 				Metadata: map[string]string{
@@ -347,13 +420,47 @@ func TestNextActionAssignsWorkItemInternallyForToolChoice(t *testing.T) {
 	}
 }
 
+func TestNextActionPassesEventChannelToEngine(t *testing.T) {
+	t.Parallel()
+
+	var input agent.NextActionInput
+	activities := Activities{
+		Engine: stubEngine{
+			output: agent.NextActionOutput{
+				NextAction: agent.NextAction{ResponseMessage: "done"},
+				Status:     NextActionStatusCompleted,
+			},
+			input: &input,
+		},
+	}
+
+	event := domain.Event{
+		ID:          "event-1",
+		ProjectID:   "project-1",
+		ChannelType: domain.ChannelTypeLocal,
+		Body:        "inspect workspace",
+	}
+	_, err := activities.NextAction(context.Background(), NextActionRequest{
+		ProjectID:      "project-1",
+		Event:          event,
+		ExecutionCycle: 1,
+	})
+	if err != nil {
+		t.Fatalf("next action: %v", err)
+	}
+	if input.ChannelType != domain.ChannelTypeLocal {
+		t.Fatalf("expected local channel, got %q", input.ChannelType)
+	}
+}
+
 func TestExecuteToolReturnsManagedProcessMetadata(t *testing.T) {
 	if goruntime.GOOS == "windows" {
-		t.Skip("uses POSIX shell fixture")
+		t.Skip("uses POSIX exec fixture")
 	}
 	t.Parallel()
 
 	dir := t.TempDir()
+	workingDir := t.TempDir()
 	stateDir := t.TempDir()
 	activities := Activities{
 		WorkspaceRoot: dir,
@@ -364,11 +471,11 @@ func TestExecuteToolReturnsManagedProcessMetadata(t *testing.T) {
 		WorkItemID: "work-item-1",
 		ToolChoice: agent.ToolChoice{
 			ToolCallID:  "toolu_bg",
-			Type:        domain.ToolTypeShell,
+			Type:        domain.ToolTypeExec,
 			Intent:      "start background fixture",
 			Command:     "sh",
 			Args:        []string{"-c", "printf 'ready\n'; sleep 30"},
-			WorkingDir:  dir,
+			WorkingDir:  workingDir,
 			TimeoutMs:   1000,
 			RunMode:     domain.ToolRunModeStartBackground,
 			Idempotency: domain.ToolIdempotencyNonIdempotent,
@@ -381,7 +488,7 @@ func TestExecuteToolReturnsManagedProcessMetadata(t *testing.T) {
 	}
 	result, err := activities.ExecuteTool(context.Background(), request)
 	if err != nil {
-		t.Fatalf("start shell process: %v", err)
+		t.Fatalf("start exec process: %v", err)
 	}
 	if result.Status != domain.ExecutionStatusSucceeded {
 		t.Fatalf("unexpected result: %#v", result)
@@ -390,10 +497,10 @@ func TestExecuteToolReturnsManagedProcessMetadata(t *testing.T) {
 	if processID == "" || result.Metadata["pid"] == "" {
 		t.Fatalf("expected process metadata, got %#v", result.Metadata)
 	}
-	if len(result.Processes) != 1 || result.Processes[0].ID != processID || result.Processes[0].Scope != domain.ProcessScopeTask {
+	if len(result.Processes) != 1 || result.Processes[0].ID != processID || result.Processes[0].Scope != domain.ProcessScopeStopOnFinish {
 		t.Fatalf("expected process reference, got %#v", result.Processes)
 	}
-	manager := shelltool.NewProcessManager(nil)
+	manager := exectool.NewProcessManager(nil)
 	defer func() {
 		_, _ = manager.Stop(context.Background(), stateDir, processID)
 	}()
@@ -404,6 +511,9 @@ func TestExecuteToolReturnsManagedProcessMetadata(t *testing.T) {
 	}
 	if checked.Status != domain.ProcessStatusRunning {
 		t.Fatalf("expected running process, got %#v", checked)
+	}
+	if checked.WorkingDirectory != workingDir {
+		t.Fatalf("expected process working directory %q, got %q", workingDir, checked.WorkingDirectory)
 	}
 	var stdoutTail string
 	deadline := time.Now().Add(time.Second)
@@ -423,9 +533,98 @@ func TestExecuteToolReturnsManagedProcessMetadata(t *testing.T) {
 	}
 }
 
-func TestNextActionReturnsResponseAfterTaskProcessCleanup(t *testing.T) {
+func TestExecuteToolStartBackgroundFailureIncludesProcessOutput(t *testing.T) {
 	if goruntime.GOOS == "windows" {
-		t.Skip("uses POSIX shell fixture")
+		t.Skip("uses POSIX exec fixture")
+	}
+	t.Parallel()
+
+	dir := t.TempDir()
+	activities := Activities{
+		WorkspaceRoot: dir,
+		StateDir:      t.TempDir(),
+	}
+	result, err := activities.ExecuteTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "project-1",
+		WorkItemID: "work-item-1",
+		ToolChoice: agent.ToolChoice{
+			ToolCallID:  "toolu_bg_fail",
+			Type:        domain.ToolTypeExec,
+			Intent:      "start failing background fixture",
+			Command:     "sh",
+			Args:        []string{"-c", "printf 'startup stdout\n'; printf 'startup stderr\n' >&2; exit 7"},
+			TimeoutMs:   1000,
+			RunMode:     domain.ToolRunModeStartBackground,
+			Idempotency: domain.ToolIdempotencyIdempotent,
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+				"tool_call_id":    "toolu_bg_fail",
+				"work_item_id":    "work-item-1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("start exec process: %v", err)
+	}
+	if result.Status != domain.ExecutionStatusFailed {
+		t.Fatalf("expected failed result, got %#v", result)
+	}
+	if !strings.Contains(result.Observation, "stdout:\nstartup stdout") {
+		t.Fatalf("expected startup stdout in observation, got %q", result.Observation)
+	}
+	if !strings.Contains(result.Observation, "stderr:\nstartup stderr") {
+		t.Fatalf("expected startup stderr in observation, got %q", result.Observation)
+	}
+	if !strings.Contains(result.Observation, "error:\nbackground process exited during startup") {
+		t.Fatalf("expected startup error in observation, got %q", result.Observation)
+	}
+	if result.Error == "" {
+		t.Fatalf("expected error details, got %#v", result)
+	}
+}
+
+func TestExecuteExecUsesToolChoiceWorkingDir(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("uses POSIX pwd fixture")
+	}
+	t.Parallel()
+
+	dir := t.TempDir()
+	workingDir := t.TempDir()
+	activities := Activities{
+		Exec:          exectool.NewSafeExecutor(nil),
+		WorkspaceRoot: dir,
+	}
+	result, err := activities.ExecuteTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "project-1",
+		WorkItemID: "work-item-1",
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_pwd",
+			Type:       domain.ToolTypeExec,
+			Intent:     "print working directory",
+			Command:    "pwd",
+			WorkingDir: workingDir,
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+				"tool_call_id":    "toolu_pwd",
+				"work_item_id":    "work-item-1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute exec: %v", err)
+	}
+	if result.WorkingDirectory != workingDir {
+		t.Fatalf("expected working directory %q, got %q", workingDir, result.WorkingDirectory)
+	}
+	if !strings.Contains(result.Observation, workingDir) {
+		t.Fatalf("expected observation to contain working directory %q, got %q", workingDir, result.Observation)
+	}
+}
+
+func TestNextActionStopsProcessWithStopOnFinishScopeAtCompletion(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("uses POSIX exec fixture")
 	}
 	t.Parallel()
 
@@ -437,9 +636,8 @@ func TestNextActionReturnsResponseAfterTaskProcessCleanup(t *testing.T) {
 				ID:        "work-item-1",
 				ProjectID: "project-1",
 				Status:    domain.WorkItemStatusRunning,
-			}}},
-			FinalAnswer: "server is available",
-			Status:      NextActionStatusCompleted,
+			}}, ResponseMessage: "server is available"},
+			Status: NextActionStatusCompleted,
 		}},
 		WorkspaceRoot: dir,
 		StateDir:      stateDir,
@@ -448,14 +646,15 @@ func TestNextActionReturnsResponseAfterTaskProcessCleanup(t *testing.T) {
 		ProjectID:  "project-1",
 		WorkItemID: "work-item-1",
 		ToolChoice: agent.ToolChoice{
-			ToolCallID: "toolu_bg",
-			Type:       domain.ToolTypeShell,
-			Intent:     "start server",
-			Command:    "sh",
-			Args:       []string{"-c", "printf 'ready\n'; sleep 30"},
-			WorkingDir: dir,
-			TimeoutMs:  1000,
-			RunMode:    domain.ToolRunModeStartBackground,
+			ToolCallID:   "toolu_bg",
+			Type:         domain.ToolTypeExec,
+			Intent:       "start server",
+			Command:      "sh",
+			Args:         []string{"-c", "printf 'ready\n'; sleep 30"},
+			WorkingDir:   dir,
+			TimeoutMs:    1000,
+			RunMode:      domain.ToolRunModeStartBackground,
+			ProcessScope: domain.ProcessScopeStopOnFinish,
 			Metadata: map[string]string{
 				"execution_cycle": "1",
 				"tool_call_id":    "toolu_bg",
@@ -464,12 +663,20 @@ func TestNextActionReturnsResponseAfterTaskProcessCleanup(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("start shell process: %v", err)
+		t.Fatalf("start exec process: %v", err)
 	}
 	processID := started.Metadata["process_id"]
+	manager := exectool.NewProcessManager(nil)
 	defer func() {
-		_, _ = shelltool.NewProcessManager(nil).Stop(context.Background(), stateDir, processID)
+		_, _ = manager.Stop(context.Background(), stateDir, processID)
 	}()
+	checked, err := manager.Check(context.Background(), stateDir, processID)
+	if err != nil {
+		t.Fatalf("check started process: %v", err)
+	}
+	if checked.Status != domain.ProcessStatusRunning {
+		t.Fatalf("expected background process to be running before completion, got %#v", checked)
+	}
 
 	result, err := activities.NextAction(context.Background(), NextActionRequest{
 		ProjectID:      "project-1",
@@ -486,10 +693,17 @@ func TestNextActionReturnsResponseAfterTaskProcessCleanup(t *testing.T) {
 	if len(result.Processes) != 1 || result.Processes[0].Status != domain.ProcessStatusStopped {
 		t.Fatalf("expected stopped process reference, got %#v", result.Processes)
 	}
+	checked, err = manager.Check(context.Background(), stateDir, processID)
+	if err != nil {
+		t.Fatalf("check stopped process: %v", err)
+	}
+	if checked.Status != domain.ProcessStatusStopped {
+		t.Fatalf("expected background process to be stopped after completion, got %#v", checked)
+	}
 	if len(result.NextAction.ResponseMessage) == 0 {
 		t.Fatalf("expected response message")
 	}
-	if !strings.Contains(result.NextAction.ResponseMessage, "server is available") || !strings.Contains(result.NextAction.ResponseMessage, "stopped task-scoped background process") {
+	if !strings.Contains(result.NextAction.ResponseMessage, "server is available") || !strings.Contains(result.NextAction.ResponseMessage, "stopped stop-on-finish background process") {
 		t.Fatalf("expected cleanup notice in response, got %q", result.NextAction.ResponseMessage)
 	}
 }

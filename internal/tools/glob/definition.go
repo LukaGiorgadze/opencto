@@ -10,8 +10,8 @@ const (
 	GlobToolDescription = `Fast file pattern matching tool that works with any codebase size. Use this tool when you need to find files by name patterns
 
 - Supports glob patterns like "*.go", "**/*.go", or "src/**/*.ts"
-- The path parameter must be an absolute path when provided
-- Searches from the optional path parameter, or the tool's configured working directory when path is omitted
+- Use cwd to set the working directory for relative paths
+- Searches from path, or from cwd when path is omitted
 - Returns absolute matching file paths sorted by modification time, newest first`
 )
 

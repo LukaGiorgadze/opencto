@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -107,6 +108,39 @@ func TestReadRejectsDirectories(t *testing.T) {
 	_, err := newReadTestExecutor().Run(context.Background(), Request{FilePath: t.TempDir()})
 	if err == nil {
 		t.Fatalf("expected directory read to fail")
+	}
+}
+
+func TestReadRunsBatchActions(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.txt")
+	second := filepath.Join(dir, "second.txt")
+	if err := os.WriteFile(first, []byte("alpha\n"), 0o644); err != nil {
+		t.Fatalf("write first fixture: %v", err)
+	}
+	if err := os.WriteFile(second, []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatalf("write second fixture: %v", err)
+	}
+
+	result, err := newReadTestExecutor().Run(context.Background(), Request{
+		Actions: []Action{
+			{FilePath: first},
+			{FilePath: second, Offset: 1, Limit: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("read batch: %v", err)
+	}
+	if len(result.Actions) != 2 {
+		t.Fatalf("expected two action results, got %#v", result.Actions)
+	}
+	if !strings.Contains(result.Actions[0].Content, "alpha") || !strings.Contains(result.Actions[1].Content, "two") {
+		t.Fatalf("unexpected batch content: %#v", result.Actions)
+	}
+	if result.LinesRead != 2 || result.BytesRead != len("alpha\n")+len("one\ntwo\n") {
+		t.Fatalf("unexpected batch metadata: %#v", result)
 	}
 }
 

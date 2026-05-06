@@ -13,12 +13,12 @@ const (
 
 - Read local files: Use Read (NOT browser file:// URLs)
 - Search content: Use Grep or Glob (NOT browser-based scraping)
-- Run scripts: Use Shell (NOT browser console evaluation)
-- Fetch a single URL's raw content: Use Shell + curl/wget (NOT a full browser session)
+- Run scripts: Use Exec (NOT browser console evaluation)
+- Fetch a single URL's raw content: Use Exec + curl/wget (NOT a full browser session)
 
 Use this tool when you genuinely need a browser: JavaScript-rendered pages, auth flows, UI interaction, visual verification, or anything that requires a real browsing context.
 
-This tool runs Vercel's agent-browser directly (not through a shell). Provide one agent-browser subcommand in command and its arguments in args. OpenCTO places known global flags before the command.
+This tool runs Vercel's agent-browser directly (not through a exec). Provide one agent-browser subcommand in command and its arguments in args. OpenCTO places known global flags before the command.
 
 ## Examples of what you can do:
 - Navigate to URLs and interact with pages (open/goto/navigate, click, fill, type, press, hover, select, check, scroll, drag, upload)

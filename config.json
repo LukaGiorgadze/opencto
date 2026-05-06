@@ -19,7 +19,12 @@
   },
   "channels": {
     "discord": {
-      "enabled": true
+      "enabled": true,
+      "outbound_attachments": {
+        "max_files": 10,
+        "max_file_bytes": 10485760,
+        "max_total_bytes": 26214400
+      }
     }
   },
   "observability": {

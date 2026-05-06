@@ -32,12 +32,28 @@ export DISCORD_TOKEN="..."
 export DISCORD_APPLICATION_ID="..."
 ```
 
-4. Invite the bot to your server with `Send Messages`, `View Channels`, and `Read Message History`.
+4. Invite the bot to your server with `Send Messages`, `Attach Files`, `View Channels`, and `Read Message History`.
 5. Set `"channels.discord.enabled": true` in `config.json` or your local config.
 6. Run `task serve`.
 
 `task worker` alone does not start the Discord adapter. Use `task serve` when Discord is enabled.
 `task serve` also runs through `air`, so config and Go code changes trigger a rebuild automatically.
+
+Outbound Discord attachment limits are configured under the Discord channel config:
+
+```json
+{
+  "channels": {
+    "discord": {
+      "outbound_attachments": {
+        "max_files": 10,
+        "max_file_bytes": 10485760,
+        "max_total_bytes": 26214400
+      }
+    }
+  }
+}
+```
 
 Approval commands in Discord are plain messages:
 

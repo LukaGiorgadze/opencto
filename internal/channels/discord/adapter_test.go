@@ -2,9 +2,11 @@ package discord
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -15,7 +17,7 @@ import (
 )
 
 func TestSplitDiscordMessageByLines(t *testing.T) {
-	message := strings.Repeat("a", 3990) + "\n" + strings.Repeat("b", 50)
+	message := strings.Repeat("a", discordMessageMaxLength-10) + "\n" + strings.Repeat("b", 50)
 
 	chunks := splitDiscordMessage(message, discordMessageMaxLength)
 	if len(chunks) != 2 {
@@ -26,7 +28,7 @@ func TestSplitDiscordMessageByLines(t *testing.T) {
 			t.Fatalf("chunk %d exceeds limit: %d", i, utf8.RuneCountInString(chunk))
 		}
 	}
-	if chunks[0] != strings.Repeat("a", 3990) {
+	if chunks[0] != strings.Repeat("a", discordMessageMaxLength-10) {
 		t.Fatalf("unexpected first chunk length/content")
 	}
 	if chunks[1] != strings.Repeat("b", 50) {
@@ -105,5 +107,37 @@ func TestNormalizeMessageDownloadsAttachments(t *testing.T) {
 	}
 	if string(got) != string(data) {
 		t.Fatalf("downloaded attachment data mismatch: %v", got)
+	}
+}
+
+func TestDiscordFilesOpenResolvedAttachments(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "screen shot.png")
+	if err := os.WriteFile(path, []byte("image"), 0o644); err != nil {
+		t.Fatalf("write attachment: %v", err)
+	}
+
+	files, closers, err := discordFiles([]domain.ReportAttachment{{
+		Path:        path,
+		Filename:    "../Screen Shot.png",
+		ContentType: "image/png",
+	}})
+	defer closeDiscordFiles(closers)
+	if err != nil {
+		t.Fatalf("discord files: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected one file, got %d", len(files))
+	}
+	if files[0].Name != "Screen-Shot.png" || files[0].ContentType != "image/png" {
+		t.Fatalf("unexpected file metadata: %#v", files[0])
+	}
+	got, err := io.ReadAll(files[0].Reader)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if string(got) != "image" {
+		t.Fatalf("unexpected file content: %q", got)
 	}
 }

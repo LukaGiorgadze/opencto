@@ -25,7 +25,6 @@ func NewOpenAIEngine(apiKey, baseURL, reasoningModelID, fastModelID, transcripti
 		openai.WithToken(apiKey),
 		openai.WithBaseURL(baseURL),
 		openai.WithModel(reasoningModelID),
-		openai.WithResponseFormat(openai.ResponseFormatJSON),
 	)
 	if err != nil {
 		return nil, err
@@ -35,7 +34,6 @@ func NewOpenAIEngine(apiKey, baseURL, reasoningModelID, fastModelID, transcripti
 		openai.WithToken(apiKey),
 		openai.WithBaseURL(baseURL),
 		openai.WithModel(fastModelID),
-		openai.WithResponseFormat(openai.ResponseFormatJSON),
 	)
 	if err != nil {
 		return nil, err
@@ -83,12 +81,4 @@ func trimStringList(values []string, max int) []string {
 		}
 	}
 	return trimmed
-}
-
-func extractJSON(raw string) string {
-	value := strings.TrimSpace(raw)
-	value = strings.TrimPrefix(value, "```json")
-	value = strings.TrimPrefix(value, "```")
-	value = strings.TrimSuffix(value, "```")
-	return strings.TrimSpace(value)
 }

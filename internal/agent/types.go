@@ -68,23 +68,24 @@ type ExecutionFeedback struct {
 type NextActionOutput struct {
 	NextAction    NextAction         `json:"next_action"`
 	ToolChoice    *ToolChoice        `json:"tool_choice,omitempty"`
+	ToolChoices   []ToolChoice       `json:"tool_choices,omitempty"`
 	WorkItemID    string             `json:"work_item_id,omitempty"`
 	Observation   *ExecutionFeedback `json:"observation,omitempty"`
-	FinalAnswer   string             `json:"final_answer,omitempty"`
 	Status        string             `json:"status"`
 	AssistantText string             `json:"assistant_text,omitempty"`
 }
 
 type NextAction struct {
-	WorkItems       []domain.WorkItem `json:"work_items,omitempty"`
-	ToolChoice      ToolChoice        `json:"tool_choice,omitempty,omitzero"`
-	ResponseMessage string            `json:"response_message,omitempty"`
+	WorkItems           []domain.WorkItem         `json:"work_items,omitempty"`
+	ToolChoice          ToolChoice                `json:"tool_choice,omitempty,omitzero"`
+	ResponseMessage     string                    `json:"response_message,omitempty"`
+	ResponseAttachments []domain.ReportAttachment `json:"response_attachments,omitempty"`
 }
 
 type RuntimeContext struct {
 	OS            string `json:"os"`
 	Arch          string `json:"arch"`
-	Shell         string `json:"shell,omitempty"`
+	Exec          string `json:"exec,omitempty"`
 	Path          string `json:"path,omitempty"`
 	WorkspaceRoot string `json:"workspace_root,omitempty"`
 	OpenCTORoot   string `json:"opencto_root"`
@@ -107,6 +108,7 @@ type NextActionInput struct {
 	ResumedFromPause   bool
 	LastObservation    *ExecutionFeedback
 	ObservationHistory []ExecutionFeedback
+	ChannelType        domain.ChannelType
 }
 
 type Engine interface {

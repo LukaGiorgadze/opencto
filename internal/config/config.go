@@ -9,6 +9,14 @@ import (
 	"github.com/opencto/opencto/internal/workspace"
 )
 
+const (
+	EnvOpenCTOWorkspace = "OPENCTO_WORKSPACE"
+
+	defaultDiscordOutboundMaxFiles      = 10
+	defaultDiscordOutboundMaxFileBytes  = 10 << 20
+	defaultDiscordOutboundMaxTotalBytes = 25 << 20
+)
+
 type Config struct {
 	Project       ProjectConfig       `json:"project"`
 	Runtime       RuntimeConfig       `json:"runtime"`
@@ -67,7 +75,14 @@ type ChannelsConfig struct {
 }
 
 type DiscordConfig struct {
-	Enabled bool `json:"enabled"`
+	Enabled             bool                   `json:"enabled"`
+	OutboundAttachments AttachmentLimitsConfig `json:"outbound_attachments"`
+}
+
+type AttachmentLimitsConfig struct {
+	MaxFiles      int   `json:"max_files"`
+	MaxFileBytes  int64 `json:"max_file_bytes"`
+	MaxTotalBytes int64 `json:"max_total_bytes"`
 }
 
 type ObservabilityConfig struct {
@@ -101,6 +116,11 @@ func Load(path string) (Config, error) {
 		Channels:      raw.Channels,
 		Observability: raw.Observability,
 	}
+	cfg.Channels.Discord.OutboundAttachments = normalizeAttachmentLimits(cfg.Channels.Discord.OutboundAttachments, AttachmentLimitsConfig{
+		MaxFiles:      defaultDiscordOutboundMaxFiles,
+		MaxFileBytes:  defaultDiscordOutboundMaxFileBytes,
+		MaxTotalBytes: defaultDiscordOutboundMaxTotalBytes,
+	})
 
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
@@ -147,6 +167,39 @@ func (c *Config) validate() error {
 	if c.Temporal.ContinueAsNewAfterEvents <= 0 {
 		errs = append(errs, errors.New("temporal.continue_as_new_after_events must be greater than 0"))
 	}
+	if err := validateDiscordAttachmentLimits(c.Channels.Discord.OutboundAttachments); err != nil {
+		errs = append(errs, err)
+	}
 
+	return errors.Join(errs...)
+}
+
+func normalizeAttachmentLimits(value, defaults AttachmentLimitsConfig) AttachmentLimitsConfig {
+	if value.MaxFiles == 0 {
+		value.MaxFiles = defaults.MaxFiles
+	}
+	if value.MaxFileBytes == 0 {
+		value.MaxFileBytes = defaults.MaxFileBytes
+	}
+	if value.MaxTotalBytes == 0 {
+		value.MaxTotalBytes = defaults.MaxTotalBytes
+	}
+	return value
+}
+
+func validateDiscordAttachmentLimits(value AttachmentLimitsConfig) error {
+	var errs []error
+	if value.MaxFiles < 1 || value.MaxFiles > defaultDiscordOutboundMaxFiles {
+		errs = append(errs, errors.New("channels.discord.outbound_attachments.max_files must be between 1 and 10"))
+	}
+	if value.MaxFileBytes <= 0 {
+		errs = append(errs, errors.New("channels.discord.outbound_attachments.max_file_bytes must be greater than 0"))
+	}
+	if value.MaxTotalBytes <= 0 {
+		errs = append(errs, errors.New("channels.discord.outbound_attachments.max_total_bytes must be greater than 0"))
+	}
+	if value.MaxFileBytes > 0 && value.MaxTotalBytes > 0 && value.MaxFileBytes > value.MaxTotalBytes {
+		errs = append(errs, errors.New("channels.discord.outbound_attachments.max_file_bytes must not exceed max_total_bytes"))
+	}
 	return errors.Join(errs...)
 }

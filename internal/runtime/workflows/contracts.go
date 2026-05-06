@@ -47,9 +47,10 @@ type TaskWorkflowInput struct {
 }
 
 type TaskWorkflowResult struct {
-	Completed       bool         `json:"completed"`
-	Status          string       `json:"status,omitempty"`
-	Event           domain.Event `json:"event,omitempty"`
-	ResponseMessage string       `json:"response_message,omitempty"`
-	Report          bool         `json:"report,omitempty"`
+	Completed           bool                      `json:"completed"`
+	Status              string                    `json:"status,omitempty"`
+	Event               domain.Event              `json:"event,omitempty"`
+	ResponseMessage     string                    `json:"response_message,omitempty"`
+	ResponseAttachments []domain.ReportAttachment `json:"response_attachments,omitempty"`
+	Report              bool                      `json:"report,omitempty"`
 }

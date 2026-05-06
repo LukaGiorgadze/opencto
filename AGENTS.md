@@ -85,7 +85,7 @@ Tools must be:
 - safe
 - auditable
 
-Shell usage must be careful and constrained.
+Exec usage must be careful and constrained.
 
 ---
 

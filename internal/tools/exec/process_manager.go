@@ -1,4 +1,4 @@
-package shell
+package exec
 
 import (
 	"context"
@@ -25,6 +25,7 @@ type StartProcessRequest struct {
 	ProcessScope domain.ProcessScope
 	Command      string
 	Args         []string
+	WorkingDir   string
 	StateDir     string
 	Timeout      time.Duration
 	Environment  map[string]string
@@ -65,7 +66,7 @@ func startProcessScope(scope domain.ProcessScope) domain.ProcessScope {
 	if scope == domain.ProcessScopeProject {
 		return domain.ProcessScopeProject
 	}
-	return domain.ProcessScopeTask
+	return domain.ProcessScopeStopOnFinish
 }
 
 func (m *ProcessManager) Start(ctx context.Context, req StartProcessRequest) (domain.ManagedProcess, error) {
@@ -75,7 +76,7 @@ func (m *ProcessManager) Start(ctx context.Context, req StartProcessRequest) (do
 	if strings.TrimSpace(req.Command) == "" {
 		return domain.ManagedProcess{}, ErrEmptyCommand
 	}
-	workingDir, err := ResolveWorkingDir("")
+	workingDir, err := ResolveWorkingDir(req.WorkingDir)
 	if err != nil {
 		return domain.ManagedProcess{}, err
 	}

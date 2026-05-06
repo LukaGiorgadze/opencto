@@ -14,25 +14,38 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
+	"github.com/opencto/opencto/internal/channels"
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/runtime"
 )
 
-const discordMessageMaxLength = 4000
+const discordMessageMaxLength = 2000
 const discordAttachmentMaxBytes int64 = 20 << 20
+const discordOutboundAttachmentMaxFiles = 10
+const discordDefaultOutboundMaxFileBytes int64 = 10 << 20
+const discordDefaultOutboundMaxTotalBytes int64 = 25 << 20
 
 const discordAttachmentPayloadKey = "attachments"
 
-type Adapter struct {
-	projectID     string
-	dispatcher    *runtime.Dispatcher
-	session       *discordgo.Session
-	logger        *slog.Logger
-	attachmentDir string
-	httpClient    *http.Client
+type AttachmentLimits = channels.AttachmentLimits
+
+type Options struct {
+	WorkspaceRoot    string
+	AttachmentLimits AttachmentLimits
 }
 
-func New(projectID, token, _ string, dispatcher *runtime.Dispatcher, logger *slog.Logger) (*Adapter, error) {
+type Adapter struct {
+	projectID        string
+	dispatcher       *runtime.Dispatcher
+	session          *discordgo.Session
+	logger           *slog.Logger
+	attachmentDir    string
+	httpClient       *http.Client
+	workspaceRoot    string
+	attachmentLimits AttachmentLimits
+}
+
+func New(projectID, token, _ string, dispatcher *runtime.Dispatcher, logger *slog.Logger, opts ...Options) (*Adapter, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -50,14 +63,44 @@ func New(projectID, token, _ string, dispatcher *runtime.Dispatcher, logger *slo
 	if err != nil {
 		return nil, err
 	}
+	options := defaultOptions()
+	if len(opts) > 0 {
+		options = opts[0]
+		options.AttachmentLimits = normalizeAttachmentLimits(options.AttachmentLimits)
+	}
 	return &Adapter{
-		projectID:     projectID,
-		dispatcher:    dispatcher,
-		session:       session,
-		logger:        logger,
-		attachmentDir: attachmentDir,
-		httpClient:    &http.Client{Timeout: 30 * time.Second},
+		projectID:        projectID,
+		dispatcher:       dispatcher,
+		session:          session,
+		logger:           logger,
+		attachmentDir:    attachmentDir,
+		httpClient:       &http.Client{Timeout: 30 * time.Second},
+		workspaceRoot:    options.WorkspaceRoot,
+		attachmentLimits: options.AttachmentLimits,
 	}, nil
+}
+
+func defaultOptions() Options {
+	return Options{
+		AttachmentLimits: AttachmentLimits{
+			MaxFiles:      discordOutboundAttachmentMaxFiles,
+			MaxFileBytes:  discordDefaultOutboundMaxFileBytes,
+			MaxTotalBytes: discordDefaultOutboundMaxTotalBytes,
+		},
+	}
+}
+
+func normalizeAttachmentLimits(limits AttachmentLimits) AttachmentLimits {
+	if limits.MaxFiles == 0 {
+		limits.MaxFiles = discordOutboundAttachmentMaxFiles
+	}
+	if limits.MaxFileBytes == 0 {
+		limits.MaxFileBytes = discordDefaultOutboundMaxFileBytes
+	}
+	if limits.MaxTotalBytes == 0 {
+		limits.MaxTotalBytes = discordDefaultOutboundMaxTotalBytes
+	}
+	return limits
 }
 
 func (a *Adapter) Start(ctx context.Context) error {
@@ -299,21 +342,93 @@ func safePathSegment(value string) string {
 	return strings.Trim(value, ".-")
 }
 
-func (a *Adapter) Report(ctx context.Context, event domain.Event, message string) error {
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func (a *Adapter) Report(ctx context.Context, event domain.Event, report domain.ReportMessage) error {
 	if a.session == nil || event.ChannelID == "" {
 		return nil
 	}
-	for _, chunk := range splitDiscordMessage(message, discordMessageMaxLength) {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+	report, err := channels.ResolveReport(report, channels.ResolveOptions{
+		WorkspaceRoot: a.workspaceRoot,
+		Limits:        a.attachmentLimits,
+	})
+	if err != nil {
+		return err
+	}
+	if report.Empty() {
+		return nil
+	}
+
+	attachments := report.Attachments
+	chunks := splitDiscordMessage(report.Text, discordMessageMaxLength)
+	for i, chunk := range chunks {
+		var files []*discordgo.File
+		var closers []io.Closer
+		if i == 0 && len(attachments) > 0 {
+			files, closers, err = discordFiles(attachments)
+			if err != nil {
+				return err
+			}
 		}
-		if _, err := a.session.ChannelMessageSend(event.ChannelID, chunk); err != nil {
+		if err := sendDiscordMessage(ctx, a.session, event.ChannelID, chunk, files); err != nil {
+			closeDiscordFiles(closers)
 			return err
 		}
+		closeDiscordFiles(closers)
 	}
 	return nil
+}
+
+func discordFiles(attachments []domain.ReportAttachment) ([]*discordgo.File, []io.Closer, error) {
+	if len(attachments) > discordOutboundAttachmentMaxFiles {
+		return nil, nil, fmt.Errorf("discord supports at most %d attachments per message", discordOutboundAttachmentMaxFiles)
+	}
+	files := make([]*discordgo.File, 0, len(attachments))
+	closers := make([]io.Closer, 0, len(attachments))
+	for _, attachment := range attachments {
+		file, err := os.Open(attachment.Path)
+		if err != nil {
+			closeDiscordFiles(closers)
+			return nil, nil, err
+		}
+		files = append(files, &discordgo.File{
+			Name:        safeAttachmentFilename("", firstNonEmpty(attachment.Filename, filepath.Base(attachment.Path))),
+			ContentType: attachment.ContentType,
+			Reader:      file,
+		})
+		closers = append(closers, file)
+	}
+	return files, closers, nil
+}
+
+func sendDiscordMessage(ctx context.Context, session *discordgo.Session, channelID, content string, files []*discordgo.File) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if strings.TrimSpace(content) == "" && len(files) == 0 {
+		return nil
+	}
+	_, err := session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+		Content:         content,
+		Files:           files,
+		AllowedMentions: &discordgo.MessageAllowedMentions{},
+	})
+	return err
+}
+
+func closeDiscordFiles(closers []io.Closer) {
+	for _, closer := range closers {
+		_ = closer.Close()
+	}
 }
 
 func (a *Adapter) NotifyTyping(ctx context.Context, event domain.Event) error {

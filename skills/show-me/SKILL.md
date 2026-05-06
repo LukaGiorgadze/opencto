@@ -1,7 +1,7 @@
 ---
 name: show-me
 description: Show visual proof of a change, feature, or bug fix by detecting the environment, launching the app if needed, capturing a screenshot, and storing it.
-allowed-tools: Shell Glob Grep Read Browser
+allowed-tools: Exec Glob Grep Read Browser
 ---
 
 # Core Rule
@@ -34,7 +34,7 @@ Follow this process:
 6. Navigate to the changed area.
 7. Wait for the target state to render.
 8. Capture focused evidence.
-9. Save evidence under `$OPENCTO_WORKSPACE/screenshots/`.
+9. Save evidences under `$OPENCTO_WORKSPACE/screenshots/` unless the user asks for another location.
 10. Present the artifact and verification result to the user.
 
 This skill's references and scripts live under `$OPENCTO_ROOT/skills/show-me/`.
@@ -48,7 +48,7 @@ Prefer the most domain-native strategy. **Before executing, read the correspondi
 
 | Strategy    | When to use                                                             | Reference               |
 | ----------- | ----------------------------------------------------------------------- | ----------------------- |
-| `web`       | Browser-based app — React, Next.js, Vite, Remix, static site, dashboard | `$OPENCTO_ROOT/skills/agent-browser/SKILL.md`       |
+| `web`       | Browser-based app — React, Next.js, Vite, Remix, static site, dashboard | `$OPENCTO_ROOT/skills/show-me/references/web.md`       |
 | `simulator` | iOS Simulator, Android emulator, Expo, React Native, native mobile app  | `$OPENCTO_ROOT/skills/show-me/references/simulator.md` |
 | `desktop`   | macOS app, Electron app, native desktop UI, visible application window  | `$OPENCTO_ROOT/skills/show-me/references/desktop.md`   |
 | `terminal`  | CLI app, script output, server logs, tests, build result                | `$OPENCTO_ROOT/skills/show-me/references/terminal.md`  |

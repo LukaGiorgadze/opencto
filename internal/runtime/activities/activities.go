@@ -18,15 +18,16 @@ import (
 	"go.temporal.io/sdk/activity"
 
 	"github.com/opencto/opencto/internal/agent"
+	"github.com/opencto/opencto/internal/config"
 	"github.com/opencto/opencto/internal/domain"
 	skillcatalog "github.com/opencto/opencto/internal/skills"
 	toolregistry "github.com/opencto/opencto/internal/tools"
 	browsertool "github.com/opencto/opencto/internal/tools/browser"
 	edittool "github.com/opencto/opencto/internal/tools/edit"
+	exectool "github.com/opencto/opencto/internal/tools/exec"
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	readtool "github.com/opencto/opencto/internal/tools/read"
-	shelltool "github.com/opencto/opencto/internal/tools/shell"
 	skilltool "github.com/opencto/opencto/internal/tools/skill"
 	writetool "github.com/opencto/opencto/internal/tools/write"
 	"github.com/opencto/opencto/internal/workspace"
@@ -41,7 +42,7 @@ type ProjectStore interface {
 }
 
 type Reporter interface {
-	Report(context.Context, domain.Event, string) error
+	Report(context.Context, domain.Event, domain.ReportMessage) error
 }
 
 type TypingReporter interface {
@@ -51,7 +52,7 @@ type TypingReporter interface {
 type Activities struct {
 	Store         ProjectStore
 	Engine        agent.Engine
-	Shell         shelltool.Executor
+	Exec          exectool.Executor
 	Browser       browsertool.Executor
 	Edit          edittool.Executor
 	Glob          globtool.Executor
@@ -74,6 +75,7 @@ type NextActionRequest struct {
 	AdditionalEvents   []domain.Event            `json:"additional_events,omitempty"`
 	NextAction         agent.NextAction          `json:"next_action"`
 	LastResult         *ExecuteToolResult        `json:"last_result,omitempty"`
+	LastResults        []ExecuteToolResult       `json:"last_results,omitempty"`
 	ObservationHistory []agent.ExecutionFeedback `json:"observation_history,omitempty"`
 	Processes          []domain.ProcessReference `json:"processes,omitempty"`
 	ExecutionCycle     int                       `json:"execution_cycle"`
@@ -83,12 +85,14 @@ type NextActionRequest struct {
 }
 
 type NextActionResult struct {
-	NextAction  agent.NextAction          `json:"next_action"`
-	ToolChoice  *agent.ToolChoice         `json:"tool_choice,omitempty"`
-	WorkItemID  string                    `json:"work_item_id,omitempty"`
-	Observation *agent.ExecutionFeedback  `json:"observation,omitempty"`
-	Status      string                    `json:"status"`
-	Processes   []domain.ProcessReference `json:"processes,omitempty"`
+	NextAction   agent.NextAction          `json:"next_action"`
+	ToolChoice   *agent.ToolChoice         `json:"tool_choice,omitempty"`
+	ToolChoices  []agent.ToolChoice        `json:"tool_choices,omitempty"`
+	WorkItemID   string                    `json:"work_item_id,omitempty"`
+	Observation  *agent.ExecutionFeedback  `json:"observation,omitempty"`
+	Observations []agent.ExecutionFeedback `json:"observations,omitempty"`
+	Status       string                    `json:"status"`
+	Processes    []domain.ProcessReference `json:"processes,omitempty"`
 }
 
 type ExecuteToolRequest struct {
@@ -103,8 +107,9 @@ type TaskCompletionRequest struct {
 }
 
 type ReportResponseRequest struct {
-	Event   domain.Event `json:"event"`
-	Message string       `json:"message"`
+	Event       domain.Event              `json:"event"`
+	Message     string                    `json:"message"`
+	Attachments []domain.ReportAttachment `json:"attachments,omitempty"`
 }
 
 type ResponseSessionRequest struct {
@@ -284,8 +289,11 @@ func (a *Activities) ResponseSession(ctx context.Context, request ResponseSessio
 }
 
 func (a *Activities) ReportResponse(ctx context.Context, request ReportResponseRequest) error {
-	message := strings.TrimSpace(request.Message)
-	if message == "" || a.Reporter == nil {
+	report := domain.ReportMessage{
+		Text:        strings.TrimSpace(request.Message),
+		Attachments: append([]domain.ReportAttachment(nil), request.Attachments...),
+	}
+	if report.Empty() || a.Reporter == nil {
 		return nil
 	}
 	a.logActivityStep("ReportResponse", "start",
@@ -294,7 +302,7 @@ func (a *Activities) ReportResponse(ctx context.Context, request ReportResponseR
 		slog.String("channel_type", string(request.Event.ChannelType)),
 		slog.String("channel_id", strings.TrimSpace(request.Event.ChannelID)),
 	)
-	if err := a.Reporter.Report(ctx, request.Event, message); err != nil {
+	if err := a.Reporter.Report(ctx, request.Event, report); err != nil {
 		a.logActivityStep("ReportResponse", "error",
 			slog.String("project_id", request.Event.ProjectID),
 			slog.String("event_id", request.Event.ID),
@@ -400,33 +408,37 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 	)
 
 	history := append([]agent.ExecutionFeedback(nil), request.ObservationHistory...)
-	var observation *agent.ExecutionFeedback
-	if request.LastResult != nil {
+	var observations []agent.ExecutionFeedback
+	if len(request.LastResults) > 0 || request.LastResult != nil {
 		a.logActivityStep("NextAction", "apply_last_result_begin",
 			slog.String("project_id", projectID),
 			slog.String("event_id", event.ID),
-			slog.String("last_result_tool_call_id", request.LastResult.ToolCallID),
-			slog.String("last_result_status", string(request.LastResult.Status)),
+			slog.Int("last_results", len(request.LastResults)),
 		)
-		feedback := executionFeedback(*request.LastResult)
-		observation = &feedback
-		history = append(history, feedback)
+		results := request.LastResults
+		if len(results) == 0 && request.LastResult != nil {
+			results = []ExecuteToolResult{*request.LastResult}
+		}
 		nextAction.ToolChoice = agent.ToolChoice{}
-		if err := applyObservationToNextAction(&nextAction, feedback, now); err != nil {
-			a.logActivityStep("NextAction", "apply_last_result_error",
-				slog.String("project_id", projectID),
-				slog.String("event_id", event.ID),
-				slog.String("work_item_id", feedback.WorkItemID),
-				slog.String("tool_call_id", feedback.ToolCallID),
-				slog.String("error", err.Error()),
-			)
-			return NextActionResult{}, err
+		for _, result := range results {
+			feedback := executionFeedback(result)
+			observations = append(observations, feedback)
+			history = append(history, feedback)
+			if err := applyObservationToNextAction(&nextAction, feedback, now); err != nil {
+				a.logActivityStep("NextAction", "apply_last_result_error",
+					slog.String("project_id", projectID),
+					slog.String("event_id", event.ID),
+					slog.String("work_item_id", feedback.WorkItemID),
+					slog.String("tool_call_id", feedback.ToolCallID),
+					slog.String("error", err.Error()),
+				)
+				return NextActionResult{}, err
+			}
 		}
 		a.logActivityStep("NextAction", "apply_last_result_done",
 			slog.String("project_id", projectID),
 			slog.String("event_id", event.ID),
-			slog.String("work_item_id", feedback.WorkItemID),
-			slog.String("tool_call_id", feedback.ToolCallID),
+			slog.Int("applied_results", len(observations)),
 			slog.Int("history_len", len(history)),
 		)
 	}
@@ -445,8 +457,9 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		ExecutionCycle:     request.ExecutionCycle,
 		ForceFinal:         request.ForceFinal,
 		ResumedFromPause:   request.ResumedFromPause,
-		LastObservation:    observation,
+		LastObservation:    lastObservation(observations),
 		ObservationHistory: history,
+		ChannelType:        event.ChannelType,
 	})
 	if err != nil {
 		a.logActivityStep("NextAction", "engine_next_action_error",
@@ -463,7 +476,7 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		slog.Bool("has_tool_choice", engineOutput.ToolChoice != nil),
 		slog.String("work_item_id", strings.TrimSpace(engineOutput.WorkItemID)),
 	)
-	if len(engineOutput.NextAction.WorkItems) > 0 || !engineOutput.NextAction.ToolChoice.IsZero() || strings.TrimSpace(engineOutput.NextAction.ResponseMessage) != "" {
+	if len(engineOutput.NextAction.WorkItems) > 0 || !engineOutput.NextAction.ToolChoice.IsZero() || strings.TrimSpace(engineOutput.NextAction.ResponseMessage) != "" || len(engineOutput.NextAction.ResponseAttachments) > 0 {
 		nextAction = engineOutput.NextAction
 	}
 	if err := ensureNextAction(&nextAction, projectID, event, now); err != nil {
@@ -480,14 +493,16 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		slog.Int("work_items", len(nextAction.WorkItems)),
 	)
 
-	if request.ForceFinal && engineOutput.Status == NextActionStatusTool {
-		a.logActivityStep("NextAction", "force_final_override_tool_status",
+	if request.ForceFinal {
+		a.logActivityStep("NextAction", "force_final_override_status",
 			slog.String("project_id", projectID),
 			slog.String("event_id", event.ID),
 		)
 		engineOutput.Status = NextActionStatusBlocked
-		engineOutput.NextAction.ResponseMessage = cycleLimitFinalAnswer(history)
 		engineOutput.ToolChoice = nil
+		if strings.TrimSpace(engineOutput.NextAction.ResponseMessage) == "" {
+			engineOutput.NextAction.ResponseMessage = cycleLimitResponseMessage(history)
+		}
 	}
 
 	a.logActivityStep("NextAction", "dispatch_status",
@@ -497,27 +512,33 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 	)
 	switch engineOutput.Status {
 	case NextActionStatusTool:
-		return a.prepareToolNextAction(ctx, nextAction, observation, engineOutput, request.ExecutionCycle, now)
+		return a.prepareToolNextAction(ctx, nextAction, observations, engineOutput, request.ExecutionCycle, now)
 	case NextActionStatusCompleted, NextActionStatusBlocked, NextActionStatusFailed, NextActionStatusIgnored:
-		return a.finishNextAction(ctx, event, nextAction, observation, engineOutput, request.Processes, now)
+		return a.finishNextAction(ctx, event, nextAction, lastObservation(observations), observations, engineOutput, request.Processes, now)
 	default:
 		return NextActionResult{}, fmt.Errorf("unsupported next action status %q", engineOutput.Status)
 	}
 }
 
-func (a *Activities) prepareToolNextAction(ctx context.Context, nextAction agent.NextAction, observation *agent.ExecutionFeedback, output agent.NextActionOutput, cycle int, now time.Time) (NextActionResult, error) {
+func (a *Activities) prepareToolNextAction(ctx context.Context, nextAction agent.NextAction, observations []agent.ExecutionFeedback, output agent.NextActionOutput, cycle int, now time.Time) (NextActionResult, error) {
 	a.logActivityStep("NextAction", "prepare_tool_begin",
 		slog.Int("execution_cycle", cycle),
-		slog.Bool("has_observation", observation != nil),
+		slog.Int("observations", len(observations)),
 		slog.Bool("has_tool_choice", output.ToolChoice != nil),
+		slog.Int("tool_choices", len(output.ToolChoices)),
 		slog.String("output_work_item_id", strings.TrimSpace(output.WorkItemID)),
 	)
-	if output.ToolChoice == nil {
+	choices := append([]agent.ToolChoice(nil), output.ToolChoices...)
+	if len(choices) == 0 && output.ToolChoice != nil {
+		choices = []agent.ToolChoice{*output.ToolChoice}
+	}
+	if len(choices) == 0 {
 		a.logActivityStep("NextAction", "prepare_tool_missing_choice")
-		return NextActionResult{}, fmt.Errorf("%w: tool status requires exactly one tool choice", agent.ErrInvalidToolChoice)
+		return NextActionResult{}, fmt.Errorf("%w: tool status requires at least one tool choice", agent.ErrInvalidToolChoice)
 	}
 
-	choice := *output.ToolChoice
+	observation := lastObservation(observations)
+	choice := choices[0]
 	workItemID := nextActionToolWorkItemID(nextAction, observation)
 	if strings.TrimSpace(workItemID) == "" {
 		a.logActivityStep("NextAction", "prepare_tool_missing_work_item_id",
@@ -559,7 +580,15 @@ func (a *Activities) prepareToolNextAction(ctx context.Context, nextAction agent
 	if assistantText == "" {
 		assistantText = strings.TrimSpace(choice.Intent)
 	}
-	ensureToolChoiceMetadata(&choice, workItemID, cycle, assistantText)
+	toolCallIDs := make([]string, 0, len(choices))
+	for _, choice := range choices {
+		toolCallIDs = append(toolCallIDs, strings.TrimSpace(choice.ToolCallID))
+	}
+	for index := range choices {
+		ensureToolChoiceMetadata(&choices[index], workItemID, cycle, assistantText)
+		choices[index].Metadata["tool_call_ids"] = strings.Join(toolCallIDs, ",")
+	}
+	choice = choices[0]
 	nextAction.ToolChoice = choice
 	nextAction.ResponseMessage = ""
 
@@ -582,36 +611,37 @@ func (a *Activities) prepareToolNextAction(ctx context.Context, nextAction agent
 	)
 
 	return NextActionResult{
-		NextAction:  nextAction,
-		ToolChoice:  &choice,
-		WorkItemID:  workItemID,
-		Observation: observation,
-		Status:      NextActionStatusTool,
+		NextAction:   nextAction,
+		ToolChoice:   &choice,
+		ToolChoices:  choices,
+		WorkItemID:   workItemID,
+		Observation:  observation,
+		Observations: observations,
+		Status:       NextActionStatusTool,
 	}, nil
 }
 
-func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, nextAction agent.NextAction, observation *agent.ExecutionFeedback, output agent.NextActionOutput, processes []domain.ProcessReference, now time.Time) (NextActionResult, error) {
+func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, nextAction agent.NextAction, observation *agent.ExecutionFeedback, observations []agent.ExecutionFeedback, output agent.NextActionOutput, processes []domain.ProcessReference, now time.Time) (NextActionResult, error) {
 	a.logActivityStep("NextAction", "finish_begin",
 		slog.String("project_id", event.ProjectID),
 		slog.String("event_id", event.ID),
 		slog.String("status", output.Status),
 		slog.Bool("has_observation", observation != nil),
 	)
-	message := strings.TrimSpace(output.FinalAnswer)
-	if message == "" {
-		message = strings.TrimSpace(output.NextAction.ResponseMessage)
-	}
-	if message == "" {
-		a.logActivityStep("NextAction", "finish_missing_final_answer",
+	message := strings.TrimSpace(output.NextAction.ResponseMessage)
+	attachments := append([]domain.ReportAttachment(nil), output.NextAction.ResponseAttachments...)
+	if message == "" && len(attachments) == 0 {
+		a.logActivityStep("NextAction", "finish_missing_response_message",
 			slog.String("project_id", event.ProjectID),
 			slog.String("event_id", event.ID),
 			slog.String("status", output.Status),
 		)
-		return NextActionResult{}, fmt.Errorf("%w: terminal next action is missing final answer", agent.ErrInvalidNextAction)
+		return NextActionResult{}, fmt.Errorf("%w: terminal next action is missing response message", agent.ErrInvalidNextAction)
 	}
 
 	nextAction.ToolChoice = agent.ToolChoice{}
 	nextAction.ResponseMessage = message
+	nextAction.ResponseAttachments = attachments
 	markFinalNextActionWorkItems(&nextAction, terminalWorkItemStatus(output.Status), observation, now)
 	result, err := a.completeTask(ctx, event.ProjectID, event, nextAction, TaskCompletionRequest{
 		Status:    output.Status,
@@ -621,6 +651,7 @@ func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, n
 		return NextActionResult{}, err
 	}
 	result.Observation = observation
+	result.Observations = observations
 	a.logActivityStep("NextAction", "finish_done",
 		slog.String("project_id", event.ProjectID),
 		slog.String("event_id", event.ID),
@@ -656,6 +687,7 @@ func (a *Activities) completeTask(ctx context.Context, projectID string, event d
 	}
 
 	message := strings.TrimSpace(nextAction.ResponseMessage)
+	attachments := append([]domain.ReportAttachment(nil), nextAction.ResponseAttachments...)
 	if persist {
 		if err := a.persistNextAction(ctx, nextAction); err != nil {
 			a.logActivityStep("NextAction", "complete_task_persist_error",
@@ -666,13 +698,14 @@ func (a *Activities) completeTask(ctx context.Context, projectID string, event d
 			return NextActionResult{}, err
 		}
 	}
-	if report && status != NextActionStatusIgnored && a.Reporter != nil && message != "" {
+	reportMessage := domain.ReportMessage{Text: message, Attachments: attachments}
+	if report && status != NextActionStatusIgnored && a.Reporter != nil && !reportMessage.Empty() {
 		a.logActivityStep("NextAction", "complete_task_report_begin",
 			slog.String("project_id", event.ProjectID),
 			slog.String("event_id", event.ID),
 			slog.String("status", status),
 		)
-		if err := a.Reporter.Report(ctx, event, message); err != nil {
+		if err := a.Reporter.Report(ctx, event, reportMessage); err != nil {
 			a.logActivityStep("NextAction", "complete_task_report_error",
 				slog.String("project_id", event.ProjectID),
 				slog.String("event_id", event.ID),
@@ -706,7 +739,7 @@ func (a *Activities) cleanupTaskProcesses(ctx context.Context, projectID string,
 	updated := append([]domain.ProcessReference(nil), processes...)
 	failed := false
 	stoppedAny := false
-	manager := shelltool.NewProcessManager(a.activityLogger())
+	manager := exectool.NewProcessManager(a.activityLogger())
 	for index := range updated {
 		process := &updated[index]
 		if process.Scope == domain.ProcessScopeProject || process.Status != domain.ProcessStatusRunning {
@@ -730,10 +763,10 @@ func (a *Activities) cleanupTaskProcesses(ctx context.Context, projectID string,
 func appendProcessCleanupNotice(message string, processes []domain.ProcessReference, stopped bool, failed bool) string {
 	var notes []string
 	if stopped {
-		notes = append(notes, "OpenCTO stopped task-scoped background process(es) at task completion: "+processRefs(processes, false))
+		notes = append(notes, "OpenCTO stopped stop-on-finish background process(es) at task completion: "+processRefs(processes, false))
 	}
 	if failed {
-		notes = append(notes, "OpenCTO could not stop one or more task-scoped background process(es); they may still be running: "+processRefs(processes, true))
+		notes = append(notes, "OpenCTO could not stop one or more stop-on-finish background process(es); they may still be running: "+processRefs(processes, true))
 	}
 	note := strings.Join(notes, " ")
 	if note == "" {
@@ -809,8 +842,8 @@ func (a *Activities) persistNextAction(ctx context.Context, nextAction agent.Nex
 }
 
 func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest) (ExecuteToolResult, error) {
-	if request.ToolChoice.Type == domain.ToolTypeShell && request.ToolChoice.RunMode == domain.ToolRunModeStartBackground {
-		return a.startShellProcess(ctx, request)
+	if request.ToolChoice.Type == domain.ToolTypeExec && request.ToolChoice.RunMode == domain.ToolRunModeStartBackground {
+		return a.startExecProcess(ctx, request)
 	}
 	a.logActivityStep("ExecuteTool", "start",
 		slog.String("project_id", strings.TrimSpace(request.ProjectID)),
@@ -1020,14 +1053,14 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 	}, nil
 }
 
-func (a *Activities) startShellProcess(ctx context.Context, request ExecuteToolRequest) (ExecuteToolResult, error) {
+func (a *Activities) startExecProcess(ctx context.Context, request ExecuteToolRequest) (ExecuteToolResult, error) {
 	execution, err := newToolExecutionContext(request)
 	if err != nil {
 		return ExecuteToolResult{}, err
 	}
 	choice := request.ToolChoice
-	if choice.Type != domain.ToolTypeShell {
-		return ExecuteToolResult{}, fmt.Errorf("start background process requires shell tool, got %q", choice.Type)
+	if choice.Type != domain.ToolTypeExec {
+		return ExecuteToolResult{}, fmt.Errorf("start background process requires exec tool, got %q", choice.Type)
 	}
 	processScope := toolProcessScope(choice.ProcessScope)
 	attempt := domain.ExecutionAttempt{
@@ -1052,8 +1085,9 @@ func (a *Activities) startShellProcess(ctx context.Context, request ExecuteToolR
 		}
 	}
 	processID := stableActivityID("managed-process", execution.ProjectID, execution.WorkItemID, execution.ToolCallID)
-	manager := shelltool.NewProcessManager(a.activityLogger())
-	process, runErr := manager.Start(ctx, shelltool.StartProcessRequest{
+	stateDir := a.runtimeStateDir()
+	manager := exectool.NewProcessManager(a.activityLogger())
+	process, runErr := manager.Start(ctx, exectool.StartProcessRequest{
 		ProcessID:    processID,
 		ProjectID:    execution.ProjectID,
 		WorkItemID:   execution.WorkItemID,
@@ -1062,8 +1096,10 @@ func (a *Activities) startShellProcess(ctx context.Context, request ExecuteToolR
 		ProcessScope: processScope,
 		Command:      choice.Command,
 		Args:         choice.Args,
-		StateDir:     a.runtimeStateDir(),
+		WorkingDir:   resolveRelativeToolPath(firstNonEmpty(choice.WorkingDir, a.WorkspaceRoot), a.WorkspaceRoot),
+		StateDir:     stateDir,
 		Timeout:      execution.Timeout,
+		Environment:  workspaceEnvironment(a.WorkspaceRoot, a.OpenCTORoot),
 	})
 	metadata := map[string]string{
 		"tool_call_id":                  execution.ToolCallID,
@@ -1098,7 +1134,7 @@ func (a *Activities) startShellProcess(ctx context.Context, request ExecuteToolR
 		status = domain.ExecutionStatusFailed
 		resultCode = "1"
 		errorMessage = runErr.Error()
-		observation = fullObservation("", "", runErr)
+		observation = backgroundStartFailureObservation(ctx, manager, stateDir, process, runErr)
 	}
 	completedAt := time.Now().UTC()
 	attempt.Status = status
@@ -1159,8 +1195,8 @@ func (a *Activities) startShellProcess(ctx context.Context, request ExecuteToolR
 
 func (a *Activities) runChosenTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
 	switch choice.Type {
-	case domain.ToolTypeShell:
-		return a.runShellTool(ctx, choice, execution)
+	case domain.ToolTypeExec:
+		return a.runExecTool(ctx, choice, execution)
 	case domain.ToolTypeBrowser:
 		return a.runBrowserTool(ctx, choice, execution)
 	case domain.ToolTypeRead:
@@ -1191,6 +1227,7 @@ func (a *Activities) runBrowserTool(ctx context.Context, choice agent.ToolChoice
 	req.WorkingDir = firstNonEmpty(choice.WorkingDir, a.WorkspaceRoot)
 	req.WorkspaceRoot = a.WorkspaceRoot
 	req.Timeout = execution.Timeout
+	req.Environment = workspaceEnvironment(a.WorkspaceRoot, a.OpenCTORoot)
 
 	executor := a.Browser
 	if executor == nil {
@@ -1220,6 +1257,9 @@ func (a *Activities) runBrowserTool(ctx context.Context, choice agent.ToolChoice
 		metadata["artifact_count"] = strconv.Itoa(len(result.ArtifactPaths))
 		metadata["artifact_paths"] = strings.Join(result.ArtifactPaths, "\n")
 	}
+	if len(result.Actions) > 0 {
+		metadata["action_count"] = strconv.Itoa(len(result.Actions))
+	}
 	if result.Duration > 0 {
 		metadata["duration_ms"] = strconv.FormatInt(result.Duration.Milliseconds(), 10)
 	}
@@ -1231,33 +1271,26 @@ func (a *Activities) runBrowserTool(ctx context.Context, choice agent.ToolChoice
 	}, err
 }
 
-func (a *Activities) runShellTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
-	if a.Shell == nil {
-		return toolRunResult{ResultCode: "1"}, fmt.Errorf("shell executor is not configured")
+func (a *Activities) runExecTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
+	if a.Exec == nil {
+		return toolRunResult{ResultCode: "1"}, fmt.Errorf("exec executor is not configured")
 	}
-	req := shelltool.Request{
+	req := exectool.Request{
 		ProjectID:          execution.ProjectID,
 		Intent:             choice.Intent,
 		Command:            choice.Command,
 		Args:               choice.Args,
+		WorkingDir:         resolveRelativeToolPath(firstNonEmpty(choice.WorkingDir, a.WorkspaceRoot), a.WorkspaceRoot),
 		Timeout:            execution.Timeout,
+		Environment:        workspaceEnvironment(a.WorkspaceRoot, a.OpenCTORoot),
 		FallbackCandidates: execution.FallbackCandidates,
 	}
-	if choice.Metadata["multi_action"] == "true" {
-		input, err := shelltool.DecodeBatchInput(choice.Input)
-		if err != nil {
-			return toolRunResult{ResultCode: "1"}, fmt.Errorf("decode shell batch input: %w", err)
-		}
-		req.Command = ""
-		req.Args = nil
-		req.Actions = input.Actions
-	}
-	result, err := a.runShellWithHeartbeats(ctx, req)
+	result, err := a.runExecWithHeartbeats(ctx, req)
 	metadata := map[string]string{
-		"shell_exit_status": strconv.Itoa(result.ExitCode),
-		"run_mode":          string(firstNonEmpty(string(choice.RunMode), string(domain.ToolRunModeWaitForExit))),
-		"idempotency":       string(firstNonEmpty(string(choice.Idempotency), string(domain.ToolIdempotencyUnknown))),
-		"process_scope":     string(toolProcessScope(choice.ProcessScope)),
+		"exec_exit_status": strconv.Itoa(result.ExitCode),
+		"run_mode":         string(firstNonEmpty(string(choice.RunMode), string(domain.ToolRunModeWaitForExit))),
+		"idempotency":      string(firstNonEmpty(string(choice.Idempotency), string(domain.ToolIdempotencyUnknown))),
+		"process_scope":    string(toolProcessScope(choice.ProcessScope)),
 	}
 	resultCode := strconv.Itoa(result.ExitCode)
 	if errors.Is(err, context.DeadlineExceeded) {
@@ -1275,22 +1308,22 @@ func (a *Activities) runShellTool(ctx context.Context, choice agent.ToolChoice, 
 		metadata["duration_ms"] = strconv.FormatInt(result.Duration.Milliseconds(), 10)
 	}
 	return toolRunResult{
-		Observation:      shellObservation(result, err),
+		Observation:      execObservation(result, err),
 		ResultCode:       resultCode,
 		WorkingDirectory: result.WorkingDirectory,
 		Metadata:         metadata,
 	}, err
 }
 
-func (a *Activities) runShellWithHeartbeats(ctx context.Context, req shelltool.Request) (shelltool.Result, error) {
-	type shellRun struct {
-		result shelltool.Result
+func (a *Activities) runExecWithHeartbeats(ctx context.Context, req exectool.Request) (exectool.Result, error) {
+	type execRun struct {
+		result exectool.Result
 		err    error
 	}
-	done := make(chan shellRun, 1)
+	done := make(chan execRun, 1)
 	go func() {
-		result, err := a.Shell.Run(ctx, req)
-		done <- shellRun{result: result, err: err}
+		result, err := a.Exec.Run(ctx, req)
+		done <- execRun{result: result, err: err}
 	}()
 
 	ticker := time.NewTicker(2 * time.Second)
@@ -1316,7 +1349,7 @@ func (a *Activities) runShellWithHeartbeats(ctx context.Context, req shelltool.R
 	}
 }
 
-func shellObservation(result shelltool.Result, err error) string {
+func execObservation(result exectool.Result, err error) string {
 	if errors.Is(err, context.DeadlineExceeded) {
 		observation := fullObservation(result.Stdout, result.Stderr, err)
 		return observation + "\n\nresult_code: timeout\npossible_long_running_process: true\nsuggestion: retry this command with run_mode=start_background if it is expected to keep running."
@@ -1342,16 +1375,20 @@ func (a *Activities) runReadTool(ctx context.Context, choice agent.ToolChoice) (
 		executor = readtool.NewSafeExecutor(a.activityLogger())
 	}
 	result, err := executor.Run(ctx, req)
+	metadata := map[string]string{
+		"file_path":   result.FilePath,
+		"lines_read":  strconv.Itoa(result.LinesRead),
+		"total_lines": strconv.Itoa(result.TotalLines),
+		"bytes_read":  strconv.Itoa(result.BytesRead),
+		"truncated":   strconv.FormatBool(result.Truncated),
+	}
+	if len(result.Actions) > 0 {
+		metadata["action_count"] = strconv.Itoa(len(result.Actions))
+	}
 	return toolRunResult{
 		Observation: readObservation(result, err),
 		ResultCode:  resultCodeForError(err),
-		Metadata: map[string]string{
-			"file_path":   result.FilePath,
-			"lines_read":  strconv.Itoa(result.LinesRead),
-			"total_lines": strconv.Itoa(result.TotalLines),
-			"bytes_read":  strconv.Itoa(result.BytesRead),
-			"truncated":   strconv.FormatBool(result.Truncated),
-		},
+		Metadata:    metadata,
 	}, err
 }
 
@@ -1411,9 +1448,11 @@ func (a *Activities) runGlobTool(ctx context.Context, choice agent.ToolChoice, e
 	}
 	req.ProjectID = execution.ProjectID
 	req.Intent = choice.Intent
-	req.Path = resolveRelativeToolPath(req.Path, firstNonEmpty(choice.WorkingDir, a.WorkspaceRoot))
-	if strings.TrimSpace(req.Path) == "" {
-		req.Path = firstNonEmpty(choice.WorkingDir, a.WorkspaceRoot)
+	req.Cwd = resolveRelativeToolPath(firstNonEmpty(req.Cwd, choice.WorkingDir, a.WorkspaceRoot), a.WorkspaceRoot)
+	req.Path = resolveRelativeToolPath(req.Path, req.Cwd)
+	for index := range req.Actions {
+		req.Actions[index].Cwd = resolveRelativeToolPath(firstNonEmpty(req.Actions[index].Cwd, req.Cwd), a.WorkspaceRoot)
+		req.Actions[index].Path = resolveRelativeToolPath(req.Actions[index].Path, req.Actions[index].Cwd)
 	}
 	req.Timeout = execution.Timeout
 
@@ -1425,15 +1464,20 @@ func (a *Activities) runGlobTool(ctx context.Context, choice agent.ToolChoice, e
 	metadata := map[string]string{
 		"pattern":     result.Pattern,
 		"path":        result.Root,
+		"cwd":         req.Cwd,
 		"match_count": strconv.Itoa(len(result.Matches)),
+	}
+	if len(result.Actions) > 0 {
+		metadata["action_count"] = strconv.Itoa(len(result.Actions))
 	}
 	if result.Duration > 0 {
 		metadata["duration_ms"] = strconv.FormatInt(result.Duration.Milliseconds(), 10)
 	}
 	return toolRunResult{
-		Observation: globObservation(result, err),
-		ResultCode:  resultCodeForError(err),
-		Metadata:    metadata,
+		Observation:      globObservation(result, err),
+		ResultCode:       resultCodeForError(err),
+		WorkingDirectory: req.Cwd,
+		Metadata:         metadata,
 	}, err
 }
 
@@ -1459,6 +1503,9 @@ func (a *Activities) runGrepTool(ctx context.Context, choice agent.ToolChoice, e
 	}
 	metadata := map[string]string{
 		"grep_exit_status": strconv.Itoa(result.ExitCode),
+	}
+	if len(result.Actions) > 0 {
+		metadata["action_count"] = strconv.Itoa(len(result.Actions))
 	}
 	if result.Duration > 0 {
 		metadata["duration_ms"] = strconv.FormatInt(result.Duration.Milliseconds(), 10)
@@ -1520,6 +1567,9 @@ func resultCodeForError(err error) string {
 }
 
 func readObservation(result readtool.Result, err error) string {
+	if len(result.Actions) > 0 {
+		return readBatchObservation(result, err)
+	}
 	if err != nil {
 		return fullObservation("", "", err)
 	}
@@ -1534,6 +1584,35 @@ func readObservation(result readtool.Result, err error) string {
 	if result.Content != "" {
 		builder.WriteString("\ncontent:\n")
 		builder.WriteString(result.Content)
+	}
+	return builder.String()
+}
+
+func readBatchObservation(result readtool.Result, err error) string {
+	var builder strings.Builder
+	_, _ = fmt.Fprintf(&builder, "files: %d\nlines: %d/%d\nbytes: %d\ntruncated: %t",
+		len(result.Actions),
+		result.LinesRead,
+		result.TotalLines,
+		result.BytesRead,
+		result.Truncated,
+	)
+	for _, action := range result.Actions {
+		_, _ = fmt.Fprintf(&builder, "\n\nfile: %s\nlines: %d/%d\nbytes: %d\ntruncated: %t",
+			action.FilePath,
+			action.LinesRead,
+			action.TotalLines,
+			action.BytesRead,
+			action.Truncated,
+		)
+		if action.Content != "" {
+			builder.WriteString("\ncontent:\n")
+			builder.WriteString(action.Content)
+		}
+	}
+	if err != nil {
+		builder.WriteString("\n\nerror:\n")
+		builder.WriteString(err.Error())
 	}
 	return builder.String()
 }
@@ -1553,6 +1632,9 @@ func writeObservation(result writetool.Result, err error) string {
 }
 
 func globObservation(result globtool.Result, err error) string {
+	if len(result.Actions) > 0 {
+		return globBatchObservation(result, err)
+	}
 	if err != nil {
 		return fullObservation("", "", err)
 	}
@@ -1565,6 +1647,27 @@ func globObservation(result globtool.Result, err error) string {
 		len(result.Matches),
 		strings.Join(result.Matches, "\n"),
 	)
+}
+
+func globBatchObservation(result globtool.Result, err error) string {
+	var builder strings.Builder
+	_, _ = fmt.Fprintf(&builder, "patterns: %d\nmatches: %d", len(result.Actions), len(result.Matches))
+	for _, action := range result.Actions {
+		_, _ = fmt.Fprintf(&builder, "\n\npattern: %s\npath: %s\nmatches: %d",
+			action.Pattern,
+			action.Root,
+			len(action.Matches),
+		)
+		if len(action.Matches) > 0 {
+			builder.WriteString("\n")
+			builder.WriteString(strings.Join(action.Matches, "\n"))
+		}
+	}
+	if err != nil {
+		builder.WriteString("\n\nerror:\n")
+		builder.WriteString(err.Error())
+	}
+	return builder.String()
 }
 
 func grepObservation(result greptool.Result, err error) string {
@@ -1659,6 +1762,13 @@ func executionFeedback(result ExecuteToolResult) agent.ExecutionFeedback {
 		Error:           result.Error,
 		Metadata:        metadata,
 	}
+}
+
+func lastObservation(observations []agent.ExecutionFeedback) *agent.ExecutionFeedback {
+	if len(observations) == 0 {
+		return nil
+	}
+	return &observations[len(observations)-1]
 }
 
 func ensureNextAction(nextAction *agent.NextAction, projectID string, event domain.Event, now time.Time) error {
@@ -1796,7 +1906,7 @@ func ensureToolChoiceMetadata(choice *agent.ToolChoice, workItemID string, cycle
 		choice.Idempotency = domain.ToolIdempotencyUnknown
 	}
 	if choice.ProcessScope == "" {
-		choice.ProcessScope = domain.ProcessScopeTask
+		choice.ProcessScope = domain.ProcessScopeStopOnFinish
 	}
 	choice.Metadata["run_mode"] = string(choice.RunMode)
 	choice.Metadata["idempotency"] = string(choice.Idempotency)
@@ -1807,7 +1917,7 @@ func toolProcessScope(scope domain.ProcessScope) domain.ProcessScope {
 	if scope == domain.ProcessScopeProject {
 		return domain.ProcessScopeProject
 	}
-	return domain.ProcessScopeTask
+	return domain.ProcessScopeStopOnFinish
 }
 
 func markFinalNextActionWorkItems(nextAction *agent.NextAction, status domain.WorkItemStatus, observation *agent.ExecutionFeedback, now time.Time) {
@@ -1841,9 +1951,9 @@ func terminalWorkItemStatus(status string) domain.WorkItemStatus {
 	}
 }
 
-func cycleLimitFinalAnswer(history []agent.ExecutionFeedback) string {
+func cycleLimitResponseMessage(history []agent.ExecutionFeedback) string {
 	if len(history) == 0 {
-		return "Stopped after reaching the execution cycle limit before a final answer was produced."
+		return "Stopped after reaching the execution cycle limit before a response was produced."
 	}
 
 	var builder strings.Builder
@@ -2012,16 +2122,41 @@ func processStartObservation(process domain.ManagedProcess) string {
 	return builder.String()
 }
 
+func backgroundStartFailureObservation(ctx context.Context, manager *exectool.ProcessManager, stateDir string, process domain.ManagedProcess, runErr error) string {
+	if manager == nil || strings.TrimSpace(process.ID) == "" {
+		return fullObservation("", "", runErr)
+	}
+	logs, err := manager.Logs(ctx, stateDir, process.ID, 0)
+	if err != nil {
+		return fullObservation("", "", runErr)
+	}
+	return fullObservation(logs.StdoutTail, logs.StderrTail, runErr)
+}
+
 func buildRuntimeContext(workspaceRoot, openCTORoot string) agent.RuntimeContext {
-	shellPath := strings.TrimSpace(os.Getenv("SHELL"))
+	execPath := strings.TrimSpace(os.Getenv("SHELL"))
 	return agent.RuntimeContext{
 		OS:            goruntime.GOOS,
 		Arch:          goruntime.GOARCH,
-		Shell:         shellPath,
+		Exec:          execPath,
 		Path:          os.Getenv("PATH"),
 		WorkspaceRoot: workspaceRoot,
 		OpenCTORoot:   openCTORoot,
 	}
+}
+
+func workspaceEnvironment(workspaceRoot, openCTORoot string) map[string]string {
+	env := map[string]string{}
+	if workspaceRoot = strings.TrimSpace(workspaceRoot); workspaceRoot != "" {
+		env[config.EnvOpenCTOWorkspace] = workspaceRoot
+	}
+	if openCTORoot = strings.TrimSpace(openCTORoot); openCTORoot != "" {
+		env["OPENCTO_ROOT"] = openCTORoot
+	}
+	if len(env) == 0 {
+		return nil
+	}
+	return env
 }
 
 func firstNonEmpty(values ...string) string {

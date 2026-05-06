@@ -36,7 +36,7 @@ export const globalFlagOptions = [
     key: "--sandbox, -s",
     type: "read-only | workspace-write | danger-full-access",
     description:
-      "Select the sandbox policy for model-generated shell commands.",
+      "Select the sandbox policy for model-generated exec commands.",
   },
   {
     key: "--ask-for-approval, -a",
@@ -649,7 +649,7 @@ export const sandboxMacOptions = [
     key: "COMMAND...",
     type: "var-args",
     description:
-      "Shell command to execute under macOS Seatbelt. Everything after `--` is forwarded.",
+      "Exec command to execute under macOS Seatbelt. Everything after `--` is forwarded.",
   },
 ];
 
@@ -724,9 +724,9 @@ export const sandboxWindowsOptions = [
 export const completionOptions = [
   {
     key: "SHELL",
-    type: "bash | zsh | fish | power-shell | elvish",
+    type: "bash | zsh | fish | powershell | elvish",
     defaultValue: "bash",
-    description: "Shell to generate completions for. Output prints to stdout.",
+    description: "Exec to generate completions for. Output prints to stdout.",
   },
 ];
 
@@ -961,7 +961,7 @@ Plain-text output prints a task URL followed by status details. Use `--json` for
 
 ### `codex completion`
 
-Generate shell completion scripts and redirect the output to the appropriate location, for example `codex completion zsh > "${fpath[1]}/_codex"`.
+Generate exec completion scripts and redirect the output to the appropriate location, for example `codex completion zsh > "${fpath[1]}/_codex"`.
 
 <ConfigTable client:load options={completionOptions} />
 

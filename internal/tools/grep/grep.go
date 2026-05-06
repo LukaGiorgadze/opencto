@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/opencto/opencto/internal/domain"
-	shelltool "github.com/opencto/opencto/internal/tools/shell"
+	exectool "github.com/opencto/opencto/internal/tools/exec"
 )
 
 const (
@@ -55,12 +55,35 @@ type Request struct {
 	Timeout            time.Duration
 	Environment        map[string]string
 	FallbackCandidates []domain.ToolType
+	Actions            []Action `json:"actions,omitempty"`
+
+	lineNumbersSet bool
+	headLimitSet   bool
+}
+
+type Action struct {
+	Pattern         string `json:"pattern"`
+	Path            string `json:"path,omitempty"`
+	Glob            string `json:"glob,omitempty"`
+	Type            string `json:"type,omitempty"`
+	OutputMode      string `json:"output_mode,omitempty"`
+	After           int    `json:"-A,omitempty"`
+	Before          int    `json:"-B,omitempty"`
+	ContextAlias    int    `json:"-C,omitempty"`
+	Context         int    `json:"context,omitempty"`
+	CaseInsensitive bool   `json:"-i,omitempty"`
+	LineNumbers     bool   `json:"-n,omitempty"`
+	Multiline       bool   `json:"multiline,omitempty"`
+	HeadLimit       int    `json:"head_limit,omitempty"`
+	Offset          int    `json:"offset,omitempty"`
 
 	lineNumbersSet bool
 	headLimitSet   bool
 }
 
 type Result struct {
+	Pattern          string
+	Path             string
 	Stdout           string
 	Stderr           string
 	ExitCode         int
@@ -68,6 +91,15 @@ type Result struct {
 	StartedAt        time.Time
 	CompletedAt      time.Time
 	Duration         time.Duration
+	Actions          []ActionResult
+}
+
+type ActionResult struct {
+	Pattern  string
+	Path     string
+	Stdout   string
+	Stderr   string
+	ExitCode int
 }
 
 type Executor interface {
@@ -109,6 +141,75 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if len(req.Actions) > 0 {
+		return e.runBatch(ctx, req)
+	}
+	return e.runSingle(ctx, req)
+}
+
+func (e *SafeExecutor) runBatch(ctx context.Context, req Request) (Result, error) {
+	startedAt := time.Now()
+	workingDir, err := exectool.ResolveWorkingDir(req.WorkingDir)
+	if err != nil {
+		return Result{}, err
+	}
+
+	runCtx := ctx
+	var cancel context.CancelFunc
+	if req.Timeout > 0 {
+		runCtx, cancel = context.WithTimeout(ctx, req.Timeout)
+		defer cancel()
+	}
+
+	var stdout strings.Builder
+	var stderr strings.Builder
+	results := make([]ActionResult, 0, len(req.Actions))
+	exitCode := 0
+
+	for index, action := range req.Actions {
+		result, err := e.runSingle(runCtx, requestForAction(req, action))
+		appendActionOutput(&stdout, index, actionSummary(result.Pattern, result.Path), result.Stdout)
+		appendActionOutput(&stderr, index, actionSummary(result.Pattern, result.Path), result.Stderr)
+		exitCode = result.ExitCode
+		results = append(results, ActionResult{
+			Pattern:  result.Pattern,
+			Path:     result.Path,
+			Stdout:   result.Stdout,
+			Stderr:   result.Stderr,
+			ExitCode: result.ExitCode,
+		})
+		if err != nil {
+			completedAt := time.Now()
+			return Result{
+				Stdout:           stdout.String(),
+				Stderr:           stderr.String(),
+				ExitCode:         exitCode,
+				WorkingDirectory: workingDir,
+				StartedAt:        startedAt,
+				CompletedAt:      completedAt,
+				Duration:         completedAt.Sub(startedAt),
+				Actions:          results,
+			}, fmt.Errorf("grep action %d: %w", index+1, err)
+		}
+	}
+
+	completedAt := time.Now()
+	return Result{
+		Stdout:           stdout.String(),
+		Stderr:           stderr.String(),
+		ExitCode:         exitCode,
+		WorkingDirectory: workingDir,
+		StartedAt:        startedAt,
+		CompletedAt:      completedAt,
+		Duration:         completedAt.Sub(startedAt),
+		Actions:          results,
+	}, nil
+}
+
+func (e *SafeExecutor) runSingle(ctx context.Context, req Request) (Result, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	normalized, err := normalizeRequest(req)
 	if err != nil {
@@ -117,7 +218,7 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 
 	startedAt := time.Now()
 
-	workingDir, err := shelltool.ResolveWorkingDir(normalized.WorkingDir)
+	workingDir, err := exectool.ResolveWorkingDir(normalized.WorkingDir)
 	if err != nil {
 		return Result{}, err
 	}
@@ -149,6 +250,8 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 	code := exitCode(err)
 
 	result := Result{
+		Pattern:          normalized.Pattern,
+		Path:             normalized.Path,
 		Stdout:           limitOutput(stdout.String(), normalized.Offset, normalized.HeadLimit),
 		Stderr:           stderr.String(),
 		ExitCode:         code,
@@ -177,6 +280,37 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 	return result, nil
 }
 
+func requestForAction(parent Request, action Action) Request {
+	path := strings.TrimSpace(action.Path)
+	if path == "" {
+		path = parent.Path
+	}
+	return Request{
+		ProjectID:          parent.ProjectID,
+		Intent:             parent.Intent,
+		Pattern:            action.Pattern,
+		Path:               path,
+		Glob:               action.Glob,
+		Type:               action.Type,
+		OutputMode:         action.OutputMode,
+		After:              action.After,
+		Before:             action.Before,
+		ContextAlias:       action.ContextAlias,
+		Context:            action.Context,
+		CaseInsensitive:    action.CaseInsensitive,
+		LineNumbers:        action.LineNumbers,
+		Multiline:          action.Multiline,
+		HeadLimit:          action.HeadLimit,
+		Offset:             action.Offset,
+		WorkingDir:         parent.WorkingDir,
+		Timeout:            0,
+		Environment:        parent.Environment,
+		FallbackCandidates: append([]domain.ToolType(nil), parent.FallbackCandidates...),
+		lineNumbersSet:     action.lineNumbersSet,
+		headLimitSet:       action.headLimitSet,
+	}
+}
+
 func (r *Request) UnmarshalJSON(data []byte) error {
 	type alias Request
 	var raw map[string]json.RawMessage
@@ -194,6 +328,26 @@ func (r *Request) UnmarshalJSON(data []byte) error {
 		decoded.headLimitSet = true
 	}
 	*r = Request(decoded)
+	return nil
+}
+
+func (a *Action) UnmarshalJSON(data []byte) error {
+	type alias Action
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if value, ok := raw["-n"]; ok && !isJSONNull(value) {
+		decoded.lineNumbersSet = true
+	}
+	if value, ok := raw["head_limit"]; ok && !isJSONNull(value) {
+		decoded.headLimitSet = true
+	}
+	*a = Action(decoded)
 	return nil
 }
 
@@ -278,7 +432,7 @@ func ripgrepArgs(req Request) []string {
 }
 
 func resolveSearchPath(workingDir, searchPath string) (string, error) {
-	path, err := shelltool.ResolvePath(workingDir, searchPath)
+	path, err := exectool.ResolvePath(workingDir, searchPath)
 	if err != nil {
 		return "", fmt.Errorf("resolve search path: %w", err)
 	}
@@ -293,6 +447,28 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func appendActionOutput(builder *strings.Builder, index int, summary string, output string) {
+	if strings.TrimSpace(output) == "" {
+		return
+	}
+	if builder.Len() > 0 {
+		builder.WriteString("\n")
+	}
+	_, _ = fmt.Fprintf(builder, "action %d: %s\n", index+1, summary)
+	builder.WriteString(output)
+	if !strings.HasSuffix(output, "\n") {
+		builder.WriteString("\n")
+	}
+}
+
+func actionSummary(pattern, path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return strings.TrimSpace(pattern)
+	}
+	return strings.TrimSpace(pattern) + " in " + path
 }
 
 func limitOutput(output string, offset int, headLimit int) string {

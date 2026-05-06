@@ -15,6 +15,13 @@ func TestGlobToolSchemaIsValidJSON(t *testing.T) {
 	if schema["type"] != "object" {
 		t.Fatalf("expected object schema, got %#v", schema["type"])
 	}
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected properties object, got %#v", schema["properties"])
+	}
+	if _, ok := properties["cwd"]; !ok {
+		t.Fatalf("expected cwd property in schema")
+	}
 }
 
 func TestGlobToolSchemaReturnsCopy(t *testing.T) {

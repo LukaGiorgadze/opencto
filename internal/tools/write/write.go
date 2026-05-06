@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	shelltool "github.com/opencto/opencto/internal/tools/shell"
+	exectool "github.com/opencto/opencto/internal/tools/exec"
 )
 
 var (
@@ -120,7 +120,7 @@ func resolveFilePath(filePath string) (string, error) {
 	if path == "." {
 		return "", ErrFilePathRequired
 	}
-	resolvedPath, err := shelltool.ResolvePath("", path)
+	resolvedPath, err := exectool.ResolvePath("", path)
 	if err != nil {
 		return "", err
 	}

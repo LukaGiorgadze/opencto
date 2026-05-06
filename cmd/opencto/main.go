@@ -21,7 +21,7 @@ import (
 	"github.com/opencto/opencto/internal/observability"
 	"github.com/opencto/opencto/internal/runtime"
 	"github.com/opencto/opencto/internal/runtime/activities"
-	"github.com/opencto/opencto/internal/tools/shell"
+	"github.com/opencto/opencto/internal/tools/exec"
 )
 
 func main() {
@@ -43,15 +43,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "resolve OpenCTO root: %v\n", err)
 		os.Exit(1)
 	}
-	if err := os.Setenv("OPENCTO_ROOT", openCTORoot); err != nil {
-		fmt.Fprintf(os.Stderr, "set OPENCTO_ROOT: %v\n", err)
-		os.Exit(1)
-	}
-	if err := os.Setenv("OPENCTO_WORKSPACE", cfg.Project.WorkspaceRoot); err != nil {
-		fmt.Fprintf(os.Stderr, "set OPENCTO_WORKSPACE: %v\n", err)
-		os.Exit(1)
-	}
-
 	logger := observability.NewLogger(cfg.Observability.LogLevel, cfg.Observability.JSONLogs, os.Stdout)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -87,7 +78,14 @@ func main() {
 			if appID == "" {
 				logger.Warn("discord application id is not set; continuing because the runtime does not require it yet", slog.String("env", "DISCORD_APPLICATION_ID"))
 			}
-			discordAdapter, err = discord.New(cfg.Project.ID, token, appID, dispatcher, logger)
+			discordAdapter, err = discord.New(cfg.Project.ID, token, appID, dispatcher, logger, discord.Options{
+				WorkspaceRoot: cfg.Project.WorkspaceRoot,
+				AttachmentLimits: discord.AttachmentLimits{
+					MaxFiles:      cfg.Channels.Discord.OutboundAttachments.MaxFiles,
+					MaxFileBytes:  cfg.Channels.Discord.OutboundAttachments.MaxFileBytes,
+					MaxTotalBytes: cfg.Channels.Discord.OutboundAttachments.MaxTotalBytes,
+				},
+			})
 			if err != nil {
 				logger.Error("create discord adapter", slog.String("error", err.Error()))
 				os.Exit(1)
@@ -98,7 +96,7 @@ func main() {
 
 		activitySet := &activities.Activities{
 			Engine:   engine,
-			Shell:    shell.NewSafeExecutor(logger),
+			Exec:     exec.NewSafeExecutor(logger),
 			Reporter: reporter,
 			Project: domain.Project{
 				ID:   cfg.Project.ID,

@@ -8,16 +8,16 @@ import (
 	"github.com/opencto/opencto/internal/domain"
 	browsertool "github.com/opencto/opencto/internal/tools/browser"
 	edittool "github.com/opencto/opencto/internal/tools/edit"
+	exectool "github.com/opencto/opencto/internal/tools/exec"
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	readtool "github.com/opencto/opencto/internal/tools/read"
-	shelltool "github.com/opencto/opencto/internal/tools/shell"
 	skilltool "github.com/opencto/opencto/internal/tools/skill"
 	writetool "github.com/opencto/opencto/internal/tools/write"
 )
 
 const (
-	CommandToolName = shelltool.ShellToolName
+	CommandToolName = exectool.ExecToolName
 )
 
 type Definition struct {
@@ -30,9 +30,9 @@ type Definition struct {
 var definitions = []Definition{
 	{
 		Name:        CommandToolName,
-		Type:        domain.ToolTypeShell,
-		Description: shelltool.ShellToolDescription,
-		Schema:      shelltool.ShellToolSchema(),
+		Type:        domain.ToolTypeExec,
+		Description: exectool.ExecToolDescription,
+		Schema:      exectool.ExecToolSchema(),
 	},
 	{
 		Name:        browsertool.BrowserToolName,

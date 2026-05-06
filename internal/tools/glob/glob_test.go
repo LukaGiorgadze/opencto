@@ -84,6 +84,53 @@ func TestGlobReturnsNewestMatchesFirst(t *testing.T) {
 	assertMatches(t, result.Matches, []string{newest, oldest})
 }
 
+func TestGlobUsesCwdForRelativePath(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	appDir := filepath.Join(root, "app")
+	srcFile := filepath.Join(appDir, "src", "main.go")
+	otherFile := filepath.Join(root, "src", "main.go")
+	writeFile(t, srcFile, "", time.Unix(100, 0))
+	writeFile(t, otherFile, "", time.Unix(200, 0))
+
+	executor := NewSafeExecutor(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	result, err := executor.Run(context.Background(), Request{
+		Cwd:     appDir,
+		Pattern: "*.go",
+		Path:    "src",
+	})
+	if err != nil {
+		t.Fatalf("glob files: %v", err)
+	}
+
+	assertMatches(t, result.Matches, []string{srcFile})
+	if result.Root != filepath.Join(appDir, "src") {
+		t.Fatalf("expected root %q, got %q", filepath.Join(appDir, "src"), result.Root)
+	}
+}
+
+func TestGlobUsesCwdWhenPathIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	appFile := filepath.Join(root, "app", "main.go")
+	workspaceFile := filepath.Join(root, "main.go")
+	writeFile(t, appFile, "", time.Unix(100, 0))
+	writeFile(t, workspaceFile, "", time.Unix(200, 0))
+
+	executor := NewSafeExecutor(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	result, err := executor.Run(context.Background(), Request{
+		Cwd:     filepath.Join(root, "app"),
+		Pattern: "*.go",
+	})
+	if err != nil {
+		t.Fatalf("glob files: %v", err)
+	}
+
+	assertMatches(t, result.Matches, []string{appFile})
+}
+
 func TestGlobValidatesRequest(t *testing.T) {
 	t.Parallel()
 
@@ -107,6 +154,34 @@ func TestGlobCanUseFilePath(t *testing.T) {
 		t.Fatalf("glob file path: %v", err)
 	}
 	assertMatches(t, result.Matches, []string{file})
+}
+
+func TestGlobRunsBatchActions(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	goFile := filepath.Join(root, "main.go")
+	mdFile := filepath.Join(root, "README.md")
+	writeFile(t, goFile, "", time.Unix(100, 0))
+	writeFile(t, mdFile, "", time.Unix(200, 0))
+
+	executor := NewSafeExecutor(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	result, err := executor.Run(context.Background(), Request{
+		Path: root,
+		Actions: []Action{
+			{Pattern: "*.go"},
+			{Pattern: "*.md"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("glob batch: %v", err)
+	}
+	if len(result.Actions) != 2 {
+		t.Fatalf("expected two action results, got %#v", result.Actions)
+	}
+	assertMatches(t, result.Actions[0].Matches, []string{goFile})
+	assertMatches(t, result.Actions[1].Matches, []string{mdFile})
+	assertMatches(t, result.Matches, []string{goFile, mdFile})
 }
 
 func TestGlobRejectsInvalidPattern(t *testing.T) {

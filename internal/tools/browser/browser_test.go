@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/opencto/opencto/internal/config"
 )
 
 func TestRunBuildsAgentBrowserCommandWithDefaultSession(t *testing.T) {
@@ -49,8 +51,8 @@ func TestRunBuildsAgentBrowserCommandWithDefaultSession(t *testing.T) {
 	if !contextHadDeadline {
 		t.Fatalf("expected timeout to create a context deadline")
 	}
-	if !envContains(captured.env, "OPENCTO_WORKSPACE="+dir) {
-		t.Fatalf("expected OPENCTO_WORKSPACE in command environment")
+	if !envContains(captured.env, config.EnvOpenCTOWorkspace+"="+dir) {
+		t.Fatalf("expected %s in command environment", config.EnvOpenCTOWorkspace)
 	}
 	if result.Session != "opencto-project-one-wi-2" {
 		t.Fatalf("unexpected session: %q", result.Session)
@@ -92,6 +94,57 @@ func TestRunUsesDefaultAgentBrowserExecutable(t *testing.T) {
 	}
 	if result.Executable != "agent-browser" {
 		t.Fatalf("unexpected result executable: %q", result.Executable)
+	}
+}
+
+func TestRunExecutesBatchActions(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	var captured []commandInvocation
+	executor := NewSafeExecutor(nil)
+	executor.runner = func(_ context.Context, invocation commandInvocation) (commandOutput, error) {
+		captured = append(captured, invocation)
+		switch len(captured) {
+		case 1:
+			return commandOutput{stdout: "opened\n[Open](.agent-browser/open.yml)\n"}, nil
+		default:
+			return commandOutput{stdout: "snapshot\n[Snapshot](.agent-browser/snapshot.yml)\n"}, nil
+		}
+	}
+
+	result, err := executor.Run(context.Background(), Request{
+		ProjectID:     "project-1",
+		WorkItemID:    "work-item-1",
+		WorkspaceRoot: dir,
+		Actions: []Action{
+			{Command: "open", Args: []string{"https://example.com"}},
+			{Command: "snapshot", Args: []string{"-i", "--json"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("run browser batch: %v", err)
+	}
+
+	if len(captured) != 2 {
+		t.Fatalf("expected two browser invocations, got %#v", captured)
+	}
+	wantFirstArgs := []string{"--session", "opencto-project-1-work-item-1", "open", "https://example.com"}
+	wantSecondArgs := []string{"--session", "opencto-project-1-work-item-1", "--json", "snapshot", "-i"}
+	if !reflect.DeepEqual(captured[0].args, wantFirstArgs) {
+		t.Fatalf("unexpected first args:\nwant %#v\ngot  %#v", wantFirstArgs, captured[0].args)
+	}
+	if !reflect.DeepEqual(captured[1].args, wantSecondArgs) {
+		t.Fatalf("unexpected second args:\nwant %#v\ngot  %#v", wantSecondArgs, captured[1].args)
+	}
+	if len(result.Actions) != 2 || result.Command != "batch" {
+		t.Fatalf("unexpected batch result: %#v", result)
+	}
+	if !strings.Contains(result.Stdout, "opened") || !strings.Contains(result.Stdout, "snapshot") {
+		t.Fatalf("expected combined stdout, got %q", result.Stdout)
+	}
+	if len(result.ArtifactPaths) != 2 {
+		t.Fatalf("expected two artifact paths, got %#v", result.ArtifactPaths)
 	}
 }
 

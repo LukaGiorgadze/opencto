@@ -1,4 +1,4 @@
-package shell
+package exec
 
 import (
 	"context"
@@ -52,6 +52,43 @@ func TestSafeExecutorRunsCommandFromProcessWorkingDirectory(t *testing.T) {
 	}
 	if result.WorkingDirectory != current {
 		t.Fatalf("expected result working directory %q, got %q", current, result.WorkingDirectory)
+	}
+}
+
+func TestSafeExecutorRunsCommandFromConfiguredWorkingDirectory(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	executor := NewSafeExecutor(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	result, err := executor.Run(context.Background(), Request{
+		Command:    executable,
+		Args:       []string{"-test.run=TestHelperProcess", "--", "pwd"},
+		WorkingDir: workingDir,
+		Timeout:    time.Second,
+		Environment: map[string]string{
+			"GO_WANT_HELPER_PROCESS": "1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("run command: %v", err)
+	}
+	want, err := filepath.EvalSymlinks(workingDir)
+	if err != nil {
+		t.Fatalf("resolve expected working directory: %v", err)
+	}
+	got, err := filepath.EvalSymlinks(strings.TrimSpace(result.Stdout))
+	if err != nil {
+		t.Fatalf("resolve actual working directory: %v", err)
+	}
+	if got != want {
+		t.Fatalf("expected command to run in %q, got %q", want, got)
+	}
+	if result.WorkingDirectory != workingDir {
+		t.Fatalf("expected result working directory %q, got %q", workingDir, result.WorkingDirectory)
 	}
 }
 
@@ -113,6 +150,41 @@ func TestSafeExecutorRunsBatchActions(t *testing.T) {
 	}
 }
 
+func TestSafeExecutorRunsBatchActionsFromConfiguredWorkingDirectory(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	executor := NewSafeExecutor(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	result, err := executor.Run(context.Background(), Request{
+		ProjectID:  "project-1",
+		Intent:     "inspect workspace",
+		WorkingDir: workingDir,
+		Timeout:    time.Second,
+		Environment: map[string]string{
+			"GO_WANT_HELPER_PROCESS": "1",
+		},
+		Actions: []Action{
+			{
+				Command: executable,
+				Args:    []string{"-test.run=TestHelperProcess", "--", "pwd"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("run batch: %v", err)
+	}
+	if !strings.Contains(result.Stdout, workingDir) {
+		t.Fatalf("expected stdout to contain working directory %q, got %q", workingDir, result.Stdout)
+	}
+	if result.WorkingDirectory != workingDir {
+		t.Fatalf("expected result working directory %q, got %q", workingDir, result.WorkingDirectory)
+	}
+}
+
 func TestSafeExecutorTimeoutKillsCommand(t *testing.T) {
 	t.Parallel()
 
@@ -141,18 +213,20 @@ func TestProcessManagerStartStatusLogsStop(t *testing.T) {
 	t.Parallel()
 
 	stateDir := t.TempDir()
+	workingDir := t.TempDir()
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatalf("resolve test executable: %v", err)
 	}
 	manager := NewProcessManager(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	process, err := manager.Start(context.Background(), StartProcessRequest{
-		ProcessID: "proc-1",
-		ProjectID: "project-1",
-		Command:   executable,
-		Args:      []string{"-test.run=TestHelperProcess", "--", "block"},
-		StateDir:  stateDir,
-		Timeout:   time.Second,
+		ProcessID:  "proc-1",
+		ProjectID:  "project-1",
+		Command:    executable,
+		Args:       []string{"-test.run=TestHelperProcess", "--", "block"},
+		WorkingDir: workingDir,
+		StateDir:   stateDir,
+		Timeout:    time.Second,
 		Environment: map[string]string{
 			"GO_WANT_HELPER_PROCESS": "1",
 		},
@@ -162,6 +236,9 @@ func TestProcessManagerStartStatusLogsStop(t *testing.T) {
 	}
 	if process.PID <= 0 || process.Status != "running" {
 		t.Fatalf("unexpected process: %#v", process)
+	}
+	if process.WorkingDirectory != workingDir {
+		t.Fatalf("expected process working directory %q, got %q", workingDir, process.WorkingDirectory)
 	}
 	defer func() {
 		_, _ = manager.Stop(context.Background(), stateDir, process.ID)
@@ -249,7 +326,7 @@ func TestProcessManagerStopUsesStoredProcessGroup(t *testing.T) {
 		t.Fatalf("wait launcher: %v", err)
 	}
 	if !processGroupRunning(pgid) {
-		t.Skip("shell did not leave a child in the launcher process group")
+		t.Skip("exec did not leave a child in the launcher process group")
 	}
 	defer func() {
 		_ = terminateManagedProcess(pid, pgid, time.Second)
@@ -285,6 +362,8 @@ func TestProcessManagerStopUsesStoredProcessGroup(t *testing.T) {
 }
 
 func TestResolveWorkingDirDefaultsToProcessWorkingDirectory(t *testing.T) {
+	t.Parallel()
+
 	workingDir, err := ResolveWorkingDir("")
 	if err != nil {
 		t.Fatalf("resolve working directory: %v", err)

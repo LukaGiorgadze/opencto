@@ -42,7 +42,7 @@ func TestTaskWorkflowAlternatesNextActionAndExecuteTool(t *testing.T) {
 	}
 	toolChoice := agent.ToolChoice{
 		ToolCallID: "toolu_1",
-		Type:       domain.ToolTypeShell,
+		Type:       domain.ToolTypeExec,
 		Intent:     "print working directory",
 		Command:    "pwd",
 		Metadata: map[string]string{
@@ -54,6 +54,7 @@ func TestTaskWorkflowAlternatesNextActionAndExecuteTool(t *testing.T) {
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
 		return request.ExecutionCycle == 1 &&
 			request.LastResult == nil &&
+			len(request.LastResults) == 0 &&
 			len(request.ObservationHistory) == 0
 	})).Return(activities.NextActionResult{
 		NextAction: nextAction,
@@ -69,7 +70,7 @@ func TestTaskWorkflowAlternatesNextActionAndExecuteTool(t *testing.T) {
 		Cycle:           1,
 		WorkItemID:      "wi-1",
 		ToolCallID:      "toolu_1",
-		Tool:            domain.ToolTypeShell,
+		Tool:            domain.ToolTypeExec,
 		Status:          domain.ExecutionStatusSucceeded,
 		RequestedAction: "print working directory",
 		Command:         "pwd",
@@ -80,9 +81,9 @@ func TestTaskWorkflowAlternatesNextActionAndExecuteTool(t *testing.T) {
 	}, nil).Once()
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
 		return request.ExecutionCycle == 2 &&
-			request.LastResult != nil &&
-			request.LastResult.ToolCallID == "toolu_1" &&
-			request.LastResult.Observation == "/tmp/opencto" &&
+			len(request.LastResults) == 1 &&
+			request.LastResults[0].ToolCallID == "toolu_1" &&
+			request.LastResults[0].Observation == "/tmp/opencto" &&
 			len(request.ObservationHistory) == 0
 	})).Return(activities.NextActionResult{
 		NextAction:  nextAction,
@@ -104,6 +105,108 @@ func TestTaskWorkflowAlternatesNextActionAndExecuteTool(t *testing.T) {
 	}
 	if !result.Completed {
 		t.Fatalf("expected workflow to complete")
+	}
+	env.AssertExpectations(t)
+}
+
+func TestTaskWorkflowExecutesMultipleToolChoicesAsSeparateActivities(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.TaskWorkflow)
+	registerTaskWorkflowActivities(env)
+
+	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "inspect workspace"}
+	nextAction := agent.NextAction{WorkItems: []domain.WorkItem{{
+		ID:        "wi-1",
+		ProjectID: "project-1",
+		Status:    domain.WorkItemStatusReady,
+	}}}
+	choices := []agent.ToolChoice{
+		{
+			ToolCallID: "toolu_read",
+			Type:       domain.ToolTypeRead,
+			Intent:     "read file",
+			Input:      []byte(`{"file_path":"/workspace/a.go"}`),
+			Metadata: map[string]string{
+				"tool_call_id":  "toolu_read",
+				"tool_call_ids": "toolu_read,toolu_grep",
+			},
+		},
+		{
+			ToolCallID: "toolu_grep",
+			Type:       domain.ToolTypeGrep,
+			Intent:     "grep files",
+			Input:      []byte(`{"pattern":"needle"}`),
+			Metadata: map[string]string{
+				"tool_call_id":  "toolu_grep",
+				"tool_call_ids": "toolu_read,toolu_grep",
+			},
+		},
+	}
+
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
+		return request.ExecutionCycle == 1 && len(request.LastResults) == 0
+	})).Return(activities.NextActionResult{
+		NextAction:  nextAction,
+		ToolChoice:  &choices[0],
+		ToolChoices: choices,
+		WorkItemID:  "wi-1",
+		Status:      activities.NextActionStatusTool,
+	}, nil).Once()
+	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.MatchedBy(func(request activities.ExecuteToolRequest) bool {
+		return request.ToolChoice.ToolCallID == "toolu_read"
+	})).Return(activities.ExecuteToolResult{
+		Cycle:           1,
+		WorkItemID:      "wi-1",
+		ToolCallID:      "toolu_read",
+		Tool:            domain.ToolTypeRead,
+		Status:          domain.ExecutionStatusSucceeded,
+		RequestedAction: "read file",
+		Observation:     "file content",
+		Metadata: map[string]string{
+			"tool_call_id":  "toolu_read",
+			"tool_call_ids": "toolu_read,toolu_grep",
+		},
+	}, nil).Once()
+	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.MatchedBy(func(request activities.ExecuteToolRequest) bool {
+		return request.ToolChoice.ToolCallID == "toolu_grep"
+	})).Return(activities.ExecuteToolResult{
+		Cycle:           1,
+		WorkItemID:      "wi-1",
+		ToolCallID:      "toolu_grep",
+		Tool:            domain.ToolTypeGrep,
+		Status:          domain.ExecutionStatusSucceeded,
+		RequestedAction: "grep files",
+		Observation:     "matched",
+		Metadata: map[string]string{
+			"tool_call_id":  "toolu_grep",
+			"tool_call_ids": "toolu_read,toolu_grep",
+		},
+	}, nil).Once()
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
+		return request.ExecutionCycle == 2 &&
+			len(request.LastResults) == 2 &&
+			request.LastResults[0].ToolCallID == "toolu_read" &&
+			request.LastResults[1].ToolCallID == "toolu_grep" &&
+			len(request.ObservationHistory) == 0
+	})).Return(activities.NextActionResult{
+		NextAction: nextAction,
+		Observations: []agent.ExecutionFeedback{
+			{WorkItemID: "wi-1", ToolCallID: "toolu_read", Tool: domain.ToolTypeRead, Status: string(domain.ExecutionStatusSucceeded), Observation: "file content", Metadata: map[string]string{"tool_call_ids": "toolu_read,toolu_grep"}},
+			{WorkItemID: "wi-1", ToolCallID: "toolu_grep", Tool: domain.ToolTypeGrep, Status: string(domain.ExecutionStatusSucceeded), Observation: "matched", Metadata: map[string]string{"tool_call_ids": "toolu_read,toolu_grep"}},
+		},
+		Status: activities.NextActionStatusCompleted,
+	}, nil).Once()
+
+	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{
+		ProjectID: "project-1",
+		Event:     event,
+	})
+
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("task workflow failed: %v", err)
 	}
 	env.AssertExpectations(t)
 }
@@ -177,7 +280,7 @@ func TestTaskWorkflowPassesProcessesReturnedByExecuteToolToNextAction(t *testing
 	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "run dev server"}
 	choice := agent.ToolChoice{
 		ToolCallID:  "toolu_bg",
-		Type:        domain.ToolTypeShell,
+		Type:        domain.ToolTypeExec,
 		Intent:      "start dev server",
 		Command:     "pnpm",
 		Args:        []string{"run", "dev"},
@@ -205,7 +308,7 @@ func TestTaskWorkflowPassesProcessesReturnedByExecuteToolToNextAction(t *testing
 		Cycle:           1,
 		WorkItemID:      "wi-1",
 		ToolCallID:      "toolu_bg",
-		Tool:            domain.ToolTypeShell,
+		Tool:            domain.ToolTypeExec,
 		Status:          domain.ExecutionStatusSucceeded,
 		RequestedAction: "start dev server",
 		Command:         "pnpm",
@@ -214,19 +317,19 @@ func TestTaskWorkflowPassesProcessesReturnedByExecuteToolToNextAction(t *testing
 		Metadata: map[string]string{
 			"tool_call_id":  "toolu_bg",
 			"process_id":    "proc-1",
-			"process_scope": string(domain.ProcessScopeTask),
+			"process_scope": string(domain.ProcessScopeStopOnFinish),
 			"run_mode":      string(domain.ToolRunModeStartBackground),
 		},
 		Processes: []domain.ProcessReference{{
 			ID:          "proc-1",
 			Description: "start dev server",
 			Status:      domain.ProcessStatusRunning,
-			Scope:       domain.ProcessScopeTask,
+			Scope:       domain.ProcessScopeStopOnFinish,
 		}},
 	}, nil).Once()
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
-		return request.LastResult != nil &&
-			request.LastResult.Metadata["process_id"] == "proc-1" &&
+		return len(request.LastResults) == 1 &&
+			request.LastResults[0].Metadata["process_id"] == "proc-1" &&
 			len(request.Processes) == 1 &&
 			request.Processes[0].ID == "proc-1"
 	})).Return(activities.NextActionResult{
@@ -235,7 +338,7 @@ func TestTaskWorkflowPassesProcessesReturnedByExecuteToolToNextAction(t *testing
 			ID:          "proc-1",
 			Description: "start dev server",
 			Status:      domain.ProcessStatusStopped,
-			Scope:       domain.ProcessScopeTask,
+			Scope:       domain.ProcessScopeStopOnFinish,
 		}},
 	}, nil).Once()
 
@@ -267,7 +370,7 @@ func TestTaskWorkflowKeepsProjectScopedBackgroundProcessRunning(t *testing.T) {
 	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "run persistent server"}
 	choice := agent.ToolChoice{
 		ToolCallID:   "toolu_bg",
-		Type:         domain.ToolTypeShell,
+		Type:         domain.ToolTypeExec,
 		Intent:       "start persistent server",
 		Command:      "server",
 		RunMode:      domain.ToolRunModeStartBackground,
@@ -288,7 +391,7 @@ func TestTaskWorkflowKeepsProjectScopedBackgroundProcessRunning(t *testing.T) {
 		Cycle:           1,
 		WorkItemID:      "wi-1",
 		ToolCallID:      "toolu_bg",
-		Tool:            domain.ToolTypeShell,
+		Tool:            domain.ToolTypeExec,
 		Status:          domain.ExecutionStatusSucceeded,
 		RequestedAction: "start persistent server",
 		Command:         "server",
@@ -341,7 +444,7 @@ func TestTaskWorkflowMarksIncompleteWhenTaskProcessCleanupFails(t *testing.T) {
 	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "run server"}
 	choice := agent.ToolChoice{
 		ToolCallID:  "toolu_bg",
-		Type:        domain.ToolTypeShell,
+		Type:        domain.ToolTypeExec,
 		Intent:      "start task server",
 		Command:     "server",
 		RunMode:     domain.ToolRunModeStartBackground,
@@ -357,20 +460,20 @@ func TestTaskWorkflowMarksIncompleteWhenTaskProcessCleanupFails(t *testing.T) {
 		Cycle:           1,
 		WorkItemID:      "wi-1",
 		ToolCallID:      "toolu_bg",
-		Tool:            domain.ToolTypeShell,
+		Tool:            domain.ToolTypeExec,
 		Status:          domain.ExecutionStatusSucceeded,
 		RequestedAction: "start task server",
 		Command:         "server",
 		Metadata: map[string]string{
 			"process_id":    "proc-1",
-			"process_scope": string(domain.ProcessScopeTask),
+			"process_scope": string(domain.ProcessScopeStopOnFinish),
 			"run_mode":      string(domain.ToolRunModeStartBackground),
 		},
 		Processes: []domain.ProcessReference{{
 			ID:          "proc-1",
 			Description: "start task server",
 			Status:      domain.ProcessStatusRunning,
-			Scope:       domain.ProcessScopeTask,
+			Scope:       domain.ProcessScopeStopOnFinish,
 		}},
 	}, nil).Once()
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{
@@ -379,7 +482,7 @@ func TestTaskWorkflowMarksIncompleteWhenTaskProcessCleanupFails(t *testing.T) {
 			ID:          "proc-1",
 			Description: "start task server",
 			Status:      domain.ProcessStatusRunning,
-			Scope:       domain.ProcessScopeTask,
+			Scope:       domain.ProcessScopeStopOnFinish,
 		}},
 	}, nil).Once()
 
@@ -411,7 +514,7 @@ func TestTaskWorkflowPreservesProjectProcessAfterNextActionError(t *testing.T) {
 	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "run persistent server"}
 	choice := agent.ToolChoice{
 		ToolCallID:   "toolu_bg",
-		Type:         domain.ToolTypeShell,
+		Type:         domain.ToolTypeExec,
 		Intent:       "start persistent server",
 		Command:      "server",
 		RunMode:      domain.ToolRunModeStartBackground,
@@ -428,7 +531,7 @@ func TestTaskWorkflowPreservesProjectProcessAfterNextActionError(t *testing.T) {
 		Cycle:           1,
 		WorkItemID:      "wi-1",
 		ToolCallID:      "toolu_bg",
-		Tool:            domain.ToolTypeShell,
+		Tool:            domain.ToolTypeExec,
 		Status:          domain.ExecutionStatusSucceeded,
 		RequestedAction: "start persistent server",
 		Command:         "server",

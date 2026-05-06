@@ -73,3 +73,29 @@ func TestRunSearchesAbsolutePathOutsideWorkingDirectory(t *testing.T) {
 		t.Fatalf("expected grep output to contain fixture, got %q", result.Stdout)
 	}
 }
+
+func TestRunExecutesBatchActions(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workingDir, "example.txt"), []byte("needle\nthread\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	result, err := NewSafeExecutor(nil).Run(context.Background(), Request{
+		WorkingDir: workingDir,
+		Actions: []Action{
+			{Pattern: "needle", OutputMode: OutputModeContent},
+			{Pattern: "thread", OutputMode: OutputModeContent},
+		},
+	})
+	if err != nil {
+		t.Fatalf("grep batch: %v", err)
+	}
+	if len(result.Actions) != 2 {
+		t.Fatalf("expected two action results, got %#v", result.Actions)
+	}
+	if !strings.Contains(result.Stdout, "needle") || !strings.Contains(result.Stdout, "thread") {
+		t.Fatalf("expected batch output to include both matches, got %q", result.Stdout)
+	}
+}
