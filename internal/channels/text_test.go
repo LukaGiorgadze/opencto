@@ -21,6 +21,21 @@ func TestSplitTextPrefersNewline(t *testing.T) {
 	}
 }
 
+func TestSplitTextPrefersMultipleLineBreaksBeforeSingleLineBreakOrDot(t *testing.T) {
+	message := "intro paragraph\n\n\nmiddle line\nlater sentence. tail continues"
+
+	chunks := SplitText(message, 45)
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks, got %d", len(chunks))
+	}
+	if chunks[0] != "intro paragraph" {
+		t.Fatalf("unexpected first chunk: %q", chunks[0])
+	}
+	if chunks[1] != "middle line\nlater sentence. tail continues" {
+		t.Fatalf("unexpected second chunk: %q", chunks[1])
+	}
+}
+
 func TestSplitTextPrefersSentenceBoundaryBeforeWhitespace(t *testing.T) {
 	message := "First sentence. Second sentence keeps going"
 
@@ -33,6 +48,33 @@ func TestSplitTextPrefersSentenceBoundaryBeforeWhitespace(t *testing.T) {
 	}
 	if chunks[1] != "Second sentence keeps going" {
 		t.Fatalf("unexpected second chunk: %q", chunks[1])
+	}
+}
+
+func TestSplitTextDoesNotLeaveMarkdownHeadingAtChunkEnd(t *testing.T) {
+	message := "previous line\n## Notes\nKeep this with the heading."
+
+	chunks := SplitText(message, len("previous line\n## Notes\nKeep this with the"))
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks, got %d", len(chunks))
+	}
+	if chunks[0] != "previous line" {
+		t.Fatalf("unexpected first chunk: %q", chunks[0])
+	}
+	if chunks[1] != "## Notes\nKeep this with the heading." {
+		t.Fatalf("unexpected second chunk: %q", chunks[1])
+	}
+}
+
+func TestSplitTextDoesNotSendMarkdownHeadingAloneAtChunkStart(t *testing.T) {
+	message := "## Notes\nKeep this with the heading body."
+
+	chunks := SplitText(message, len("## Notes\nKeep this"))
+	if len(chunks) != 3 {
+		t.Fatalf("expected 3 chunks, got %d", len(chunks))
+	}
+	if chunks[0] != "## Notes\nKeep" {
+		t.Fatalf("unexpected first chunk: %q", chunks[0])
 	}
 }
 

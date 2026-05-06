@@ -1,6 +1,6 @@
 ---
 name: app-store-connect
-description: description: Use for building, publishing and managing apps on the App Store — covers building and uploading, signing, certificates, TestFlight, metadata, screenshots, localization, ASO, release notes, submission, pricing, subscriptions, in-app purchases, crash triage and more.
+description: Use for ios/react-native apps building, publishing and managing on the App Store — covers building and uploading, signing, certificates, TestFlight, metadata, screenshots, localization, ASO, release notes, submission, pricing, subscriptions, in-app purchases, crash triage and more.
 ---
 
 # App Store Connect
@@ -8,6 +8,44 @@ description: description: Use for building, publishing and managing apps on the 
 Use this umbrella skill as the entry point for App Store Connect work. It is a routing and safety guide; the detailed workflows live in `references/<skill-name>/SKILL.md`.
 
 Do not load every reference by default. Classify the task, read the relevant reference skills, then execute with the current local `asc` command surface.
+
+## 1. Install
+- `brew install asc` - Homebrew (recommended)
+- `curl -fsSL https://asccli.sh/install | bash` - Install script (macOS/Linux)
+
+## 2. Authenticate
+```bash
+asc auth login \
+  --name "MyApp" \
+  --key-id "ABC123" \
+  --issuer-id "DEF456" \
+  --private-key /path/to/AuthKey.p8 \
+  --network
+```
+
+Generate API keys at: https://appstoreconnect.apple.com/access/integrations/api
+
+If you are running in CI, a headless shell, or a machine where keychain access is not available, use config-backed auth instead:
+```bash
+asc auth login \
+  --bypass-keychain \
+  --name "MyCIKey" \
+  --key-id "ABC123" \
+  --issuer-id "DEF456" \
+  --private-key /path/to/AuthKey.p8
+```
+
+## 3. Validate auth
+```bash
+asc auth status --validate
+asc auth doctor
+```
+
+## First command
+```bash
+asc apps list --output table
+asc apps list --output json --pretty
+```
 
 ## Core Workflow
 
