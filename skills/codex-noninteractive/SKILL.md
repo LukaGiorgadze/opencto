@@ -11,14 +11,6 @@ Delegate repository code work to `codex exec`. It runs Codex headlessly against
 the target project; progress streams to `stderr`, and the final agent message
 goes to `stdout`.
 
-Use the target project path explicitly. In examples below, `PROJECT_ROOT` is the
-repository OpenCTO should operate on.
-
-Skill references and helper files for this skill live under
-`$OPENCTO_ROOT/skills/codex-noninteractive/`. Do not confuse `OPENCTO_ROOT` or
-`OPENCTO_WORKSPACE` with `PROJECT_ROOT`, which is the repository Codex should
-inspect or modify.
-
 ## Basic Invocation
 
 ```bash
