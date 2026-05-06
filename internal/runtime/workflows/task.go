@@ -59,7 +59,7 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 	}
 	additionalEvents := append([]domain.Event(nil), input.AdditionalEvents...)
 	var observationHistory []agent.ExecutionFeedback
-	var lastResult *activities.ExecuteToolResult
+	var lastResults []activities.ExecuteToolResult
 	var processes []domain.ProcessReference
 
 	for cycle := 1; cycle <= maxExecutionCycles; cycle++ {
@@ -69,7 +69,7 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			Event:              input.Event,
 			AdditionalEvents:   additionalEvents,
 			NextAction:         currentAction,
-			LastResult:         lastResult,
+			LastResults:        lastResults,
 			ObservationHistory: observationHistory,
 			Processes:          processes,
 			ExecutionCycle:     cycle,
@@ -80,28 +80,40 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 		}
 
 		currentAction = next.NextAction
-		if next.Observation != nil {
+		if len(next.Observations) > 0 {
+			observationHistory = append(observationHistory, next.Observations...)
+		} else if next.Observation != nil {
 			observationHistory = append(observationHistory, *next.Observation)
 		}
 		if next.IsTerminal() {
 			return resultFromNextAction(input.Event, next), nil
 		}
-		if next.ToolChoice == nil {
+		toolChoices := append([]agent.ToolChoice(nil), next.ToolChoices...)
+		if len(toolChoices) == 0 && next.ToolChoice != nil {
+			toolChoices = []agent.ToolChoice{*next.ToolChoice}
+		}
+		if len(toolChoices) == 0 {
 			return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, fmt.Errorf("Activities.NextAction returned non-terminal status %q without a tool choice", next.Status))
 		}
 		if strings.TrimSpace(next.WorkItemID) == "" {
 			return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, fmt.Errorf("Activities.NextAction returned a tool choice without a work item id"))
 		}
 
-		execResult, canceled, err := executeToolStep(ctx, toolCtx, input.ProjectID, next.WorkItemID, *next.ToolChoice, cycle, &additionalEvents)
-		mergeTaskProcesses(&processes, execResult.Processes)
-		if canceled {
-			return completeIncompleteTask(nextActionCtx, input.ProjectID, input.Event, processes)
+		lastResults = nil
+		for _, choice := range toolChoices {
+			execResult, canceled, interrupted, err := executeToolStep(ctx, toolCtx, input.ProjectID, next.WorkItemID, choice, cycle, &additionalEvents)
+			mergeTaskProcesses(&processes, execResult.Processes)
+			if canceled {
+				return completeIncompleteTask(nextActionCtx, input.ProjectID, input.Event, processes)
+			}
+			if err != nil {
+				execResult = failedExecutionActivityResult(choice, next.WorkItemID, cycle, err)
+			}
+			lastResults = append(lastResults, execResult)
+			if interrupted {
+				break
+			}
 		}
-		if err != nil {
-			execResult = failedExecutionActivityResult(*next.ToolChoice, next.WorkItemID, cycle, err)
-		}
-		lastResult = &execResult
 	}
 
 	final, err := nextAction(nextActionCtx, activities.NextActionRequest{
@@ -109,7 +121,7 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 		Event:              input.Event,
 		AdditionalEvents:   additionalEvents,
 		NextAction:         currentAction,
-		LastResult:         lastResult,
+		LastResults:        lastResults,
 		ObservationHistory: observationHistory,
 		Processes:          processes,
 		ExecutionCycle:     maxExecutionCycles + 1,
@@ -119,7 +131,9 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 	if err != nil {
 		return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)
 	}
-	if final.Observation != nil {
+	if len(final.Observations) > 0 {
+		observationHistory = append(observationHistory, final.Observations...)
+	} else if final.Observation != nil {
 		observationHistory = append(observationHistory, *final.Observation)
 	}
 	if !final.IsTerminal() {
@@ -134,7 +148,7 @@ func nextAction(ctx workflow.Context, request activities.NextActionRequest) (act
 	return result, err
 }
 
-func executeToolStep(ctx workflow.Context, toolCtx workflow.Context, projectID, workItemID string, choice agent.ToolChoice, cycle int, additionalEvents *[]domain.Event) (activities.ExecuteToolResult, bool, error) {
+func executeToolStep(ctx workflow.Context, toolCtx workflow.Context, projectID, workItemID string, choice agent.ToolChoice, cycle int, additionalEvents *[]domain.Event) (activities.ExecuteToolResult, bool, bool, error) {
 	activityCtx, cancelActivity := workflow.WithCancel(toolCtx)
 	defer cancelActivity()
 	future := workflow.ExecuteActivity(activityCtx, "Activities.ExecuteTool", activities.ExecuteToolRequest{
@@ -177,18 +191,18 @@ func executeToolStep(ctx workflow.Context, toolCtx workflow.Context, projectID, 
 		selector.Select(ctx)
 		if result.ToolCallID != "" || result.Status != "" {
 			if canceled {
-				return result, true, nil
+				return result, true, false, nil
 			}
 			if interrupted {
 				result.Status = domain.ExecutionStatusCanceled
 				result.Error = "interrupted by user message"
 			}
-			return result, false, nil
+			return result, false, interrupted, nil
 		}
 		if interrupted {
 			result = failedExecutionActivityResult(choice, workItemID, cycle, fmt.Errorf("interrupted by user message"))
 			result.Status = domain.ExecutionStatusCanceled
-			return result, false, nil
+			return result, false, true, nil
 		}
 	}
 }
@@ -236,12 +250,14 @@ func drainTaskSignals(ctx workflow.Context, additionalEvents *[]domain.Event) {
 
 func resultFromNextAction(event domain.Event, next activities.NextActionResult) TaskWorkflowResult {
 	message := strings.TrimSpace(next.NextAction.ResponseMessage)
+	attachments := append([]domain.ReportAttachment(nil), next.NextAction.ResponseAttachments...)
 	return TaskWorkflowResult{
-		Completed:       next.Status == activities.NextActionStatusCompleted || next.Status == activities.NextActionStatusIgnored,
-		Status:          next.Status,
-		Event:           event,
-		ResponseMessage: message,
-		Report:          next.Status != activities.NextActionStatusIgnored && message != "",
+		Completed:           next.Status == activities.NextActionStatusCompleted || next.Status == activities.NextActionStatusIgnored,
+		Status:              next.Status,
+		Event:               event,
+		ResponseMessage:     message,
+		ResponseAttachments: attachments,
+		Report:              next.Status != activities.NextActionStatusIgnored && (message != "" || len(attachments) > 0),
 	}
 }
 

@@ -17,12 +17,11 @@ import (
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	readtool "github.com/opencto/opencto/internal/tools/read"
-	shelltool "github.com/opencto/opencto/internal/tools/shell"
 	skilltool "github.com/opencto/opencto/internal/tools/skill"
 	writetool "github.com/opencto/opencto/internal/tools/write"
 )
 
-type shellToolInput struct {
+type execToolInput struct {
 	Command      string   `json:"command"`
 	Args         []string `json:"args,omitempty"`
 	Cwd          string   `json:"cwd,omitempty"`
@@ -34,49 +33,19 @@ type shellToolInput struct {
 	Destructive  bool     `json:"destructive,omitempty"`
 }
 
-func toolChoiceFromToolCalls(calls []llms.ToolCall, input agent.ToolSelectionInput) (agent.ToolChoice, error) {
+func toolChoicesFromToolCalls(calls []llms.ToolCall, input agent.ToolSelectionInput) ([]agent.ToolChoice, error) {
 	if len(calls) == 0 {
-		return agent.ToolChoice{}, fmt.Errorf("tool call is required")
+		return nil, fmt.Errorf("tool call is required")
 	}
-	if len(calls) == 1 {
-		return toolChoiceFromToolCall(calls[0], input)
-	}
-
 	choices := make([]agent.ToolChoice, 0, len(calls))
 	for _, call := range calls {
 		choice, err := toolChoiceFromToolCall(call, input)
 		if err != nil {
-			return agent.ToolChoice{}, err
+			return nil, err
 		}
 		choices = append(choices, choice)
 	}
-	return multiToolChoiceFromChoices(choices)
-}
-
-func multiToolChoiceFromChoices(choices []agent.ToolChoice) (agent.ToolChoice, error) {
-	if len(choices) == 0 {
-		return agent.ToolChoice{}, fmt.Errorf("tool choice is required")
-	}
-	toolType := choices[0].Type
-	for _, choice := range choices {
-		if choice.Type != toolType {
-			return agent.ToolChoice{}, fmt.Errorf("multiple actions must use one tool type")
-		}
-	}
-
-	if toolType != domain.ToolTypeShell {
-		if supportsStructuredBatch(toolType) {
-			return multiStructuredToolChoice(choices)
-		}
-		return agent.ToolChoice{}, fmt.Errorf("tool %q does not support multiple actions", toolType)
-	}
-
-	for _, choice := range choices {
-		if choice.RunMode == domain.ToolRunModeStartBackground {
-			return agent.ToolChoice{}, fmt.Errorf("shell does not support multiple background actions")
-		}
-	}
-	return multiShellToolChoice(choices)
+	return choices, nil
 }
 
 func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) (agent.ToolChoice, error) {
@@ -91,12 +60,12 @@ func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) 
 
 	raw := json.RawMessage(strings.TrimSpace(call.FunctionCall.Arguments))
 	switch definition.Type {
-	case domain.ToolTypeShell:
-		var args shellToolInput
+	case domain.ToolTypeExec:
+		var args execToolInput
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
 			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
 		}
-		return shellToolChoiceFromInput(definition, call, raw, args, input)
+		return execToolChoiceFromInput(definition, call, raw, args, input)
 	case domain.ToolTypeBrowser:
 		var args browsertool.Request
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
@@ -152,151 +121,6 @@ func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) 
 	}
 }
 
-func multiShellToolChoice(choices []agent.ToolChoice) (agent.ToolChoice, error) {
-	actions := make([]shelltool.Action, 0, len(choices))
-	ids := make([]string, 0, len(choices))
-	intents := make([]string, 0, len(choices))
-	timeoutMs := 0
-	destructive := false
-	idempotency := domain.ToolIdempotencyReadOnly
-	workingDir := ""
-	for _, choice := range choices {
-		actions = append(actions, shelltool.Action{
-			Intent:     choice.Intent,
-			Command:    choice.Command,
-			Args:       append([]string(nil), choice.Args...),
-			WorkingDir: choice.WorkingDir,
-			TimeoutMs:  choice.TimeoutMs,
-		})
-		ids = append(ids, strings.TrimSpace(choice.ToolCallID))
-		intents = append(intents, strings.TrimSpace(firstNonEmpty(choice.Intent, choice.Command)))
-		timeoutMs += clampToolTimeoutMs(choice.TimeoutMs)
-		destructive = destructive || choice.Destructive
-		idempotency = combineToolIdempotency(idempotency, choice.Idempotency)
-		workingDir = firstNonEmpty(workingDir, choice.WorkingDir)
-	}
-
-	raw, err := json.Marshal(shelltool.BatchInput{Actions: actions})
-	if err != nil {
-		return agent.ToolChoice{}, err
-	}
-
-	metadata := map[string]string{
-		"model_tool":        toolregistry.CommandToolName,
-		"tool_call_id":      firstNonEmpty(ids...),
-		"tool_call_ids":     strings.Join(ids, ","),
-		"multi_action":      "true",
-		"multi_action_size": fmt.Sprintf("%d", len(actions)),
-		"run_mode":          string(domain.ToolRunModeWaitForExit),
-		"idempotency":       string(idempotency),
-		"process_scope":     string(domain.ProcessScopeStopOnFinish),
-	}
-	return agent.ToolChoice{
-		ToolCallID:   firstNonEmpty(ids...),
-		Type:         domain.ToolTypeShell,
-		Intent:       fmt.Sprintf("run %d shell commands", len(actions)),
-		Command:      "shell-batch",
-		Input:        json.RawMessage(raw),
-		WorkingDir:   workingDir,
-		TimeoutMs:    clampToolTimeoutMs(timeoutMs),
-		RunMode:      domain.ToolRunModeWaitForExit,
-		Idempotency:  idempotency,
-		ProcessScope: domain.ProcessScopeStopOnFinish,
-		InputSummary: strings.Join(trimStringList(intents, 10), "; "),
-		Destructive:  destructive,
-		Metadata:     metadata,
-	}, nil
-}
-
-func supportsStructuredBatch(toolType domain.ToolType) bool {
-	switch toolType {
-	case domain.ToolTypeBrowser, domain.ToolTypeRead, domain.ToolTypeGlob, domain.ToolTypeGrep:
-		return true
-	default:
-		return false
-	}
-}
-
-func multiStructuredToolChoice(choices []agent.ToolChoice) (agent.ToolChoice, error) {
-	toolType := choices[0].Type
-	definition, ok := toolregistry.DefinitionByType(toolType)
-	if !ok {
-		return agent.ToolChoice{}, fmt.Errorf("unsupported tool type %q", toolType)
-	}
-
-	raw, err := rawActionBatchInput(choices)
-	if err != nil {
-		return agent.ToolChoice{}, err
-	}
-
-	ids := make([]string, 0, len(choices))
-	intents := make([]string, 0, len(choices))
-	timeoutMs := 0
-	workingDir := ""
-	destructive := false
-	idempotency := domain.ToolIdempotencyReadOnly
-	for _, choice := range choices {
-		ids = append(ids, strings.TrimSpace(choice.ToolCallID))
-		intents = append(intents, strings.TrimSpace(firstNonEmpty(choice.InputSummary, choice.Intent)))
-		timeoutMs += clampToolTimeoutMs(choice.TimeoutMs)
-		workingDir = firstNonEmpty(workingDir, choice.WorkingDir)
-		destructive = destructive || choice.Destructive
-		idempotency = combineToolIdempotency(idempotency, choice.Idempotency)
-	}
-
-	metadata := map[string]string{
-		"model_tool":        definition.Name,
-		"tool_call_id":      firstNonEmpty(ids...),
-		"tool_call_ids":     strings.Join(ids, ","),
-		"multi_action":      "true",
-		"multi_action_size": fmt.Sprintf("%d", len(choices)),
-	}
-	return agent.ToolChoice{
-		ToolCallID:   firstNonEmpty(ids...),
-		Type:         toolType,
-		Intent:       fmt.Sprintf("run %d %s actions", len(choices), toolType),
-		Command:      string(toolType) + "-batch",
-		Input:        raw,
-		WorkingDir:   workingDir,
-		TimeoutMs:    clampToolTimeoutMs(timeoutMs),
-		RunMode:      domain.ToolRunModeWaitForExit,
-		Idempotency:  idempotency,
-		ProcessScope: domain.ProcessScopeStopOnFinish,
-		InputSummary: strings.Join(trimStringList(intents, 10), "; "),
-		Destructive:  destructive,
-		Metadata:     metadata,
-	}, nil
-}
-
-func rawActionBatchInput(choices []agent.ToolChoice) (json.RawMessage, error) {
-	actions := make([]json.RawMessage, 0, len(choices))
-	for _, choice := range choices {
-		actions = append(actions, cloneRawMessage(choice.Input))
-	}
-	raw, err := json.Marshal(struct {
-		Actions []json.RawMessage `json:"actions"`
-	}{
-		Actions: actions,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return raw, nil
-}
-
-func combineToolIdempotency(current, next domain.ToolIdempotency) domain.ToolIdempotency {
-	switch {
-	case current == domain.ToolIdempotencyNonIdempotent || next == domain.ToolIdempotencyNonIdempotent:
-		return domain.ToolIdempotencyNonIdempotent
-	case current == domain.ToolIdempotencyUnknown || next == domain.ToolIdempotencyUnknown:
-		return domain.ToolIdempotencyUnknown
-	case current == domain.ToolIdempotencyIdempotent || next == domain.ToolIdempotencyIdempotent:
-		return domain.ToolIdempotencyIdempotent
-	default:
-		return domain.ToolIdempotencyReadOnly
-	}
-}
-
 func decodeToolArguments(toolName string, raw json.RawMessage, target any) error {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return fmt.Errorf("%s tool arguments are required", toolName)
@@ -317,7 +141,7 @@ func decodeToolArguments(toolName string, raw json.RawMessage, target any) error
 	}
 }
 
-func shellToolChoiceFromInput(definition toolregistry.Definition, call llms.ToolCall, raw json.RawMessage, args shellToolInput, input agent.ToolSelectionInput) (agent.ToolChoice, error) {
+func execToolChoiceFromInput(definition toolregistry.Definition, call llms.ToolCall, raw json.RawMessage, args execToolInput, input agent.ToolSelectionInput) (agent.ToolChoice, error) {
 	commandText := strings.TrimSpace(args.Command)
 	if commandText == "" {
 		return agent.ToolChoice{}, fmt.Errorf("%s tool requires a command", definition.Name)
@@ -326,8 +150,8 @@ func shellToolChoiceFromInput(definition toolregistry.Definition, call llms.Tool
 	commandArgs := trimStringList(args.Args, 100)
 	wrapped := false
 	if len(commandArgs) == 0 {
-		if shouldUseShell(commandText) {
-			command, commandArgs = shellCommandForRuntime(input.Runtime, commandText)
+		if shouldWrapExecCommand(commandText) {
+			command, commandArgs = execCommandForRuntime(input.Runtime, commandText)
 			wrapped = true
 		} else {
 			fields := strings.Fields(commandText)
@@ -343,7 +167,7 @@ func shellToolChoiceFromInput(definition toolregistry.Definition, call llms.Tool
 		"tool_call_id": call.ID,
 	}
 	if wrapped {
-		metadata["wrapped_shell_command"] = "true"
+		metadata["wrapped_exec_command"] = "true"
 		metadata["original_command"] = commandText
 	}
 	runMode := normalizeToolRunMode(args.RunMode)
@@ -467,24 +291,24 @@ func normalizeProcessScope(value string) domain.ProcessScope {
 	}
 }
 
-func shouldUseShell(command string) bool {
+func shouldWrapExecCommand(command string) bool {
 	return strings.ContainsAny(command, "\r\n;&|<>*$`()\"'")
 }
 
-func shellCommandForRuntime(runtime agent.RuntimeContext, command string) (string, []string) {
-	shell := firstNonEmpty(strings.TrimSpace(runtime.Shell), defaultShellForOS(runtime.OS))
-	name := strings.ToLower(filepathBase(shell))
+func execCommandForRuntime(runtime agent.RuntimeContext, command string) (string, []string) {
+	exec := firstNonEmpty(strings.TrimSpace(runtime.Exec), defaultExecForOS(runtime.OS))
+	name := strings.ToLower(filepathBase(exec))
 	switch name {
 	case "cmd", "cmd.exe":
-		return shell, []string{"/C", command}
+		return exec, []string{"/C", command}
 	case "powershell", "powershell.exe", "pwsh", "pwsh.exe":
-		return shell, []string{"-Command", command}
+		return exec, []string{"-Command", command}
 	default:
-		return shell, []string{"-c", command}
+		return exec, []string{"-c", command}
 	}
 }
 
-func defaultShellForOS(osName string) string {
+func defaultExecForOS(osName string) string {
 	if strings.EqualFold(osName, "windows") {
 		return "cmd"
 	}

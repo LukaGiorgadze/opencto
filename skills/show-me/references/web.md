@@ -10,7 +10,7 @@ Good fits include, but are not limited to:
 - browser-only behavior such as console errors, network requests, storage, cookies, accessibility state, and client-side routing
 
 Use the `Browser` tool for web proof. The proof must come from a real browser
-session, not from source inspection alone. Use shell commands for supporting
+session, not from source inspection alone. Use exec commands for supporting
 work such as starting a dev server or checking logs, but not as a substitute for
 browser proof when the behavior is browser-visible.
 

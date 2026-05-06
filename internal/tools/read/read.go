@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	shelltool "github.com/opencto/opencto/internal/tools/shell"
+	exectool "github.com/opencto/opencto/internal/tools/exec"
 )
 
 const defaultLineLimit = 2000
@@ -208,7 +208,7 @@ func validateRequest(req Request) (Request, error) {
 	if req.FilePath == "." {
 		return Request{}, ErrFilePathRequired
 	}
-	filePath, err := shelltool.ResolvePath("", req.FilePath)
+	filePath, err := exectool.ResolvePath("", req.FilePath)
 	if err != nil {
 		return Request{}, err
 	}

@@ -23,7 +23,7 @@ type nextActionPromptData struct {
 	ProjectDescription string
 	OS                 string
 	Arch               string
-	Shell              string
+	Exec               string
 	Path               string
 	WorkspaceRoot      string
 	OpenCTORoot        string
@@ -88,12 +88,31 @@ func buildNextActionMessages(input agent.NextActionInput) ([]llms.MessageContent
 		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, reminder))
 	}
 	messages = append(messages, userMessage)
-	for _, feedback := range input.ObservationHistory {
-		assistantMessage, toolResultMessage, err := nextActionTranscriptMessages(feedback)
+	for index := 0; index < len(input.ObservationHistory); {
+		toolCallIDs := strings.TrimSpace(input.ObservationHistory[index].Metadata["tool_call_ids"])
+		if strings.Contains(toolCallIDs, ",") {
+			end := index + 1
+			for end < len(input.ObservationHistory) &&
+				input.ObservationHistory[end].Cycle == input.ObservationHistory[index].Cycle &&
+				strings.TrimSpace(input.ObservationHistory[end].Metadata["tool_call_ids"]) == toolCallIDs {
+				end++
+			}
+			if end-index > 1 {
+				transcript, err := nextActionTranscriptMessages(input.ObservationHistory[index:end]...)
+				if err != nil {
+					return nil, err
+				}
+				messages = append(messages, transcript...)
+				index = end
+				continue
+			}
+		}
+		transcript, err := nextActionTranscriptMessages(input.ObservationHistory[index])
 		if err != nil {
 			return nil, err
 		}
-		messages = append(messages, assistantMessage, toolResultMessage)
+		messages = append(messages, transcript...)
+		index++
 	}
 	additionalMessages, err := additionalUserMessages(input.Context.AdditionalEvents)
 	if err != nil {
@@ -119,7 +138,7 @@ func renderNextActionPrompt(input agent.NextActionInput) (string, error) {
 		ProjectDescription: strings.TrimSpace(input.Context.Project.Description),
 		OS:                 input.Runtime.OS,
 		Arch:               input.Runtime.Arch,
-		Shell:              firstNonEmpty(strings.TrimSpace(input.Runtime.Shell), "unknown"),
+		Exec:               firstNonEmpty(strings.TrimSpace(input.Runtime.Exec), "unknown"),
 		Path:               strings.TrimSpace(input.Runtime.Path),
 		WorkspaceRoot:      firstNonEmpty(strings.TrimSpace(input.Runtime.WorkspaceRoot), "."),
 		OpenCTORoot:        firstNonEmpty(strings.TrimSpace(input.Runtime.OpenCTORoot), "."),
@@ -157,49 +176,53 @@ func messageHasContent(message llms.MessageContent) bool {
 	return false
 }
 
-func nextActionTranscriptMessages(feedback agent.ExecutionFeedback) (llms.MessageContent, llms.MessageContent, error) {
-	toolCallID := executionFeedbackToolCallID(feedback)
-	if toolCallID == "" {
-		return llms.MessageContent{}, llms.MessageContent{}, fmt.Errorf("%w: execution feedback is missing tool_call_id", agent.ErrInvalidNextAction)
+func nextActionTranscriptMessages(feedbacks ...agent.ExecutionFeedback) ([]llms.MessageContent, error) {
+	if len(feedbacks) == 0 {
+		return nil, nil
 	}
 
-	assistantText := strings.TrimSpace(feedback.Metadata["assistant_text"])
+	assistantText := strings.TrimSpace(feedbacks[0].Metadata["assistant_text"])
 	if assistantText == "" {
-		assistantText = strings.TrimSpace(feedback.RequestedAction)
+		assistantText = strings.TrimSpace(feedbacks[0].RequestedAction)
 	}
 	if assistantText == "" {
 		assistantText = "I will run the next command step."
 	}
 
-	toolName, arguments, err := transcriptToolCall(feedback)
-	if err != nil {
-		return llms.MessageContent{}, llms.MessageContent{}, err
+	parts := []llms.ContentPart{llms.TextContent{Text: assistantText}}
+	results := make([]llms.MessageContent, 0, len(feedbacks))
+	for _, feedback := range feedbacks {
+		toolCallID := executionFeedbackToolCallID(feedback)
+		if toolCallID == "" {
+			return nil, fmt.Errorf("%w: execution feedback is missing tool_call_id", agent.ErrInvalidNextAction)
+		}
+		toolName, arguments, err := transcriptToolCall(feedback)
+		if err != nil {
+			return nil, err
+		}
+		parts = append(parts, llms.ToolCall{
+			ID:   toolCallID,
+			Type: "function",
+			FunctionCall: &llms.FunctionCall{
+				Name:      toolName,
+				Arguments: arguments,
+			},
+		})
+		results = append(results, llms.MessageContent{
+			Role: llms.ChatMessageTypeTool,
+			Parts: []llms.ContentPart{llms.ToolCallResponse{
+				ToolCallID: toolCallID,
+				Name:       toolName,
+				Content:    formatToolResultContent(toolCallID, feedback),
+			}},
+		})
 	}
 
 	assistant := llms.MessageContent{
-		Role: llms.ChatMessageTypeAI,
-		Parts: []llms.ContentPart{
-			llms.TextContent{Text: assistantText},
-			llms.ToolCall{
-				ID:   toolCallID,
-				Type: "function",
-				FunctionCall: &llms.FunctionCall{
-					Name:      toolName,
-					Arguments: arguments,
-				},
-			},
-		},
+		Role:  llms.ChatMessageTypeAI,
+		Parts: parts,
 	}
-
-	result := llms.MessageContent{
-		Role: llms.ChatMessageTypeTool,
-		Parts: []llms.ContentPart{llms.ToolCallResponse{
-			ToolCallID: toolCallID,
-			Name:       toolName,
-			Content:    formatToolResultContent(toolCallID, feedback),
-		}},
-	}
-	return assistant, result, nil
+	return append([]llms.MessageContent{assistant}, results...), nil
 }
 
 func nextActionToolOutput(choice *llms.ContentChoice, input agent.NextActionInput) (agent.NextActionOutput, error) {
@@ -209,37 +232,105 @@ func nextActionToolOutput(choice *llms.ContentChoice, input agent.NextActionInpu
 		Runtime:        input.Runtime,
 		ExecutionCycle: input.ExecutionCycle,
 	}
-	toolChoice, err := toolChoiceFromToolCalls(choice.ToolCalls, selectionInput)
+	toolChoices, err := toolChoicesFromToolCalls(choice.ToolCalls, selectionInput)
 	if err != nil {
 		return agent.NextActionOutput{}, err
 	}
-	if toolChoice.Metadata == nil {
-		toolChoice.Metadata = map[string]string{}
+	toolCallIDs := make([]string, 0, len(toolChoices))
+	for _, toolChoice := range toolChoices {
+		toolCallIDs = append(toolCallIDs, strings.TrimSpace(toolChoice.ToolCallID))
 	}
-	toolChoice.Metadata["tool_call_id"] = toolChoice.ToolCallID
 	assistantText := strings.TrimSpace(choice.Content)
 	if assistantText == "" {
-		assistantText = strings.TrimSpace(toolChoice.Intent)
+		assistantText = strings.TrimSpace(toolChoices[0].Intent)
 	}
-	return agent.NextActionOutput{
+	for index := range toolChoices {
+		if toolChoices[index].Metadata == nil {
+			toolChoices[index].Metadata = map[string]string{}
+		}
+		toolChoices[index].Metadata["tool_call_id"] = toolChoices[index].ToolCallID
+		toolChoices[index].Metadata["tool_call_ids"] = strings.Join(toolCallIDs, ",")
+	}
+	output := agent.NextActionOutput{
 		NextAction:    input.NextAction,
-		ToolChoice:    &toolChoice,
 		Status:        "tool",
 		AssistantText: assistantText,
-	}, nil
+	}
+	if len(toolChoices) == 1 {
+		output.ToolChoice = &toolChoices[0]
+	} else {
+		output.ToolChoices = toolChoices
+	}
+	return output, nil
 }
 
 func nextActionTerminalFromContent(content string, input agent.NextActionInput) (agent.NextActionOutput, error) {
-	answer := strings.TrimSpace(content)
-	if answer == "" {
+	answer, attachments, err := parseTerminalResponse(content)
+	if err != nil {
+		return agent.NextActionOutput{}, err
+	}
+	if answer == "" && len(attachments) == 0 {
 		return agent.NextActionOutput{}, fmt.Errorf("%w: terminal response is empty", agent.ErrInvalidNextAction)
 	}
 	nextAction := input.NextAction
 	nextAction.ResponseMessage = answer
+	nextAction.ResponseAttachments = attachments
 	return agent.NextActionOutput{
 		NextAction: nextAction,
 		Status:     "completed",
 	}, nil
+}
+
+type terminalResponse struct {
+	ResponseMessage     string                    `json:"response_message"`
+	ResponseAttachments []domain.ReportAttachment `json:"response_attachments"`
+}
+
+func parseTerminalResponse(content string) (string, []domain.ReportAttachment, error) {
+	answer := strings.TrimSpace(content)
+	if answer == "" {
+		return "", nil, nil
+	}
+	structured := stripJSONFence(answer)
+	if !strings.HasPrefix(structured, "{") {
+		return answer, nil, nil
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(structured), &raw); err != nil {
+		return answer, nil, nil
+	}
+	if _, ok := raw["response_message"]; !ok {
+		if _, ok := raw["response_attachments"]; !ok {
+			return answer, nil, nil
+		}
+	}
+
+	var response terminalResponse
+	if err := json.Unmarshal([]byte(structured), &response); err != nil {
+		return "", nil, fmt.Errorf("%w: terminal response JSON is invalid: %w", agent.ErrInvalidNextAction, err)
+	}
+	message := strings.TrimSpace(response.ResponseMessage)
+	attachments := make([]domain.ReportAttachment, 0, len(response.ResponseAttachments))
+	for _, attachment := range response.ResponseAttachments {
+		if strings.TrimSpace(attachment.Path) == "" {
+			return "", nil, fmt.Errorf("%w: response attachment path is required", agent.ErrInvalidNextAction)
+		}
+		attachments = append(attachments, attachment)
+	}
+	return message, attachments, nil
+}
+
+func stripJSONFence(content string) string {
+	content = strings.TrimSpace(content)
+	if !strings.HasPrefix(content, "```") || !strings.HasSuffix(content, "```") {
+		return content
+	}
+	content = strings.TrimPrefix(content, "```")
+	content = strings.TrimSpace(content)
+	content = strings.TrimPrefix(content, "json")
+	content = strings.TrimSpace(content)
+	content = strings.TrimSuffix(content, "```")
+	return strings.TrimSpace(content)
 }
 
 func executionFeedbackToolCallID(feedback agent.ExecutionFeedback) string {
@@ -293,8 +384,8 @@ func transcriptProcessScope(feedback agent.ExecutionFeedback) string {
 }
 
 func transcriptToolCall(feedback agent.ExecutionFeedback) (string, string, error) {
-	if feedback.Tool == "" || feedback.Tool == domain.ToolTypeShell {
-		args := shellToolInput{
+	if feedback.Tool == "" || feedback.Tool == domain.ToolTypeExec {
+		args := execToolInput{
 			Command:      transcriptCommand(feedback),
 			Args:         feedback.Args,
 			TimeoutMs:    transcriptTimeoutMs(feedback),

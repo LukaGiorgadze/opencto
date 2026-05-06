@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/opencto/opencto/internal/config"
-	shelltool "github.com/opencto/opencto/internal/tools/shell"
+	exectool "github.com/opencto/opencto/internal/tools/exec"
 )
 
 const (
@@ -146,7 +146,7 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 
 func (e *SafeExecutor) runBatch(ctx context.Context, req Request) (Result, error) {
 	startedAt := time.Now()
-	workingDir, err := shelltool.ResolveWorkingDir(firstNonEmpty(req.WorkspaceRoot, req.WorkingDir))
+	workingDir, err := exectool.ResolveWorkingDir(firstNonEmpty(req.WorkspaceRoot, req.WorkingDir))
 	if err != nil {
 		return Result{}, err
 	}
@@ -227,7 +227,7 @@ func (e *SafeExecutor) runSingle(ctx context.Context, req Request) (Result, erro
 	if err != nil {
 		return Result{}, err
 	}
-	workingDir, err := shelltool.ResolveWorkingDir(firstNonEmpty(normalized.WorkspaceRoot, normalized.WorkingDir))
+	workingDir, err := exectool.ResolveWorkingDir(firstNonEmpty(normalized.WorkspaceRoot, normalized.WorkingDir))
 	if err != nil {
 		return Result{}, err
 	}

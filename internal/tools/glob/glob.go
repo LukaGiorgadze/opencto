@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	shelltool "github.com/opencto/opencto/internal/tools/shell"
+	exectool "github.com/opencto/opencto/internal/tools/exec"
 )
 
 var (
@@ -248,7 +248,7 @@ func validateRequest(req Request) (string, string, bool, error) {
 		return "", "", false, fmt.Errorf("%w: cwd %q", ErrPathRequired, workingDir)
 	}
 	var err error
-	workingDir, err = shelltool.ResolveWorkingDir(workingDir)
+	workingDir, err = exectool.ResolveWorkingDir(workingDir)
 	if err != nil {
 		return "", "", false, fmt.Errorf("resolve cwd: %w", err)
 	}
@@ -259,7 +259,7 @@ func validateRequest(req Request) (string, string, bool, error) {
 	} else if strings.EqualFold(root, "undefined") || strings.EqualFold(root, "null") {
 		return "", "", false, fmt.Errorf("%w: %q", ErrPathRequired, root)
 	} else {
-		root, err = shelltool.ResolvePath(workingDir, root)
+		root, err = exectool.ResolvePath(workingDir, root)
 		if err != nil {
 			return "", "", false, fmt.Errorf("resolve path: %w", err)
 		}

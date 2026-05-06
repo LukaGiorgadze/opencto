@@ -1,4 +1,4 @@
-package shell
+package exec
 
 import (
 	"context"
@@ -326,7 +326,7 @@ func TestProcessManagerStopUsesStoredProcessGroup(t *testing.T) {
 		t.Fatalf("wait launcher: %v", err)
 	}
 	if !processGroupRunning(pgid) {
-		t.Skip("shell did not leave a child in the launcher process group")
+		t.Skip("exec did not leave a child in the launcher process group")
 	}
 	defer func() {
 		_ = terminateManagedProcess(pid, pgid, time.Second)

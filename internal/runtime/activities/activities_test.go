@@ -15,8 +15,8 @@ import (
 	"github.com/opencto/opencto/internal/domain"
 	skillcatalog "github.com/opencto/opencto/internal/skills"
 	browsertool "github.com/opencto/opencto/internal/tools/browser"
+	exectool "github.com/opencto/opencto/internal/tools/exec"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
-	shelltool "github.com/opencto/opencto/internal/tools/shell"
 )
 
 type stubProjectStore struct {
@@ -37,14 +37,16 @@ func (e stubEngine) NextAction(_ context.Context, input agent.NextActionInput) (
 }
 
 type captureReporter struct {
+	reports      []domain.ReportMessage
 	messages     []string
 	typingEvents []domain.Event
 	typingErr    error
 	onTyping     func()
 }
 
-func (r *captureReporter) Report(_ context.Context, _ domain.Event, message string) error {
-	r.messages = append(r.messages, message)
+func (r *captureReporter) Report(_ context.Context, _ domain.Event, report domain.ReportMessage) error {
+	r.reports = append(r.reports, report)
+	r.messages = append(r.messages, report.Text)
 	return nil
 }
 
@@ -74,6 +76,33 @@ func (s stubProjectStore) UpsertExecutionAttempt(context.Context, domain.Executi
 
 func (s stubProjectStore) UpsertToolInvocation(context.Context, domain.ToolInvocation) error {
 	return nil
+}
+
+func TestReportResponseIncludesAttachments(t *testing.T) {
+	t.Parallel()
+
+	reporter := &captureReporter{}
+	activities := Activities{Reporter: reporter}
+	err := activities.ReportResponse(context.Background(), ReportResponseRequest{
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "project-1",
+		},
+		Message: "see attached",
+		Attachments: []domain.ReportAttachment{{
+			Path: "/workspace/screenshot.png",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("report response: %v", err)
+	}
+	if len(reporter.reports) != 1 {
+		t.Fatalf("expected one report, got %d", len(reporter.reports))
+	}
+	report := reporter.reports[0]
+	if report.Text != "see attached" || len(report.Attachments) != 1 || report.Attachments[0].Path != "/workspace/screenshot.png" {
+		t.Fatalf("unexpected report: %#v", report)
+	}
 }
 
 func TestFullObservationKeepsLongStdout(t *testing.T) {
@@ -360,7 +389,7 @@ func TestNextActionAssignsWorkItemInternallyForToolChoice(t *testing.T) {
 		Engine: stubEngine{output: agent.NextActionOutput{
 			ToolChoice: &agent.ToolChoice{
 				ToolCallID: "toolu_next",
-				Type:       domain.ToolTypeShell,
+				Type:       domain.ToolTypeExec,
 				Intent:     "inspect workspace",
 				Command:    "pwd",
 				Metadata: map[string]string{
@@ -426,7 +455,7 @@ func TestNextActionPassesEventChannelToEngine(t *testing.T) {
 
 func TestExecuteToolReturnsManagedProcessMetadata(t *testing.T) {
 	if goruntime.GOOS == "windows" {
-		t.Skip("uses POSIX shell fixture")
+		t.Skip("uses POSIX exec fixture")
 	}
 	t.Parallel()
 
@@ -442,7 +471,7 @@ func TestExecuteToolReturnsManagedProcessMetadata(t *testing.T) {
 		WorkItemID: "work-item-1",
 		ToolChoice: agent.ToolChoice{
 			ToolCallID:  "toolu_bg",
-			Type:        domain.ToolTypeShell,
+			Type:        domain.ToolTypeExec,
 			Intent:      "start background fixture",
 			Command:     "sh",
 			Args:        []string{"-c", "printf 'ready\n'; sleep 30"},
@@ -459,7 +488,7 @@ func TestExecuteToolReturnsManagedProcessMetadata(t *testing.T) {
 	}
 	result, err := activities.ExecuteTool(context.Background(), request)
 	if err != nil {
-		t.Fatalf("start shell process: %v", err)
+		t.Fatalf("start exec process: %v", err)
 	}
 	if result.Status != domain.ExecutionStatusSucceeded {
 		t.Fatalf("unexpected result: %#v", result)
@@ -471,7 +500,7 @@ func TestExecuteToolReturnsManagedProcessMetadata(t *testing.T) {
 	if len(result.Processes) != 1 || result.Processes[0].ID != processID || result.Processes[0].Scope != domain.ProcessScopeStopOnFinish {
 		t.Fatalf("expected process reference, got %#v", result.Processes)
 	}
-	manager := shelltool.NewProcessManager(nil)
+	manager := exectool.NewProcessManager(nil)
 	defer func() {
 		_, _ = manager.Stop(context.Background(), stateDir, processID)
 	}()
@@ -506,7 +535,7 @@ func TestExecuteToolReturnsManagedProcessMetadata(t *testing.T) {
 
 func TestExecuteToolStartBackgroundFailureIncludesProcessOutput(t *testing.T) {
 	if goruntime.GOOS == "windows" {
-		t.Skip("uses POSIX shell fixture")
+		t.Skip("uses POSIX exec fixture")
 	}
 	t.Parallel()
 
@@ -520,7 +549,7 @@ func TestExecuteToolStartBackgroundFailureIncludesProcessOutput(t *testing.T) {
 		WorkItemID: "work-item-1",
 		ToolChoice: agent.ToolChoice{
 			ToolCallID:  "toolu_bg_fail",
-			Type:        domain.ToolTypeShell,
+			Type:        domain.ToolTypeExec,
 			Intent:      "start failing background fixture",
 			Command:     "sh",
 			Args:        []string{"-c", "printf 'startup stdout\n'; printf 'startup stderr\n' >&2; exit 7"},
@@ -535,7 +564,7 @@ func TestExecuteToolStartBackgroundFailureIncludesProcessOutput(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("start shell process: %v", err)
+		t.Fatalf("start exec process: %v", err)
 	}
 	if result.Status != domain.ExecutionStatusFailed {
 		t.Fatalf("expected failed result, got %#v", result)
@@ -554,7 +583,7 @@ func TestExecuteToolStartBackgroundFailureIncludesProcessOutput(t *testing.T) {
 	}
 }
 
-func TestExecuteShellUsesToolChoiceWorkingDir(t *testing.T) {
+func TestExecuteExecUsesToolChoiceWorkingDir(t *testing.T) {
 	if goruntime.GOOS == "windows" {
 		t.Skip("uses POSIX pwd fixture")
 	}
@@ -563,7 +592,7 @@ func TestExecuteShellUsesToolChoiceWorkingDir(t *testing.T) {
 	dir := t.TempDir()
 	workingDir := t.TempDir()
 	activities := Activities{
-		Shell:         shelltool.NewSafeExecutor(nil),
+		Exec:          exectool.NewSafeExecutor(nil),
 		WorkspaceRoot: dir,
 	}
 	result, err := activities.ExecuteTool(context.Background(), ExecuteToolRequest{
@@ -571,7 +600,7 @@ func TestExecuteShellUsesToolChoiceWorkingDir(t *testing.T) {
 		WorkItemID: "work-item-1",
 		ToolChoice: agent.ToolChoice{
 			ToolCallID: "toolu_pwd",
-			Type:       domain.ToolTypeShell,
+			Type:       domain.ToolTypeExec,
 			Intent:     "print working directory",
 			Command:    "pwd",
 			WorkingDir: workingDir,
@@ -583,7 +612,7 @@ func TestExecuteShellUsesToolChoiceWorkingDir(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("execute shell: %v", err)
+		t.Fatalf("execute exec: %v", err)
 	}
 	if result.WorkingDirectory != workingDir {
 		t.Fatalf("expected working directory %q, got %q", workingDir, result.WorkingDirectory)
@@ -593,55 +622,9 @@ func TestExecuteShellUsesToolChoiceWorkingDir(t *testing.T) {
 	}
 }
 
-func TestExecuteShellBatchUsesActionWorkingDir(t *testing.T) {
-	if goruntime.GOOS == "windows" {
-		t.Skip("uses POSIX pwd fixture")
-	}
-	t.Parallel()
-
-	dir := t.TempDir()
-	parentWorkingDir := t.TempDir()
-	workingDir := t.TempDir()
-	input, err := json.Marshal(shelltool.BatchInput{Actions: []shelltool.Action{{
-		Command:    "pwd",
-		WorkingDir: workingDir,
-	}}})
-	if err != nil {
-		t.Fatalf("marshal shell batch: %v", err)
-	}
-	activities := Activities{
-		Shell:         shelltool.NewSafeExecutor(nil),
-		WorkspaceRoot: dir,
-	}
-	result, err := activities.ExecuteTool(context.Background(), ExecuteToolRequest{
-		ProjectID:  "project-1",
-		WorkItemID: "work-item-1",
-		ToolChoice: agent.ToolChoice{
-			ToolCallID: "toolu_batch",
-			Type:       domain.ToolTypeShell,
-			Intent:     "print working directory",
-			Command:    "shell-batch",
-			Input:      input,
-			WorkingDir: parentWorkingDir,
-			Metadata: map[string]string{
-				"execution_cycle": "1",
-				"multi_action":    "true",
-				"tool_call_id":    "toolu_batch",
-				"work_item_id":    "work-item-1",
-			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("execute shell batch: %v", err)
-	}
-	if !strings.Contains(result.Observation, workingDir) {
-		t.Fatalf("expected observation to contain action working directory %q, got %q", workingDir, result.Observation)
-	}
-}
-
 func TestNextActionStopsProcessWithStopOnFinishScopeAtCompletion(t *testing.T) {
 	if goruntime.GOOS == "windows" {
-		t.Skip("uses POSIX shell fixture")
+		t.Skip("uses POSIX exec fixture")
 	}
 	t.Parallel()
 
@@ -664,7 +647,7 @@ func TestNextActionStopsProcessWithStopOnFinishScopeAtCompletion(t *testing.T) {
 		WorkItemID: "work-item-1",
 		ToolChoice: agent.ToolChoice{
 			ToolCallID:   "toolu_bg",
-			Type:         domain.ToolTypeShell,
+			Type:         domain.ToolTypeExec,
 			Intent:       "start server",
 			Command:      "sh",
 			Args:         []string{"-c", "printf 'ready\n'; sleep 30"},
@@ -680,10 +663,10 @@ func TestNextActionStopsProcessWithStopOnFinishScopeAtCompletion(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("start shell process: %v", err)
+		t.Fatalf("start exec process: %v", err)
 	}
 	processID := started.Metadata["process_id"]
-	manager := shelltool.NewProcessManager(nil)
+	manager := exectool.NewProcessManager(nil)
 	defer func() {
 		_, _ = manager.Stop(context.Background(), stateDir, processID)
 	}()

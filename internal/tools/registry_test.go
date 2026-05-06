@@ -40,7 +40,7 @@ func TestDefinitionsIncludeDedicatedTools(t *testing.T) {
 		seen[definition.Type] = true
 	}
 	for _, toolType := range []domain.ToolType{
-		domain.ToolTypeShell,
+		domain.ToolTypeExec,
 		domain.ToolTypeBrowser,
 		domain.ToolTypeRead,
 		domain.ToolTypeEdit,
@@ -85,7 +85,7 @@ func TestLLMDefinitionsUseCommandNameAndDescription(t *testing.T) {
 	}
 	commandDescription := decodedSchema.Properties["command"].Description
 	if !strings.Contains(commandDescription, "Do not assume Bash, sh, cmd, or PowerShell") {
-		t.Fatalf("command description should avoid shell assumptions: %q", commandDescription)
+		t.Fatalf("command description should avoid exec assumptions: %q", commandDescription)
 	}
 }
 

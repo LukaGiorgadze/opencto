@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/opencto/opencto/internal/domain"
-	shelltool "github.com/opencto/opencto/internal/tools/shell"
+	exectool "github.com/opencto/opencto/internal/tools/exec"
 )
 
 const (
@@ -149,7 +149,7 @@ func (e *SafeExecutor) Run(ctx context.Context, req Request) (Result, error) {
 
 func (e *SafeExecutor) runBatch(ctx context.Context, req Request) (Result, error) {
 	startedAt := time.Now()
-	workingDir, err := shelltool.ResolveWorkingDir(req.WorkingDir)
+	workingDir, err := exectool.ResolveWorkingDir(req.WorkingDir)
 	if err != nil {
 		return Result{}, err
 	}
@@ -218,7 +218,7 @@ func (e *SafeExecutor) runSingle(ctx context.Context, req Request) (Result, erro
 
 	startedAt := time.Now()
 
-	workingDir, err := shelltool.ResolveWorkingDir(normalized.WorkingDir)
+	workingDir, err := exectool.ResolveWorkingDir(normalized.WorkingDir)
 	if err != nil {
 		return Result{}, err
 	}
@@ -432,7 +432,7 @@ func ripgrepArgs(req Request) []string {
 }
 
 func resolveSearchPath(workingDir, searchPath string) (string, error) {
-	path, err := shelltool.ResolvePath(workingDir, searchPath)
+	path, err := exectool.ResolvePath(workingDir, searchPath)
 	if err != nil {
 		return "", fmt.Errorf("resolve search path: %w", err)
 	}

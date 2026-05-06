@@ -1,4 +1,4 @@
-package shell
+package exec
 
 import (
 	"encoding/json"
@@ -6,12 +6,12 @@ import (
 	"testing"
 )
 
-func TestShellToolSchemaIsValidJSON(t *testing.T) {
+func TestExecToolSchemaIsValidJSON(t *testing.T) {
 	t.Parallel()
 
 	var schema map[string]any
-	if err := json.Unmarshal(ShellToolSchema(), &schema); err != nil {
-		t.Fatalf("decode shell tool schema: %v", err)
+	if err := json.Unmarshal(ExecToolSchema(), &schema); err != nil {
+		t.Fatalf("decode exec tool schema: %v", err)
 	}
 	if schema["$schema"] != "https://json-schema.org/draft/2020-12/schema" {
 		t.Fatalf("expected draft 2020-12 schema declaration, got %#v", schema["$schema"])
@@ -39,12 +39,12 @@ func TestShellToolSchemaIsValidJSON(t *testing.T) {
 	}
 }
 
-func TestShellToolSchemaUsesStopOnFinishProcessScope(t *testing.T) {
+func TestExecToolSchemaUsesStopOnFinishProcessScope(t *testing.T) {
 	t.Parallel()
 
 	var schema map[string]any
-	if err := json.Unmarshal(ShellToolSchema(), &schema); err != nil {
-		t.Fatalf("decode shell tool schema: %v", err)
+	if err := json.Unmarshal(ExecToolSchema(), &schema); err != nil {
+		t.Fatalf("decode exec tool schema: %v", err)
 	}
 	properties := schema["properties"].(map[string]any)
 	processScope := properties["process_scope"].(map[string]any)
@@ -61,19 +61,19 @@ func TestShellToolSchemaUsesStopOnFinishProcessScope(t *testing.T) {
 	}
 }
 
-func TestShellToolSchemaReturnsCopy(t *testing.T) {
+func TestExecToolSchemaReturnsCopy(t *testing.T) {
 	t.Parallel()
 
-	first := ShellToolSchema()
-	second := ShellToolSchema()
+	first := ExecToolSchema()
+	second := ExecToolSchema()
 	if len(first) == 0 || len(second) == 0 {
-		t.Fatalf("expected non-empty shell tool schema")
+		t.Fatalf("expected non-empty exec tool schema")
 	}
 
 	original := second[0]
 	first[0] = 'x'
 	if second[0] != original {
-		t.Fatalf("ShellToolSchema should return a copy")
+		t.Fatalf("ExecToolSchema should return a copy")
 	}
 }
 

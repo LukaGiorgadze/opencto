@@ -1,7 +1,7 @@
 ---
 name: show-me
 description: Show visual proof of a change, feature, or bug fix by detecting the environment, launching the app if needed, capturing a screenshot, and storing it.
-allowed-tools: Shell Glob Grep Read Browser
+allowed-tools: Exec Glob Grep Read Browser
 ---
 
 # Core Rule

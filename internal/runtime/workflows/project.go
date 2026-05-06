@@ -110,12 +110,17 @@ type activeTask struct {
 }
 
 func reportTaskResult(ctx workflow.Context, result TaskWorkflowResult) error {
-	if !result.Report || strings.TrimSpace(result.ResponseMessage) == "" {
+	report := domain.ReportMessage{
+		Text:        result.ResponseMessage,
+		Attachments: result.ResponseAttachments,
+	}
+	if !result.Report || report.Empty() {
 		return nil
 	}
 	return workflow.ExecuteActivity(ctx, "Activities.ReportResponse", activities.ReportResponseRequest{
-		Event:   result.Event,
-		Message: result.ResponseMessage,
+		Event:       result.Event,
+		Message:     report.Text,
+		Attachments: report.Attachments,
 	}).Get(ctx, nil)
 }
 

@@ -1,4 +1,4 @@
-package shell
+package exec
 
 import (
 	"bytes"
@@ -9,7 +9,7 @@ import (
 	"log/slog"
 	"maps"
 	"os"
-	"os/exec"
+	osexec "os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -114,7 +114,7 @@ func (e *SafeExecutor) runBatch(ctx context.Context, req Request) (Result, error
 	exitCode := 0
 
 	for index, action := range req.Actions {
-		subReq := shellRequestForAction(req, action)
+		subReq := execRequestForAction(req, action)
 		result, err := e.runSingle(runCtx, subReq)
 		appendActionOutput(&stdout, index, action.Command, action.Args, result.Stdout)
 		appendActionOutput(&stderr, index, action.Command, action.Args, result.Stderr)
@@ -162,7 +162,7 @@ func (e *SafeExecutor) runSingle(ctx context.Context, req Request) (Result, erro
 		defer cancel()
 	}
 
-	cmd := exec.Command(req.Command, req.Args...)
+	cmd := osexec.Command(req.Command, req.Args...)
 	cmd.Dir = workingDir
 	cmd.Env = mergeEnv(req.Environment)
 	setProcessGroup(cmd)
@@ -209,7 +209,7 @@ func commandContext(ctx context.Context, timeout time.Duration) (context.Context
 	return context.WithTimeout(ctx, timeout)
 }
 
-func shellRequestForAction(parent Request, action Action) Request {
+func execRequestForAction(parent Request, action Action) Request {
 	timeout := time.Duration(action.TimeoutMs) * time.Millisecond
 	return Request{
 		ProjectID:          parent.ProjectID,
@@ -264,7 +264,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func runCommandWithContext(ctx context.Context, cmd *exec.Cmd) error {
+func runCommandWithContext(ctx context.Context, cmd *osexec.Cmd) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -353,7 +353,7 @@ func exitCode(err error) int {
 		return 0
 	}
 
-	var exitErr *exec.ExitError
+	var exitErr *osexec.ExitError
 	if errors.As(err, &exitErr) {
 		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
 			return status.ExitStatus()

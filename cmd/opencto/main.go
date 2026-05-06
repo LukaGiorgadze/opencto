@@ -21,7 +21,7 @@ import (
 	"github.com/opencto/opencto/internal/observability"
 	"github.com/opencto/opencto/internal/runtime"
 	"github.com/opencto/opencto/internal/runtime/activities"
-	"github.com/opencto/opencto/internal/tools/shell"
+	"github.com/opencto/opencto/internal/tools/exec"
 )
 
 func main() {
@@ -78,7 +78,14 @@ func main() {
 			if appID == "" {
 				logger.Warn("discord application id is not set; continuing because the runtime does not require it yet", slog.String("env", "DISCORD_APPLICATION_ID"))
 			}
-			discordAdapter, err = discord.New(cfg.Project.ID, token, appID, dispatcher, logger)
+			discordAdapter, err = discord.New(cfg.Project.ID, token, appID, dispatcher, logger, discord.Options{
+				WorkspaceRoot: cfg.Project.WorkspaceRoot,
+				AttachmentLimits: discord.AttachmentLimits{
+					MaxFiles:      cfg.Channels.Discord.OutboundAttachments.MaxFiles,
+					MaxFileBytes:  cfg.Channels.Discord.OutboundAttachments.MaxFileBytes,
+					MaxTotalBytes: cfg.Channels.Discord.OutboundAttachments.MaxTotalBytes,
+				},
+			})
 			if err != nil {
 				logger.Error("create discord adapter", slog.String("error", err.Error()))
 				os.Exit(1)
@@ -89,7 +96,7 @@ func main() {
 
 		activitySet := &activities.Activities{
 			Engine:   engine,
-			Shell:    shell.NewSafeExecutor(logger),
+			Exec:     exec.NewSafeExecutor(logger),
 			Reporter: reporter,
 			Project: domain.Project{
 				ID:   cfg.Project.ID,

@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type Metadata map[string]string
 
@@ -73,7 +76,7 @@ const (
 type ToolType string
 
 const (
-	ToolTypeShell   ToolType = "shell"
+	ToolTypeExec    ToolType = "exec"
 	ToolTypeBrowser ToolType = "browser"
 	ToolTypeEdit    ToolType = "edit"
 	ToolTypeGlob    ToolType = "glob"
@@ -131,6 +134,24 @@ type EventAttachment struct {
 	LocalPath   string    `json:"local_path,omitempty"`
 	Metadata    Metadata  `json:"metadata,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
+}
+
+type ReportMessage struct {
+	Text        string             `json:"text,omitempty"`
+	Attachments []ReportAttachment `json:"attachments,omitempty"`
+}
+
+func (m ReportMessage) Empty() bool {
+	return strings.TrimSpace(m.Text) == "" && len(m.Attachments) == 0
+}
+
+type ReportAttachment struct {
+	Path        string   `json:"path"`
+	Filename    string   `json:"filename,omitempty"`
+	ContentType string   `json:"content_type,omitempty"`
+	Description string   `json:"description,omitempty"`
+	SizeBytes   int64    `json:"size_bytes,omitempty"`
+	Metadata    Metadata `json:"metadata,omitempty"`
 }
 
 type WorkItem struct {
