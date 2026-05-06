@@ -31,9 +31,8 @@ type nextActionPromptData struct {
 }
 
 type toolResultEnvelope struct {
-	ToolUseID string `json:"tool_use_id"`
-	IsError   bool   `json:"is_error"`
-	Content   string `json:"content"`
+	IsError bool   `json:"is_error"`
+	Content string `json:"content"`
 }
 
 func (e *OpenAIEngine) NextAction(ctx context.Context, input agent.NextActionInput) (agent.NextActionOutput, error) {
@@ -213,7 +212,7 @@ func nextActionTranscriptMessages(feedbacks ...agent.ExecutionFeedback) ([]llms.
 			Parts: []llms.ContentPart{llms.ToolCallResponse{
 				ToolCallID: toolCallID,
 				Name:       toolName,
-				Content:    formatToolResultContent(toolCallID, feedback),
+				Content:    formatToolResultContent(feedback),
 			}},
 		})
 	}
@@ -430,11 +429,10 @@ func stripHiddenToolInputFields(raw json.RawMessage) string {
 	return string(encoded)
 }
 
-func formatToolResultContent(toolUseID string, feedback agent.ExecutionFeedback) string {
+func formatToolResultContent(feedback agent.ExecutionFeedback) string {
 	envelope := toolResultEnvelope{
-		ToolUseID: strings.TrimSpace(toolUseID),
-		IsError:   toolResultIsError(feedback),
-		Content:   formatToolResultDetails(feedback),
+		IsError: toolResultIsError(feedback),
+		Content: formatToolResultDetails(feedback),
 	}
 	encoded, err := json.Marshal(envelope)
 	if err != nil {

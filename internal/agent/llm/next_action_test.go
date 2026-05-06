@@ -171,8 +171,11 @@ func TestBuildNextActionMessagesUsesOpenAIToolTranscript(t *testing.T) {
 	if err := json.Unmarshal([]byte(toolResult.Content), &envelope); err != nil {
 		t.Fatalf("tool result should be a JSON envelope: %v\n%s", err, toolResult.Content)
 	}
-	if envelope.ToolUseID != "toolu_abc123" || !envelope.IsError {
+	if !envelope.IsError {
 		t.Fatalf("unexpected tool result envelope metadata: %#v", envelope)
+	}
+	if strings.Contains(toolResult.Content, "tool_use_id") || strings.Contains(toolResult.Content, "toolu_abc123") {
+		t.Fatalf("tool result content should not duplicate tool call id: %s", toolResult.Content)
 	}
 	if !strings.Contains(envelope.Content, "exit_code: 1") ||
 		!strings.Contains(envelope.Content, "output:\nstaging target not found") ||
@@ -304,8 +307,11 @@ func TestBuildNextActionMessagesAppendsAdditionalEventsAsUserMessages(t *testing
 	if err := json.Unmarshal([]byte(toolResult.Content), &envelope); err != nil {
 		t.Fatalf("tool result should be a JSON envelope: %v\n%s", err, toolResult.Content)
 	}
-	if envelope.ToolUseID != "toolu_abc123" || envelope.IsError {
+	if envelope.IsError {
 		t.Fatalf("unexpected successful tool result envelope: %#v", envelope)
+	}
+	if strings.Contains(toolResult.Content, "tool_use_id") || strings.Contains(toolResult.Content, "toolu_abc123") {
+		t.Fatalf("tool result content should not duplicate tool call id: %s", toolResult.Content)
 	}
 	if !strings.Contains(envelope.Content, "exit_code: 0") || !strings.Contains(envelope.Content, "output:\ncreated") {
 		t.Fatalf("tool result envelope content should include success details: %q", envelope.Content)
