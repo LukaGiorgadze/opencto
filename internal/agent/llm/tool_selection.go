@@ -17,6 +17,7 @@ import (
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	readtool "github.com/opencto/opencto/internal/tools/read"
+	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
 	skilltool "github.com/opencto/opencto/internal/tools/skill"
 	writetool "github.com/opencto/opencto/internal/tools/write"
 )
@@ -110,6 +111,12 @@ func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) 
 			summary += " in " + path
 		}
 		return structuredToolChoiceFromInput(definition, call, raw, input, summary), nil
+	case domain.ToolTypeSchedule:
+		var args scheduletool.Request
+		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
+			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
+		}
+		return scheduleToolChoiceFromInput(definition, call, raw, input, args), nil
 	case domain.ToolTypeSkill:
 		var args skilltool.Request
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
@@ -228,6 +235,42 @@ func browserToolChoiceFromInput(definition toolregistry.Definition, call llms.To
 		InputSummary: summary,
 		Destructive:  args.Destructive,
 		Metadata:     metadata,
+	}
+}
+
+func scheduleToolChoiceFromInput(definition toolregistry.Definition, call llms.ToolCall, raw json.RawMessage, input agent.ToolSelectionInput, args scheduletool.Request) agent.ToolChoice {
+	operation := strings.TrimSpace(args.Operation)
+	summary := "schedule " + operation
+	if name := strings.TrimSpace(args.Name); name != "" {
+		summary += " " + name
+	} else if id := strings.TrimSpace(args.ScheduleID); id != "" {
+		summary += " " + id
+	}
+	if task := strings.TrimSpace(args.Task); task != "" {
+		summary += ": " + task
+	} else if description := strings.TrimSpace(args.Description); description != "" {
+		summary += ": " + description
+	}
+	idempotency := domain.ToolIdempotencyNonIdempotent
+	if operation == scheduletool.OperationList || operation == scheduletool.OperationDescribe {
+		idempotency = domain.ToolIdempotencyReadOnly
+	}
+	return agent.ToolChoice{
+		ToolCallID:   call.ID,
+		Type:         definition.Type,
+		Intent:       firstNonEmpty(summary, strings.TrimSpace(input.Context.Event.Body)),
+		Input:        cloneRawMessage(raw),
+		WorkingDir:   strings.TrimSpace(input.Runtime.WorkspaceRoot),
+		TimeoutMs:    clampToolTimeoutMs(0),
+		RunMode:      domain.ToolRunModeWaitForExit,
+		Idempotency:  idempotency,
+		ProcessScope: domain.ProcessScopeStopOnFinish,
+		InputSummary: firstNonEmpty(summary, strings.TrimSpace(input.Context.Event.Body)),
+		Destructive:  operation == scheduletool.OperationDelete || operation == scheduletool.OperationTrigger,
+		Metadata: map[string]string{
+			"model_tool":   definition.Name,
+			"tool_call_id": call.ID,
+		},
 	}
 }
 

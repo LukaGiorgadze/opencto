@@ -1,0 +1,67 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+        "operation",
+        "schedule_id",
+        "name",
+        "description",
+        "task",
+        "one_shot_at",
+        "cron",
+        "paused",
+        "note",
+        "limit",
+        "include_completed"
+    ],
+    "additionalProperties": false,
+    "properties": {
+        "operation": {
+            "type": "string",
+            "enum": ["create", "list", "describe", "update", "delete", "pause", "resume", "trigger"],
+            "description": "Schedule operation to perform. Use create for new one-shot or recurring schedules; use list/describe to inspect; use update/delete/pause/resume/trigger to manage existing schedules."
+        },
+        "schedule_id": {
+            "type": "string",
+            "description": "Existing schedule ID or human-readable schedule name for describe/update/delete/pause/resume/trigger. For create, pass an empty string to let OpenCTO generate a project-scoped ID, or a short stable slug like \"daily-hello\"."
+        },
+        "name": {
+            "type": "string",
+            "description": "Short human-readable schedule name shown to the user in schedule lists. Use a concise name such as \"daily hello\" or \"deploy app today\". Use an empty string for operations that do not need a name."
+        },
+        "description": {
+            "type": "string",
+            "description": "Optional human-readable description shown to the user in schedule lists. Use an empty string when unnecessary."
+        },
+        "task": {
+            "type": "string",
+            "description": "The exact instruction OpenCTO should execute when the schedule fires. Required for create and update. Do not include the scheduling phrase here; include only the future task, such as \"deploy this app\" or \"send me hello in Discord\"."
+        },
+        "one_shot_at": {
+            "type": "string",
+            "description": "RFC3339 timestamp for one-shot schedules, e.g. \"2026-05-07T09:00:00+04:00\". Use an empty string for recurring schedules and non-create/update operations."
+        },
+        "cron": {
+            "type": "string",
+            "description": "Temporal cron expression for recurring schedules, e.g. \"0 9 * * *\" or \"@every 24h\". Interpret natural language before calling this tool. Do not include TZ/CRON_TZ prefixes; OpenCTO uses the host IANA timezone. Use an empty string for one-shot schedules and non-create/update operations."
+        },
+        "paused": {
+            "type": "boolean",
+            "description": "For create/update, whether the schedule should start paused. Use false unless the user asks to create it paused."
+        },
+        "note": {
+            "type": "string",
+            "description": "Optional Temporal operation note. For create/update, prefer description for user-facing text. Use an empty string when unnecessary."
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Maximum schedules to list. Use 0 for the default. Ignored for operations other than list."
+        },
+        "include_completed": {
+            "type": "boolean",
+            "description": "For list only. Set false by default so completed/exhausted schedules are hidden. Set true only when the user explicitly asks to include completed, exhausted, past, no-upcoming-run, or all schedules."
+        }
+    }
+}

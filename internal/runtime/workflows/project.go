@@ -9,6 +9,7 @@ import (
 
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/runtime/activities"
+	"github.com/opencto/opencto/internal/runtime/scheduled"
 )
 
 func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
@@ -173,6 +174,13 @@ func handleProjectEventSignal(ctx workflow.Context, state *ProjectWorkflowState,
 	if eventID != "" {
 		state.SeenEventIDs[eventID] = true
 	}
+	if scheduled.IsScheduledTaskEvent(event) {
+		if scheduledTaskOverlaps(state, active, event) {
+			return
+		}
+		state.Queue = append(state.Queue, event)
+		return
+	}
 	if len(active) == 0 {
 		state.Queue = append(state.Queue, event)
 		return
@@ -191,6 +199,24 @@ func handleProjectEventSignal(ctx workflow.Context, state *ProjectWorkflowState,
 	default:
 		_ = workflow.SignalExternalWorkflow(ctx, targetWorkflowID, "", SignalTaskAdditionalContext, AdditionalContextSignal{Event: event}).Get(ctx, nil)
 	}
+}
+
+func scheduledTaskOverlaps(state *ProjectWorkflowState, active map[string]activeTask, event domain.Event) bool {
+	scheduleID := scheduled.ScheduleID(event)
+	if scheduleID == "" {
+		return false
+	}
+	for _, queued := range state.Queue {
+		if scheduled.ScheduleID(queued) == scheduleID {
+			return true
+		}
+	}
+	for _, task := range active {
+		if scheduled.ScheduleID(task.Event) == scheduleID {
+			return true
+		}
+	}
+	return false
 }
 
 func taskWorkflowID(projectID, eventID string) string {

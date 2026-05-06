@@ -71,6 +71,9 @@ Use only artifact paths produced or verified during this task. Do not attach sec
 OS: {{ .OS }}
 Architecture: {{ .Arch }}
 Exec: {{ .Exec }}
+Current local time: {{ .CurrentLocalTime }}
+Current UTC time: {{ .CurrentUTCTime }}
+Host timezone: {{- if .HostTimeZone }} {{ .HostTimeZone }}{{- else }} unresolved{{- if .HostTimeZoneError }} ({{ .HostTimeZoneError }}){{- end }}{{- end }}
 
 `$OPENCTO_ROOT`: {{ .OpenCTORoot }}
 - Meaning: READ ONLY. OpenCTO repository root, where the Go code, skills, references, and helper scripts live.
