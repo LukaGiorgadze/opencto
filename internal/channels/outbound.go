@@ -34,15 +34,10 @@ func ResolveReport(report domain.ReportMessage, options ResolveOptions) (domain.
 		return domain.ReportMessage{}, fmt.Errorf("report has %d attachment(s), limit is %d", len(report.Attachments), options.Limits.MaxFiles)
 	}
 
-	root, err := resolvedRoot(options.WorkspaceRoot)
-	if err != nil {
-		return domain.ReportMessage{}, err
-	}
-
 	total := int64(0)
 	attachments := make([]domain.ReportAttachment, 0, len(report.Attachments))
 	for _, attachment := range report.Attachments {
-		resolved, err := resolveAttachment(root, attachment, options.Limits)
+		resolved, err := resolveAttachment(options.WorkspaceRoot, attachment, options.Limits)
 		if err != nil {
 			return domain.ReportMessage{}, err
 		}
@@ -59,7 +54,7 @@ func ResolveReport(report domain.ReportMessage, options ResolveOptions) (domain.
 func resolvedRoot(root string) (string, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
-		return "", fmt.Errorf("workspace root is required for attachments")
+		return "", fmt.Errorf("workspace root is required for relative attachments")
 	}
 	abs, err := filepath.Abs(filepath.Clean(root))
 	if err != nil {
@@ -78,14 +73,16 @@ func resolveAttachment(root string, attachment domain.ReportAttachment, limits A
 		return domain.ReportAttachment{}, fmt.Errorf("attachment path is required")
 	}
 	if !filepath.IsAbs(path) {
+		rootPath, err := resolvedRoot(root)
+		if err != nil {
+			return domain.ReportAttachment{}, err
+		}
+		root = rootPath
 		path = filepath.Join(root, path)
 	}
 	resolved, err := filepath.EvalSymlinks(filepath.Clean(path))
 	if err != nil {
 		return domain.ReportAttachment{}, fmt.Errorf("resolve attachment %q: %w", attachment.Path, err)
-	}
-	if err := requirePathUnderRoot(root, resolved); err != nil {
-		return domain.ReportAttachment{}, err
 	}
 	info, err := os.Stat(resolved)
 	if err != nil {
@@ -110,20 +107,6 @@ func resolveAttachment(root string, attachment domain.ReportAttachment, limits A
 	attachment.ContentType = contentType
 	attachment.SizeBytes = info.Size()
 	return attachment, nil
-}
-
-func requirePathUnderRoot(root, path string) error {
-	rel, err := filepath.Rel(root, path)
-	if err != nil {
-		return err
-	}
-	if rel == "." || rel == "" {
-		return nil
-	}
-	if strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || filepath.IsAbs(rel) {
-		return fmt.Errorf("attachment %q is outside workspace root %q", path, root)
-	}
-	return nil
 }
 
 func detectContentType(path string) (string, error) {

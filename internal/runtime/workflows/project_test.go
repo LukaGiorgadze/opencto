@@ -687,6 +687,68 @@ func TestProjectWorkflowReportsAfterTaskWorkflowCompletes(t *testing.T) {
 	env.AssertExpectations(t)
 }
 
+func TestProjectWorkflowContinuesAfterReportResponseFails(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ProjectWorkflow)
+	var seen []string
+	env.RegisterWorkflowWithOptions(func(_ workflow.Context, input workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		seen = append(seen, input.Event.ID)
+		return workflows.TaskWorkflowResult{
+			Completed:       true,
+			Status:          activities.NextActionStatusCompleted,
+			Event:           input.Event,
+			ResponseMessage: "done",
+			Report:          true,
+		}, nil
+	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+	env.RegisterActivityWithOptions((&activities.Activities{}).ReportResponse, activity.RegisterOptions{Name: "Activities.ReportResponse"})
+
+	env.OnActivity("Activities.ReportResponse", mock.Anything, mock.MatchedBy(func(request activities.ReportResponseRequest) bool {
+		return request.Event.ID == "event-1"
+	})).Return(errors.New("discord upload failed")).Once()
+	reportedSecond := false
+	env.OnActivity("Activities.ReportResponse", mock.Anything, mock.MatchedBy(func(request activities.ReportResponseRequest) bool {
+		reportedSecond = request.Event.ID == "event-2"
+		return reportedSecond
+	})).Run(func(mock.Arguments) {
+		env.CancelWorkflow()
+	}).Return(nil).Once()
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "project-1",
+			ChannelID:   "channel-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			Body:        "do work",
+		}})
+	}, 0)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:          "event-2",
+			ProjectID:   "project-1",
+			ChannelID:   "channel-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			Body:        "next work",
+		}})
+	}, time.Millisecond)
+
+	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	if strings.Join(seen, ",") != "event-1,event-2" {
+		t.Fatalf("expected workflow to continue with second event, got %#v", seen)
+	}
+	if !reportedSecond {
+		t.Fatalf("expected second event to be reported")
+	}
+	env.AssertExpectations(t)
+}
+
 func TestProjectWorkflowReportsAfterTaskWorkflowFails(t *testing.T) {
 	t.Parallel()
 
