@@ -1,0 +1,56 @@
+{
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "required": ["memory_id", "content", "kind", "tags_mode", "tags", "confidence_mode", "confidence", "pinned_mode", "pinned", "reason"],
+    "properties": {
+        "memory_id": {
+            "type": "string",
+            "description": "Exact memory id to update. Search memory first if unknown."
+        },
+        "content": {
+            "type": "string",
+            "description": "Replacement memory content. Use an empty string to keep existing content."
+        },
+        "kind": {
+            "type": "string",
+            "description": "Replacement short category. Use an empty string to keep existing kind."
+        },
+        "tags_mode": {
+            "type": "string",
+            "enum": ["keep", "replace"],
+            "description": "Use keep to preserve existing tags. Use replace to replace tags with the tags array."
+        },
+        "tags": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            },
+            "description": "Replacement tags when tags_mode is replace. Use an empty array to clear tags."
+        },
+        "confidence_mode": {
+            "type": "string",
+            "enum": ["keep", "set"],
+            "description": "Use keep to preserve confidence. Use set to apply the confidence value."
+        },
+        "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Replacement confidence when confidence_mode is set."
+        },
+        "pinned_mode": {
+            "type": "string",
+            "enum": ["keep", "set"],
+            "description": "Use keep to preserve pinned. Use set to apply the pinned value."
+        },
+        "pinned": {
+            "type": "boolean",
+            "description": "Replacement pinned value when pinned_mode is set."
+        },
+        "reason": {
+            "type": "string",
+            "description": "Why this memory is being updated."
+        }
+    },
+    "additionalProperties": false
+}

@@ -86,6 +86,7 @@ const (
 	ToolTypeMemoryForget   ToolType = "memory_forget"
 	ToolTypeMemoryRemember ToolType = "memory_remember"
 	ToolTypeMemorySearch   ToolType = "memory_search"
+	ToolTypeMemoryUpdate   ToolType = "memory_update"
 	ToolTypeRead           ToolType = "read"
 	ToolTypeSchedule       ToolType = "schedule"
 	ToolTypeSkill          ToolType = "skill"
@@ -257,8 +258,25 @@ type MemorySearchRequest struct {
 	ProjectID      string        `json:"project_id,omitempty"`
 	Query          string        `json:"query,omitempty"`
 	Scopes         []MemoryScope `json:"scopes,omitempty"`
+	Tags           []string      `json:"tags,omitempty"`
 	Limit          int           `json:"limit,omitempty"`
 	FallbackRecent bool          `json:"fallback_recent,omitempty"`
+}
+
+type MemoryUpdateRequest struct {
+	ProjectID   string   `json:"project_id,omitempty"`
+	MemoryID    string   `json:"memory_id"`
+	Content     string   `json:"content,omitempty"`
+	Kind        string   `json:"kind,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	ReplaceTags bool     `json:"replace_tags,omitempty"`
+	Confidence  *float64 `json:"confidence,omitempty"`
+	Pinned      *bool    `json:"pinned,omitempty"`
+}
+
+type MemoryUpdateResult struct {
+	Memory  Memory `json:"memory"`
+	Updated bool   `json:"updated"`
 }
 
 type MemoryForgetRequest struct {

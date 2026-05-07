@@ -78,6 +78,12 @@ var definitions = []Definition{
 		Schema:      memorytool.SearchToolSchema(),
 	},
 	{
+		Name:        memorytool.UpdateToolName,
+		Type:        domain.ToolTypeMemoryUpdate,
+		Description: memorytool.UpdateToolDescription,
+		Schema:      memorytool.UpdateToolSchema(),
+	},
+	{
 		Name:        memorytool.ForgetToolName,
 		Type:        domain.ToolTypeMemoryForget,
 		Description: memorytool.ForgetToolDescription,

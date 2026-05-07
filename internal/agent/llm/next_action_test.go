@@ -575,7 +575,7 @@ func TestNextActionReturnsSingleToolChoice(t *testing.T) {
 	if output.ToolChoice.RunMode != domain.ToolRunModeWaitForExit || output.ToolChoice.Idempotency != domain.ToolIdempotencyReadOnly || output.ToolChoice.ProcessScope != domain.ProcessScopeStopOnFinish {
 		t.Fatalf("tool execution metadata was not preserved: %#v", output.ToolChoice)
 	}
-	if len(model.options.Tools) != 11 {
+	if len(model.options.Tools) != len(toolregistry.Definitions()) {
 		t.Fatalf("expected all tool schemas, got %#v", model.options.Tools)
 	}
 }

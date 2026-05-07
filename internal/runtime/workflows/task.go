@@ -307,7 +307,7 @@ func executeToolStep(ctx workflow.Context, toolCtx workflow.Context, persistence
 
 func isMemoryTool(toolType domain.ToolType) bool {
 	switch toolType {
-	case domain.ToolTypeMemoryRemember, domain.ToolTypeMemorySearch, domain.ToolTypeMemoryForget:
+	case domain.ToolTypeMemoryRemember, domain.ToolTypeMemorySearch, domain.ToolTypeMemoryUpdate, domain.ToolTypeMemoryForget:
 		return true
 	default:
 		return false

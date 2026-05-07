@@ -23,7 +23,7 @@
             "items": {
                 "type": "string"
             },
-            "description": "Optional tags to include in the search query."
+            "description": "Optional exact tags to filter results by. A memory must contain every listed tag."
         }
     },
     "additionalProperties": false

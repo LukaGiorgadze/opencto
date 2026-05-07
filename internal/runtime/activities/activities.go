@@ -2024,7 +2024,7 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 		}
 		payload := mustJSON(memorytool.RememberResult{Memory: remembered})
 		return memoryToolRunResult{
-			Observation: fmt.Sprintf("Remembered memory.\nmemory_id: %s\nscope: %s\ncontent: %s", remembered.ID, remembered.Scope, remembered.Content),
+			Observation: memoryDetailObservation("Remembered memory.", remembered),
 			Payload:     payload,
 			Metadata: map[string]string{
 				"memory_id": remembered.ID,
@@ -2036,14 +2036,12 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 		if err := decodeChoiceInput(choice, &req); err != nil {
 			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
 		}
-		query := strings.TrimSpace(req.Query)
-		if len(req.Tags) > 0 {
-			query = strings.TrimSpace(query + " " + strings.Join(req.Tags, " "))
-		}
+		tags := cleanMemoryTags(req.Tags)
 		memories, err := a.Store.SearchMemories(ctx, domain.MemorySearchRequest{
 			ProjectID: execution.ProjectID,
-			Query:     query,
+			Query:     strings.TrimSpace(req.Query),
 			Scopes:    memorySearchScopes(req.Scope),
+			Tags:      tags,
 			Limit:     req.Limit,
 		})
 		if err != nil {
@@ -2055,7 +2053,89 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 			Payload:     payload,
 			Metadata: map[string]string{
 				"memory_count": strconv.Itoa(len(memories)),
+				"tags":         strings.Join(tags, ", "),
 			},
+		}, nil
+	case domain.ToolTypeMemoryUpdate:
+		var req memorytool.UpdateRequest
+		if err := decodeChoiceInput(choice, &req); err != nil {
+			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+		}
+		memoryID := strings.TrimSpace(req.MemoryID)
+		if memoryID == "" {
+			err := fmt.Errorf("memory_id is required")
+			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+		}
+		update := domain.MemoryUpdateRequest{
+			ProjectID: execution.ProjectID,
+			MemoryID:  memoryID,
+		}
+		hasUpdate := false
+		if content := strings.TrimSpace(req.Content); content != "" {
+			update.Content = content
+			hasUpdate = true
+		}
+		if kind := strings.TrimSpace(req.Kind); kind != "" {
+			update.Kind = kind
+			hasUpdate = true
+		}
+		switch mode := strings.ToLower(strings.TrimSpace(req.TagsMode)); mode {
+		case "", "keep":
+		case "replace":
+			update.ReplaceTags = true
+			update.Tags = cleanMemoryTags(req.Tags)
+			hasUpdate = true
+		default:
+			err := fmt.Errorf("unsupported tags_mode %q", req.TagsMode)
+			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+		}
+		switch mode := strings.ToLower(strings.TrimSpace(req.ConfidenceMode)); mode {
+		case "", "keep":
+		case "set":
+			if req.Confidence < 0 || req.Confidence > 1 {
+				err := fmt.Errorf("memory confidence must be between 0 and 1")
+				return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+			}
+			confidence := req.Confidence
+			update.Confidence = &confidence
+			hasUpdate = true
+		default:
+			err := fmt.Errorf("unsupported confidence_mode %q", req.ConfidenceMode)
+			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+		}
+		switch mode := strings.ToLower(strings.TrimSpace(req.PinnedMode)); mode {
+		case "", "keep":
+		case "set":
+			pinned := req.Pinned
+			update.Pinned = &pinned
+			hasUpdate = true
+		default:
+			err := fmt.Errorf("unsupported pinned_mode %q", req.PinnedMode)
+			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+		}
+		if !hasUpdate {
+			err := fmt.Errorf("at least one memory update field is required")
+			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+		}
+		result, err := a.Store.UpdateMemory(ctx, update)
+		if err != nil {
+			return memoryToolRunResult{}, err
+		}
+		payload := mustJSON(memorytool.UpdateResult{Memory: result.Memory, Updated: result.Updated})
+		observation := "Memory not found.\nmemory_id: " + memoryID
+		metadata := map[string]string{
+			"memory_id": memoryID,
+			"updated":   strconv.FormatBool(result.Updated),
+		}
+		if result.Updated {
+			observation = memoryDetailObservation("Updated memory.", result.Memory)
+			metadata["scope"] = string(result.Memory.Scope)
+			metadata["tags"] = strings.Join(result.Memory.Tags, ", ")
+		}
+		return memoryToolRunResult{
+			Observation: observation,
+			Payload:     payload,
+			Metadata:    metadata,
 		}, nil
 	case domain.ToolTypeMemoryForget:
 		var req memorytool.ForgetRequest
@@ -2932,28 +3012,48 @@ func memorySearchObservation(memories []domain.Memory) string {
 		return "No memories found."
 	}
 	var builder strings.Builder
-	_, _ = fmt.Fprintf(&builder, "memories: %d", len(memories))
-	for _, memory := range memories {
-		_, _ = fmt.Fprintf(&builder, "\n\nmemory_id: %s\nscope: %s\nkind: %s\ncontent: %s",
-			memory.ID,
-			memory.Scope,
-			firstNonEmpty(memory.Kind, "fact"),
-			strings.TrimSpace(memory.Content),
-		)
-		if len(memory.Tags) > 0 {
-			builder.WriteString("\ntags: ")
-			builder.WriteString(strings.Join(memory.Tags, ", "))
-		}
+	_, _ = fmt.Fprintf(&builder, "Memory search results.\ncount: %d", len(memories))
+	for i, memory := range memories {
+		_, _ = fmt.Fprintf(&builder, "\n\n%d. ", i+1)
+		writeMemoryObservationFields(&builder, memory)
 	}
 	return builder.String()
+}
+
+func memoryDetailObservation(title string, memory domain.Memory) string {
+	var builder strings.Builder
+	builder.WriteString(title)
+	builder.WriteString("\n")
+	writeMemoryObservationFields(&builder, memory)
+	return builder.String()
+}
+
+func writeMemoryObservationFields(builder *strings.Builder, memory domain.Memory) {
+	_, _ = fmt.Fprintf(builder, "memory_id: %s\nscope: %s\nkind: %s\nconfidence: %.2f\npinned: %t",
+		strings.TrimSpace(memory.ID),
+		memory.Scope,
+		firstNonEmpty(memory.Kind, "fact"),
+		memory.Confidence,
+		memory.Pinned,
+	)
+	if !memory.UpdatedAt.IsZero() {
+		builder.WriteString("\nupdated_at: ")
+		builder.WriteString(memory.UpdatedAt.UTC().Format(time.RFC3339))
+	}
+	if len(memory.Tags) > 0 {
+		builder.WriteString("\ntags: ")
+		builder.WriteString(strings.Join(memory.Tags, ", "))
+	}
+	builder.WriteString("\ncontent:\n")
+	builder.WriteString(strings.TrimSpace(memory.Content))
 }
 
 func memoryForgetObservation(memoryIDs, deletedIDs, notFoundIDs, tags []string, scope string) string {
 	if len(memoryIDs) == 1 && len(tags) == 0 {
 		if len(deletedIDs) > 0 {
-			return "Forgot memory.\nmemory_ids: " + memoryIDs[0]
+			return "Forgot memory.\ndeleted_count: 1\nmemory_id: " + memoryIDs[0]
 		}
-		return "Memory not found.\nmemory_ids: " + memoryIDs[0]
+		return "Memory not found.\nmemory_id: " + memoryIDs[0]
 	}
 
 	var builder strings.Builder

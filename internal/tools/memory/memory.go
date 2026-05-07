@@ -33,6 +33,24 @@ type SearchResult struct {
 	Memories []domain.Memory `json:"memories"`
 }
 
+type UpdateRequest struct {
+	MemoryID       string   `json:"memory_id"`
+	Content        string   `json:"content,omitempty"`
+	Kind           string   `json:"kind,omitempty"`
+	TagsMode       string   `json:"tags_mode,omitempty"`
+	Tags           []string `json:"tags,omitempty"`
+	ConfidenceMode string   `json:"confidence_mode,omitempty"`
+	Confidence     float64  `json:"confidence,omitempty"`
+	PinnedMode     string   `json:"pinned_mode,omitempty"`
+	Pinned         bool     `json:"pinned,omitempty"`
+	Reason         string   `json:"reason,omitempty"`
+}
+
+type UpdateResult struct {
+	Memory  domain.Memory `json:"memory"`
+	Updated bool          `json:"updated"`
+}
+
 type ForgetRequest struct {
 	MemoryIDs []string `json:"memory_ids,omitempty"`
 	Tags      []string `json:"tags,omitempty"`

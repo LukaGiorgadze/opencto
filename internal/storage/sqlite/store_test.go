@@ -306,6 +306,94 @@ func TestMemoryRememberSearchAndForget(t *testing.T) {
 	}
 }
 
+func TestUpdateMemoryReindexesAndPreservesMemoryID(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := time.Now().UTC()
+	if _, err := store.RememberMemory(ctx, domain.Memory{
+		ID:         "memory-1",
+		ProjectID:  "default",
+		Scope:      domain.MemoryScopeProject,
+		Kind:       "fact",
+		Content:    "Use BoltDB for local OpenCTO storage.",
+		Tags:       []string{"boltdb", "storage"},
+		Confidence: 0.4,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatalf("remember memory: %v", err)
+	}
+
+	confidence := 0.9
+	pinned := true
+	result, err := store.UpdateMemory(ctx, domain.MemoryUpdateRequest{
+		ProjectID:   "default",
+		MemoryID:    "memory-1",
+		Content:     "Use SQLite for durable local OpenCTO storage.",
+		Kind:        "preference",
+		ReplaceTags: true,
+		Tags:        []string{"sqlite", "storage"},
+		Confidence:  &confidence,
+		Pinned:      &pinned,
+	})
+	if err != nil {
+		t.Fatalf("update memory: %v", err)
+	}
+	if !result.Updated || result.Memory.ID != "memory-1" {
+		t.Fatalf("unexpected update result: %#v", result)
+	}
+	if result.Memory.Content != "Use SQLite for durable local OpenCTO storage." || result.Memory.Kind != "preference" {
+		t.Fatalf("unexpected updated memory fields: %#v", result.Memory)
+	}
+	if strings.Join(result.Memory.Tags, ",") != "sqlite,storage" || result.Memory.Confidence != 0.9 || !result.Memory.Pinned {
+		t.Fatalf("unexpected updated memory metadata: %#v", result.Memory)
+	}
+
+	found, err := store.SearchMemories(ctx, domain.MemorySearchRequest{
+		ProjectID: "default",
+		Query:     "sqlite",
+		Tags:      []string{"storage"},
+		Limit:     5,
+	})
+	if err != nil {
+		t.Fatalf("search updated memory: %v", err)
+	}
+	if len(found) != 1 || found[0].ID != "memory-1" {
+		t.Fatalf("expected updated memory to be indexed, got %#v", found)
+	}
+	found, err = store.SearchMemories(ctx, domain.MemorySearchRequest{
+		ProjectID: "default",
+		Query:     "boltdb",
+		Limit:     5,
+	})
+	if err != nil {
+		t.Fatalf("search old memory content: %v", err)
+	}
+	if len(found) != 0 {
+		t.Fatalf("expected old FTS content to be removed, got %#v", found)
+	}
+}
+
+func TestUpdateMemoryReturnsNotUpdatedForUnknownMemory(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	result, err := store.UpdateMemory(ctx, domain.MemoryUpdateRequest{
+		ProjectID: "default",
+		MemoryID:  "missing-memory",
+		Content:   "new content",
+	})
+	if err != nil {
+		t.Fatalf("update missing memory: %v", err)
+	}
+	if result.Updated {
+		t.Fatalf("expected missing memory update to be reported as not updated: %#v", result)
+	}
+}
+
 func TestForgetMemoriesByIDsTagsOrScope(t *testing.T) {
 	t.Parallel()
 

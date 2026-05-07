@@ -23,6 +23,8 @@ import (
 type stubProjectStore struct {
 	pending              []domain.WorkItem
 	memories             []domain.Memory
+	updateResult         domain.MemoryUpdateResult
+	updateRequests       *[]domain.MemoryUpdateRequest
 	forgetResult         domain.MemoryForgetResult
 	forgetRequests       *[]domain.MemoryForgetRequest
 	conversationsByScope map[storage.ConversationScope][]domain.ConversationMessage
@@ -129,6 +131,13 @@ func (s stubProjectStore) RememberMemory(context.Context, domain.Memory) (domain
 
 func (s stubProjectStore) SearchMemories(context.Context, domain.MemorySearchRequest) ([]domain.Memory, error) {
 	return append([]domain.Memory(nil), s.memories...), nil
+}
+
+func (s stubProjectStore) UpdateMemory(_ context.Context, request domain.MemoryUpdateRequest) (domain.MemoryUpdateResult, error) {
+	if s.updateRequests != nil {
+		*s.updateRequests = append(*s.updateRequests, request)
+	}
+	return s.updateResult, nil
 }
 
 func (s stubProjectStore) ForgetMemory(context.Context, string, string) (bool, error) {
@@ -417,6 +426,77 @@ func TestExecuteMemoryToolForgetsByCombinedFilters(t *testing.T) {
 	}
 	if result.Metadata["deleted_count"] != "1" {
 		t.Fatalf("unexpected forget result: %#v", result)
+	}
+}
+
+func TestExecuteMemoryToolUpdatesMemory(t *testing.T) {
+	t.Parallel()
+
+	var updateRequests []domain.MemoryUpdateRequest
+	activities := Activities{
+		Store: stubProjectStore{
+			updateResult: domain.MemoryUpdateResult{
+				Updated: true,
+				Memory: domain.Memory{
+					ID:         "memory-1",
+					ProjectID:  "default",
+					Scope:      domain.MemoryScopeProject,
+					Kind:       "preference",
+					Content:    "Use SQLite for durable local state.",
+					Tags:       []string{"storage", "sqlite"},
+					Confidence: 0.8,
+					Pinned:     true,
+					UpdatedAt:  time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC),
+				},
+			},
+			updateRequests: &updateRequests,
+		},
+		MemoryEnabled: true,
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "default",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemoryUpdate,
+			Intent:     "update stale memory",
+			Input:      []byte(`{"memory_id":"memory-1","content":"Use SQLite for durable local state.","kind":"preference","tags_mode":"replace","tags":["SQLite","storage"],"confidence_mode":"set","confidence":0.8,"pinned_mode":"set","pinned":true,"reason":"newer decision"}`),
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute memory update: %v", err)
+	}
+	if len(updateRequests) != 1 {
+		t.Fatalf("expected one update request, got %d", len(updateRequests))
+	}
+	request := updateRequests[0]
+	if request.ProjectID != "default" || request.MemoryID != "memory-1" {
+		t.Fatalf("unexpected update request target: %#v", request)
+	}
+	if request.Content != "Use SQLite for durable local state." || request.Kind != "preference" {
+		t.Fatalf("unexpected content update: %#v", request)
+	}
+	if !request.ReplaceTags || strings.Join(request.Tags, ",") != "sqlite,storage" {
+		t.Fatalf("unexpected tag update: %#v", request)
+	}
+	if request.Confidence == nil || *request.Confidence != 0.8 {
+		t.Fatalf("unexpected confidence update: %#v", request.Confidence)
+	}
+	if request.Pinned == nil || !*request.Pinned {
+		t.Fatalf("unexpected pinned update: %#v", request.Pinned)
+	}
+	if result.Metadata["updated"] != "true" || !strings.Contains(result.Observation, "Updated memory.") {
+		t.Fatalf("unexpected update result: %#v", result)
+	}
+	if !strings.Contains(result.Observation, "memory_id: memory-1") || !strings.Contains(result.Observation, "confidence: 0.80") {
+		t.Fatalf("expected formatted memory observation, got %q", result.Observation)
 	}
 }
 

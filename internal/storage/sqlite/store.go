@@ -805,11 +805,12 @@ func (s *Store) SearchMemories(ctx context.Context, request domain.MemorySearchR
 		limit = 20
 	}
 	scopes := normalizeMemoryScopes(request.Scopes)
+	tags := cleanTags(request.Tags)
 	query := ftsQuery(request.Query)
 	var memories []domain.Memory
 	var err error
 	if query != "" {
-		memories, err = s.searchMemoriesFTS(ctx, strings.TrimSpace(request.ProjectID), scopes, query, limit)
+		memories, err = s.searchMemoriesFTS(ctx, strings.TrimSpace(request.ProjectID), scopes, query, tags, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -820,18 +821,24 @@ func (s *Store) SearchMemories(ctx context.Context, request domain.MemorySearchR
 	if query != "" && !request.FallbackRecent {
 		return nil, nil
 	}
-	return s.recentMemories(ctx, strings.TrimSpace(request.ProjectID), scopes, limit)
+	memories, err = s.recentMemories(ctx, strings.TrimSpace(request.ProjectID), scopes, tags, limit)
+	if err != nil {
+		return nil, err
+	}
+	return memories, nil
 }
 
-func (s *Store) searchMemoriesFTS(ctx context.Context, projectID string, scopes []domain.MemoryScope, query string, limit int) ([]domain.Memory, error) {
+func (s *Store) searchMemoriesFTS(ctx context.Context, projectID string, scopes []domain.MemoryScope, query string, tags []string, limit int) ([]domain.Memory, error) {
 	scopeSQL, args := memoryVisibilitySQL(projectID, scopes)
+	tagSQL, tagArgs := memoryTagsSQL(tags)
 	args = append([]any{query}, args...)
+	args = append(args, tagArgs...)
 	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, `
 SELECT m.id, m.project_id, m.scope, m.kind, m.content, m.tags, m.source, m.source_id, m.actor, m.confidence, m.pinned, m.metadata, m.created_at, m.updated_at
 FROM memory_fts f
 JOIN memories m ON m.id = f.memory_id
-WHERE memory_fts MATCH ? AND `+scopeSQL+`
+WHERE memory_fts MATCH ? AND `+scopeSQL+tagSQL+`
 ORDER BY rank, m.pinned DESC, m.updated_at DESC
 LIMIT ?
 `, args...)
@@ -842,13 +849,15 @@ LIMIT ?
 	return scanMemories(rows)
 }
 
-func (s *Store) recentMemories(ctx context.Context, projectID string, scopes []domain.MemoryScope, limit int) ([]domain.Memory, error) {
+func (s *Store) recentMemories(ctx context.Context, projectID string, scopes []domain.MemoryScope, tags []string, limit int) ([]domain.Memory, error) {
 	scopeSQL, args := memoryVisibilitySQL(projectID, scopes)
+	tagSQL, tagArgs := memoryTagsSQL(tags)
+	args = append(args, tagArgs...)
 	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, project_id, scope, kind, content, tags, source, source_id, actor, confidence, pinned, metadata, created_at, updated_at
 FROM memories m
-WHERE `+scopeSQL+`
+WHERE `+scopeSQL+tagSQL+`
 ORDER BY pinned DESC, updated_at DESC
 LIMIT ?
 `, args...)
@@ -901,6 +910,106 @@ func scanMemories(rows *sql.Rows) ([]domain.Memory, error) {
 		memories = append(memories, memory)
 	}
 	return memories, rows.Err()
+}
+
+func (s *Store) UpdateMemory(ctx context.Context, request domain.MemoryUpdateRequest) (domain.MemoryUpdateResult, error) {
+	memoryID := strings.TrimSpace(request.MemoryID)
+	if memoryID == "" {
+		return domain.MemoryUpdateResult{}, fmt.Errorf("memory id is required")
+	}
+	if request.Confidence != nil && (*request.Confidence < 0 || *request.Confidence > 1) {
+		return domain.MemoryUpdateResult{}, fmt.Errorf("memory confidence must be between 0 and 1")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.MemoryUpdateResult{}, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	current, found, err := getVisibleMemory(ctx, tx, strings.TrimSpace(request.ProjectID), memoryID)
+	if err != nil {
+		return domain.MemoryUpdateResult{}, err
+	}
+	if !found {
+		return domain.MemoryUpdateResult{}, nil
+	}
+
+	updated := current
+	if content := strings.TrimSpace(request.Content); content != "" {
+		updated.Content = content
+	}
+	if kind := strings.TrimSpace(request.Kind); kind != "" {
+		updated.Kind = kind
+	}
+	if request.ReplaceTags {
+		updated.Tags = cleanTags(request.Tags)
+	}
+	if request.Confidence != nil {
+		updated.Confidence = *request.Confidence
+	}
+	if request.Pinned != nil {
+		updated.Pinned = *request.Pinned
+	}
+	if updated.Kind == "" {
+		updated.Kind = "fact"
+	}
+	if strings.TrimSpace(updated.Content) == "" {
+		return domain.MemoryUpdateResult{}, fmt.Errorf("memory content is required")
+	}
+	updated.UpdatedAt = time.Now().UTC()
+
+	tags, err := encodeJSON(updated.Tags, "[]")
+	if err != nil {
+		return domain.MemoryUpdateResult{}, err
+	}
+	metadata, err := encodeJSON(updated.Metadata, "{}")
+	if err != nil {
+		return domain.MemoryUpdateResult{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+	UPDATE memories
+	SET kind = ?, content = ?, tags = json(?), confidence = ?, pinned = ?, metadata = json(?), updated_at = ?
+	WHERE id = ?
+	`, updated.Kind, updated.Content, tags, updated.Confidence, boolInt(updated.Pinned), metadata, formatTime(updated.UpdatedAt), updated.ID); err != nil {
+		return domain.MemoryUpdateResult{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_fts WHERE memory_id = ?`, updated.ID); err != nil {
+		return domain.MemoryUpdateResult{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+	INSERT INTO memory_fts(memory_id, project_id, scope, content, tags)
+	VALUES (?, ?, ?, ?, ?)
+	`, updated.ID, strings.TrimSpace(updated.ProjectID), string(updated.Scope), updated.Content, strings.Join(updated.Tags, " ")); err != nil {
+		return domain.MemoryUpdateResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.MemoryUpdateResult{}, err
+	}
+	return domain.MemoryUpdateResult{Memory: updated, Updated: true}, nil
+}
+
+func getVisibleMemory(ctx context.Context, tx *sql.Tx, projectID, memoryID string) (domain.Memory, bool, error) {
+	rows, err := tx.QueryContext(ctx, `
+	SELECT id, project_id, scope, kind, content, tags, source, source_id, actor, confidence, pinned, metadata, created_at, updated_at
+	FROM memories
+	WHERE id = ? AND (scope = 'global' OR project_id = ?)
+	LIMIT 1
+	`, strings.TrimSpace(memoryID), strings.TrimSpace(projectID))
+	if err != nil {
+		return domain.Memory{}, false, err
+	}
+	defer rows.Close()
+	memories, err := scanMemories(rows)
+	if err != nil {
+		return domain.Memory{}, false, err
+	}
+	if len(memories) == 0 {
+		return domain.Memory{}, false, nil
+	}
+	return memories[0], true, nil
 }
 
 func (s *Store) ForgetMemory(ctx context.Context, projectID, memoryID string) (bool, error) {
@@ -1127,6 +1236,19 @@ func cleanTags(tags []string) []string {
 	}
 	sort.Strings(cleaned)
 	return cleaned
+}
+
+func memoryTagsSQL(tags []string) (string, []any) {
+	if len(tags) == 0 {
+		return "", nil
+	}
+	clauses := make([]string, 0, len(tags))
+	args := make([]any, 0, len(tags))
+	for _, tag := range tags {
+		clauses = append(clauses, `EXISTS (SELECT 1 FROM json_each(m.tags) AS tag WHERE tag.value = ?)`)
+		args = append(args, tag)
+	}
+	return " AND " + strings.Join(clauses, " AND "), args
 }
 
 func cleanMemoryIDs(memoryIDs []string) []string {

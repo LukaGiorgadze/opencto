@@ -117,6 +117,12 @@ func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) 
 			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
 		}
 		return memoryToolChoiceFromInput(definition, call, raw, input, "search memory "+strings.TrimSpace(args.Query), domain.ToolIdempotencyReadOnly), nil
+	case domain.ToolTypeMemoryUpdate:
+		var args memorytool.UpdateRequest
+		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
+			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
+		}
+		return memoryToolChoiceFromInput(definition, call, raw, input, "update memory "+strings.TrimSpace(args.MemoryID), domain.ToolIdempotencyNonIdempotent), nil
 	case domain.ToolTypeMemoryForget:
 		var args memorytool.ForgetRequest
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
