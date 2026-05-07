@@ -77,7 +77,6 @@ type ToolType string
 
 const (
 	ToolTypeExec     ToolType = "exec"
-	ToolTypeBrowser  ToolType = "browser"
 	ToolTypeEdit     ToolType = "edit"
 	ToolTypeGlob     ToolType = "glob"
 	ToolTypeGrep     ToolType = "grep"

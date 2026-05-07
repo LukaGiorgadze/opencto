@@ -23,7 +23,6 @@ import (
 	"github.com/opencto/opencto/internal/runtime/scheduled"
 	skillcatalog "github.com/opencto/opencto/internal/skills"
 	toolregistry "github.com/opencto/opencto/internal/tools"
-	browsertool "github.com/opencto/opencto/internal/tools/browser"
 	edittool "github.com/opencto/opencto/internal/tools/edit"
 	exectool "github.com/opencto/opencto/internal/tools/exec"
 	globtool "github.com/opencto/opencto/internal/tools/glob"
@@ -59,7 +58,6 @@ type Activities struct {
 	Store         ProjectStore
 	Engine        agent.Engine
 	Exec          exectool.Executor
-	Browser       browsertool.Executor
 	Edit          edittool.Executor
 	Glob          globtool.Executor
 	Grep          greptool.Executor
@@ -1331,8 +1329,6 @@ func (a *Activities) runChosenTool(ctx context.Context, choice agent.ToolChoice,
 	switch choice.Type {
 	case domain.ToolTypeExec:
 		return a.runExecTool(ctx, choice, execution)
-	case domain.ToolTypeBrowser:
-		return a.runBrowserTool(ctx, choice, execution)
 	case domain.ToolTypeRead:
 		return a.runReadTool(ctx, choice)
 	case domain.ToolTypeEdit:
@@ -1350,76 +1346,6 @@ func (a *Activities) runChosenTool(ctx context.Context, choice agent.ToolChoice,
 	default:
 		return toolRunResult{ResultCode: "1"}, fmt.Errorf("unsupported tool type %q", choice.Type)
 	}
-}
-
-func (a *Activities) runBrowserTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
-	var req browsertool.Request
-	if err := decodeChoiceInput(choice, &req); err != nil {
-		return toolRunResult{ResultCode: "1"}, err
-	}
-	req.ProjectID = execution.ProjectID
-	req.WorkItemID = execution.WorkItemID
-	req.Intent = choice.Intent
-	req.WorkingDir = firstNonEmpty(choice.WorkingDir, a.WorkspaceRoot)
-	req.WorkspaceRoot = a.WorkspaceRoot
-	req.StateDir = a.runtimeStateDir()
-	req.Timeout = execution.Timeout
-	req.TailBytes = a.execTailBytes()
-	req.Environment = workspaceEnvironment(a.WorkspaceRoot, a.OpenCTORoot)
-
-	executor := a.Browser
-	if executor == nil {
-		executor = browsertool.NewSafeExecutor(a.activityLogger())
-	}
-	result, err := executor.Run(ctx, req)
-	code := strconv.Itoa(result.ExitCode)
-	if err != nil && result.ExitCode == 0 && result.StartedAt.IsZero() {
-		code = "1"
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		code = "timeout"
-	}
-	metadata := map[string]string{
-		"browser_exit_status": strconv.Itoa(result.ExitCode),
-		"browser_session":     result.Session,
-		"browser_command":     result.Command,
-		"browser_executable":  result.Executable,
-	}
-	if len(result.HoistedArgs) > 0 {
-		metadata["browser_hoisted_args"] = strings.Join(result.HoistedArgs, "\n")
-	}
-	if len(result.Args) > 0 {
-		metadata["browser_args"] = strings.Join(result.Args, "\n")
-	}
-	if len(result.ArtifactPaths) > 0 {
-		metadata["artifact_count"] = strconv.Itoa(len(result.ArtifactPaths))
-		metadata["artifact_paths"] = strings.Join(result.ArtifactPaths, "\n")
-	}
-	if result.StdoutLogPath != "" {
-		metadata["stdout_log_path"] = result.StdoutLogPath
-	}
-	if result.StderrLogPath != "" {
-		metadata["stderr_log_path"] = result.StderrLogPath
-	}
-	if result.StdoutTruncated {
-		metadata["stdout_truncated"] = "true"
-	}
-	if result.StderrTruncated {
-		metadata["stderr_truncated"] = "true"
-	}
-	if len(result.Actions) > 0 {
-		metadata["action_count"] = strconv.Itoa(len(result.Actions))
-	}
-	if result.Duration > 0 {
-		metadata["duration_ms"] = strconv.FormatInt(result.Duration.Milliseconds(), 10)
-	}
-	return toolRunResult{
-		Observation:      browserObservation(result, err),
-		ResultCode:       code,
-		Input:            browserInputWithSession(choice.Input, result.Session),
-		WorkingDirectory: result.WorkingDirectory,
-		Metadata:         metadata,
-	}, err
 }
 
 func (a *Activities) runExecTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
@@ -1531,51 +1457,6 @@ func execObservation(result exectool.Result, err error) string {
 		return observation
 	}
 	return observation + "\n\n" + strings.Join(notes, "\n")
-}
-
-func browserObservation(result browsertool.Result, err error) string {
-	observation := fullObservation(result.Stdout, result.Stderr, err)
-	var sections []string
-	if len(result.ArtifactPaths) > 0 {
-		sections = append(sections, "artifacts:\n"+strings.Join(result.ArtifactPaths, "\n"))
-	}
-	var notes []string
-	if result.Session != "" {
-		notes = append(notes, "browser_session: "+result.Session)
-	}
-	if result.StdoutTruncated || result.StderrTruncated {
-		notes = append(notes, "output_truncated: true")
-	}
-	if result.StdoutLogPath != "" {
-		notes = append(notes, "stdout_log_path: "+result.StdoutLogPath)
-	}
-	if result.StderrLogPath != "" {
-		notes = append(notes, "stderr_log_path: "+result.StderrLogPath)
-	}
-	if len(notes) > 0 {
-		sections = append(sections, strings.Join(notes, "\n"))
-	}
-	if len(sections) == 0 {
-		return observation
-	}
-	return observation + "\n\n" + strings.Join(sections, "\n\n")
-}
-
-func browserInputWithSession(raw json.RawMessage, session string) json.RawMessage {
-	session = strings.TrimSpace(session)
-	if session == "" {
-		return cloneRawMessage(raw)
-	}
-	var object map[string]any
-	if err := json.Unmarshal(raw, &object); err != nil || object == nil {
-		return cloneRawMessage(raw)
-	}
-	object["session"] = session
-	encoded, err := json.Marshal(object)
-	if err != nil {
-		return cloneRawMessage(raw)
-	}
-	return encoded
 }
 
 func (a *Activities) runReadTool(ctx context.Context, choice agent.ToolChoice) (toolRunResult, error) {

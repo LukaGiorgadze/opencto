@@ -9,10 +9,10 @@ Good fits include, but are not limited to:
 - animations, transitions, media, charts, maps, canvases, and other rendered UI state
 - browser-only behavior such as console errors, network requests, storage, cookies, accessibility state, and client-side routing
 
-Use the `Browser` tool for web proof. The proof must come from a real browser
-session, not from source inspection alone. Use exec commands for supporting
-work such as starting a dev server or checking logs, but not as a substitute for
-browser proof when the behavior is browser-visible.
+Use the `agent-browser` skill for web proof. The proof must come from a real
+browser session, not from source inspection alone. Use exec commands for
+supporting work such as starting a dev server or checking logs, but not as a
+substitute for browser proof when the behavior is browser-visible.
 
 Prefer a focused browser screenshot for visual proof. Use accessibility
 snapshots, console output, network output, traces, videos, or logs when those
@@ -22,7 +22,7 @@ state, or video when a single screenshot would be misleading.
 
 ## Browser Guidance
 
-- Open or reuse the relevant browser session with the `Browser` tool.
+- Open or reuse the relevant browser session with `agent-browser`.
 - Navigate to the page, route, story, preview, deployed URL, or local server that exercises the requested behavior.
 - Interact with the page until the exact feature, fix, bug path, animation, log, or state is visible or observable.
 - Wait for the page to finish rendering or for the target state to become stable before capturing proof.

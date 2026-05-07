@@ -10,18 +10,18 @@
     },
     {
       "role": "user",
-      "content": "use browser tool, open finance2049.com and tell me what you see"
+      "content": "use agent-browser skill, open finance2049.com and tell me what you see"
     },
     {
       "role": "assistant",
-      "content": "Open finance2049.com to inspect the page",
+      "content": "Open finance2049.com with agent-browser to inspect the page",
       "tool_calls": [
         {
           "id": "call_3lCYD9Gbb6mTF64AJ9M3o5Z2",
           "type": "function",
           "function": {
-            "name": "Browser",
-            "arguments": "{\"command\":\"open\",\"args\":[\"https://finance2049.com\"],\"session\":\"\",\"timeout_ms\":120000,\"idempotency\":\"read_only\",\"description\":\"Open finance2049.com to inspect the page\",\"destructive\":false}"
+            "name": "Exec",
+            "arguments": "{\"command\":\"agent-browser\",\"args\":[\"open\",\"https://finance2049.com\"],\"timeout_ms\":120000,\"run_mode\":\"wait_for_exit\",\"idempotency\":\"read_only\",\"process_scope\":\"stop_on_finish\",\"description\":\"Open finance2049.com with agent-browser to inspect the page\",\"destructive\":false}"
           }
         }
       ]
@@ -33,7 +33,7 @@
     },
     {
         "role": "assistant",
-        "content": "{\"status\":\"blocked\",\"final_answer\":\"Browser tool is blocked because the required agent-browser executable is not installed or not on PATH. What I can verify: the attempt to open https://finance2049.com failed locally with `exec: \\\"agent-browser\\\": executable file not found in $PATH`. If you want, I can inspect the site another way once the browser tool is available.\"}",
+        "content": "{\"status\":\"blocked\",\"final_answer\":\"agent-browser is blocked because the required executable is not installed or not on PATH. What I can verify: the attempt to open https://finance2049.com failed locally with `exec: \\\"agent-browser\\\": executable file not found in $PATH`.\"}",
         "tool_calls": null,
         "annotations": [],
         "function_call": null,

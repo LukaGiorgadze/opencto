@@ -6,7 +6,6 @@ import (
 	"github.com/tmc/langchaingo/llms"
 
 	"github.com/opencto/opencto/internal/domain"
-	browsertool "github.com/opencto/opencto/internal/tools/browser"
 	edittool "github.com/opencto/opencto/internal/tools/edit"
 	exectool "github.com/opencto/opencto/internal/tools/exec"
 	globtool "github.com/opencto/opencto/internal/tools/glob"
@@ -34,12 +33,6 @@ var definitions = []Definition{
 		Type:        domain.ToolTypeExec,
 		Description: exectool.ExecToolDescription,
 		Schema:      exectool.ExecToolSchema(),
-	},
-	{
-		Name:        browsertool.BrowserToolName,
-		Type:        domain.ToolTypeBrowser,
-		Description: browsertool.BrowserToolDescription,
-		Schema:      browsertool.BrowserToolSchema(),
 	},
 	{
 		Name:        readtool.ReadToolName,

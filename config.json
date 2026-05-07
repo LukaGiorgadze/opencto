@@ -7,7 +7,7 @@
   "llm": {
     "provider": "openai",
     "base_url": "http://127.0.0.1:4000",
-    "model_reasoning": "gpt-5.4-mini",
+    "model_reasoning": "gpt-5.4-nano",
     "model_fast": "gpt-5.4-nano",
     "transcription_model": "gpt-4o-mini-transcribe"
   },
