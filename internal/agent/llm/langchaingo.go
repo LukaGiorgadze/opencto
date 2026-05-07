@@ -1,15 +1,12 @@
 package llm
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/tmc/langchaingo/llms"
 	openai "github.com/tmc/langchaingo/llms/openai"
-
-	"github.com/opencto/opencto/internal/domain"
 )
 
 type OpenAIEngine struct {
@@ -46,13 +43,6 @@ func NewOpenAIEngine(apiKey, baseURL, reasoningModelID, fastModelID, transcripti
 		fastModelID:      fastModelID,
 		audioTranscriber: newOpenAICompatibleAudioTranscriber(apiKey, baseURL, transcriptionModel, &http.Client{Timeout: 2 * time.Minute}),
 	}, nil
-}
-
-func formatProjectState(active []domain.WorkItem) string {
-	if len(active) == 0 {
-		return "idle"
-	}
-	return fmt.Sprintf("%d active work item(s)", len(active))
 }
 
 func firstNonEmpty(values ...string) string {

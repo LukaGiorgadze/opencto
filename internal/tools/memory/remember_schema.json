@@ -5,7 +5,7 @@
     "properties": {
         "content": {
             "type": "string",
-            "description": "Durable memory content to store. Keep it concise and factual."
+            "description": "New durable memory content to store. Keep it concise and factual; do not store transient task progress, command output, logs, or one-off errors."
         },
         "scope": {
             "type": "string",
@@ -14,14 +14,14 @@
         },
         "kind": {
             "type": "string",
-            "description": "Short category such as preference, decision, fact, instruction, credential-note, or workflow."
+            "description": "Short category such as preference, decision, fact, instruction, identity, constraint, or workflow."
         },
         "tags": {
             "type": "array",
             "items": {
                 "type": "string"
             },
-            "description": "Optional short lowercase tags for filtering and review."
+            "description": "Optional short lowercase tags for filtering and review. Prefer preference, decision, project, identity, workflow, or constraint when applicable."
         },
         "confidence": {
             "type": "number",
@@ -31,7 +31,7 @@
         },
         "pinned": {
             "type": "boolean",
-            "description": "Whether this memory should be preferred in fallback context."
+            "description": "Whether this memory should be preferred in fallback context. Pin only high-value long-term memory."
         },
         "reason": {
             "type": "string",

@@ -5,7 +5,7 @@
     "properties": {
         "memory_id": {
             "type": "string",
-            "description": "Exact memory id to update. Search memory first if unknown."
+            "description": "Exact memory id to update. Search memory first if unknown; update existing durable memory instead of forgetting and recreating it."
         },
         "content": {
             "type": "string",
@@ -45,7 +45,7 @@
         },
         "pinned": {
             "type": "boolean",
-            "description": "Replacement pinned value when pinned_mode is set."
+            "description": "Replacement pinned value when pinned_mode is set. Pin only high-value long-term memory."
         },
         "reason": {
             "type": "string",

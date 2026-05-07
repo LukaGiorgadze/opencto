@@ -373,6 +373,46 @@ func TestBuildNextActionMessagesAddsSkillReminderAsUserMessage(t *testing.T) {
 	}
 }
 
+func TestBuildNextActionMessagesIncludesMemoryCrudPolicy(t *testing.T) {
+	t.Parallel()
+
+	input := agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event: domain.Event{
+				ID:        "event-1",
+				ProjectID: "project-1",
+				Body:      "remember that I prefer SQLite",
+			},
+		},
+	}
+
+	messages, err := buildNextActionMessages(input)
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected system and user messages, got %d", len(messages))
+	}
+	systemPrompt := messageText(messages[0])
+	for _, expected := range []string{
+		"Search memory before writing",
+		"Use `MemoryUpdate` when an existing memory should change",
+		"Use `MemoryRemember` only for new durable facts",
+		"Use `MemoryForget` only when the user asks to forget/delete memory",
+		"Do not save temporary task details",
+		"Pin only high-value long-term memory",
+	} {
+		if !strings.Contains(systemPrompt, expected) {
+			t.Fatalf("system prompt should include memory CRUD policy %q:\n%s", expected, systemPrompt)
+		}
+	}
+	if got := messageText(messages[1]); got != "remember that I prefer SQLite" {
+		t.Fatalf("unexpected user message: %q", got)
+	}
+}
+
 func TestBuildNextActionMessagesAddsMemoryAsUserContextBeforeCurrentRequest(t *testing.T) {
 	t.Parallel()
 

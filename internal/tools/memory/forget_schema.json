@@ -8,7 +8,7 @@
             "items": {
                 "type": "string"
             },
-            "description": "Exact memory ids to delete. Use an empty array to ignore id filtering. Search memory first if unknown."
+            "description": "Exact memory ids to delete. Use an empty array to ignore id filtering. Search memory first if unknown; delete only when the user asks or the memory is clearly obsolete."
         },
         "tags": {
             "type": "array",

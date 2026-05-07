@@ -19,7 +19,6 @@ import (
 type nextActionPromptData struct {
 	ProjectName        string
 	ProjectID          string
-	ProjectState       string
 	ProjectDescription string
 	OS                 string
 	Arch               string
@@ -143,7 +142,6 @@ func renderNextActionPrompt(input agent.NextActionInput) (string, error) {
 	data := nextActionPromptData{
 		ProjectName:        projectName,
 		ProjectID:          input.ProjectID,
-		ProjectState:       formatProjectState(input.Context.ActiveWorkItems),
 		ProjectDescription: strings.TrimSpace(input.Context.Project.Description),
 		OS:                 input.Runtime.OS,
 		Arch:               input.Runtime.Arch,
