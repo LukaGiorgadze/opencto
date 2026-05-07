@@ -921,27 +921,10 @@ func (s *Store) ForgetMemory(ctx context.Context, projectID, memoryID string) (b
 func (s *Store) ForgetMemories(ctx context.Context, request domain.MemoryForgetRequest) (domain.MemoryForgetResult, error) {
 	memoryIDs := cleanMemoryIDs(request.MemoryIDs)
 	tags := cleanTags(request.Tags)
-	scopeSelected := len(request.Scopes) > 0
-	selectorCount := 0
-	if len(memoryIDs) > 0 {
-		selectorCount++
-	}
-	if len(tags) > 0 {
-		selectorCount++
-	}
-	if scopeSelected {
-		selectorCount++
-	}
-	if selectorCount == 0 {
+	if len(memoryIDs) == 0 && len(tags) == 0 && len(request.Scopes) == 0 {
 		return domain.MemoryForgetResult{}, fmt.Errorf("memory ids, tags, or memory scope is required")
 	}
-	if selectorCount > 1 {
-		return domain.MemoryForgetResult{}, fmt.Errorf("forget memory accepts exactly one selector: memory ids, tags, or scope")
-	}
-	scopes := normalizeMemoryScopes(nil)
-	if scopeSelected {
-		scopes = normalizeMemoryScopes(request.Scopes)
-	}
+	scopes := normalizeMemoryScopes(request.Scopes)
 
 	scopeSQL, args := memoryVisibilitySQL(strings.TrimSpace(request.ProjectID), scopes)
 	where := []string{scopeSQL}

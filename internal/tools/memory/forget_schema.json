@@ -8,19 +8,19 @@
             "items": {
                 "type": "string"
             },
-            "description": "Delete by exact memory ids. Use an empty array when deleting by tags or scope. Search memory first if unknown."
+            "description": "Exact memory ids to delete. Use an empty array to ignore id filtering. Search memory first if unknown."
         },
         "tags": {
             "type": "array",
             "items": {
                 "type": "string"
             },
-            "description": "Delete by tags. Use an empty array when deleting by ids or scope. Matching memories must contain all tags."
+            "description": "Tags that memories must all contain to be deleted. Use an empty array to ignore tag filtering."
         },
         "scope": {
             "type": "string",
             "enum": ["project", "global", "all"],
-            "description": "Delete by scope when memory_ids and tags are empty. Use all when deleting by memory_ids or tags."
+            "description": "Scope filter for deletion. Use all to include all visible memory."
         }
     },
     "additionalProperties": false

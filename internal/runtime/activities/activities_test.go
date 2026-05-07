@@ -360,7 +360,7 @@ func TestExecuteMemoryToolForgetsByMemoryIDs(t *testing.T) {
 	if strings.Join(request.MemoryIDs, ",") != "memory-1,memory-2" {
 		t.Fatalf("unexpected forget memory ids: %#v", request.MemoryIDs)
 	}
-	if len(request.Scopes) != 0 {
+	if len(request.Scopes) != 2 || request.Scopes[0] != domain.MemoryScopeProject || request.Scopes[1] != domain.MemoryScopeGlobal {
 		t.Fatalf("unexpected forget scopes: %#v", request.Scopes)
 	}
 	if len(request.Tags) != 0 {
@@ -371,14 +371,18 @@ func TestExecuteMemoryToolForgetsByMemoryIDs(t *testing.T) {
 	}
 }
 
-func TestExecuteMemoryToolRejectsMixedForgetSelectors(t *testing.T) {
+func TestExecuteMemoryToolForgetsByCombinedFilters(t *testing.T) {
 	t.Parallel()
 
+	var forgetRequests []domain.MemoryForgetRequest
 	activities := Activities{
-		Store:         stubProjectStore{},
+		Store: stubProjectStore{
+			forgetResult:   domain.MemoryForgetResult{DeletedMemoryIDs: []string{"memory-1"}},
+			forgetRequests: &forgetRequests,
+		},
 		MemoryEnabled: true,
 	}
-	_, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
 		ProjectID:  "default",
 		WorkItemID: "work-1",
 		Event: domain.Event{
@@ -389,14 +393,30 @@ func TestExecuteMemoryToolRejectsMixedForgetSelectors(t *testing.T) {
 			ToolCallID: "toolu_memory",
 			Type:       domain.ToolTypeMemoryForget,
 			Intent:     "forget cleanup memories",
-			Input:      []byte(`{"memory_ids":["memory-1"],"tags":["cleanup"],"scope":"all"}`),
+			Input:      []byte(`{"memory_ids":["memory-1"],"tags":["Cleanup"],"scope":"project"}`),
 			Metadata: map[string]string{
 				"execution_cycle": "1",
 			},
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "exactly one selector") {
-		t.Fatalf("expected mixed selector error, got %v", err)
+	if err != nil {
+		t.Fatalf("execute combined memory forget: %v", err)
+	}
+	if len(forgetRequests) != 1 {
+		t.Fatalf("expected one forget request, got %d", len(forgetRequests))
+	}
+	request := forgetRequests[0]
+	if strings.Join(request.MemoryIDs, ",") != "memory-1" {
+		t.Fatalf("unexpected forget memory ids: %#v", request.MemoryIDs)
+	}
+	if strings.Join(request.Tags, ",") != "cleanup" {
+		t.Fatalf("unexpected forget tags: %#v", request.Tags)
+	}
+	if len(request.Scopes) != 1 || request.Scopes[0] != domain.MemoryScopeProject {
+		t.Fatalf("unexpected forget scopes: %#v", request.Scopes)
+	}
+	if result.Metadata["deleted_count"] != "1" {
+		t.Fatalf("unexpected forget result: %#v", result)
 	}
 }
 

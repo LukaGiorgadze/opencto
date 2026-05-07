@@ -433,7 +433,62 @@ func TestForgetMemoriesByIDsTagsOrScope(t *testing.T) {
 	}
 }
 
-func TestForgetMemoriesRejectsMissingOrMixedSelector(t *testing.T) {
+func TestForgetMemoriesSupportsCombinedFilters(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := time.Now().UTC()
+	memories := []domain.Memory{
+		{
+			ID:        "delete-me",
+			ProjectID: "default",
+			Scope:     domain.MemoryScopeProject,
+			Kind:      "fact",
+			Content:   "Delete matching memory.",
+			Tags:      []string{"cleanup", "obsolete"},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			ID:        "wrong-tag",
+			ProjectID: "default",
+			Scope:     domain.MemoryScopeProject,
+			Kind:      "fact",
+			Content:   "Keep memory with wrong tag.",
+			Tags:      []string{"cleanup"},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			ID:        "wrong-scope",
+			ProjectID: "default",
+			Scope:     domain.MemoryScopeGlobal,
+			Kind:      "fact",
+			Content:   "Keep memory with wrong scope.",
+			Tags:      []string{"cleanup", "obsolete"},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	}
+	for _, memory := range memories {
+		if _, err := store.RememberMemory(ctx, memory); err != nil {
+			t.Fatalf("remember %s: %v", memory.ID, err)
+		}
+	}
+	result, err := store.ForgetMemories(ctx, domain.MemoryForgetRequest{
+		ProjectID: "default",
+		MemoryIDs: []string{"delete-me", "wrong-tag", "wrong-scope"},
+		Tags:      []string{"cleanup", "obsolete"},
+		Scopes:    []domain.MemoryScope{domain.MemoryScopeProject},
+	})
+	if err != nil {
+		t.Fatalf("forget memories by combined filters: %v", err)
+	}
+	requireMemoryIDs(t, result.DeletedMemoryIDs, "delete-me")
+}
+
+func TestForgetMemoriesRejectsMissingSelector(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -442,13 +497,6 @@ func TestForgetMemoriesRejectsMissingOrMixedSelector(t *testing.T) {
 		ProjectID: "default",
 	}); err == nil {
 		t.Fatalf("expected forget without selector to fail")
-	}
-	if _, err := store.ForgetMemories(ctx, domain.MemoryForgetRequest{
-		ProjectID: "default",
-		MemoryIDs: []string{"memory-1"},
-		Tags:      []string{"cleanup"},
-	}); err == nil {
-		t.Fatalf("expected forget with mixed selectors to fail")
 	}
 }
 

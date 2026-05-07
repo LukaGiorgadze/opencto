@@ -2064,27 +2064,14 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 		}
 		memoryIDs := cleanMemoryIDs(req.MemoryIDs)
 		tags := cleanMemoryTags(req.Tags)
-		scopeValue := strings.ToLower(strings.TrimSpace(req.Scope))
-		if len(memoryIDs) == 0 && len(tags) == 0 && scopeValue == "" {
+		scope := strings.ToLower(strings.TrimSpace(req.Scope))
+		if len(memoryIDs) == 0 && len(tags) == 0 && scope == "" {
 			err := fmt.Errorf("memory_ids, tags, or scope is required")
 			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
 		}
-		if len(memoryIDs) > 0 && len(tags) > 0 {
-			err := fmt.Errorf("forget memory accepts exactly one selector: memory_ids, tags, or scope")
+		scopes, scope, err := memoryForgetScopes(req.Scope)
+		if err != nil {
 			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
-		}
-		if (len(memoryIDs) > 0 || len(tags) > 0) && scopeValue != "" && scopeValue != memorytool.ScopeAll {
-			err := fmt.Errorf("scope must be all when deleting by memory_ids or tags")
-			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
-		}
-		var scopes []domain.MemoryScope
-		scope := ""
-		if len(memoryIDs) == 0 && len(tags) == 0 {
-			var err error
-			scopes, scope, err = memoryForgetScopes(req.Scope)
-			if err != nil {
-				return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
-			}
 		}
 		result, err := a.Store.ForgetMemories(ctx, domain.MemoryForgetRequest{
 			ProjectID: execution.ProjectID,
