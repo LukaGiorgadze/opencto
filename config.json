@@ -1,8 +1,10 @@
 {
+  "general": {
+    "workspace_root": "$HOME/.opencto"
+  },
   "project": {
     "id": "default",
-    "name": "Default Project",
-    "workspace_root": "$HOME/.opencto"
+    "name": "Default Project"
   },
   "llm": {
     "provider": "openai",

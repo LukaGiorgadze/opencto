@@ -80,7 +80,7 @@ func main() {
 				logger.Warn("discord application id is not set; continuing because the runtime does not require it yet", slog.String("env", "DISCORD_APPLICATION_ID"))
 			}
 			discordAdapter, err = discord.New(cfg.Project.ID, token, appID, dispatcher, logger, discord.Options{
-				WorkspaceRoot: cfg.Project.WorkspaceRoot,
+				WorkspaceRoot: cfg.General.WorkspaceRoot,
 				MessageLimits: discord.MessageLimits{
 					MaxChars: cfg.Channels.Discord.OutboundMessages.MaxChars,
 				},
@@ -108,7 +108,7 @@ func main() {
 				ID:   cfg.Project.ID,
 				Name: cfg.Project.Name,
 			},
-			WorkspaceRoot: cfg.Project.WorkspaceRoot,
+			WorkspaceRoot: cfg.General.WorkspaceRoot,
 			OpenCTORoot:   openCTORoot,
 			StateDir:      cfg.Runtime.StateDir,
 			Logger:        logger,

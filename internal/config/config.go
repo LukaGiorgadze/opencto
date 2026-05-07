@@ -19,6 +19,7 @@ const (
 )
 
 type Config struct {
+	General       GeneralConfig       `json:"general"`
 	Project       ProjectConfig       `json:"project"`
 	Runtime       RuntimeConfig       `json:"runtime"`
 	LLM           LLMConfig           `json:"llm"`
@@ -28,6 +29,7 @@ type Config struct {
 }
 
 type fileConfig struct {
+	General       GeneralConfig       `json:"general"`
 	Project       ProjectConfig       `json:"project"`
 	Runtime       RuntimeConfig       `json:"runtime"`
 	LLM           llmFileConfig       `json:"llm"`
@@ -45,10 +47,13 @@ type llmFileConfig struct {
 	APIKey             string `json:"api_key"`
 }
 
-type ProjectConfig struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
+type GeneralConfig struct {
 	WorkspaceRoot string `json:"workspace_root"`
+}
+
+type ProjectConfig struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type RuntimeConfig struct {
@@ -108,6 +113,7 @@ func Load(path string) (Config, error) {
 	}
 
 	cfg := Config{
+		General: raw.General,
 		Project: raw.Project,
 		Runtime: raw.Runtime,
 		LLM: LLMConfig{
@@ -135,11 +141,11 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 
-	cfg.Project.WorkspaceRoot, err = workspace.ResolveRoot(cfg.Project.WorkspaceRoot)
+	cfg.General.WorkspaceRoot, err = workspace.ResolveRoot(cfg.General.WorkspaceRoot)
 	if err != nil {
 		return Config{}, err
 	}
-	cfg.Runtime.StateDir, err = workspace.ResolveStateDir(cfg.Runtime.StateDir, cfg.Project.WorkspaceRoot)
+	cfg.Runtime.StateDir, err = workspace.ResolveStateDir(cfg.Runtime.StateDir, cfg.General.WorkspaceRoot)
 	if err != nil {
 		return Config{}, err
 	}
@@ -156,9 +162,9 @@ func (c *Config) validate() error {
 		}
 	}
 
+	requireString(c.General.WorkspaceRoot, "general.workspace_root")
 	requireString(c.Project.ID, "project.id")
 	requireString(c.Project.Name, "project.name")
-	requireString(c.Project.WorkspaceRoot, "project.workspace_root")
 	requireString(c.LLM.Provider, "llm.provider")
 	requireString(c.LLM.BaseURL, "llm.base_url")
 	requireString(c.LLM.ModelReasoning, "llm.model_reasoning")

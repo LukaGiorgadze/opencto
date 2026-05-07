@@ -27,9 +27,9 @@ func TestLoadRequiresExplicitConfigValues(t *testing.T) {
 	}
 
 	for _, field := range []string{
+		"general.workspace_root",
 		"project.id",
 		"project.name",
-		"project.workspace_root",
 		"llm.provider",
 		"llm.base_url",
 		"llm.model_reasoning",
@@ -53,10 +53,12 @@ func TestLoadDerivesRuntimeStateDirFromConfiguredWorkspace(t *testing.T) {
 	path := filepath.Join(dir, "config.json")
 	data := []byte(`
 {
+  "general": {
+    "workspace_root": "$HOME/.opencto"
+  },
   "project": {
     "id": "default",
-    "name": "OpenCTO",
-    "workspace_root": "$HOME/.opencto"
+    "name": "OpenCTO"
   },
   "llm": {
     "provider": "openai",
@@ -101,10 +103,12 @@ func TestLoadExpandsWorkspaceRootHome(t *testing.T) {
 	path := filepath.Join(dir, "config.json")
 	data := []byte(`
 {
+  "general": {
+    "workspace_root": "$HOME/.opencto"
+  },
   "project": {
     "id": "default",
-    "name": "OpenCTO",
-    "workspace_root": "$HOME/.opencto"
+    "name": "OpenCTO"
   },
   "llm": {
     "provider": "openai",
@@ -137,8 +141,8 @@ func TestLoadExpandsWorkspaceRootHome(t *testing.T) {
 		t.Fatalf("resolve user home: %v", err)
 	}
 	want := filepath.Join(home, ".opencto")
-	if cfg.Project.WorkspaceRoot != want {
-		t.Fatalf("expected workspace root %q, got %q", want, cfg.Project.WorkspaceRoot)
+	if cfg.General.WorkspaceRoot != want {
+		t.Fatalf("expected workspace root %q, got %q", want, cfg.General.WorkspaceRoot)
 	}
 }
 
@@ -149,10 +153,12 @@ func TestLoadParsesLLMSecretFields(t *testing.T) {
 	path := filepath.Join(dir, "config.json")
 	data := []byte(`
 {
+  "general": {
+    "workspace_root": "."
+  },
   "project": {
     "id": "default",
-    "name": "OpenCTO",
-    "workspace_root": "."
+    "name": "OpenCTO"
   },
   "llm": {
     "provider": "openai",
@@ -200,10 +206,12 @@ func TestLoadParsesDiscordOutboundAttachmentLimits(t *testing.T) {
 	path := filepath.Join(dir, "config.json")
 	data := []byte(`
 	{
+	  "general": {
+	    "workspace_root": "."
+	  },
 	  "project": {
 	    "id": "default",
-	    "name": "OpenCTO",
-	    "workspace_root": "."
+	    "name": "OpenCTO"
 	  },
 	  "llm": {
 	    "provider": "openai",
@@ -261,10 +269,12 @@ func TestLoadDefaultsDiscordOutboundMessageLimits(t *testing.T) {
 	path := filepath.Join(dir, "config.json")
 	data := []byte(`
 {
+  "general": {
+    "workspace_root": "."
+  },
   "project": {
     "id": "default",
-    "name": "OpenCTO",
-    "workspace_root": "."
+    "name": "OpenCTO"
   },
   "llm": {
     "provider": "openai",
@@ -304,10 +314,12 @@ func TestLoadRejectsInvalidDiscordOutboundMessageLimits(t *testing.T) {
 	path := filepath.Join(dir, "config.json")
 	data := []byte(`
 {
+  "general": {
+    "workspace_root": "."
+  },
   "project": {
     "id": "default",
-    "name": "OpenCTO",
-    "workspace_root": "."
+    "name": "OpenCTO"
   },
   "llm": {
     "provider": "openai",
@@ -354,10 +366,12 @@ func TestLoadRejectsNonPositiveTemporalConfigValues(t *testing.T) {
 	path := filepath.Join(dir, "config.json")
 	data := []byte(`
 {
+  "general": {
+    "workspace_root": "."
+  },
   "project": {
     "id": "default",
-    "name": "OpenCTO",
-    "workspace_root": "."
+    "name": "OpenCTO"
   },
   "llm": {
     "provider": "openai",
