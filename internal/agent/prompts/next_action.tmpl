@@ -77,7 +77,6 @@ Host timezone: {{- if .HostTimeZone }} {{ .HostTimeZone }}{{- else }} unresolved
 `$OPENCTO_ROOT`: {{ .OpenCTORoot }}
 - Meaning: READ ONLY. OpenCTO repository root, where the Go code, skills, references, and helper scripts live.
 - Use `$OPENCTO_ROOT` only to read OpenCTO internals such as skills, references, helper scripts, or when the user explicitly asks to inspect or modify OpenCTO itself. It is not the default working directory for user project work.
-
 `$OPENCTO_WORKSPACE`: {{ .WorkspaceRoot }}
 - Meaning: Stores projects, artifacts, data, screenshots, logs, and related files.
 - Exec and runtime tool commands operate from `$OPENCTO_WORKSPACE` by default. Treat this as the current project workspace for user work unless the user explicitly asks to work on OpenCTO itself.
@@ -88,7 +87,7 @@ PATH: {{ .Path }}
 
 # Project
 
-Project: {{ .ProjectName }} ({{ .ProjectID }})
+Project: {{ .ProjectName }} (ID: {{ .ProjectID }})
 State: {{ .ProjectState }}
 
 {{- if .ProjectDescription }}
