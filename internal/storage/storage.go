@@ -37,6 +37,7 @@ type RuntimeStore interface {
 	RememberMemory(context.Context, domain.Memory) (domain.Memory, error)
 	SearchMemories(context.Context, domain.MemorySearchRequest) ([]domain.Memory, error)
 	ForgetMemory(context.Context, string, string) (bool, error)
+	ForgetMemories(context.Context, domain.MemoryForgetRequest) (domain.MemoryForgetResult, error)
 }
 
 type ConversationScope string

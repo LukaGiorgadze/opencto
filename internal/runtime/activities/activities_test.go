@@ -23,6 +23,8 @@ import (
 type stubProjectStore struct {
 	pending              []domain.WorkItem
 	memories             []domain.Memory
+	forgetResult         domain.MemoryForgetResult
+	forgetRequests       *[]domain.MemoryForgetRequest
 	conversationsByScope map[storage.ConversationScope][]domain.ConversationMessage
 	conversationQueries  *[]storage.ConversationQuery
 }
@@ -127,6 +129,13 @@ func (s stubProjectStore) SearchMemories(context.Context, domain.MemorySearchReq
 
 func (s stubProjectStore) ForgetMemory(context.Context, string, string) (bool, error) {
 	return false, nil
+}
+
+func (s stubProjectStore) ForgetMemories(_ context.Context, request domain.MemoryForgetRequest) (domain.MemoryForgetResult, error) {
+	if s.forgetRequests != nil {
+		*s.forgetRequests = append(*s.forgetRequests, request)
+	}
+	return s.forgetResult, nil
 }
 
 func idsFromConversation(messages []domain.ConversationMessage) []string {
@@ -275,6 +284,55 @@ func TestLoadContextIncludesBoundedMemoryWhenEnabled(t *testing.T) {
 	}
 	if len(loaded.Memory) != 1 || loaded.Memory[0].ID != "memory-1" {
 		t.Fatalf("expected memory to be loaded, got %#v", loaded.Memory)
+	}
+}
+
+func TestExecuteMemoryToolForgetsByArrayTagsAndScope(t *testing.T) {
+	t.Parallel()
+
+	var forgetRequests []domain.MemoryForgetRequest
+	activities := Activities{
+		Store: stubProjectStore{
+			forgetResult:   domain.MemoryForgetResult{DeletedMemoryIDs: []string{"memory-1", "memory-2"}},
+			forgetRequests: &forgetRequests,
+		},
+		MemoryEnabled: true,
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "default",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemoryForget,
+			Intent:     "forget cleanup memories",
+			Input:      []byte(`{"memory_ids":["memory-1","memory-2","memory-2",""],"tags":["Cleanup","obsolete","cleanup"],"scope":"project"}`),
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute memory forget: %v", err)
+	}
+	if len(forgetRequests) != 1 {
+		t.Fatalf("expected one forget request, got %d", len(forgetRequests))
+	}
+	request := forgetRequests[0]
+	if strings.Join(request.MemoryIDs, ",") != "memory-1,memory-2" {
+		t.Fatalf("unexpected forget memory ids: %#v", request.MemoryIDs)
+	}
+	if len(request.Scopes) != 1 || request.Scopes[0] != domain.MemoryScopeProject {
+		t.Fatalf("unexpected forget scopes: %#v", request.Scopes)
+	}
+	if strings.Join(request.Tags, ",") != "cleanup,obsolete" {
+		t.Fatalf("unexpected forget tags: %#v", request.Tags)
+	}
+	if result.Metadata["deleted_count"] != "2" || !strings.Contains(result.Observation, "deleted_count: 2") {
+		t.Fatalf("unexpected forget result: %#v", result)
 	}
 }
 

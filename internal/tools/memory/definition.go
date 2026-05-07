@@ -12,7 +12,7 @@ const (
 
 	RememberToolDescription = "Stores a durable memory for later OpenCTO tasks. Use for user preferences, project facts, standing instructions, decisions, and important context worth remembering beyond the current task."
 	SearchToolDescription   = "Searches durable OpenCTO memory for project or global context. Use when the current task may depend on remembered preferences, decisions, or project facts beyond the automatically provided memory context."
-	ForgetToolDescription   = "Deletes a durable OpenCTO memory by memory_id. Search memory first if the exact memory_id is not already known."
+	ForgetToolDescription   = "Deletes durable OpenCTO memories by exact memory_ids, or by tag and scope filters. Search memory first if exact memory ids are not already known."
 )
 
 //go:embed remember_schema.json

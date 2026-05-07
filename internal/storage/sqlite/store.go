@@ -905,31 +905,81 @@ func (s *Store) ForgetMemory(ctx context.Context, projectID, memoryID string) (b
 	if memoryID == "" {
 		return false, fmt.Errorf("memory id is required")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	result, err := s.ForgetMemories(ctx, domain.MemoryForgetRequest{
+		ProjectID: projectID,
+		MemoryIDs: []string{memoryID},
+	})
 	if err != nil {
 		return false, err
+	}
+	return len(result.DeletedMemoryIDs) > 0, nil
+}
+
+func (s *Store) ForgetMemories(ctx context.Context, request domain.MemoryForgetRequest) (domain.MemoryForgetResult, error) {
+	memoryIDs := cleanMemoryIDs(request.MemoryIDs)
+	tags := cleanTags(request.Tags)
+	scopes := normalizeMemoryScopes(request.Scopes)
+	if len(memoryIDs) == 0 && len(tags) == 0 && len(scopes) != 1 {
+		return domain.MemoryForgetResult{}, fmt.Errorf("memory ids, tags, or a single memory scope is required")
+	}
+
+	scopeSQL, args := memoryVisibilitySQL(strings.TrimSpace(request.ProjectID), scopes)
+	where := []string{scopeSQL}
+	if len(memoryIDs) > 0 {
+		where = append(where, "m.id IN ("+sqlPlaceholders(len(memoryIDs))+")")
+		for _, memoryID := range memoryIDs {
+			args = append(args, memoryID)
+		}
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, project_id, scope, kind, content, tags, source, source_id, actor, confidence, pinned, metadata, created_at, updated_at
+FROM memories m
+WHERE `+strings.Join(where, " AND ")+`
+ORDER BY updated_at DESC
+`, args...)
+	if err != nil {
+		return domain.MemoryForgetResult{}, err
+	}
+	defer rows.Close()
+	candidates, err := scanMemories(rows)
+	if err != nil {
+		return domain.MemoryForgetResult{}, err
+	}
+
+	var deleteIDs []string
+	for _, memory := range candidates {
+		if memoryHasAllTags(memory, tags) {
+			deleteIDs = append(deleteIDs, memory.ID)
+		}
+	}
+	deleteIDs = cleanMemoryIDs(deleteIDs)
+	if len(deleteIDs) == 0 {
+		return domain.MemoryForgetResult{}, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.MemoryForgetResult{}, err
 	}
 	defer func() {
 		_ = tx.Rollback()
 	}()
-	result, err := tx.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 DELETE FROM memories
-WHERE id = ? AND (scope = 'global' OR project_id = ?)
-`, memoryID, strings.TrimSpace(projectID))
-	if err != nil {
-		return false, err
+WHERE id IN (`+sqlPlaceholders(len(deleteIDs))+`)
+`, stringAnySlice(deleteIDs)...); err != nil {
+		return domain.MemoryForgetResult{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_fts WHERE memory_id = ?`, memoryID); err != nil {
-		return false, err
+	if _, err := tx.ExecContext(ctx, `
+DELETE FROM memory_fts
+WHERE memory_id IN (`+sqlPlaceholders(len(deleteIDs))+`)
+`, stringAnySlice(deleteIDs)...); err != nil {
+		return domain.MemoryForgetResult{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return false, err
+		return domain.MemoryForgetResult{}, err
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return false, nil
-	}
-	return affected > 0, nil
+	return domain.MemoryForgetResult{DeletedMemoryIDs: deleteIDs}, nil
 }
 
 func encodeJSON(value any, empty string) (string, error) {
@@ -1074,6 +1124,55 @@ func cleanTags(tags []string) []string {
 	}
 	sort.Strings(cleaned)
 	return cleaned
+}
+
+func cleanMemoryIDs(memoryIDs []string) []string {
+	cleaned := make([]string, 0, len(memoryIDs))
+	seen := map[string]bool{}
+	for _, memoryID := range memoryIDs {
+		memoryID = strings.TrimSpace(memoryID)
+		if memoryID == "" || seen[memoryID] {
+			continue
+		}
+		seen[memoryID] = true
+		cleaned = append(cleaned, memoryID)
+	}
+	return cleaned
+}
+
+func memoryHasAllTags(memory domain.Memory, tags []string) bool {
+	if len(tags) == 0 {
+		return true
+	}
+	memoryTags := map[string]bool{}
+	for _, tag := range memory.Tags {
+		tag = strings.ToLower(strings.TrimSpace(tag))
+		if tag != "" {
+			memoryTags[tag] = true
+		}
+	}
+	for _, tag := range tags {
+		if !memoryTags[tag] {
+			return false
+		}
+	}
+	return true
+}
+
+func sqlPlaceholders(count int) string {
+	placeholders := make([]string, 0, count)
+	for range count {
+		placeholders = append(placeholders, "?")
+	}
+	return strings.Join(placeholders, ", ")
+}
+
+func stringAnySlice(values []string) []any {
+	args := make([]any, 0, len(values))
+	for _, value := range values {
+		args = append(args, value)
+	}
+	return args
 }
 
 func boolInt(value bool) int {

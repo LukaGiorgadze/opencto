@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -292,6 +294,111 @@ func TestMemoryRememberSearchAndForget(t *testing.T) {
 	}
 }
 
+func TestForgetMemoriesByIDsTagsAndScope(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := time.Now().UTC()
+	memories := []domain.Memory{
+		{
+			ID:        "project-delete",
+			ProjectID: "default",
+			Scope:     domain.MemoryScopeProject,
+			Kind:      "fact",
+			Content:   "Delete project cleanup memory.",
+			Tags:      []string{"cleanup", "obsolete"},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			ID:        "project-keep",
+			ProjectID: "default",
+			Scope:     domain.MemoryScopeProject,
+			Kind:      "fact",
+			Content:   "Keep project memory.",
+			Tags:      []string{"active"},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			ID:        "other-project",
+			ProjectID: "other",
+			Scope:     domain.MemoryScopeProject,
+			Kind:      "fact",
+			Content:   "Other project cleanup memory.",
+			Tags:      []string{"cleanup", "obsolete"},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			ID:        "global-delete",
+			ProjectID: "default",
+			Scope:     domain.MemoryScopeGlobal,
+			Kind:      "fact",
+			Content:   "Delete global cleanup memory.",
+			Tags:      []string{"cleanup"},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	}
+	for _, memory := range memories {
+		if _, err := store.RememberMemory(ctx, memory); err != nil {
+			t.Fatalf("remember %s: %v", memory.ID, err)
+		}
+	}
+
+	result, err := store.ForgetMemories(ctx, domain.MemoryForgetRequest{
+		ProjectID: "default",
+		Scopes:    []domain.MemoryScope{domain.MemoryScopeProject},
+		Tags:      []string{"cleanup", "obsolete"},
+	})
+	if err != nil {
+		t.Fatalf("forget project memories by tags: %v", err)
+	}
+	if len(result.DeletedMemoryIDs) != 1 || result.DeletedMemoryIDs[0] != "project-delete" {
+		t.Fatalf("unexpected tag/scope forget result: %#v", result)
+	}
+
+	result, err = store.ForgetMemories(ctx, domain.MemoryForgetRequest{
+		ProjectID: "default",
+		MemoryIDs: []string{"project-keep", "global-delete"},
+		Scopes:    []domain.MemoryScope{domain.MemoryScopeGlobal},
+	})
+	if err != nil {
+		t.Fatalf("forget memories by ids and scope: %v", err)
+	}
+	if len(result.DeletedMemoryIDs) != 1 || result.DeletedMemoryIDs[0] != "global-delete" {
+		t.Fatalf("unexpected id/scope forget result: %#v", result)
+	}
+
+	result, err = store.ForgetMemories(ctx, domain.MemoryForgetRequest{
+		ProjectID: "default",
+		Scopes:    []domain.MemoryScope{domain.MemoryScopeProject},
+	})
+	if err != nil {
+		t.Fatalf("forget memories by scope: %v", err)
+	}
+	if len(result.DeletedMemoryIDs) != 1 || result.DeletedMemoryIDs[0] != "project-keep" {
+		t.Fatalf("unexpected scope forget result: %#v", result)
+	}
+
+	found, err := store.SearchMemories(ctx, domain.MemorySearchRequest{
+		ProjectID:      "default",
+		Query:          "",
+		Scopes:         []domain.MemoryScope{domain.MemoryScopeProject, domain.MemoryScopeGlobal},
+		FallbackRecent: true,
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatalf("search after filtered forget: %v", err)
+	}
+	remaining := memoryIDs(found)
+	if strings.Join(remaining, ",") != "" {
+		t.Fatalf("unexpected remaining default memories: %#v", found)
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	ctx := context.Background()
@@ -308,4 +415,13 @@ func openTestStore(t *testing.T) *Store {
 		t.Fatalf("migrate store: %v", err)
 	}
 	return store
+}
+
+func memoryIDs(memories []domain.Memory) []string {
+	ids := make([]string, 0, len(memories))
+	for _, memory := range memories {
+		ids = append(ids, memory.ID)
+	}
+	sort.Strings(ids)
+	return ids
 }

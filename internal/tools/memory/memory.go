@@ -34,10 +34,17 @@ type SearchResult struct {
 }
 
 type ForgetRequest struct {
-	MemoryID string `json:"memory_id"`
+	MemoryIDs []string `json:"memory_ids,omitempty"`
+	Tags      []string `json:"tags,omitempty"`
+	Scope     string   `json:"scope,omitempty"`
 }
 
 type ForgetResult struct {
-	MemoryID string `json:"memory_id"`
-	Deleted  bool   `json:"deleted"`
+	MemoryIDs         []string `json:"memory_ids,omitempty"`
+	Deleted           bool     `json:"deleted"`
+	DeletedCount      int      `json:"deleted_count"`
+	DeletedMemoryIDs  []string `json:"deleted_memory_ids,omitempty"`
+	NotFoundMemoryIDs []string `json:"not_found_memory_ids,omitempty"`
+	Tags              []string `json:"tags,omitempty"`
+	Scope             string   `json:"scope,omitempty"`
 }

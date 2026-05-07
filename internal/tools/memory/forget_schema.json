@@ -1,11 +1,26 @@
 {
     "type": "object",
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "required": ["memory_id"],
+    "required": ["memory_ids", "tags", "scope"],
     "properties": {
-        "memory_id": {
+        "memory_ids": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            },
+            "description": "Exact memory ids to delete. Include one or more ids for exact deletion, or use an empty array when deleting by tag/scope filters. Search memory first if unknown."
+        },
+        "tags": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            },
+            "description": "Tags that memories must all contain to be deleted. Use an empty array when deleting only by exact ids."
+        },
+        "scope": {
             "type": "string",
-            "description": "Exact memory id to delete. Search memory first if unknown."
+            "enum": ["project", "global", "all"],
+            "description": "Scope filter for deletion. Use all for exact ids unless intentionally limiting to project or global memory."
         }
     },
     "additionalProperties": false

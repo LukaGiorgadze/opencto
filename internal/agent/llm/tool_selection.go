@@ -122,7 +122,7 @@ func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) 
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
 			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
 		}
-		return memoryToolChoiceFromInput(definition, call, raw, input, "forget memory "+strings.TrimSpace(args.MemoryID), domain.ToolIdempotencyNonIdempotent), nil
+		return memoryToolChoiceFromInput(definition, call, raw, input, forgetMemorySummary(args), domain.ToolIdempotencyNonIdempotent), nil
 	case domain.ToolTypeSchedule:
 		var args scheduletool.Request
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
@@ -146,6 +146,21 @@ func memoryToolChoiceFromInput(definition toolregistry.Definition, call llms.Too
 	choice.Idempotency = idempotency
 	choice.ProcessScope = domain.ProcessScopeStopOnFinish
 	return choice
+}
+
+func forgetMemorySummary(args memorytool.ForgetRequest) string {
+	ids := trimStringList(args.MemoryIDs, 20)
+	if len(ids) > 0 {
+		return "forget memory " + strings.Join(ids, ", ")
+	}
+	tags := trimStringList(args.Tags, 20)
+	if len(tags) > 0 {
+		return "forget memory tags " + strings.Join(tags, ", ")
+	}
+	if scope := strings.TrimSpace(args.Scope); scope != "" {
+		return "forget memory scope " + scope
+	}
+	return "forget memory"
 }
 
 func decodeToolArguments(toolName string, raw json.RawMessage, target any) error {

@@ -259,6 +259,17 @@ type MemorySearchRequest struct {
 	FallbackRecent bool          `json:"fallback_recent,omitempty"`
 }
 
+type MemoryForgetRequest struct {
+	ProjectID string        `json:"project_id,omitempty"`
+	MemoryIDs []string      `json:"memory_ids,omitempty"`
+	Scopes    []MemoryScope `json:"scopes,omitempty"`
+	Tags      []string      `json:"tags,omitempty"`
+}
+
+type MemoryForgetResult struct {
+	DeletedMemoryIDs []string `json:"deleted_memory_ids,omitempty"`
+}
+
 type ProcessStatus string
 
 const (

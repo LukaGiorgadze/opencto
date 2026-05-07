@@ -2053,26 +2053,48 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 		if err := decodeChoiceInput(choice, &req); err != nil {
 			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
 		}
-		memoryID := strings.TrimSpace(req.MemoryID)
-		if memoryID == "" {
-			err := fmt.Errorf("memory_id is required")
+		memoryIDs := cleanMemoryIDs(req.MemoryIDs)
+		tags := cleanMemoryTags(req.Tags)
+		scopes, scope, err := memoryForgetScopes(req.Scope)
+		if err != nil {
 			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
 		}
-		deleted, err := a.Store.ForgetMemory(ctx, execution.ProjectID, memoryID)
+		if len(memoryIDs) == 0 && len(tags) == 0 && scope == memorytool.ScopeAll {
+			err := fmt.Errorf("memory_ids, tags, or project/global scope is required")
+			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+		}
+		result, err := a.Store.ForgetMemories(ctx, domain.MemoryForgetRequest{
+			ProjectID: execution.ProjectID,
+			MemoryIDs: memoryIDs,
+			Scopes:    scopes,
+			Tags:      tags,
+		})
 		if err != nil {
 			return memoryToolRunResult{}, err
 		}
-		payload := mustJSON(memorytool.ForgetResult{MemoryID: memoryID, Deleted: deleted})
-		observation := "Memory not found.\nmemory_id: " + memoryID
-		if deleted {
-			observation = "Forgot memory.\nmemory_id: " + memoryID
-		}
+		deletedIDs := cleanMemoryIDs(result.DeletedMemoryIDs)
+		notFoundIDs := missingMemoryIDs(memoryIDs, deletedIDs)
+		deleted := len(deletedIDs) > 0
+		payload := mustJSON(memorytool.ForgetResult{
+			MemoryIDs:         memoryIDs,
+			Deleted:           deleted,
+			DeletedCount:      len(deletedIDs),
+			DeletedMemoryIDs:  deletedIDs,
+			NotFoundMemoryIDs: notFoundIDs,
+			Tags:              tags,
+			Scope:             scope,
+		})
+		observation := memoryForgetObservation(memoryIDs, deletedIDs, notFoundIDs, tags, scope)
 		return memoryToolRunResult{
 			Observation: observation,
 			Payload:     payload,
 			Metadata: map[string]string{
-				"memory_id": memoryID,
-				"deleted":   strconv.FormatBool(deleted),
+				"memory_ids":    strings.Join(memoryIDs, ", "),
+				"deleted":       strconv.FormatBool(deleted),
+				"deleted_count": strconv.Itoa(len(deletedIDs)),
+				"deleted_ids":   strings.Join(deletedIDs, ", "),
+				"scope":         scope,
+				"tags":          strings.Join(tags, ", "),
 			},
 		}, nil
 	default:
@@ -2882,6 +2904,19 @@ func memorySearchScopes(value string) []domain.MemoryScope {
 	}
 }
 
+func memoryForgetScopes(value string) ([]domain.MemoryScope, string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", memorytool.ScopeAll:
+		return []domain.MemoryScope{domain.MemoryScopeProject, domain.MemoryScopeGlobal}, memorytool.ScopeAll, nil
+	case memorytool.ScopeProject:
+		return []domain.MemoryScope{domain.MemoryScopeProject}, memorytool.ScopeProject, nil
+	case memorytool.ScopeGlobal:
+		return []domain.MemoryScope{domain.MemoryScopeGlobal}, memorytool.ScopeGlobal, nil
+	default:
+		return nil, "", fmt.Errorf("unsupported memory scope %q", value)
+	}
+}
+
 func memorySearchObservation(memories []domain.Memory) string {
 	if len(memories) == 0 {
 		return "No memories found."
@@ -2901,6 +2936,87 @@ func memorySearchObservation(memories []domain.Memory) string {
 		}
 	}
 	return builder.String()
+}
+
+func memoryForgetObservation(memoryIDs, deletedIDs, notFoundIDs, tags []string, scope string) string {
+	if len(memoryIDs) == 1 && len(tags) == 0 {
+		if len(deletedIDs) > 0 {
+			return "Forgot memory.\nmemory_ids: " + memoryIDs[0]
+		}
+		return "Memory not found.\nmemory_ids: " + memoryIDs[0]
+	}
+
+	var builder strings.Builder
+	if len(deletedIDs) > 0 {
+		_, _ = fmt.Fprintf(&builder, "Forgot memories.\ndeleted_count: %d", len(deletedIDs))
+		builder.WriteString("\ndeleted_memory_ids: ")
+		builder.WriteString(strings.Join(deletedIDs, ", "))
+	} else {
+		builder.WriteString("No memories forgotten.")
+	}
+	if len(memoryIDs) > 0 {
+		builder.WriteString("\nrequested_memory_ids: ")
+		builder.WriteString(strings.Join(memoryIDs, ", "))
+	}
+	if len(notFoundIDs) > 0 {
+		builder.WriteString("\nnot_found_memory_ids: ")
+		builder.WriteString(strings.Join(notFoundIDs, ", "))
+	}
+	if len(tags) > 0 {
+		builder.WriteString("\ntags: ")
+		builder.WriteString(strings.Join(tags, ", "))
+	}
+	if strings.TrimSpace(scope) != "" {
+		builder.WriteString("\nscope: ")
+		builder.WriteString(scope)
+	}
+	return builder.String()
+}
+
+func cleanMemoryIDs(memoryIDs []string) []string {
+	cleaned := make([]string, 0, len(memoryIDs))
+	seen := map[string]bool{}
+	for _, memoryID := range memoryIDs {
+		memoryID = strings.TrimSpace(memoryID)
+		if memoryID == "" || seen[memoryID] {
+			continue
+		}
+		seen[memoryID] = true
+		cleaned = append(cleaned, memoryID)
+	}
+	return cleaned
+}
+
+func cleanMemoryTags(tags []string) []string {
+	cleaned := make([]string, 0, len(tags))
+	seen := map[string]bool{}
+	for _, tag := range tags {
+		tag = strings.ToLower(strings.TrimSpace(tag))
+		if tag == "" || seen[tag] {
+			continue
+		}
+		seen[tag] = true
+		cleaned = append(cleaned, tag)
+	}
+	sort.Strings(cleaned)
+	return cleaned
+}
+
+func missingMemoryIDs(requested, deleted []string) []string {
+	if len(requested) == 0 {
+		return nil
+	}
+	deletedSet := map[string]bool{}
+	for _, memoryID := range deleted {
+		deletedSet[memoryID] = true
+	}
+	var missing []string
+	for _, memoryID := range requested {
+		if !deletedSet[memoryID] {
+			missing = append(missing, memoryID)
+		}
+	}
+	return missing
 }
 
 func isTerminalStatus(status string) bool {
