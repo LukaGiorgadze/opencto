@@ -53,7 +53,6 @@ type Request struct {
 type Action struct {
 	Command     string   `json:"command"`
 	Args        []string `json:"args"`
-	Session     string   `json:"session,omitempty"`
 	TimeoutMs   int      `json:"timeout_ms,omitempty"`
 	Idempotency string   `json:"idempotency,omitempty"`
 	Description string   `json:"description,omitempty"`
@@ -338,7 +337,7 @@ func requestForAction(parent Request, action Action) Request {
 		Environment:   parent.Environment,
 		Command:       action.Command,
 		Args:          append([]string(nil), action.Args...),
-		Session:       action.Session,
+		Session:       parent.Session,
 		TimeoutMs:     action.TimeoutMs,
 		Idempotency:   action.Idempotency,
 		Description:   action.Description,
@@ -367,9 +366,9 @@ func normalizeRequest(req Request) (Request, error) {
 
 	req.Session = strings.TrimSpace(req.Session)
 	if req.Session == "" {
-		req.Session = defaultSession(req.ProjectID, req.WorkItemID)
+		req.Session = defaultSession(req.ProjectID)
 	} else {
-		req.Session = sanitizeSessionPart(req.Session)
+		req.Session = sessionWithProject(req.ProjectID, req.Session)
 	}
 	req.Args = append([]string(nil), req.Args...)
 	return req, nil
@@ -649,13 +648,17 @@ func isSessionFlag(arg string) bool {
 		strings.HasPrefix(arg, "--session=")
 }
 
-func defaultSession(projectID, workItemID string) string {
-	session := "opencto-" + sanitizeSessionPart(projectID) + "-" + sanitizeSessionPart(workItemID)
-	session = strings.Trim(session, "-")
-	if session == "opencto" || session == "" {
-		return "opencto-default"
+func defaultSession(projectID string) string {
+	return "opencto-" + sanitizeSessionPart(projectID)
+}
+
+func sessionWithProject(projectID, session string) string {
+	prefix := defaultSession(projectID)
+	session = sanitizeSessionPart(session)
+	if session == prefix || strings.HasPrefix(session, prefix+"-") {
+		return session
 	}
-	return session
+	return prefix + "-" + session
 }
 
 func browserLogName(projectID, workItemID, session, command string) string {
@@ -674,7 +677,7 @@ func sanitizeSessionPart(value string) string {
 	var builder strings.Builder
 	lastDash := false
 	for _, r := range value {
-		valid := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-'
+		valid := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-'
 		if valid {
 			builder.WriteRune(r)
 			lastDash = false

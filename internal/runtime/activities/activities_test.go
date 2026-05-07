@@ -262,7 +262,7 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 			ExitCode:         0,
 			WorkingDirectory: dir,
 			Executable:       "agent-browser",
-			Session:          "opencto-project-1-work-item-1",
+			Session:          "opencto-project-1",
 			Command:          "snapshot",
 			ArtifactPaths:    []string{filepath.Join(dir, ".agent-browser", "page.yml")},
 		}},
@@ -351,7 +351,7 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 	}
 	if browserResult.Status != domain.ExecutionStatusSucceeded ||
 		!strings.Contains(browserResult.Observation, "Page URL") ||
-		browserResult.Metadata["browser_session"] != "opencto-project-1-work-item-1" ||
+		browserResult.Metadata["browser_session"] != "opencto-project-1" ||
 		!strings.Contains(browserResult.Metadata["artifact_paths"], ".agent-browser") {
 		t.Fatalf("unexpected browser result: %#v", browserResult)
 	}
@@ -709,7 +709,7 @@ func TestExecuteBrowserUsesStateDirAndLogMetadata(t *testing.T) {
 				ExitCode:         0,
 				WorkingDirectory: dir,
 				Executable:       "agent-browser",
-				Session:          "opencto-project-1-work-item-1",
+				Session:          "opencto-project-1",
 				Command:          "snapshot",
 				StdoutLogPath:    stdoutLog,
 				StderrLogPath:    stderrLog,
@@ -731,6 +731,16 @@ func TestExecuteBrowserUsesStateDirAndLogMetadata(t *testing.T) {
 	}
 	if result.Metadata["stdout_truncated"] != "true" || !strings.Contains(result.Observation, "output_truncated: true") {
 		t.Fatalf("expected browser truncation observation, got %#v", result)
+	}
+	if !strings.Contains(result.Observation, "browser_session: opencto-project-1") {
+		t.Fatalf("expected browser session in observation, got %#v", result.Observation)
+	}
+	var input map[string]any
+	if err := json.Unmarshal(result.Input, &input); err != nil {
+		t.Fatalf("decode browser input: %v", err)
+	}
+	if input["session"] != "opencto-project-1" {
+		t.Fatalf("expected resolved browser session in input, got %s", result.Input)
 	}
 }
 

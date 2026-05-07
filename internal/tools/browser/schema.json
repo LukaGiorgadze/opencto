@@ -26,7 +26,7 @@
         },
         "session": {
             "type": "string",
-            "description": "agent-browser isolated session name passed as --session by OpenCTO. Use an empty string for OpenCTO's default task session. For persistent saved auth state, use --session-name in args or configure sessionName in agent-browser.json."
+            "description": "Human-readable browser session name for this browsing flow, using only letters, numbers, and dashes, for example appstore-login or stripe-dashboard. For a new browser flow, choose a meaningful non-empty name. OpenCTO runs it as opencto-<project_id>-<session>. If continuing a browser flow, reuse the same session value or the returned browser_session value. Use an empty string only when no meaningful browser flow name is available; OpenCTO then uses opencto-<project_id>."
         },
         "timeout_ms": {
             "type": "integer",

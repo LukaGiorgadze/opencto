@@ -184,6 +184,7 @@ type toolExecutionContext struct {
 type toolRunResult struct {
 	Observation      string
 	ResultCode       string
+	Input            json.RawMessage
 	WorkingDirectory string
 	Metadata         map[string]string
 	Processes        []domain.ProcessReference
@@ -1078,6 +1079,10 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 	if request.ToolChoice.Destructive {
 		metadata["destructive"] = "true"
 	}
+	resultInput := cloneRawMessage(request.ToolChoice.Input)
+	if len(strings.TrimSpace(string(toolResult.Input))) > 0 {
+		resultInput = cloneRawMessage(toolResult.Input)
+	}
 
 	invocation := domain.ToolInvocation{
 		ID:                 execution.InvocationID,
@@ -1172,7 +1177,7 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 		RequestedAction:  request.ToolChoice.Intent,
 		Command:          request.ToolChoice.Command,
 		Args:             request.ToolChoice.Args,
-		Input:            cloneRawMessage(request.ToolChoice.Input),
+		Input:            resultInput,
 		Observation:      attempt.OutputSummary,
 		Error:            errorMessage,
 		WorkingDirectory: invocation.WorkingDirectory,
@@ -1411,6 +1416,7 @@ func (a *Activities) runBrowserTool(ctx context.Context, choice agent.ToolChoice
 	return toolRunResult{
 		Observation:      browserObservation(result, err),
 		ResultCode:       code,
+		Input:            browserInputWithSession(choice.Input, result.Session),
 		WorkingDirectory: result.WorkingDirectory,
 		Metadata:         metadata,
 	}, err
@@ -1534,6 +1540,9 @@ func browserObservation(result browsertool.Result, err error) string {
 		sections = append(sections, "artifacts:\n"+strings.Join(result.ArtifactPaths, "\n"))
 	}
 	var notes []string
+	if result.Session != "" {
+		notes = append(notes, "browser_session: "+result.Session)
+	}
 	if result.StdoutTruncated || result.StderrTruncated {
 		notes = append(notes, "output_truncated: true")
 	}
@@ -1550,6 +1559,23 @@ func browserObservation(result browsertool.Result, err error) string {
 		return observation
 	}
 	return observation + "\n\n" + strings.Join(sections, "\n\n")
+}
+
+func browserInputWithSession(raw json.RawMessage, session string) json.RawMessage {
+	session = strings.TrimSpace(session)
+	if session == "" {
+		return cloneRawMessage(raw)
+	}
+	var object map[string]any
+	if err := json.Unmarshal(raw, &object); err != nil || object == nil {
+		return cloneRawMessage(raw)
+	}
+	object["session"] = session
+	encoded, err := json.Marshal(object)
+	if err != nil {
+		return cloneRawMessage(raw)
+	}
+	return encoded
 }
 
 func (a *Activities) runReadTool(ctx context.Context, choice agent.ToolChoice) (toolRunResult, error) {

@@ -39,7 +39,7 @@ func TestRunBuildsAgentBrowserCommandWithDefaultSession(t *testing.T) {
 		t.Fatalf("run browser command: %v", err)
 	}
 
-	wantArgs := []string{"--session", "opencto-project-one-wi-2", "--headed", "open", "https://example.com"}
+	wantArgs := []string{"--session", "opencto-project-one", "--headed", "open", "https://example.com"}
 	if captured.executable != "agent-browser" {
 		t.Fatalf("unexpected executable: %q", captured.executable)
 	}
@@ -55,7 +55,7 @@ func TestRunBuildsAgentBrowserCommandWithDefaultSession(t *testing.T) {
 	if !envContains(captured.env, config.EnvOpenCTOWorkspace+"="+dir) {
 		t.Fatalf("expected %s in command environment", config.EnvOpenCTOWorkspace)
 	}
-	if result.Session != "opencto-project-one-wi-2" {
+	if result.Session != "opencto-project-one" {
 		t.Fatalf("unexpected session: %q", result.Session)
 	}
 	wantArtifact := filepath.Join(dir, ".agent-browser", "page.yml")
@@ -86,7 +86,7 @@ func TestRunUsesDefaultAgentBrowserExecutable(t *testing.T) {
 		t.Fatalf("run browser command: %v", err)
 	}
 
-	wantArgs := []string{"--session", "opencto-project-1-work-item-1", "session", "list"}
+	wantArgs := []string{"--session", "opencto-project-1", "session", "list"}
 	if captured.executable != "agent-browser" {
 		t.Fatalf("unexpected executable: %q", captured.executable)
 	}
@@ -117,6 +117,7 @@ func TestRunExecutesBatchActions(t *testing.T) {
 	result, err := executor.Run(context.Background(), Request{
 		ProjectID:     "project-1",
 		WorkItemID:    "work-item-1",
+		Session:       "Login_Flow 123!",
 		WorkspaceRoot: dir,
 		Actions: []Action{
 			{Command: "open", Args: []string{"https://example.com"}},
@@ -130,8 +131,8 @@ func TestRunExecutesBatchActions(t *testing.T) {
 	if len(captured) != 2 {
 		t.Fatalf("expected two browser invocations, got %#v", captured)
 	}
-	wantFirstArgs := []string{"--session", "opencto-project-1-work-item-1", "open", "https://example.com"}
-	wantSecondArgs := []string{"--session", "opencto-project-1-work-item-1", "--json", "snapshot", "-i"}
+	wantFirstArgs := []string{"--session", "opencto-project-1-login-flow-123", "open", "https://example.com"}
+	wantSecondArgs := []string{"--session", "opencto-project-1-login-flow-123", "--json", "snapshot", "-i"}
 	if !reflect.DeepEqual(captured[0].args, wantFirstArgs) {
 		t.Fatalf("unexpected first args:\nwant %#v\ngot  %#v", wantFirstArgs, captured[0].args)
 	}
@@ -140,6 +141,9 @@ func TestRunExecutesBatchActions(t *testing.T) {
 	}
 	if len(result.Actions) != 2 || result.Command != "batch" {
 		t.Fatalf("unexpected batch result: %#v", result)
+	}
+	if result.Session != "opencto-project-1-login-flow-123" {
+		t.Fatalf("unexpected batch session: %q", result.Session)
 	}
 	if !strings.Contains(result.Stdout, "opened") || !strings.Contains(result.Stdout, "snapshot") {
 		t.Fatalf("expected combined stdout, got %q", result.Stdout)
@@ -159,6 +163,22 @@ func TestNormalizeRejectsSessionFlagsOutsideSessionField(t *testing.T) {
 		if _, err := normalizeRequest(req); !errors.Is(err, ErrSessionFlagNotAllowed) {
 			t.Fatalf("expected session flag error for %#v, got %v", req, err)
 		}
+	}
+}
+
+func TestNormalizeAcceptsReturnedBrowserSession(t *testing.T) {
+	t.Parallel()
+
+	req, err := normalizeRequest(Request{
+		ProjectID: "project-1",
+		Command:   "snapshot",
+		Session:   "opencto-project-1-appstore-login",
+	})
+	if err != nil {
+		t.Fatalf("normalize request: %v", err)
+	}
+	if req.Session != "opencto-project-1-appstore-login" {
+		t.Fatalf("unexpected session: %q", req.Session)
 	}
 }
 
