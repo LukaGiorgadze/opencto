@@ -649,6 +649,9 @@ func (s *Store) ListConversationMessages(ctx context.Context, query storage.Conv
 		where = append(where, "event_id <> ?")
 		args = append(args, eventID)
 	}
+	if query.ExcludeControl {
+		where = append(where, "COALESCE(json_extract(metadata, '$."+domain.MetadataKeyControl+"'), '') = ''")
+	}
 	roles := normalizeConversationRoles(query.Roles)
 	if len(roles) > 0 {
 		placeholders := make([]string, 0, len(roles))
@@ -918,9 +921,26 @@ func (s *Store) ForgetMemory(ctx context.Context, projectID, memoryID string) (b
 func (s *Store) ForgetMemories(ctx context.Context, request domain.MemoryForgetRequest) (domain.MemoryForgetResult, error) {
 	memoryIDs := cleanMemoryIDs(request.MemoryIDs)
 	tags := cleanTags(request.Tags)
-	scopes := normalizeMemoryScopes(request.Scopes)
-	if len(memoryIDs) == 0 && len(tags) == 0 && len(scopes) != 1 {
-		return domain.MemoryForgetResult{}, fmt.Errorf("memory ids, tags, or a single memory scope is required")
+	scopeSelected := len(request.Scopes) > 0
+	selectorCount := 0
+	if len(memoryIDs) > 0 {
+		selectorCount++
+	}
+	if len(tags) > 0 {
+		selectorCount++
+	}
+	if scopeSelected {
+		selectorCount++
+	}
+	if selectorCount == 0 {
+		return domain.MemoryForgetResult{}, fmt.Errorf("memory ids, tags, or memory scope is required")
+	}
+	if selectorCount > 1 {
+		return domain.MemoryForgetResult{}, fmt.Errorf("forget memory accepts exactly one selector: memory ids, tags, or scope")
+	}
+	scopes := normalizeMemoryScopes(nil)
+	if scopeSelected {
+		scopes = normalizeMemoryScopes(request.Scopes)
 	}
 
 	scopeSQL, args := memoryVisibilitySQL(strings.TrimSpace(request.ProjectID), scopes)

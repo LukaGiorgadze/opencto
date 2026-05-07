@@ -27,6 +27,7 @@ type stubProjectStore struct {
 	forgetRequests       *[]domain.MemoryForgetRequest
 	conversationsByScope map[storage.ConversationScope][]domain.ConversationMessage
 	conversationQueries  *[]storage.ConversationQuery
+	upsertedConversation *[]domain.ConversationMessage
 }
 
 type stubEngine struct {
@@ -100,7 +101,10 @@ func (s stubProjectStore) UpsertToolInvocation(context.Context, domain.ToolInvoc
 	return nil
 }
 
-func (s stubProjectStore) UpsertConversationMessage(context.Context, domain.ConversationMessage) error {
+func (s stubProjectStore) UpsertConversationMessage(_ context.Context, message domain.ConversationMessage) error {
+	if s.upsertedConversation != nil {
+		*s.upsertedConversation = append(*s.upsertedConversation, message)
+	}
 	return nil
 }
 
@@ -144,6 +148,37 @@ func idsFromConversation(messages []domain.ConversationMessage) []string {
 		ids = append(ids, message.ID)
 	}
 	return ids
+}
+
+func TestPersistEventCarriesControlMetadataToConversationMessage(t *testing.T) {
+	t.Parallel()
+
+	upserted := []domain.ConversationMessage{}
+	activities := Activities{
+		Store: stubProjectStore{upsertedConversation: &upserted},
+	}
+	err := activities.PersistEvent(context.Background(), PersistEventRequest{
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "project-1",
+			ChannelID:   "channel-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			Body:        "/stop",
+			Metadata:    domain.Metadata{domain.MetadataKeyControl: "cancel"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("persist event: %v", err)
+	}
+	if len(upserted) != 1 {
+		t.Fatalf("expected one conversation message, got %#v", upserted)
+	}
+	if upserted[0].Metadata[domain.MetadataKeyControl] != "cancel" {
+		t.Fatalf("expected control metadata to be carried, got %#v", upserted[0].Metadata)
+	}
+	if upserted[0].ChannelID != "channel-1" || upserted[0].ChannelType != domain.ChannelTypeDiscord {
+		t.Fatalf("expected channel scope to be carried, got %#v", upserted[0])
+	}
 }
 
 func TestReportResponseIncludesAttachments(t *testing.T) {
@@ -287,7 +322,7 @@ func TestLoadContextIncludesBoundedMemoryWhenEnabled(t *testing.T) {
 	}
 }
 
-func TestExecuteMemoryToolForgetsByArrayTagsAndScope(t *testing.T) {
+func TestExecuteMemoryToolForgetsByMemoryIDs(t *testing.T) {
 	t.Parallel()
 
 	var forgetRequests []domain.MemoryForgetRequest
@@ -309,7 +344,7 @@ func TestExecuteMemoryToolForgetsByArrayTagsAndScope(t *testing.T) {
 			ToolCallID: "toolu_memory",
 			Type:       domain.ToolTypeMemoryForget,
 			Intent:     "forget cleanup memories",
-			Input:      []byte(`{"memory_ids":["memory-1","memory-2","memory-2",""],"tags":["Cleanup","obsolete","cleanup"],"scope":"project"}`),
+			Input:      []byte(`{"memory_ids":["memory-1","memory-2","memory-2",""],"tags":[],"scope":"all"}`),
 			Metadata: map[string]string{
 				"execution_cycle": "1",
 			},
@@ -325,14 +360,43 @@ func TestExecuteMemoryToolForgetsByArrayTagsAndScope(t *testing.T) {
 	if strings.Join(request.MemoryIDs, ",") != "memory-1,memory-2" {
 		t.Fatalf("unexpected forget memory ids: %#v", request.MemoryIDs)
 	}
-	if len(request.Scopes) != 1 || request.Scopes[0] != domain.MemoryScopeProject {
+	if len(request.Scopes) != 0 {
 		t.Fatalf("unexpected forget scopes: %#v", request.Scopes)
 	}
-	if strings.Join(request.Tags, ",") != "cleanup,obsolete" {
+	if len(request.Tags) != 0 {
 		t.Fatalf("unexpected forget tags: %#v", request.Tags)
 	}
 	if result.Metadata["deleted_count"] != "2" || !strings.Contains(result.Observation, "deleted_count: 2") {
 		t.Fatalf("unexpected forget result: %#v", result)
+	}
+}
+
+func TestExecuteMemoryToolRejectsMixedForgetSelectors(t *testing.T) {
+	t.Parallel()
+
+	activities := Activities{
+		Store:         stubProjectStore{},
+		MemoryEnabled: true,
+	}
+	_, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "default",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemoryForget,
+			Intent:     "forget cleanup memories",
+			Input:      []byte(`{"memory_ids":["memory-1"],"tags":["cleanup"],"scope":"all"}`),
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+			},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "exactly one selector") {
+		t.Fatalf("expected mixed selector error, got %v", err)
 	}
 }
 
@@ -379,6 +443,9 @@ func TestLoadContextIncludesScopedConversationHistory(t *testing.T) {
 	for _, query := range queries {
 		if query.ExcludeEventID != "current-event" {
 			t.Fatalf("expected current event to be excluded, got %#v", query)
+		}
+		if !query.ExcludeControl {
+			t.Fatalf("expected control messages to be excluded from normal history, got %#v", query)
 		}
 	}
 }

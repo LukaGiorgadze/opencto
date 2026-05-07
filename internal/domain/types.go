@@ -8,6 +8,8 @@ import (
 
 type Metadata map[string]string
 
+const MetadataKeyControl = "control"
+
 type Provenance struct {
 	Source     string    `json:"source"`
 	SourceID   string    `json:"source_id,omitempty"`

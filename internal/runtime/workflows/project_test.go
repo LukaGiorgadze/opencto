@@ -658,9 +658,16 @@ func TestTaskWorkflowPassesAdditionalContextSignalToNextAction(t *testing.T) {
 
 	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "do work"}
 	additional := domain.Event{ID: "event-2", ProjectID: "project-1", Body: "also check tests"}
+	persistedAdditional := false
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(workflows.SignalTaskAdditionalContext, workflows.AdditionalContextSignal{Event: additional})
 	}, 0)
+	env.OnActivity("Activities.PersistEvent", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		request := args.Get(1).(activities.PersistEventRequest)
+		if request.Event.ID == "event-2" && request.Event.Metadata[domain.MetadataKeyControl] == "" {
+			persistedAdditional = true
+		}
+	}).Return(nil)
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
 		return len(request.AdditionalEvents) == 1 && request.AdditionalEvents[0].ID == "event-2"
 	})).Return(activities.NextActionResult{
@@ -673,6 +680,9 @@ func TestTaskWorkflowPassesAdditionalContextSignalToNextAction(t *testing.T) {
 	})
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatalf("task workflow failed: %v", err)
+	}
+	if !persistedAdditional {
+		t.Fatalf("expected additional context signal to be persisted")
 	}
 	env.AssertExpectations(t)
 }

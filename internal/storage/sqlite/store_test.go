@@ -185,6 +185,17 @@ func TestConversationMessagesUseScopedHistory(t *testing.T) {
 			CreatedAt:   base.Add(3 * time.Second),
 		},
 		{
+			ID:          "control",
+			ProjectID:   "default",
+			EventID:     "control-event",
+			Role:        domain.ConversationRoleUser,
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-a",
+			Body:        "/stop",
+			Metadata:    domain.Metadata{domain.MetadataKeyControl: "cancel"},
+			CreatedAt:   base.Add(3500 * time.Millisecond),
+		},
+		{
 			ID:          "current",
 			ProjectID:   "default",
 			EventID:     "current-event",
@@ -224,6 +235,7 @@ func TestConversationMessagesUseScopedHistory(t *testing.T) {
 		Scope:          storage.ConversationScopeChannel,
 		Limit:          10,
 		ExcludeEventID: "current-event",
+		ExcludeControl: true,
 	})
 	if err != nil {
 		t.Fatalf("list channel conversation: %v", err)
@@ -294,7 +306,7 @@ func TestMemoryRememberSearchAndForget(t *testing.T) {
 	}
 }
 
-func TestForgetMemoriesByIDsTagsAndScope(t *testing.T) {
+func TestForgetMemoriesByIDsTagsOrScope(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -302,21 +314,31 @@ func TestForgetMemoriesByIDsTagsAndScope(t *testing.T) {
 	now := time.Now().UTC()
 	memories := []domain.Memory{
 		{
-			ID:        "project-delete",
+			ID:        "project-id-delete",
 			ProjectID: "default",
 			Scope:     domain.MemoryScopeProject,
 			Kind:      "fact",
-			Content:   "Delete project cleanup memory.",
+			Content:   "Delete project memory by id.",
+			Tags:      []string{"active"},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			ID:        "project-tag-delete",
+			ProjectID: "default",
+			Scope:     domain.MemoryScopeProject,
+			Kind:      "fact",
+			Content:   "Delete project cleanup memory by tag.",
 			Tags:      []string{"cleanup", "obsolete"},
 			CreatedAt: now,
 			UpdatedAt: now,
 		},
 		{
-			ID:        "project-keep",
+			ID:        "project-scope-delete",
 			ProjectID: "default",
 			Scope:     domain.MemoryScopeProject,
 			Kind:      "fact",
-			Content:   "Keep project memory.",
+			Content:   "Delete project memory by scope.",
 			Tags:      []string{"active"},
 			CreatedAt: now,
 			UpdatedAt: now,
@@ -332,12 +354,32 @@ func TestForgetMemoriesByIDsTagsAndScope(t *testing.T) {
 			UpdatedAt: now,
 		},
 		{
-			ID:        "global-delete",
+			ID:        "global-id-delete",
 			ProjectID: "default",
 			Scope:     domain.MemoryScopeGlobal,
 			Kind:      "fact",
-			Content:   "Delete global cleanup memory.",
+			Content:   "Delete global memory by id.",
+			Tags:      []string{"active"},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			ID:        "global-tag-delete",
+			ProjectID: "default",
+			Scope:     domain.MemoryScopeGlobal,
+			Kind:      "fact",
+			Content:   "Delete global cleanup memory by tag.",
 			Tags:      []string{"cleanup"},
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			ID:        "global-scope-delete",
+			ProjectID: "default",
+			Scope:     domain.MemoryScopeGlobal,
+			Kind:      "fact",
+			Content:   "Delete global memory by scope.",
+			Tags:      []string{"active"},
 			CreatedAt: now,
 			UpdatedAt: now,
 		},
@@ -350,38 +392,30 @@ func TestForgetMemoriesByIDsTagsAndScope(t *testing.T) {
 
 	result, err := store.ForgetMemories(ctx, domain.MemoryForgetRequest{
 		ProjectID: "default",
-		Scopes:    []domain.MemoryScope{domain.MemoryScopeProject},
-		Tags:      []string{"cleanup", "obsolete"},
+		MemoryIDs: []string{"project-id-delete", "global-id-delete"},
 	})
 	if err != nil {
-		t.Fatalf("forget project memories by tags: %v", err)
+		t.Fatalf("forget memories by ids: %v", err)
 	}
-	if len(result.DeletedMemoryIDs) != 1 || result.DeletedMemoryIDs[0] != "project-delete" {
-		t.Fatalf("unexpected tag/scope forget result: %#v", result)
-	}
+	requireMemoryIDs(t, result.DeletedMemoryIDs, "global-id-delete", "project-id-delete")
 
 	result, err = store.ForgetMemories(ctx, domain.MemoryForgetRequest{
 		ProjectID: "default",
-		MemoryIDs: []string{"project-keep", "global-delete"},
-		Scopes:    []domain.MemoryScope{domain.MemoryScopeGlobal},
+		Tags:      []string{"cleanup"},
 	})
 	if err != nil {
-		t.Fatalf("forget memories by ids and scope: %v", err)
+		t.Fatalf("forget memories by tags: %v", err)
 	}
-	if len(result.DeletedMemoryIDs) != 1 || result.DeletedMemoryIDs[0] != "global-delete" {
-		t.Fatalf("unexpected id/scope forget result: %#v", result)
-	}
+	requireMemoryIDs(t, result.DeletedMemoryIDs, "global-tag-delete", "project-tag-delete")
 
 	result, err = store.ForgetMemories(ctx, domain.MemoryForgetRequest{
 		ProjectID: "default",
-		Scopes:    []domain.MemoryScope{domain.MemoryScopeProject},
+		Scopes:    []domain.MemoryScope{domain.MemoryScopeProject, domain.MemoryScopeGlobal},
 	})
 	if err != nil {
 		t.Fatalf("forget memories by scope: %v", err)
 	}
-	if len(result.DeletedMemoryIDs) != 1 || result.DeletedMemoryIDs[0] != "project-keep" {
-		t.Fatalf("unexpected scope forget result: %#v", result)
-	}
+	requireMemoryIDs(t, result.DeletedMemoryIDs, "global-scope-delete", "project-scope-delete")
 
 	found, err := store.SearchMemories(ctx, domain.MemorySearchRequest{
 		ProjectID:      "default",
@@ -396,6 +430,25 @@ func TestForgetMemoriesByIDsTagsAndScope(t *testing.T) {
 	remaining := memoryIDs(found)
 	if strings.Join(remaining, ",") != "" {
 		t.Fatalf("unexpected remaining default memories: %#v", found)
+	}
+}
+
+func TestForgetMemoriesRejectsMissingOrMixedSelector(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	if _, err := store.ForgetMemories(ctx, domain.MemoryForgetRequest{
+		ProjectID: "default",
+	}); err == nil {
+		t.Fatalf("expected forget without selector to fail")
+	}
+	if _, err := store.ForgetMemories(ctx, domain.MemoryForgetRequest{
+		ProjectID: "default",
+		MemoryIDs: []string{"memory-1"},
+		Tags:      []string{"cleanup"},
+	}); err == nil {
+		t.Fatalf("expected forget with mixed selectors to fail")
 	}
 }
 
@@ -415,6 +468,16 @@ func openTestStore(t *testing.T) *Store {
 		t.Fatalf("migrate store: %v", err)
 	}
 	return store
+}
+
+func requireMemoryIDs(t *testing.T, actual []string, expected ...string) {
+	t.Helper()
+	got := append([]string(nil), actual...)
+	sort.Strings(got)
+	sort.Strings(expected)
+	if strings.Join(got, ",") != strings.Join(expected, ",") {
+		t.Fatalf("unexpected memory ids: got %#v want %#v", got, expected)
+	}
 }
 
 func memoryIDs(memories []domain.Memory) []string {

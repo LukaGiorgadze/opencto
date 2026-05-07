@@ -57,6 +57,7 @@ type ConversationQuery struct {
 	Roles          []domain.ConversationRole
 	Limit          int
 	ExcludeEventID string
+	ExcludeControl bool
 }
 
 func DefaultDBPath(workspaceRoot string) string {

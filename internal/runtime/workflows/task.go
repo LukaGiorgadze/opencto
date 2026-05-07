@@ -81,7 +81,9 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 	}
 
 	for cycle := 1; cycle <= maxExecutionCycles; cycle++ {
-		drainTaskSignals(ctx, &additionalEvents)
+		if err := persistTaskSignalEvents(persistenceCtx, drainTaskSignals(ctx, &additionalEvents)); err != nil {
+			return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)
+		}
 		next, err := nextAction(nextActionCtx, activities.NextActionRequest{
 			ProjectID:          input.ProjectID,
 			Event:              input.Event,
@@ -126,8 +128,11 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 
 		lastResults = nil
 		for _, choice := range toolChoices {
-			execResult, canceled, interrupted, err := executeToolStep(ctx, toolCtx, persistenceCtx, input.ProjectID, next.WorkItemID, input.Event, choice, cycle, &additionalEvents)
+			execResult, canceled, interrupted, signalEvents, err := executeToolStep(ctx, toolCtx, persistenceCtx, input.ProjectID, next.WorkItemID, input.Event, choice, cycle, &additionalEvents)
 			mergeTaskProcesses(&processes, execResult.Processes)
+			if err := persistTaskSignalEvents(persistenceCtx, signalEvents); err != nil {
+				return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)
+			}
 			if canceled {
 				return completeIncompleteTask(nextActionCtx, input.ProjectID, input.Event, processes)
 			}
@@ -198,7 +203,39 @@ func persistToolResult(ctx workflow.Context, request activities.PersistToolResul
 	return workflow.ExecuteActivity(ctx, "Activities.PersistToolResult", request).Get(ctx, nil)
 }
 
-func executeToolStep(ctx workflow.Context, toolCtx workflow.Context, persistenceCtx workflow.Context, projectID, workItemID string, event domain.Event, choice agent.ToolChoice, cycle int, additionalEvents *[]domain.Event) (activities.ExecuteToolResult, bool, bool, error) {
+type taskSignalEvent struct {
+	Event   domain.Event
+	Control string
+}
+
+func persistTaskSignalEvents(ctx workflow.Context, events []taskSignalEvent) error {
+	for _, item := range events {
+		event := eventWithControlMetadata(item.Event, item.Control)
+		if strings.TrimSpace(event.ID) == "" {
+			continue
+		}
+		if err := persistEvent(ctx, activities.PersistEventRequest{Event: event}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func eventWithControlMetadata(event domain.Event, control string) domain.Event {
+	control = strings.TrimSpace(control)
+	if control == "" {
+		return event
+	}
+	metadata := domain.Metadata{}
+	for key, value := range event.Metadata {
+		metadata[key] = value
+	}
+	metadata[domain.MetadataKeyControl] = control
+	event.Metadata = metadata
+	return event
+}
+
+func executeToolStep(ctx workflow.Context, toolCtx workflow.Context, persistenceCtx workflow.Context, projectID, workItemID string, event domain.Event, choice agent.ToolChoice, cycle int, additionalEvents *[]domain.Event) (activities.ExecuteToolResult, bool, bool, []taskSignalEvent, error) {
 	activityBaseCtx := toolCtx
 	activityName := "Activities.ExecuteTool"
 	if isMemoryTool(choice.Type) {
@@ -217,6 +254,7 @@ func executeToolStep(ctx workflow.Context, toolCtx workflow.Context, persistence
 	var result activities.ExecuteToolResult
 	interrupted := false
 	canceled := false
+	var signalEvents []taskSignalEvent
 	for {
 		selector := workflow.NewSelector(ctx)
 		selector.AddFuture(future, func(f workflow.Future) {
@@ -228,12 +266,14 @@ func executeToolStep(ctx workflow.Context, toolCtx workflow.Context, persistence
 		selector.AddReceive(workflow.GetSignalChannel(ctx, SignalTaskCancel), func(c workflow.ReceiveChannel, more bool) {
 			var signal TaskControlSignal
 			c.Receive(ctx, &signal)
+			signalEvents = append(signalEvents, taskSignalEvent{Event: signal.Event, Control: "cancel"})
 			canceled = true
 			cancelActivity()
 		})
 		selector.AddReceive(workflow.GetSignalChannel(ctx, SignalTaskInterrupt), func(c workflow.ReceiveChannel, more bool) {
 			var signal TaskControlSignal
 			c.Receive(ctx, &signal)
+			signalEvents = append(signalEvents, taskSignalEvent{Event: signal.Event, Control: "interrupt"})
 			if strings.TrimSpace(signal.Event.Body) != "" {
 				*additionalEvents = append(*additionalEvents, signal.Event)
 			}
@@ -244,22 +284,23 @@ func executeToolStep(ctx workflow.Context, toolCtx workflow.Context, persistence
 			var signal AdditionalContextSignal
 			c.Receive(ctx, &signal)
 			*additionalEvents = append(*additionalEvents, signal.Event)
+			signalEvents = append(signalEvents, taskSignalEvent{Event: signal.Event})
 		})
 		selector.Select(ctx)
 		if result.ToolCallID != "" || result.Status != "" {
 			if canceled {
-				return result, true, false, nil
+				return result, true, false, signalEvents, nil
 			}
 			if interrupted {
 				result.Status = domain.ExecutionStatusCanceled
 				result.Error = "interrupted by user message"
 			}
-			return result, false, interrupted, nil
+			return result, false, interrupted, signalEvents, nil
 		}
 		if interrupted {
 			result = failedExecutionActivityResult(choice, workItemID, cycle, fmt.Errorf("interrupted by user message"))
 			result.Status = domain.ExecutionStatusCanceled
-			return result, false, true, nil
+			return result, false, true, signalEvents, nil
 		}
 	}
 }
@@ -304,13 +345,15 @@ func shouldStartResponseSession(event domain.Event) bool {
 	return strings.TrimSpace(event.ChannelID) != ""
 }
 
-func drainTaskSignals(ctx workflow.Context, additionalEvents *[]domain.Event) {
+func drainTaskSignals(ctx workflow.Context, additionalEvents *[]domain.Event) []taskSignalEvent {
+	var signalEvents []taskSignalEvent
 	for {
 		var signal AdditionalContextSignal
 		if !workflow.GetSignalChannel(ctx, SignalTaskAdditionalContext).ReceiveAsync(&signal) {
-			return
+			return signalEvents
 		}
 		*additionalEvents = append(*additionalEvents, signal.Event)
+		signalEvents = append(signalEvents, taskSignalEvent{Event: signal.Event})
 	}
 }
 
