@@ -13,24 +13,20 @@ import (
 	"github.com/opencto/opencto/internal/runtime/scheduled"
 )
 
-const reportResponseActivityTimeout = time.Minute
+const (
+	reportResponseActivityTimeout = time.Minute
+	recentProjectEventIDLimit     = 1000
+)
 
 func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: time.Minute})
 
 	state := ProjectWorkflowState{
-		ProjectID:    input.ProjectID,
-		ActiveTasks:  map[string]string{},
-		SeenEventIDs: map[string]bool{},
+		ProjectID: input.ProjectID,
 	}
 	if input.Snapshot != nil {
 		state = *input.Snapshot
-		if state.ActiveTasks == nil {
-			state.ActiveTasks = map[string]string{}
-		}
-		if state.SeenEventIDs == nil {
-			state.SeenEventIDs = map[string]bool{}
-		}
+		trimRecentProjectEventIDs(&state)
 	}
 
 	eventSignal := workflow.GetSignalChannel(ctx, SignalEnqueueEvent)
@@ -69,8 +65,7 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 				state.ProcessedEvents++
 				continue
 			}
-			active[event.ID] = activeTask{Future: future, Event: event}
-			state.ActiveTasks[event.ID] = workflowID
+			active[event.ID] = activeTask{Future: future, Event: event, WorkflowID: workflowID}
 			continue
 		}
 
@@ -78,7 +73,7 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 		selector.AddReceive(eventSignal, func(c workflow.ReceiveChannel, more bool) {
 			var signal EnqueueEventSignal
 			c.Receive(ctx, &signal)
-			handleProjectEventSignal(ctx, &state, active, input.ProjectID, signal.Event)
+			handleProjectEventSignal(ctx, &state, active, signal.Event)
 		})
 		for eventID, task := range active {
 			selector.AddFuture(task.Future, func(f workflow.Future) {
@@ -90,7 +85,6 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 					pendingReports = append(pendingReports, result)
 				}
 				delete(active, eventID)
-				delete(state.ActiveTasks, eventID)
 				state.ProcessedEvents++
 			})
 		}
@@ -99,8 +93,9 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 }
 
 type activeTask struct {
-	Future workflow.ChildWorkflowFuture
-	Event  domain.Event
+	Future     workflow.ChildWorkflowFuture
+	Event      domain.Event
+	WorkflowID string
 }
 
 func reportTaskResult(ctx workflow.Context, result TaskWorkflowResult) {
@@ -174,13 +169,9 @@ func taskWorkflowFailureDetail(err error) string {
 	return "the task workflow failed (" + text + ")."
 }
 
-func handleProjectEventSignal(ctx workflow.Context, state *ProjectWorkflowState, active map[string]activeTask, projectID string, event domain.Event) {
-	eventID := strings.TrimSpace(event.ID)
-	if eventID != "" && state.SeenEventIDs[eventID] {
+func handleProjectEventSignal(ctx workflow.Context, state *ProjectWorkflowState, active map[string]activeTask, event domain.Event) {
+	if rememberProjectEventID(state, event.ID) {
 		return
-	}
-	if eventID != "" {
-		state.SeenEventIDs[eventID] = true
 	}
 	if scheduled.IsScheduledTaskEvent(event) {
 		if scheduledTaskOverlaps(state, active, event) {
@@ -194,7 +185,7 @@ func handleProjectEventSignal(ctx workflow.Context, state *ProjectWorkflowState,
 		return
 	}
 
-	_, targetWorkflowID := firstActiveTask(state.ActiveTasks)
+	targetWorkflowID := firstActiveTaskWorkflowID(active)
 	if targetWorkflowID == "" {
 		state.Queue = append(state.Queue, event)
 		return
@@ -235,11 +226,34 @@ func taskWorkflowID(projectID, eventID string) string {
 	return fmt.Sprintf("%s:task:%s", projectID, eventID)
 }
 
-func firstActiveTask(active map[string]string) (string, string) {
-	for eventID, workflowID := range active {
-		return eventID, workflowID
+func firstActiveTaskWorkflowID(active map[string]activeTask) string {
+	for _, task := range active {
+		return task.WorkflowID
 	}
-	return "", ""
+	return ""
+}
+
+func rememberProjectEventID(state *ProjectWorkflowState, eventID string) bool {
+	eventID = strings.TrimSpace(eventID)
+	if eventID == "" {
+		return false
+	}
+	for _, recentID := range state.RecentEventIDs {
+		if recentID == eventID {
+			return true
+		}
+	}
+	state.RecentEventIDs = append(state.RecentEventIDs, eventID)
+	trimRecentProjectEventIDs(state)
+	return false
+}
+
+func trimRecentProjectEventIDs(state *ProjectWorkflowState) {
+	if len(state.RecentEventIDs) <= recentProjectEventIDLimit {
+		return
+	}
+	start := len(state.RecentEventIDs) - recentProjectEventIDLimit
+	state.RecentEventIDs = append([]string(nil), state.RecentEventIDs[start:]...)
 }
 
 func projectControlAction(event domain.Event) string {

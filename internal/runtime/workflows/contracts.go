@@ -31,11 +31,10 @@ type (
 )
 
 type ProjectWorkflowState struct {
-	ProjectID       string            `json:"project_id"`
-	Queue           []domain.Event    `json:"queue,omitempty"`
-	ActiveTasks     map[string]string `json:"active_tasks,omitempty"`
-	SeenEventIDs    map[string]bool   `json:"seen_event_ids,omitempty"`
-	ProcessedEvents int               `json:"processed_events"`
+	ProjectID       string         `json:"project_id"`
+	Queue           []domain.Event `json:"queue,omitempty"`
+	RecentEventIDs  []string       `json:"recent_event_ids,omitempty"`
+	ProcessedEvents int            `json:"processed_events"`
 }
 
 type TaskWorkflowInput struct {

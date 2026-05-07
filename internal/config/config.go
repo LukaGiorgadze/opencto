@@ -16,6 +16,9 @@ const (
 	defaultDiscordOutboundMaxFiles      = 10
 	defaultDiscordOutboundMaxFileBytes  = 10 << 20
 	defaultDiscordOutboundMaxTotalBytes = 25 << 20
+	defaultMemoryEmbeddingProvider      = "openai"
+	defaultMemoryEmbeddingModel         = "text-embedding-3-small"
+	defaultMemoryEmbeddingDimensions    = 1536
 )
 
 type Config struct {
@@ -71,8 +74,9 @@ type StorageConfig struct {
 }
 
 type MemoryConfig struct {
-	Enabled          bool `json:"enabled"`
-	AutoContextLimit int  `json:"auto_context_limit"`
+	Enabled          bool                  `json:"enabled"`
+	AutoContextLimit int                   `json:"auto_context_limit"`
+	Embedding        MemoryEmbeddingConfig `json:"embedding"`
 }
 
 type ConversationConfig struct {
@@ -82,8 +86,23 @@ type ConversationConfig struct {
 }
 
 type memoryFileConfig struct {
-	Enabled          *bool `json:"enabled"`
-	AutoContextLimit int   `json:"auto_context_limit"`
+	Enabled          *bool                     `json:"enabled"`
+	AutoContextLimit int                       `json:"auto_context_limit"`
+	Embedding        memoryEmbeddingFileConfig `json:"embedding"`
+}
+
+type memoryEmbeddingFileConfig struct {
+	Enabled    *bool  `json:"enabled"`
+	Provider   string `json:"provider"`
+	Model      string `json:"model"`
+	Dimensions int    `json:"dimensions"`
+}
+
+type MemoryEmbeddingConfig struct {
+	Enabled    bool   `json:"enabled"`
+	Provider   string `json:"provider"`
+	Model      string `json:"model"`
+	Dimensions int    `json:"dimensions"`
 }
 
 type conversationFileConfig struct {
@@ -221,6 +240,17 @@ func (c *Config) validate() error {
 	if c.Memory.AutoContextLimit < 1 || c.Memory.AutoContextLimit > 20 {
 		errs = append(errs, errors.New("memory.auto_context_limit must be between 1 and 20"))
 	}
+	if c.Memory.Embedding.Enabled {
+		if c.Memory.Embedding.Provider != "openai" {
+			errs = append(errs, errors.New("memory.embedding.provider must be openai"))
+		}
+		if strings.TrimSpace(c.Memory.Embedding.Model) == "" {
+			errs = append(errs, errors.New("memory.embedding.model is required when memory embeddings are enabled"))
+		}
+		if c.Memory.Embedding.Dimensions != defaultMemoryEmbeddingDimensions {
+			errs = append(errs, errors.New("memory.embedding.dimensions must be 1536"))
+		}
+	}
 	if c.Conversation.HistoryLimit < 1 || c.Conversation.HistoryLimit > 50 {
 		errs = append(errs, errors.New("conversation.history_limit must be between 1 and 50"))
 	}
@@ -257,6 +287,32 @@ func normalizeMemory(value memoryFileConfig) MemoryConfig {
 	return MemoryConfig{
 		Enabled:          enabled,
 		AutoContextLimit: limit,
+		Embedding:        normalizeMemoryEmbedding(value.Embedding),
+	}
+}
+
+func normalizeMemoryEmbedding(value memoryEmbeddingFileConfig) MemoryEmbeddingConfig {
+	enabled := true
+	if value.Enabled != nil {
+		enabled = *value.Enabled
+	}
+	provider := strings.ToLower(strings.TrimSpace(value.Provider))
+	if provider == "" {
+		provider = defaultMemoryEmbeddingProvider
+	}
+	model := strings.TrimSpace(value.Model)
+	if model == "" {
+		model = defaultMemoryEmbeddingModel
+	}
+	dimensions := value.Dimensions
+	if dimensions == 0 {
+		dimensions = defaultMemoryEmbeddingDimensions
+	}
+	return MemoryEmbeddingConfig{
+		Enabled:    enabled,
+		Provider:   provider,
+		Model:      model,
+		Dimensions: dimensions,
 	}
 }
 

@@ -255,12 +255,16 @@ type Memory struct {
 }
 
 type MemorySearchRequest struct {
-	ProjectID      string        `json:"project_id,omitempty"`
-	Query          string        `json:"query,omitempty"`
-	Scopes         []MemoryScope `json:"scopes,omitempty"`
-	Tags           []string      `json:"tags,omitempty"`
-	Limit          int           `json:"limit,omitempty"`
-	FallbackRecent bool          `json:"fallback_recent,omitempty"`
+	ProjectID           string        `json:"project_id,omitempty"`
+	Query               string        `json:"query,omitempty"`
+	Scopes              []MemoryScope `json:"scopes,omitempty"`
+	Tags                []string      `json:"tags,omitempty"`
+	QueryEmbedding      []float32     `json:"query_embedding,omitempty"`
+	EmbeddingProvider   string        `json:"embedding_provider,omitempty"`
+	EmbeddingModel      string        `json:"embedding_model,omitempty"`
+	EmbeddingDimensions int           `json:"embedding_dimensions,omitempty"`
+	Limit               int           `json:"limit,omitempty"`
+	FallbackRecent      bool          `json:"fallback_recent,omitempty"`
 }
 
 type MemoryUpdateRequest struct {
@@ -288,6 +292,15 @@ type MemoryForgetRequest struct {
 
 type MemoryForgetResult struct {
 	DeletedMemoryIDs []string `json:"deleted_memory_ids,omitempty"`
+}
+
+type MemoryEmbedding struct {
+	MemoryID    string    `json:"memory_id"`
+	Provider    string    `json:"provider"`
+	Model       string    `json:"model"`
+	Dimensions  int       `json:"dimensions"`
+	ContentHash string    `json:"content_hash"`
+	Vector      []float32 `json:"vector"`
 }
 
 type ProcessStatus string

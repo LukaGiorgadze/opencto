@@ -22,6 +22,7 @@ import (
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/config"
 	"github.com/opencto/opencto/internal/domain"
+	"github.com/opencto/opencto/internal/embedding"
 	"github.com/opencto/opencto/internal/runtime/scheduled"
 	skillcatalog "github.com/opencto/opencto/internal/skills"
 	"github.com/opencto/opencto/internal/storage"
@@ -63,6 +64,7 @@ type Activities struct {
 	Write                       writetool.Executor
 	Reporter                    Reporter
 	EventEnqueuer               EventEnqueuer
+	MemoryEmbedder              embedding.Embedder
 	Project                     domain.Project
 	WorkspaceRoot               string
 	OpenCTORoot                 string
@@ -222,7 +224,7 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event) (agent
 	var memories []domain.Memory
 	if a.Store != nil && a.MemoryEnabled {
 		var err error
-		memories, err = a.Store.SearchMemories(ctx, domain.MemorySearchRequest{
+		memories, err = a.searchMemories(ctx, domain.MemorySearchRequest{
 			ProjectID:      strings.TrimSpace(event.ProjectID),
 			Query:          strings.TrimSpace(event.Body),
 			Scopes:         []domain.MemoryScope{domain.MemoryScopeProject, domain.MemoryScopeGlobal},
@@ -2022,6 +2024,7 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 		if err != nil {
 			return memoryToolRunResult{}, err
 		}
+		a.upsertMemoryEmbedding(ctx, remembered)
 		payload := mustJSON(memorytool.RememberResult{Memory: remembered})
 		return memoryToolRunResult{
 			Observation: memoryDetailObservation("Remembered memory.", remembered),
@@ -2037,7 +2040,7 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
 		}
 		tags := cleanMemoryTags(req.Tags)
-		memories, err := a.Store.SearchMemories(ctx, domain.MemorySearchRequest{
+		memories, err := a.searchMemories(ctx, domain.MemorySearchRequest{
 			ProjectID: execution.ProjectID,
 			Query:     strings.TrimSpace(req.Query),
 			Scopes:    memorySearchScopes(req.Scope),
@@ -2128,6 +2131,9 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 			"updated":   strconv.FormatBool(result.Updated),
 		}
 		if result.Updated {
+			if memoryUpdateAffectsEmbedding(update) {
+				a.upsertMemoryEmbedding(ctx, result.Memory)
+			}
 			observation = memoryDetailObservation("Updated memory.", result.Memory)
 			metadata["scope"] = string(result.Memory.Scope)
 			metadata["tags"] = strings.Join(result.Memory.Tags, ", ")
@@ -3005,6 +3011,78 @@ func memoryForgetScopes(value string) ([]domain.MemoryScope, string, error) {
 	default:
 		return nil, "", fmt.Errorf("unsupported memory scope %q", value)
 	}
+}
+
+func (a *Activities) searchMemories(ctx context.Context, request domain.MemorySearchRequest) ([]domain.Memory, error) {
+	if a.Store == nil {
+		return nil, nil
+	}
+	if a.MemoryEmbedder != nil && strings.TrimSpace(request.Query) != "" {
+		result, err := a.MemoryEmbedder.Embed(ctx, []string{strings.TrimSpace(request.Query)})
+		if err != nil {
+			a.logActivityStep("Memory", "embed_search_query_failed", slog.String("error", err.Error()))
+		} else if len(result.Embeddings) > 0 && len(result.Embeddings[0]) > 0 {
+			request.QueryEmbedding = result.Embeddings[0]
+			request.EmbeddingProvider = a.MemoryEmbedder.Provider()
+			request.EmbeddingModel = a.MemoryEmbedder.Model()
+			request.EmbeddingDimensions = a.MemoryEmbedder.Dimensions()
+		}
+	}
+	memories, err := a.Store.SearchMemories(ctx, request)
+	if err == nil || len(request.QueryEmbedding) == 0 {
+		return memories, err
+	}
+	a.logActivityStep("Memory", "vector_search_failed",
+		slog.String("error", err.Error()),
+		slog.String("embedding_provider", request.EmbeddingProvider),
+		slog.String("embedding_model", request.EmbeddingModel),
+	)
+	request.QueryEmbedding = nil
+	request.EmbeddingProvider = ""
+	request.EmbeddingModel = ""
+	request.EmbeddingDimensions = 0
+	return a.Store.SearchMemories(ctx, request)
+}
+
+func (a *Activities) upsertMemoryEmbedding(ctx context.Context, memory domain.Memory) {
+	if a.Store == nil || a.MemoryEmbedder == nil {
+		return
+	}
+	text := embedding.MemoryText(memory)
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	result, err := a.MemoryEmbedder.Embed(ctx, []string{text})
+	if err != nil {
+		a.logActivityStep("Memory", "embed_memory_failed",
+			slog.String("memory_id", strings.TrimSpace(memory.ID)),
+			slog.String("error", err.Error()),
+		)
+		return
+	}
+	if len(result.Embeddings) == 0 || len(result.Embeddings[0]) == 0 {
+		a.logActivityStep("Memory", "embed_memory_empty",
+			slog.String("memory_id", strings.TrimSpace(memory.ID)),
+		)
+		return
+	}
+	if err := a.Store.UpsertMemoryEmbedding(ctx, domain.MemoryEmbedding{
+		MemoryID:    memory.ID,
+		Provider:    a.MemoryEmbedder.Provider(),
+		Model:       a.MemoryEmbedder.Model(),
+		Dimensions:  a.MemoryEmbedder.Dimensions(),
+		ContentHash: embedding.ContentHash(text),
+		Vector:      result.Embeddings[0],
+	}); err != nil {
+		a.logActivityStep("Memory", "upsert_memory_embedding_failed",
+			slog.String("memory_id", strings.TrimSpace(memory.ID)),
+			slog.String("error", err.Error()),
+		)
+	}
+}
+
+func memoryUpdateAffectsEmbedding(update domain.MemoryUpdateRequest) bool {
+	return strings.TrimSpace(update.Content) != "" || strings.TrimSpace(update.Kind) != "" || update.ReplaceTags
 }
 
 func memorySearchObservation(memories []domain.Memory) string {

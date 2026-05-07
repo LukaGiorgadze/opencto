@@ -37,6 +37,8 @@ type RuntimeStore interface {
 	RememberMemory(context.Context, domain.Memory) (domain.Memory, error)
 	SearchMemories(context.Context, domain.MemorySearchRequest) ([]domain.Memory, error)
 	UpdateMemory(context.Context, domain.MemoryUpdateRequest) (domain.MemoryUpdateResult, error)
+	UpsertMemoryEmbedding(context.Context, domain.MemoryEmbedding) error
+	DeleteMemoryEmbeddings(context.Context, []string) error
 	ForgetMemory(context.Context, string, string) (bool, error)
 	ForgetMemories(context.Context, domain.MemoryForgetRequest) (domain.MemoryForgetResult, error)
 }

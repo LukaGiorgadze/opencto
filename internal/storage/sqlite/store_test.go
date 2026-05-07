@@ -453,6 +453,132 @@ func TestUpdateMemoryReturnsNotUpdatedForUnknownMemory(t *testing.T) {
 	}
 }
 
+func TestMemoryEmbeddingVectorSearch(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := time.Now().UTC()
+	memories := []domain.Memory{
+		{
+			ID:        "sqlite-local",
+			ProjectID: "default",
+			Scope:     domain.MemoryScopeProject,
+			Kind:      "preference",
+			Content:   "Use SQLite for local development.",
+			Tags:      []string{"storage", "sqlite"},
+			CreatedAt: now,
+			UpdatedAt: now.Add(time.Second),
+		},
+		{
+			ID:        "postgres-production",
+			ProjectID: "default",
+			Scope:     domain.MemoryScopeProject,
+			Kind:      "preference",
+			Content:   "Use Postgres for production.",
+			Tags:      []string{"storage", "postgres"},
+			CreatedAt: now,
+			UpdatedAt: now.Add(2 * time.Second),
+		},
+	}
+	for _, memory := range memories {
+		if _, err := store.RememberMemory(ctx, memory); err != nil {
+			t.Fatalf("remember %s: %v", memory.ID, err)
+		}
+	}
+	if err := store.UpsertMemoryEmbedding(ctx, domain.MemoryEmbedding{
+		MemoryID:    "sqlite-local",
+		Provider:    "openai",
+		Model:       "text-embedding-3-small",
+		Dimensions:  1536,
+		ContentHash: "hash-sqlite",
+		Vector:      testVector(0),
+	}); err != nil {
+		t.Fatalf("upsert sqlite embedding: %v", err)
+	}
+	if err := store.UpsertMemoryEmbedding(ctx, domain.MemoryEmbedding{
+		MemoryID:    "postgres-production",
+		Provider:    "openai",
+		Model:       "text-embedding-3-small",
+		Dimensions:  1536,
+		ContentHash: "hash-postgres",
+		Vector:      testVector(1),
+	}); err != nil {
+		t.Fatalf("upsert postgres embedding: %v", err)
+	}
+
+	found, err := store.SearchMemories(ctx, domain.MemorySearchRequest{
+		ProjectID:           "default",
+		Query:               "database preference",
+		Scopes:              []domain.MemoryScope{domain.MemoryScopeProject},
+		Tags:                []string{"storage"},
+		QueryEmbedding:      testVector(1),
+		EmbeddingProvider:   "openai",
+		EmbeddingModel:      "text-embedding-3-small",
+		EmbeddingDimensions: 1536,
+		Limit:               2,
+	})
+	if err != nil {
+		t.Fatalf("search vector memory: %v", err)
+	}
+	if len(found) == 0 || found[0].ID != "postgres-production" {
+		t.Fatalf("expected closest vector memory first, got %#v", found)
+	}
+}
+
+func TestForgetMemoryDeletesEmbedding(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := time.Now().UTC()
+	if _, err := store.RememberMemory(ctx, domain.Memory{
+		ID:        "memory-1",
+		ProjectID: "default",
+		Scope:     domain.MemoryScopeProject,
+		Kind:      "fact",
+		Content:   "Remembered vector memory.",
+		Tags:      []string{"storage"},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("remember memory: %v", err)
+	}
+	if err := store.UpsertMemoryEmbedding(ctx, domain.MemoryEmbedding{
+		MemoryID:    "memory-1",
+		Provider:    "openai",
+		Model:       "text-embedding-3-small",
+		Dimensions:  1536,
+		ContentHash: "hash",
+		Vector:      testVector(0),
+	}); err != nil {
+		t.Fatalf("upsert embedding: %v", err)
+	}
+	deleted, err := store.ForgetMemory(ctx, "default", "memory-1")
+	if err != nil {
+		t.Fatalf("forget memory: %v", err)
+	}
+	if !deleted {
+		t.Fatalf("expected memory to be deleted")
+	}
+	found, err := store.SearchMemories(ctx, domain.MemorySearchRequest{
+		ProjectID:           "default",
+		Query:               "vector",
+		Scopes:              []domain.MemoryScope{domain.MemoryScopeProject},
+		QueryEmbedding:      testVector(0),
+		EmbeddingProvider:   "openai",
+		EmbeddingModel:      "text-embedding-3-small",
+		EmbeddingDimensions: 1536,
+		Limit:               5,
+	})
+	if err != nil {
+		t.Fatalf("search after forget: %v", err)
+	}
+	if len(found) != 0 {
+		t.Fatalf("expected no vector results after forget, got %#v", found)
+	}
+}
+
 func TestForgetMemoriesByIDsTagsOrScope(t *testing.T) {
 	t.Parallel()
 
@@ -682,4 +808,12 @@ func memoryIDs(memories []domain.Memory) []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+func testVector(activeIndex int) []float32 {
+	vector := make([]float32, 1536)
+	if activeIndex >= 0 && activeIndex < len(vector) {
+		vector[activeIndex] = 1
+	}
+	return vector
 }

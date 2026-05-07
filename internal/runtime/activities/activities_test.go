@@ -13,6 +13,7 @@ import (
 
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
+	"github.com/opencto/opencto/internal/embedding"
 	skillcatalog "github.com/opencto/opencto/internal/skills"
 	"github.com/opencto/opencto/internal/storage"
 	exectool "github.com/opencto/opencto/internal/tools/exec"
@@ -25,6 +26,7 @@ type stubProjectStore struct {
 	memories             []domain.Memory
 	updateResult         domain.MemoryUpdateResult
 	updateRequests       *[]domain.MemoryUpdateRequest
+	embeddingRequests    *[]domain.MemoryEmbedding
 	forgetResult         domain.MemoryForgetResult
 	forgetRequests       *[]domain.MemoryForgetRequest
 	conversationsByScope map[storage.ConversationScope][]domain.ConversationMessage
@@ -43,6 +45,38 @@ func (e stubEngine) NextAction(_ context.Context, input agent.NextActionInput) (
 		*e.input = input
 	}
 	return e.output, e.err
+}
+
+type fakeEmbedder struct {
+	vector []float32
+	inputs *[]string
+}
+
+func (e fakeEmbedder) Embed(_ context.Context, inputs []string) (embedding.Result, error) {
+	if e.inputs != nil {
+		*e.inputs = append(*e.inputs, inputs...)
+	}
+	vectors := make([][]float32, len(inputs))
+	for i := range inputs {
+		vectors[i] = append([]float32(nil), e.vector...)
+	}
+	return embedding.Result{
+		Embeddings: vectors,
+		Model:      e.Model(),
+		Dimensions: e.Dimensions(),
+	}, nil
+}
+
+func (e fakeEmbedder) Provider() string {
+	return embedding.ProviderOpenAI
+}
+
+func (e fakeEmbedder) Model() string {
+	return embedding.DefaultOpenAIModel
+}
+
+func (e fakeEmbedder) Dimensions() int {
+	return len(e.vector)
 }
 
 type captureReporter struct {
@@ -125,8 +159,8 @@ func (s stubProjectStore) ListConversationMessages(_ context.Context, query stor
 	return append([]domain.ConversationMessage(nil), source[:limit]...), nil
 }
 
-func (s stubProjectStore) RememberMemory(context.Context, domain.Memory) (domain.Memory, error) {
-	return domain.Memory{}, nil
+func (s stubProjectStore) RememberMemory(_ context.Context, memory domain.Memory) (domain.Memory, error) {
+	return memory, nil
 }
 
 func (s stubProjectStore) SearchMemories(context.Context, domain.MemorySearchRequest) ([]domain.Memory, error) {
@@ -138,6 +172,17 @@ func (s stubProjectStore) UpdateMemory(_ context.Context, request domain.MemoryU
 		*s.updateRequests = append(*s.updateRequests, request)
 	}
 	return s.updateResult, nil
+}
+
+func (s stubProjectStore) UpsertMemoryEmbedding(_ context.Context, embedding domain.MemoryEmbedding) error {
+	if s.embeddingRequests != nil {
+		*s.embeddingRequests = append(*s.embeddingRequests, embedding)
+	}
+	return nil
+}
+
+func (s stubProjectStore) DeleteMemoryEmbeddings(context.Context, []string) error {
+	return nil
 }
 
 func (s stubProjectStore) ForgetMemory(context.Context, string, string) (bool, error) {
@@ -557,6 +602,56 @@ func TestExecuteMemoryToolUpdatesZeroConfidenceAndUnpins(t *testing.T) {
 	}
 	if result.Metadata["updated"] != "true" || !strings.Contains(result.Observation, "confidence: 0.00") || !strings.Contains(result.Observation, "pinned: false") {
 		t.Fatalf("unexpected update result: %#v", result)
+	}
+}
+
+func TestExecuteMemoryToolRememberUpsertsEmbedding(t *testing.T) {
+	t.Parallel()
+
+	embeddingRequests := []domain.MemoryEmbedding{}
+	embeddingInputs := []string{}
+	vector := make([]float32, 1536)
+	vector[0] = 1
+	activities := Activities{
+		Store:          stubProjectStore{embeddingRequests: &embeddingRequests},
+		MemoryEnabled:  true,
+		MemoryEmbedder: fakeEmbedder{vector: vector, inputs: &embeddingInputs},
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "default",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemoryRemember,
+			Intent:     "remember storage preference",
+			Input:      []byte(`{"content":"Use SQLite for local state.","scope":"project","kind":"preference","tags":["storage","sqlite"],"confidence":1,"pinned":true,"reason":"user preference"}`),
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute memory remember: %v", err)
+	}
+	if result.Status != domain.ExecutionStatusSucceeded {
+		t.Fatalf("unexpected memory remember result: %#v", result)
+	}
+	if len(embeddingInputs) != 1 || !strings.Contains(embeddingInputs[0], "kind: preference") || !strings.Contains(embeddingInputs[0], "content: Use SQLite for local state.") {
+		t.Fatalf("unexpected embedding inputs: %#v", embeddingInputs)
+	}
+	if len(embeddingRequests) != 1 {
+		t.Fatalf("expected one embedding upsert, got %#v", embeddingRequests)
+	}
+	request := embeddingRequests[0]
+	if request.MemoryID == "" || request.Provider != embedding.ProviderOpenAI || request.Model != embedding.DefaultOpenAIModel || request.Dimensions != 1536 || len(request.Vector) != 1536 {
+		t.Fatalf("unexpected embedding request: %#v", request)
+	}
+	if request.ContentHash == "" {
+		t.Fatalf("expected content hash in embedding request")
 	}
 }
 

@@ -1,8 +1,10 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,15 +16,16 @@ import (
 	"time"
 	"unicode"
 
-	_ "github.com/ncruces/go-sqlite3/driver"
+	"github.com/ncruces/go-sqlite3/driver"
+	"github.com/ncruces/go-sqlite3/ext/vec1"
 
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/storage"
 )
 
 const (
-	driverName           = "sqlite3"
-	currentSchemaVersion = 2
+	currentSchemaVersion = 3
+	memoryVectorDims     = 1536
 )
 
 type Store struct {
@@ -40,7 +43,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		}
 	}
 
-	db, err := sql.Open(driverName, dataSourceName(path))
+	db, err := driver.Open(dataSourceName(path), vec1.Register)
 	if err != nil {
 		return nil, err
 	}
@@ -153,6 +156,7 @@ var migrations = []struct {
 }{
 	{version: 1, sql: migrationV1},
 	{version: 2, sql: migrationV2},
+	{version: 3, sql: migrationV3},
 }
 
 const migrationV1 = `
@@ -288,6 +292,24 @@ const migrationV2 = `
 	CREATE INDEX IF NOT EXISTS idx_conversation_messages_project_scope_created
 	ON conversation_messages(project_id, channel_type, channel_id, thread_id, created_at);
 	`
+
+const migrationV3 = `
+CREATE TABLE IF NOT EXISTS memory_embeddings (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	memory_id TEXT NOT NULL UNIQUE,
+	provider TEXT NOT NULL,
+	model TEXT NOT NULL,
+	dimensions INTEGER NOT NULL,
+	content_hash TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	FOREIGN KEY(memory_id) REFERENCES memories(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_memory_embeddings_profile ON memory_embeddings(provider, model, dimensions);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_embedding_vec USING vec1(embedding);
+INSERT INTO memory_embedding_vec(cmd, embedding) VALUES('rebuild', '{index:"flat", distance:"cos"}');
+`
 
 func (s *Store) EnsureProject(ctx context.Context, project domain.Project) error {
 	project.ID = strings.TrimSpace(project.ID)
@@ -807,21 +829,29 @@ func (s *Store) SearchMemories(ctx context.Context, request domain.MemorySearchR
 	scopes := normalizeMemoryScopes(request.Scopes)
 	tags := cleanTags(request.Tags)
 	query := ftsQuery(request.Query)
-	var memories []domain.Memory
-	var err error
+	var ftsMemories []domain.Memory
+	var vectorMemories []domain.Memory
 	if query != "" {
-		memories, err = s.searchMemoriesFTS(ctx, strings.TrimSpace(request.ProjectID), scopes, query, tags, limit)
+		var err error
+		ftsMemories, err = s.searchMemoriesFTS(ctx, strings.TrimSpace(request.ProjectID), scopes, query, tags, limit)
 		if err != nil {
 			return nil, err
 		}
 	}
-	if len(memories) > 0 {
-		return memories, nil
+	if len(request.QueryEmbedding) > 0 {
+		var err error
+		vectorMemories, err = s.searchMemoriesVector(ctx, strings.TrimSpace(request.ProjectID), scopes, tags, request, limit)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(ftsMemories) > 0 || len(vectorMemories) > 0 {
+		return fuseMemoryResults(limit, ftsMemories, vectorMemories), nil
 	}
 	if query != "" && !request.FallbackRecent {
 		return nil, nil
 	}
-	memories, err = s.recentMemories(ctx, strings.TrimSpace(request.ProjectID), scopes, tags, limit)
+	memories, err := s.recentMemories(ctx, strings.TrimSpace(request.ProjectID), scopes, tags, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -842,6 +872,48 @@ WHERE memory_fts MATCH ? AND `+scopeSQL+tagSQL+`
 ORDER BY rank, m.pinned DESC, m.updated_at DESC
 LIMIT ?
 `, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanMemories(rows)
+}
+
+func (s *Store) searchMemoriesVector(ctx context.Context, projectID string, scopes []domain.MemoryScope, tags []string, request domain.MemorySearchRequest, limit int) ([]domain.Memory, error) {
+	if len(request.QueryEmbedding) != memoryVectorDims {
+		return nil, fmt.Errorf("memory query embedding dimensions mismatch: got %d, want %d", len(request.QueryEmbedding), memoryVectorDims)
+	}
+	if strings.TrimSpace(request.EmbeddingProvider) == "" || strings.TrimSpace(request.EmbeddingModel) == "" || request.EmbeddingDimensions <= 0 {
+		return nil, fmt.Errorf("memory embedding profile is required")
+	}
+	vector, err := serializeFloat32(request.QueryEmbedding)
+	if err != nil {
+		return nil, err
+	}
+	scopeSQL, args := memoryVisibilitySQL(projectID, scopes)
+	tagSQL, tagArgs := memoryTagsSQL(tags)
+	k := limit * 3
+	if k < limit {
+		k = limit
+	}
+	if k < 10 {
+		k = 10
+	}
+	args = append([]any{vector, k, strings.TrimSpace(request.EmbeddingProvider), strings.TrimSpace(request.EmbeddingModel), request.EmbeddingDimensions}, args...)
+	args = append(args, tagArgs...)
+	rows, err := s.db.QueryContext(ctx, `
+WITH vector_matches AS (
+	SELECT rowid, embedding
+	FROM memory_embedding_vec(?, ?)
+)
+SELECT m.id, m.project_id, m.scope, m.kind, m.content, m.tags, m.source, m.source_id, m.actor, m.confidence, m.pinned, m.metadata, m.created_at, m.updated_at
+FROM vector_matches v
+JOIN memory_embeddings e ON e.id = v.rowid
+JOIN memories m ON m.id = e.memory_id
+WHERE e.provider = ? AND e.model = ? AND e.dimensions = ? AND `+scopeSQL+tagSQL+`
+ORDER BY vec1_cos_distance(?, v.embedding) ASC, m.pinned DESC, m.updated_at DESC
+LIMIT ?
+`, append(args, vector, limit)...)
 	if err != nil {
 		return nil, err
 	}
@@ -910,6 +982,55 @@ func scanMemories(rows *sql.Rows) ([]domain.Memory, error) {
 		memories = append(memories, memory)
 	}
 	return memories, rows.Err()
+}
+
+func fuseMemoryResults(limit int, rankedLists ...[]domain.Memory) []domain.Memory {
+	if limit <= 0 {
+		limit = 5
+	}
+	type candidate struct {
+		memory domain.Memory
+		score  float64
+	}
+	candidates := map[string]*candidate{}
+	for _, memories := range rankedLists {
+		for rank, memory := range memories {
+			id := strings.TrimSpace(memory.ID)
+			if id == "" {
+				continue
+			}
+			current := candidates[id]
+			if current == nil {
+				current = &candidate{memory: memory}
+				candidates[id] = current
+			}
+			current.score += 1 / float64(60+rank+1)
+		}
+	}
+	ordered := make([]candidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.memory.Pinned {
+			candidate.score += 0.001
+		}
+		ordered = append(ordered, *candidate)
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].score != ordered[j].score {
+			return ordered[i].score > ordered[j].score
+		}
+		if ordered[i].memory.Pinned != ordered[j].memory.Pinned {
+			return ordered[i].memory.Pinned
+		}
+		return ordered[i].memory.UpdatedAt.After(ordered[j].memory.UpdatedAt)
+	})
+	if len(ordered) > limit {
+		ordered = ordered[:limit]
+	}
+	memories := make([]domain.Memory, 0, len(ordered))
+	for _, candidate := range ordered {
+		memories = append(memories, candidate.memory)
+	}
+	return memories
 }
 
 func (s *Store) UpdateMemory(ctx context.Context, request domain.MemoryUpdateRequest) (domain.MemoryUpdateResult, error) {
@@ -1012,6 +1133,86 @@ func getVisibleMemory(ctx context.Context, tx *sql.Tx, projectID, memoryID strin
 	return memories[0], true, nil
 }
 
+func (s *Store) UpsertMemoryEmbedding(ctx context.Context, embedding domain.MemoryEmbedding) error {
+	memoryID := strings.TrimSpace(embedding.MemoryID)
+	if memoryID == "" {
+		return fmt.Errorf("memory id is required")
+	}
+	provider := strings.TrimSpace(embedding.Provider)
+	model := strings.TrimSpace(embedding.Model)
+	contentHash := strings.TrimSpace(embedding.ContentHash)
+	if provider == "" || model == "" || contentHash == "" {
+		return fmt.Errorf("memory embedding provider, model, and content hash are required")
+	}
+	if embedding.Dimensions != memoryVectorDims || len(embedding.Vector) != memoryVectorDims {
+		return fmt.Errorf("memory embedding dimensions mismatch: got config=%d vector=%d want=%d", embedding.Dimensions, len(embedding.Vector), memoryVectorDims)
+	}
+	vector, err := serializeFloat32(embedding.Vector)
+	if err != nil {
+		return err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	now := formatTime(time.Now().UTC())
+	var rowID int64
+	err = tx.QueryRowContext(ctx, `SELECT id FROM memory_embeddings WHERE memory_id = ?`, memoryID).Scan(&rowID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		result, err := tx.ExecContext(ctx, `
+INSERT INTO memory_embeddings(memory_id, provider, model, dimensions, content_hash, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+`, memoryID, provider, model, embedding.Dimensions, contentHash, now, now)
+		if err != nil {
+			return err
+		}
+		rowID, err = result.LastInsertId()
+		if err != nil {
+			return err
+		}
+	case err != nil:
+		return err
+	default:
+		if _, err := tx.ExecContext(ctx, `
+UPDATE memory_embeddings
+SET provider = ?, model = ?, dimensions = ?, content_hash = ?, updated_at = ?
+WHERE id = ?
+`, provider, model, embedding.Dimensions, contentHash, now, rowID); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_embedding_vec WHERE rowid = ?`, rowID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO memory_embedding_vec(rowid, embedding) VALUES (?, ?)`, rowID, vector); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) DeleteMemoryEmbeddings(ctx context.Context, memoryIDs []string) error {
+	memoryIDs = cleanMemoryIDs(memoryIDs)
+	if len(memoryIDs) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	if err := deleteMemoryEmbeddingsTx(ctx, tx, memoryIDs); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) ForgetMemory(ctx context.Context, projectID, memoryID string) (bool, error) {
 	memoryID = strings.TrimSpace(memoryID)
 	if memoryID == "" {
@@ -1076,6 +1277,9 @@ ORDER BY updated_at DESC
 	defer func() {
 		_ = tx.Rollback()
 	}()
+	if err := deleteMemoryEmbeddingsTx(ctx, tx, deleteIDs); err != nil {
+		return domain.MemoryForgetResult{}, err
+	}
 	if _, err := tx.ExecContext(ctx, `
 DELETE FROM memories
 WHERE id IN (`+sqlPlaceholders(len(deleteIDs))+`)
@@ -1092,6 +1296,48 @@ WHERE memory_id IN (`+sqlPlaceholders(len(deleteIDs))+`)
 		return domain.MemoryForgetResult{}, err
 	}
 	return domain.MemoryForgetResult{DeletedMemoryIDs: deleteIDs}, nil
+}
+
+func deleteMemoryEmbeddingsTx(ctx context.Context, tx *sql.Tx, memoryIDs []string) error {
+	memoryIDs = cleanMemoryIDs(memoryIDs)
+	if len(memoryIDs) == 0 {
+		return nil
+	}
+	rows, err := tx.QueryContext(ctx, `
+SELECT id FROM memory_embeddings
+WHERE memory_id IN (`+sqlPlaceholders(len(memoryIDs))+`)
+`, stringAnySlice(memoryIDs)...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var rowIDs []string
+	for rows.Next() {
+		var rowID string
+		if err := rows.Scan(&rowID); err != nil {
+			return err
+		}
+		rowIDs = append(rowIDs, rowID)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(rowIDs) == 0 {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+DELETE FROM memory_embedding_vec
+WHERE rowid IN (`+sqlPlaceholders(len(rowIDs))+`)
+`, stringAnySlice(rowIDs)...); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+DELETE FROM memory_embeddings
+WHERE id IN (`+sqlPlaceholders(len(rowIDs))+`)
+`, stringAnySlice(rowIDs)...); err != nil {
+		return err
+	}
+	return nil
 }
 
 func encodeJSON(value any, empty string) (string, error) {
@@ -1249,6 +1495,14 @@ func memoryTagsSQL(tags []string) (string, []any) {
 		args = append(args, tag)
 	}
 	return " AND " + strings.Join(clauses, " AND "), args
+}
+
+func serializeFloat32(vector []float32) ([]byte, error) {
+	var buffer bytes.Buffer
+	if err := binary.Write(&buffer, binary.LittleEndian, vector); err != nil {
+		return nil, err
+	}
+	return buffer.Bytes(), nil
 }
 
 func cleanMemoryIDs(memoryIDs []string) []string {
