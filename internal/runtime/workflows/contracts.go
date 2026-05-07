@@ -16,8 +16,6 @@ const (
 	SignalTaskCancel            = "task-cancel"
 	SignalTaskInterrupt         = "task-interrupt"
 	SignalTaskAdditionalContext = "task-additional-context"
-
-	QueryProjectState = "project-state"
 )
 
 type ProjectWorkflowInput struct {

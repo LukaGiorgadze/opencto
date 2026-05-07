@@ -33,12 +33,6 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 		}
 	}
 
-	if err := workflow.SetQueryHandler(ctx, QueryProjectState, func() (ProjectWorkflowState, error) {
-		return state, nil
-	}); err != nil {
-		return err
-	}
-
 	eventSignal := workflow.GetSignalChannel(ctx, SignalEnqueueEvent)
 	active := map[string]activeTask{}
 	var pendingReports []TaskWorkflowResult
@@ -87,8 +81,6 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 			handleProjectEventSignal(ctx, &state, active, input.ProjectID, signal.Event)
 		})
 		for eventID, task := range active {
-			eventID := eventID
-			task := task
 			selector.AddFuture(task.Future, func(f workflow.Future) {
 				var result TaskWorkflowResult
 				if err := f.Get(ctx, &result); err != nil {
