@@ -306,6 +306,65 @@ func TestMemoryRememberSearchAndForget(t *testing.T) {
 	}
 }
 
+func TestSearchMemoriesFiltersExactTagsWithEmptyQuery(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := time.Now().UTC()
+	memories := []domain.Memory{
+		{
+			ID:        "sqlite-local",
+			ProjectID: "default",
+			Scope:     domain.MemoryScopeProject,
+			Kind:      "preference",
+			Content:   "Use SQLite for local development.",
+			Tags:      []string{"storage", "sqlite"},
+			CreatedAt: now,
+			UpdatedAt: now.Add(3 * time.Second),
+		},
+		{
+			ID:        "postgres-production",
+			ProjectID: "default",
+			Scope:     domain.MemoryScopeProject,
+			Kind:      "preference",
+			Content:   "Use Postgres for production.",
+			Tags:      []string{"storage", "postgres"},
+			CreatedAt: now,
+			UpdatedAt: now.Add(2 * time.Second),
+		},
+		{
+			ID:        "other-project-sqlite",
+			ProjectID: "other",
+			Scope:     domain.MemoryScopeProject,
+			Kind:      "preference",
+			Content:   "Other project SQLite preference.",
+			Tags:      []string{"storage", "sqlite"},
+			CreatedAt: now,
+			UpdatedAt: now.Add(time.Second),
+		},
+	}
+	for _, memory := range memories {
+		if _, err := store.RememberMemory(ctx, memory); err != nil {
+			t.Fatalf("remember %s: %v", memory.ID, err)
+		}
+	}
+
+	found, err := store.SearchMemories(ctx, domain.MemorySearchRequest{
+		ProjectID: "default",
+		Query:     "",
+		Scopes:    []domain.MemoryScope{domain.MemoryScopeProject},
+		Tags:      []string{"SQLite", "storage"},
+		Limit:     5,
+	})
+	if err != nil {
+		t.Fatalf("search memory by exact tags: %v", err)
+	}
+	if len(found) != 1 || found[0].ID != "sqlite-local" {
+		t.Fatalf("expected exact project tag match, got %#v", found)
+	}
+}
+
 func TestUpdateMemoryReindexesAndPreservesMemoryID(t *testing.T) {
 	t.Parallel()
 

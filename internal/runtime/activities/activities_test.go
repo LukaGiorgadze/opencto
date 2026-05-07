@@ -500,6 +500,66 @@ func TestExecuteMemoryToolUpdatesMemory(t *testing.T) {
 	}
 }
 
+func TestExecuteMemoryToolUpdatesZeroConfidenceAndUnpins(t *testing.T) {
+	t.Parallel()
+
+	var updateRequests []domain.MemoryUpdateRequest
+	activities := Activities{
+		Store: stubProjectStore{
+			updateResult: domain.MemoryUpdateResult{
+				Updated: true,
+				Memory: domain.Memory{
+					ID:         "memory-1",
+					ProjectID:  "default",
+					Scope:      domain.MemoryScopeProject,
+					Kind:       "preference",
+					Content:    "Use SQLite for local state.",
+					Confidence: 0,
+					Pinned:     false,
+				},
+			},
+			updateRequests: &updateRequests,
+		},
+		MemoryEnabled: true,
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "default",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemoryUpdate,
+			Intent:     "lower confidence and unpin",
+			Input:      []byte(`{"memory_id":"memory-1","content":"","kind":"","tags_mode":"keep","tags":[],"confidence_mode":"set","confidence":0,"pinned_mode":"set","pinned":false,"reason":"stale memory"}`),
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute memory update: %v", err)
+	}
+	if len(updateRequests) != 1 {
+		t.Fatalf("expected one update request, got %d", len(updateRequests))
+	}
+	request := updateRequests[0]
+	if request.Confidence == nil || *request.Confidence != 0 {
+		t.Fatalf("expected confidence pointer with zero value, got %#v", request.Confidence)
+	}
+	if request.Pinned == nil || *request.Pinned {
+		t.Fatalf("expected pinned pointer with false value, got %#v", request.Pinned)
+	}
+	if request.Content != "" || request.Kind != "" || request.ReplaceTags {
+		t.Fatalf("unexpected extra update fields: %#v", request)
+	}
+	if result.Metadata["updated"] != "true" || !strings.Contains(result.Observation, "confidence: 0.00") || !strings.Contains(result.Observation, "pinned: false") {
+		t.Fatalf("unexpected update result: %#v", result)
+	}
+}
+
 func TestLoadContextIncludesScopedConversationHistory(t *testing.T) {
 	t.Parallel()
 

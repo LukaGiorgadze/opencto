@@ -15,6 +15,7 @@ import (
 	toolregistry "github.com/opencto/opencto/internal/tools"
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
+	memorytool "github.com/opencto/opencto/internal/tools/memory"
 	readtool "github.com/opencto/opencto/internal/tools/read"
 	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
 	skilltool "github.com/opencto/opencto/internal/tools/skill"
@@ -855,6 +856,36 @@ func TestToolChoicePreservesCommandAndArgsForDirectExecution(t *testing.T) {
 	}
 	if choice.RunMode != domain.ToolRunModeWaitForExit || choice.Idempotency != domain.ToolIdempotencyIdempotent || choice.ProcessScope != domain.ProcessScopeStopOnFinish {
 		t.Fatalf("expected execution metadata to be preserved, got %#v", choice)
+	}
+}
+
+func TestToolChoiceCapturesMemoryUpdateInput(t *testing.T) {
+	t.Parallel()
+
+	choice, err := toolChoiceFromToolCall(llms.ToolCall{
+		ID:   "toolu_memory_update",
+		Type: "function",
+		FunctionCall: &llms.FunctionCall{
+			Name:      memorytool.UpdateToolName,
+			Arguments: `{"memory_id":"memory-123","content":"","kind":"","tags_mode":"keep","tags":[],"confidence_mode":"set","confidence":0,"pinned_mode":"set","pinned":false,"reason":"lower confidence and unpin"}`,
+		},
+	}, agent.ToolSelectionInput{
+		Runtime: agent.RuntimeContext{WorkspaceRoot: "/workspace"},
+	})
+	if err != nil {
+		t.Fatalf("tool choice: %v", err)
+	}
+	if choice.Type != domain.ToolTypeMemoryUpdate {
+		t.Fatalf("expected memory update type, got %q", choice.Type)
+	}
+	if choice.Intent != "update memory memory-123" {
+		t.Fatalf("unexpected memory update summary: %q", choice.Intent)
+	}
+	if choice.RunMode != domain.ToolRunModeWaitForExit || choice.Idempotency != domain.ToolIdempotencyNonIdempotent || choice.ProcessScope != domain.ProcessScopeStopOnFinish {
+		t.Fatalf("unexpected memory update execution metadata: %#v", choice)
+	}
+	if !strings.Contains(string(choice.Input), `"confidence":0`) || !strings.Contains(string(choice.Input), `"pinned":false`) {
+		t.Fatalf("expected raw memory update input to preserve zero/false values, got %s", choice.Input)
 	}
 }
 
