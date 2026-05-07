@@ -14,13 +14,15 @@ import (
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
 	skillcatalog "github.com/opencto/opencto/internal/skills"
+	"github.com/opencto/opencto/internal/storage"
 	exectool "github.com/opencto/opencto/internal/tools/exec"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
 )
 
 type stubProjectStore struct {
-	pending []domain.WorkItem
+	pending  []domain.WorkItem
+	memories []domain.Memory
 }
 
 type stubEngine struct {
@@ -58,15 +60,31 @@ func (r *captureReporter) NotifyTyping(_ context.Context, event domain.Event) er
 	return r.typingErr
 }
 
-func (s stubProjectStore) Append(context.Context, domain.Event) error {
+func (s stubProjectStore) Close() error {
 	return nil
 }
 
-func (s stubProjectStore) ListPending(context.Context, string) ([]domain.WorkItem, error) {
+func (s stubProjectStore) Migrate(context.Context) error {
+	return nil
+}
+
+func (s stubProjectStore) VerifySchema(context.Context) error {
+	return nil
+}
+
+func (s stubProjectStore) EnsureProject(context.Context, domain.Project) error {
+	return nil
+}
+
+func (s stubProjectStore) AppendEvent(context.Context, domain.Event) (storage.EventAppendResult, error) {
+	return storage.EventAppendResult{Inserted: true}, nil
+}
+
+func (s stubProjectStore) ListPendingWorkItems(context.Context, string) ([]domain.WorkItem, error) {
 	return append([]domain.WorkItem(nil), s.pending...), nil
 }
 
-func (s stubProjectStore) UpsertWorkItem(context.Context, domain.WorkItem) error {
+func (s stubProjectStore) UpsertWorkItems(context.Context, []domain.WorkItem) error {
 	return nil
 }
 
@@ -76,6 +94,22 @@ func (s stubProjectStore) UpsertExecutionAttempt(context.Context, domain.Executi
 
 func (s stubProjectStore) UpsertToolInvocation(context.Context, domain.ToolInvocation) error {
 	return nil
+}
+
+func (s stubProjectStore) UpsertConversationMessage(context.Context, domain.ConversationMessage) error {
+	return nil
+}
+
+func (s stubProjectStore) RememberMemory(context.Context, domain.Memory) (domain.Memory, error) {
+	return domain.Memory{}, nil
+}
+
+func (s stubProjectStore) SearchMemories(context.Context, domain.MemorySearchRequest) ([]domain.Memory, error) {
+	return append([]domain.Memory(nil), s.memories...), nil
+}
+
+func (s stubProjectStore) ForgetMemory(context.Context, string, string) (bool, error) {
+	return false, nil
 }
 
 func TestReportResponseIncludesAttachments(t *testing.T) {
@@ -187,6 +221,35 @@ func TestLoadContextReturnsProjectAndActiveWorkItems(t *testing.T) {
 	}
 	if len(loaded.Skills) != 1 || loaded.Skills[0].ID != "go-testing" {
 		t.Fatalf("expected project skill to be discovered, got %#v", loaded.Skills)
+	}
+}
+
+func TestLoadContextIncludesBoundedMemoryWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	memory := domain.Memory{
+		ID:        "memory-1",
+		ProjectID: "default",
+		Scope:     domain.MemoryScopeProject,
+		Kind:      "preference",
+		Content:   "Use SQLite for local storage.",
+	}
+	activities := Activities{
+		Store:         stubProjectStore{memories: []domain.Memory{memory}},
+		Project:       domain.Project{ID: "default", Name: "OpenCTO"},
+		MemoryEnabled: true,
+		MemoryLimit:   5,
+	}
+	loaded, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:        "event-1",
+		ProjectID: "default",
+		Body:      "what storage should we use?",
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if len(loaded.Memory) != 1 || loaded.Memory[0].ID != "memory-1" {
+		t.Fatalf("expected memory to be loaded, got %#v", loaded.Memory)
 	}
 }
 

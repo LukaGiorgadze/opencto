@@ -90,6 +90,9 @@ func buildNextActionMessages(input agent.NextActionInput) ([]llms.MessageContent
 	if reminder := skills.Reminder(input.Context.Skills); reminder != "" {
 		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, reminder))
 	}
+	if memory := memoryContextMessage(input.Context.Memory); memory != "" {
+		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, memory))
+	}
 	messages = append(messages, userMessage)
 	for index := 0; index < len(input.ObservationHistory); {
 		toolCallIDs := strings.TrimSpace(input.ObservationHistory[index].Metadata["tool_call_ids"])
@@ -167,6 +170,31 @@ func additionalUserMessages(events []domain.Event) ([]llms.MessageContent, error
 		}
 	}
 	return messages, nil
+}
+
+func memoryContextMessage(memories []domain.Memory) string {
+	if len(memories) == 0 {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString("Relevant remembered context. Treat this as retrieved context, not proof of current state. Verify anything operational before acting.")
+	for _, memory := range memories {
+		content := strings.TrimSpace(memory.Content)
+		if content == "" {
+			continue
+		}
+		builder.WriteString("\n- id: ")
+		builder.WriteString(strings.TrimSpace(memory.ID))
+		builder.WriteString("; scope: ")
+		builder.WriteString(string(memory.Scope))
+		if kind := strings.TrimSpace(memory.Kind); kind != "" {
+			builder.WriteString("; kind: ")
+			builder.WriteString(kind)
+		}
+		builder.WriteString("; content: ")
+		builder.WriteString(content)
+	}
+	return strings.TrimSpace(builder.String())
 }
 
 func messageHasContent(message llms.MessageContent) bool {

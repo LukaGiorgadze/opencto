@@ -373,6 +373,43 @@ func TestBuildNextActionMessagesAddsSkillReminderAsUserMessage(t *testing.T) {
 	}
 }
 
+func TestBuildNextActionMessagesAddsMemoryAsUserContextBeforeCurrentRequest(t *testing.T) {
+	t.Parallel()
+
+	input := agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event: domain.Event{
+				ID:        "event-1",
+				ProjectID: "project-1",
+				Body:      "what database should we use?",
+			},
+			Memory: []domain.Memory{{
+				ID:      "memory-1",
+				Scope:   domain.MemoryScopeProject,
+				Kind:    "decision",
+				Content: "Use SQLite for local storage.",
+			}},
+		},
+	}
+
+	messages, err := buildNextActionMessages(input)
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	if len(messages) != 3 {
+		t.Fatalf("expected system, memory context, and user messages, got %d", len(messages))
+	}
+	memory := messageText(messages[1])
+	if !strings.Contains(memory, "Relevant remembered context") || !strings.Contains(memory, "memory-1") || !strings.Contains(memory, "Use SQLite for local storage.") {
+		t.Fatalf("unexpected memory context message:\n%s", memory)
+	}
+	if got := messageText(messages[2]); got != "what database should we use?" {
+		t.Fatalf("unexpected user message: %q", got)
+	}
+}
+
 func TestBuildNextActionMessagesIncludesEventAttachments(t *testing.T) {
 	t.Parallel()
 
@@ -493,7 +530,7 @@ func TestNextActionReturnsSingleToolChoice(t *testing.T) {
 	if output.ToolChoice.RunMode != domain.ToolRunModeWaitForExit || output.ToolChoice.Idempotency != domain.ToolIdempotencyReadOnly || output.ToolChoice.ProcessScope != domain.ProcessScopeStopOnFinish {
 		t.Fatalf("tool execution metadata was not preserved: %#v", output.ToolChoice)
 	}
-	if len(model.options.Tools) != 8 {
+	if len(model.options.Tools) != 11 {
 		t.Fatalf("expected all tool schemas, got %#v", model.options.Tools)
 	}
 }

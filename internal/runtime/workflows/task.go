@@ -41,6 +41,14 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			MaximumAttempts: 1,
 		},
 	}
+	persistenceAO := workflow.ActivityOptions{
+		StartToCloseTimeout: time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:    time.Second,
+			BackoffCoefficient: 2.0,
+			MaximumInterval:    30 * time.Second,
+		},
+	}
 	sessionAO := workflow.ActivityOptions{
 		StartToCloseTimeout: responseSessionMaxDuration,
 		HeartbeatTimeout:    responseSessionHeartbeatGap,
@@ -52,6 +60,7 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 	}
 	nextActionCtx := workflow.WithActivityOptions(ctx, nextActionAO)
 	toolCtx := workflow.WithActivityOptions(ctx, toolAO)
+	persistenceCtx := workflow.WithActivityOptions(ctx, persistenceAO)
 	sessionCtx := workflow.WithActivityOptions(ctx, sessionAO)
 	session := startResponseSession(ctx, sessionCtx, input.ProjectID, input.Event)
 	defer stopResponseSession(ctx, session)
@@ -64,6 +73,12 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 	var observationHistory []agent.ExecutionFeedback
 	var lastResults []activities.ExecuteToolResult
 	var processes []domain.ProcessReference
+
+	if !input.ResumedFromPause {
+		if err := persistEvent(persistenceCtx, activities.PersistEventRequest{Event: input.Event}); err != nil {
+			return TaskWorkflowResult{}, err
+		}
+	}
 
 	for cycle := 1; cycle <= maxExecutionCycles; cycle++ {
 		drainTaskSignals(ctx, &additionalEvents)
@@ -88,6 +103,13 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 		} else if next.Observation != nil {
 			observationHistory = append(observationHistory, *next.Observation)
 		}
+		if err := persistNextAction(persistenceCtx, activities.PersistNextActionRequest{
+			Event:      input.Event,
+			NextAction: next.NextAction,
+			Status:     next.Status,
+		}); err != nil {
+			return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)
+		}
 		if next.IsTerminal() {
 			return resultFromNextAction(input.Event, next), nil
 		}
@@ -104,13 +126,19 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 
 		lastResults = nil
 		for _, choice := range toolChoices {
-			execResult, canceled, interrupted, err := executeToolStep(ctx, toolCtx, input.ProjectID, next.WorkItemID, input.Event, choice, cycle, &additionalEvents)
+			execResult, canceled, interrupted, err := executeToolStep(ctx, toolCtx, persistenceCtx, input.ProjectID, next.WorkItemID, input.Event, choice, cycle, &additionalEvents)
 			mergeTaskProcesses(&processes, execResult.Processes)
 			if canceled {
 				return completeIncompleteTask(nextActionCtx, input.ProjectID, input.Event, processes)
 			}
 			if err != nil {
 				execResult = failedExecutionActivityResult(choice, next.WorkItemID, cycle, err)
+			}
+			if err := persistToolResult(persistenceCtx, activities.PersistToolResultRequest{
+				Event:  input.Event,
+				Result: execResult,
+			}); err != nil {
+				return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)
 			}
 			lastResults = append(lastResults, execResult)
 			if interrupted {
@@ -139,6 +167,13 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 	} else if final.Observation != nil {
 		observationHistory = append(observationHistory, *final.Observation)
 	}
+	if err := persistNextAction(persistenceCtx, activities.PersistNextActionRequest{
+		Event:      input.Event,
+		NextAction: final.NextAction,
+		Status:     final.Status,
+	}); err != nil {
+		return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)
+	}
 	if !final.IsTerminal() {
 		return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, fmt.Errorf("Activities.NextAction returned non-terminal status %q for force-final request", final.Status))
 	}
@@ -151,10 +186,28 @@ func nextAction(ctx workflow.Context, request activities.NextActionRequest) (act
 	return result, err
 }
 
-func executeToolStep(ctx workflow.Context, toolCtx workflow.Context, projectID, workItemID string, event domain.Event, choice agent.ToolChoice, cycle int, additionalEvents *[]domain.Event) (activities.ExecuteToolResult, bool, bool, error) {
-	activityCtx, cancelActivity := workflow.WithCancel(toolCtx)
+func persistEvent(ctx workflow.Context, request activities.PersistEventRequest) error {
+	return workflow.ExecuteActivity(ctx, "Activities.PersistEvent", request).Get(ctx, nil)
+}
+
+func persistNextAction(ctx workflow.Context, request activities.PersistNextActionRequest) error {
+	return workflow.ExecuteActivity(ctx, "Activities.PersistNextAction", request).Get(ctx, nil)
+}
+
+func persistToolResult(ctx workflow.Context, request activities.PersistToolResultRequest) error {
+	return workflow.ExecuteActivity(ctx, "Activities.PersistToolResult", request).Get(ctx, nil)
+}
+
+func executeToolStep(ctx workflow.Context, toolCtx workflow.Context, persistenceCtx workflow.Context, projectID, workItemID string, event domain.Event, choice agent.ToolChoice, cycle int, additionalEvents *[]domain.Event) (activities.ExecuteToolResult, bool, bool, error) {
+	activityBaseCtx := toolCtx
+	activityName := "Activities.ExecuteTool"
+	if isMemoryTool(choice.Type) {
+		activityBaseCtx = persistenceCtx
+		activityName = "Activities.ExecuteMemoryTool"
+	}
+	activityCtx, cancelActivity := workflow.WithCancel(activityBaseCtx)
 	defer cancelActivity()
-	future := workflow.ExecuteActivity(activityCtx, "Activities.ExecuteTool", activities.ExecuteToolRequest{
+	future := workflow.ExecuteActivity(activityCtx, activityName, activities.ExecuteToolRequest{
 		ProjectID:  projectID,
 		WorkItemID: workItemID,
 		Event:      event,
@@ -208,6 +261,15 @@ func executeToolStep(ctx workflow.Context, toolCtx workflow.Context, projectID, 
 			result.Status = domain.ExecutionStatusCanceled
 			return result, false, true, nil
 		}
+	}
+}
+
+func isMemoryTool(toolType domain.ToolType) bool {
+	switch toolType {
+	case domain.ToolTypeMemoryRemember, domain.ToolTypeMemorySearch, domain.ToolTypeMemoryForget:
+		return true
+	default:
+		return false
 	}
 }
 

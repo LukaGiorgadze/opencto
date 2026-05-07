@@ -64,4 +64,36 @@ reject <approval-id> optional comment
 
 ## Persistence
 
-Persistence is not implemented right now. The runtime starts without a database backend until the next storage layer is introduced.
+OpenCTO uses SQLite for local runtime storage.
+
+The default database path is:
+
+```text
+$OPENCTO_WORKSPACE/db/opencto.db
+```
+
+With the default local config, `$OPENCTO_WORKSPACE` resolves to `$HOME/.opencto`, so the database is created at:
+
+```text
+$HOME/.opencto/db/opencto.db
+```
+
+`task worker` opens the SQLite store, creates the database directory, runs migrations, and ensures the hardcoded development project exists.
+
+`task serve` verifies that migrations have already been applied and fails fast if the schema is missing or behind. Run `task worker` once after pulling storage changes before running `task serve`.
+
+Storage and memory are configured with small top-level switches:
+
+```json
+{
+  "storage": {
+    "provider": "sqlite"
+  },
+  "memory": {
+    "enabled": true,
+    "auto_context_limit": 5
+  }
+}
+```
+
+Memory uses the same SQLite database. The first implementation uses SQLite FTS keyword search and recent/pinned fallback context; embeddings and vector search are intentionally deferred.

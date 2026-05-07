@@ -21,6 +21,10 @@ import (
 func registerTaskWorkflowActivities(env *testsuite.TestWorkflowEnvironment) {
 	env.RegisterActivityWithOptions((&activities.Activities{}).NextAction, activity.RegisterOptions{Name: "Activities.NextAction"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).ExecuteTool, activity.RegisterOptions{Name: "Activities.ExecuteTool"})
+	env.RegisterActivityWithOptions((&activities.Activities{}).ExecuteMemoryTool, activity.RegisterOptions{Name: "Activities.ExecuteMemoryTool"})
+	env.RegisterActivityWithOptions((&activities.Activities{}).PersistEvent, activity.RegisterOptions{Name: "Activities.PersistEvent"})
+	env.RegisterActivityWithOptions((&activities.Activities{}).PersistNextAction, activity.RegisterOptions{Name: "Activities.PersistNextAction"})
+	env.RegisterActivityWithOptions((&activities.Activities{}).PersistToolResult, activity.RegisterOptions{Name: "Activities.PersistToolResult"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).ResponseSession, activity.RegisterOptions{Name: "Activities.ResponseSession"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).ReportResponse, activity.RegisterOptions{Name: "Activities.ReportResponse"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).EnqueueScheduledEvent, activity.RegisterOptions{Name: scheduled.EnqueueScheduledEventName})
@@ -207,6 +211,69 @@ func TestTaskWorkflowExecutesMultipleToolChoicesAsSeparateActivities(t *testing.
 		Event:     event,
 	})
 
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("task workflow failed: %v", err)
+	}
+	env.AssertExpectations(t)
+}
+
+func TestTaskWorkflowRoutesMemoryToolsToMemoryActivity(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.TaskWorkflow)
+	registerTaskWorkflowActivities(env)
+
+	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "remember this"}
+	choice := agent.ToolChoice{
+		ToolCallID: "toolu_memory",
+		Type:       domain.ToolTypeMemoryRemember,
+		Intent:     "remember preference",
+		Input:      []byte(`{"content":"Use SQLite for local storage.","scope":"project","kind":"decision","tags":["storage"],"confidence":1,"pinned":false,"reason":"user preference"}`),
+		Metadata: map[string]string{
+			"tool_call_id":    "toolu_memory",
+			"execution_cycle": "1",
+		},
+	}
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{
+		NextAction: agent.NextAction{WorkItems: []domain.WorkItem{{
+			ID:        "wi-1",
+			ProjectID: "project-1",
+			Status:    domain.WorkItemStatusReady,
+		}}},
+		ToolChoice: &choice,
+		WorkItemID: "wi-1",
+		Status:     activities.NextActionStatusTool,
+	}, nil).Once()
+	env.OnActivity("Activities.ExecuteMemoryTool", mock.Anything, mock.MatchedBy(func(request activities.ExecuteToolRequest) bool {
+		return request.ToolChoice.Type == domain.ToolTypeMemoryRemember &&
+			request.ToolChoice.ToolCallID == "toolu_memory"
+	})).Return(activities.ExecuteToolResult{
+		Cycle:           1,
+		WorkItemID:      "wi-1",
+		ToolCallID:      "toolu_memory",
+		Tool:            domain.ToolTypeMemoryRemember,
+		Status:          domain.ExecutionStatusSucceeded,
+		RequestedAction: "remember preference",
+		Observation:     "Remembered memory.\nmemory_id: memory-1",
+		Metadata: map[string]string{
+			"tool_call_id": "toolu_memory",
+			"memory_id":    "memory-1",
+		},
+	}, nil).Once()
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
+		return request.ExecutionCycle == 2 &&
+			len(request.LastResults) == 1 &&
+			request.LastResults[0].Tool == domain.ToolTypeMemoryRemember
+	})).Return(activities.NextActionResult{
+		Status: activities.NextActionStatusCompleted,
+	}, nil).Once()
+
+	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{
+		ProjectID: "project-1",
+		Event:     event,
+	})
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatalf("task workflow failed: %v", err)
 	}

@@ -22,6 +22,8 @@ type Config struct {
 	General       GeneralConfig       `json:"general"`
 	Project       ProjectConfig       `json:"project"`
 	Runtime       RuntimeConfig       `json:"runtime"`
+	Storage       StorageConfig       `json:"storage"`
+	Memory        MemoryConfig        `json:"memory"`
 	LLM           LLMConfig           `json:"llm"`
 	Temporal      TemporalConfig      `json:"temporal"`
 	Channels      ChannelsConfig      `json:"channels"`
@@ -32,6 +34,8 @@ type fileConfig struct {
 	General       GeneralConfig       `json:"general"`
 	Project       ProjectConfig       `json:"project"`
 	Runtime       RuntimeConfig       `json:"runtime"`
+	Storage       StorageConfig       `json:"storage"`
+	Memory        memoryFileConfig    `json:"memory"`
 	LLM           llmFileConfig       `json:"llm"`
 	Temporal      TemporalConfig      `json:"temporal"`
 	Channels      ChannelsConfig      `json:"channels"`
@@ -58,6 +62,20 @@ type ProjectConfig struct {
 
 type RuntimeConfig struct {
 	StateDir string `json:"state_dir"`
+}
+
+type StorageConfig struct {
+	Provider string `json:"provider"`
+}
+
+type MemoryConfig struct {
+	Enabled          bool `json:"enabled"`
+	AutoContextLimit int  `json:"auto_context_limit"`
+}
+
+type memoryFileConfig struct {
+	Enabled          *bool `json:"enabled"`
+	AutoContextLimit int   `json:"auto_context_limit"`
 }
 
 type LLMConfig struct {
@@ -116,6 +134,8 @@ func Load(path string) (Config, error) {
 		General: raw.General,
 		Project: raw.Project,
 		Runtime: raw.Runtime,
+		Storage: normalizeStorage(raw.Storage),
+		Memory:  normalizeMemory(raw.Memory),
 		LLM: LLMConfig{
 			Provider:           raw.LLM.Provider,
 			BaseURL:            raw.LLM.BaseURL,
@@ -163,8 +183,6 @@ func (c *Config) validate() error {
 	}
 
 	requireString(c.General.WorkspaceRoot, "general.workspace_root")
-	requireString(c.Project.ID, "project.id")
-	requireString(c.Project.Name, "project.name")
 	requireString(c.LLM.Provider, "llm.provider")
 	requireString(c.LLM.BaseURL, "llm.base_url")
 	requireString(c.LLM.ModelReasoning, "llm.model_reasoning")
@@ -182,6 +200,12 @@ func (c *Config) validate() error {
 	if c.Temporal.ContinueAsNewAfterEvents <= 0 {
 		errs = append(errs, errors.New("temporal.continue_as_new_after_events must be greater than 0"))
 	}
+	if c.Storage.Provider != "sqlite" {
+		errs = append(errs, errors.New("storage.provider must be sqlite"))
+	}
+	if c.Memory.AutoContextLimit < 1 || c.Memory.AutoContextLimit > 20 {
+		errs = append(errs, errors.New("memory.auto_context_limit must be between 1 and 20"))
+	}
 	if err := validateDiscordMessageLimits(c.Channels.Discord.OutboundMessages); err != nil {
 		errs = append(errs, err)
 	}
@@ -190,6 +214,29 @@ func (c *Config) validate() error {
 	}
 
 	return errors.Join(errs...)
+}
+
+func normalizeStorage(value StorageConfig) StorageConfig {
+	if strings.TrimSpace(value.Provider) == "" {
+		value.Provider = "sqlite"
+	}
+	value.Provider = strings.ToLower(strings.TrimSpace(value.Provider))
+	return value
+}
+
+func normalizeMemory(value memoryFileConfig) MemoryConfig {
+	enabled := true
+	if value.Enabled != nil {
+		enabled = *value.Enabled
+	}
+	limit := value.AutoContextLimit
+	if limit == 0 {
+		limit = 5
+	}
+	return MemoryConfig{
+		Enabled:          enabled,
+		AutoContextLimit: limit,
+	}
 }
 
 func normalizeMessageLimits(value, defaults MessageLimitsConfig) MessageLimitsConfig {

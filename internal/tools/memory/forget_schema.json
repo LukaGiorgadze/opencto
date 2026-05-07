@@ -1,0 +1,12 @@
+{
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "required": ["memory_id"],
+    "properties": {
+        "memory_id": {
+            "type": "string",
+            "description": "Exact memory id to delete. Search memory first if unknown."
+        }
+    },
+    "additionalProperties": false
+}

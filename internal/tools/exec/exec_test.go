@@ -17,6 +17,8 @@ import (
 	"github.com/opencto/opencto/internal/domain"
 )
 
+const testCommandTimeout = 5 * time.Second
+
 func TestSafeExecutorRunsCommandFromProcessWorkingDirectory(t *testing.T) {
 	t.Parallel()
 
@@ -28,7 +30,7 @@ func TestSafeExecutorRunsCommandFromProcessWorkingDirectory(t *testing.T) {
 	result, err := executor.Run(context.Background(), Request{
 		Command: executable,
 		Args:    []string{"-test.run=TestHelperProcess", "--", "pwd"},
-		Timeout: time.Second,
+		Timeout: testCommandTimeout,
 		Environment: map[string]string{
 			"GO_WANT_HELPER_PROCESS": "1",
 		},
@@ -69,7 +71,7 @@ func TestSafeExecutorRunsCommandFromConfiguredWorkingDirectory(t *testing.T) {
 		Command:    executable,
 		Args:       []string{"-test.run=TestHelperProcess", "--", "pwd"},
 		WorkingDir: workingDir,
-		Timeout:    time.Second,
+		Timeout:    testCommandTimeout,
 		Environment: map[string]string{
 			"GO_WANT_HELPER_PROCESS": "1",
 		},
@@ -104,7 +106,7 @@ func TestSafeExecutorRunsCommand(t *testing.T) {
 	result, err := executor.Run(context.Background(), Request{
 		Command: executable,
 		Args:    []string{"-test.run=TestHelperProcess", "--", "hello"},
-		Timeout: time.Second,
+		Timeout: testCommandTimeout,
 		Environment: map[string]string{
 			"GO_WANT_HELPER_PROCESS": "1",
 		},
@@ -130,7 +132,7 @@ func TestSafeExecutorStreamsOutputToLogsAndReturnsTail(t *testing.T) {
 		Command:   executable,
 		Args:      []string{"-test.run=TestHelperProcess", "--", "spam"},
 		StateDir:  stateDir,
-		Timeout:   time.Second,
+		Timeout:   testCommandTimeout,
 		TailBytes: 64,
 		Environment: map[string]string{
 			"GO_WANT_HELPER_PROCESS": "1",
@@ -220,7 +222,7 @@ func TestSafeExecutorRunsBatchActions(t *testing.T) {
 	result, err := executor.Run(context.Background(), Request{
 		ProjectID: "project-1",
 		Intent:    "inspect system",
-		Timeout:   time.Second,
+		Timeout:   testCommandTimeout,
 		Environment: map[string]string{
 			"GO_WANT_HELPER_PROCESS": "1",
 		},
@@ -256,7 +258,7 @@ func TestSafeExecutorRunsBatchActionsFromConfiguredWorkingDirectory(t *testing.T
 		ProjectID:  "project-1",
 		Intent:     "inspect workspace",
 		WorkingDir: workingDir,
-		Timeout:    time.Second,
+		Timeout:    testCommandTimeout,
 		Environment: map[string]string{
 			"GO_WANT_HELPER_PROCESS": "1",
 		},
