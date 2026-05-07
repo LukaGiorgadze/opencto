@@ -1,0 +1,27 @@
+{
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "required": ["memory_ids", "tags", "scope"],
+    "properties": {
+        "memory_ids": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            },
+            "description": "Exact memory ids to delete. Use an empty array to ignore id filtering. Search memory first if unknown."
+        },
+        "tags": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            },
+            "description": "Tags that memories must all contain to be deleted. Use an empty array to ignore tag filtering."
+        },
+        "scope": {
+            "type": "string",
+            "enum": ["project", "global", "all"],
+            "description": "Scope filter for deletion. Use all to include all visible memory."
+        }
+    },
+    "additionalProperties": false
+}

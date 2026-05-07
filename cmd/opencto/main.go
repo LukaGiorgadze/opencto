@@ -21,9 +21,16 @@ import (
 	"github.com/opencto/opencto/internal/observability"
 	"github.com/opencto/opencto/internal/runtime"
 	"github.com/opencto/opencto/internal/runtime/activities"
+	"github.com/opencto/opencto/internal/storage"
+	sqlitestore "github.com/opencto/opencto/internal/storage/sqlite"
 	"github.com/opencto/opencto/internal/tools/exec"
 	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
 )
+
+var defaultProject = domain.Project{
+	ID:   "default",
+	Name: "OpenCTO",
+}
 
 func main() {
 	var (
@@ -49,7 +56,7 @@ func main() {
 	defer stop()
 
 	if *mode == "validate" {
-		logger.Info("configuration validated", slog.String("project_id", cfg.Project.ID))
+		logger.Info("configuration validated", slog.String("project_id", defaultProject.ID))
 		return
 	}
 
@@ -68,6 +75,31 @@ func main() {
 	engine := buildNextActionEngine(cfg, logger)
 
 	if *mode == "worker" || *mode == "serve" {
+		dbPath := storage.DefaultDBPath(cfg.General.WorkspaceRoot)
+		store, err := sqlitestore.Open(ctx, dbPath)
+		if err != nil {
+			logger.Error("open sqlite store", slog.String("path", dbPath), slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		defer store.Close()
+		switch *mode {
+		case "worker":
+			if err := store.Migrate(ctx); err != nil {
+				logger.Error("migrate sqlite store", slog.String("path", dbPath), slog.String("error", err.Error()))
+				os.Exit(1)
+			}
+			if err := store.EnsureProject(ctx, defaultProject); err != nil {
+				logger.Error("ensure default project", slog.String("project_id", defaultProject.ID), slog.String("error", err.Error()))
+				os.Exit(1)
+			}
+			logger.Info("sqlite store migrated", slog.String("path", dbPath), slog.String("project_id", defaultProject.ID))
+		case "serve":
+			if err := store.VerifySchema(ctx); err != nil {
+				logger.Error("sqlite store schema is not ready", slog.String("path", dbPath), slog.String("error", err.Error()))
+				os.Exit(1)
+			}
+		}
+
 		var discordAdapter *discord.Adapter
 		if cfg.Channels.Discord.Enabled {
 			token := strings.TrimSpace(os.Getenv("DISCORD_TOKEN"))
@@ -79,7 +111,7 @@ func main() {
 			if appID == "" {
 				logger.Warn("discord application id is not set; continuing because the runtime does not require it yet", slog.String("env", "DISCORD_APPLICATION_ID"))
 			}
-			discordAdapter, err = discord.New(cfg.Project.ID, token, appID, dispatcher, logger, discord.Options{
+			discordAdapter, err = discord.New(defaultProject.ID, token, appID, dispatcher, logger, discord.Options{
 				WorkspaceRoot: cfg.General.WorkspaceRoot,
 				MessageLimits: discord.MessageLimits{
 					MaxChars: cfg.Channels.Discord.OutboundMessages.MaxChars,
@@ -99,19 +131,22 @@ func main() {
 		}
 
 		activitySet := &activities.Activities{
-			Engine:        engine,
-			Exec:          exec.NewSafeExecutor(logger),
-			Schedule:      scheduletool.NewTemporalExecutor(temporalClient.ScheduleClient(), cfg.Temporal.TaskQueue, logger),
-			Reporter:      reporter,
-			EventEnqueuer: dispatcher,
-			Project: domain.Project{
-				ID:   cfg.Project.ID,
-				Name: cfg.Project.Name,
-			},
-			WorkspaceRoot: cfg.General.WorkspaceRoot,
-			OpenCTORoot:   openCTORoot,
-			StateDir:      cfg.Runtime.StateDir,
-			Logger:        logger,
+			Store:                       store,
+			Engine:                      engine,
+			Exec:                        exec.NewSafeExecutor(logger),
+			Schedule:                    scheduletool.NewTemporalExecutor(temporalClient.ScheduleClient(), cfg.Temporal.TaskQueue, logger),
+			Reporter:                    reporter,
+			EventEnqueuer:               dispatcher,
+			Project:                     defaultProject,
+			WorkspaceRoot:               cfg.General.WorkspaceRoot,
+			OpenCTORoot:                 openCTORoot,
+			StateDir:                    cfg.Runtime.StateDir,
+			MemoryEnabled:               cfg.Memory.Enabled,
+			MemoryLimit:                 cfg.Memory.AutoContextLimit,
+			ConversationEnabled:         cfg.Conversation.Enabled,
+			ConversationLimit:           cfg.Conversation.HistoryLimit,
+			ConversationMaxContextChars: cfg.Conversation.MaxContextChars,
+			Logger:                      logger,
 		}
 
 		worker := runtime.NewWorker(temporalClient, cfg.Temporal.TaskQueue, activitySet)
@@ -135,7 +170,7 @@ func main() {
 				logger.Error("start discord adapter", slog.String("error", err.Error()))
 				os.Exit(1)
 			}
-			logger.Info("discord adapter started", slog.String("project_id", cfg.Project.ID))
+			logger.Info("discord adapter started", slog.String("project_id", defaultProject.ID))
 		}
 
 		<-ctx.Done()
@@ -143,12 +178,12 @@ func main() {
 	}
 
 	if *mode == "inject" {
-		injector := local.NewInjector(cfg.Project.ID, dispatcher, logger)
+		injector := local.NewInjector(defaultProject.ID, dispatcher, logger)
 		if _, err := injector.Inject(ctx, *actor, *body); err != nil {
 			logger.Error("inject local event", slog.String("error", err.Error()))
 			os.Exit(1)
 		}
-		logger.Info("event injected", slog.String("project_id", cfg.Project.ID))
+		logger.Info("event injected", slog.String("project_id", defaultProject.ID))
 		return
 	}
 

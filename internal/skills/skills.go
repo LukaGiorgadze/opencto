@@ -160,8 +160,8 @@ func Reminder(summaries []Summary) string {
 	}
 	var builder strings.Builder
 	builder.WriteString("<system-reminder>\n")
-	builder.WriteString("The following skills are loadable with the `load_skill` tool. Only call `load_skill` with one of these exact top-level skill IDs.\n")
-	builder.WriteString("If a loaded skill points to reference files, do not call `load_skill` for those references; read them with the Read tool by file path instead.\n\n")
+	builder.WriteString("The following skills are loadable with the `LoadSkill` tool. Only call `LoadSkill` with one of these exact top-level skill IDs.\n")
+	builder.WriteString("If a loaded skill points to reference files, do not call `LoadSkill` for those references; read them with the Read tool by file path instead.\n\n")
 	for _, summary := range summaries {
 		description := strings.TrimSpace(summary.Description)
 		if description == "" {

@@ -1,0 +1,30 @@
+{
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "required": ["query", "scope", "limit", "tags"],
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": "Search query for remembered project or global context."
+        },
+        "scope": {
+            "type": "string",
+            "enum": ["project", "global", "all"],
+            "description": "Memory scope to search. Defaults to all visible memory."
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "description": "Maximum number of memories to return."
+        },
+        "tags": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            },
+            "description": "Optional exact tags to filter results by. A memory must contain every listed tag."
+        }
+    },
+    "additionalProperties": false
+}

@@ -58,7 +58,7 @@ func TestResolveReportAttachmentWithinWorkspace(t *testing.T) {
 	}
 }
 
-func TestResolveReportRejectsSymlinkEscape(t *testing.T) {
+func TestResolveReportAllowsSymlinkOutsideWorkspace(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
@@ -71,14 +71,46 @@ func TestResolveReportRejectsSymlinkEscape(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	_, err := ResolveReport(domain.ReportMessage{
+	report, err := ResolveReport(domain.ReportMessage{
 		Attachments: []domain.ReportAttachment{{Path: link}},
 	}, ResolveOptions{
 		WorkspaceRoot: root,
 		Limits:        AttachmentLimits{MaxFiles: 1, MaxFileBytes: 1024, MaxTotalBytes: 1024},
 	})
-	if err == nil || !strings.Contains(err.Error(), "outside workspace root") {
-		t.Fatalf("expected workspace escape error, got %v", err)
+	if err != nil {
+		t.Fatalf("resolve report: %v", err)
+	}
+	wantPath, err := filepath.EvalSymlinks(outside)
+	if err != nil {
+		t.Fatalf("eval outside path: %v", err)
+	}
+	if report.Attachments[0].Path != wantPath {
+		t.Fatalf("expected symlink target %q, got %q", wantPath, report.Attachments[0].Path)
+	}
+}
+
+func TestResolveReportAllowsAbsoluteAttachmentWithoutWorkspaceRoot(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "shot.png")
+	if err := os.WriteFile(path, []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}, 0o644); err != nil {
+		t.Fatalf("write attachment: %v", err)
+	}
+
+	report, err := ResolveReport(domain.ReportMessage{
+		Attachments: []domain.ReportAttachment{{Path: path}},
+	}, ResolveOptions{
+		Limits: AttachmentLimits{MaxFiles: 1, MaxFileBytes: 1024, MaxTotalBytes: 1024},
+	})
+	if err != nil {
+		t.Fatalf("resolve report: %v", err)
+	}
+	wantPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("eval path: %v", err)
+	}
+	if report.Attachments[0].Path != wantPath {
+		t.Fatalf("expected absolute path %q, got %q", wantPath, report.Attachments[0].Path)
 	}
 }
 

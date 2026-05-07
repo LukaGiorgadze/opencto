@@ -15,6 +15,7 @@ import (
 	edittool "github.com/opencto/opencto/internal/tools/edit"
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
+	memorytool "github.com/opencto/opencto/internal/tools/memory"
 	readtool "github.com/opencto/opencto/internal/tools/read"
 	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
 	skilltool "github.com/opencto/opencto/internal/tools/skill"
@@ -104,6 +105,30 @@ func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) 
 			summary += " in " + path
 		}
 		return structuredToolChoiceFromInput(definition, call, raw, input, summary), nil
+	case domain.ToolTypeMemoryRemember:
+		var args memorytool.RememberRequest
+		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
+			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
+		}
+		return memoryToolChoiceFromInput(definition, call, raw, input, "remember "+strings.TrimSpace(args.Content), domain.ToolIdempotencyNonIdempotent), nil
+	case domain.ToolTypeMemorySearch:
+		var args memorytool.SearchRequest
+		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
+			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
+		}
+		return memoryToolChoiceFromInput(definition, call, raw, input, "search memory "+strings.TrimSpace(args.Query), domain.ToolIdempotencyReadOnly), nil
+	case domain.ToolTypeMemoryUpdate:
+		var args memorytool.UpdateRequest
+		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
+			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
+		}
+		return memoryToolChoiceFromInput(definition, call, raw, input, "update memory "+strings.TrimSpace(args.MemoryID), domain.ToolIdempotencyNonIdempotent), nil
+	case domain.ToolTypeMemoryForget:
+		var args memorytool.ForgetRequest
+		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
+			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
+		}
+		return memoryToolChoiceFromInput(definition, call, raw, input, forgetMemorySummary(args), domain.ToolIdempotencyNonIdempotent), nil
 	case domain.ToolTypeSchedule:
 		var args scheduletool.Request
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
@@ -119,6 +144,29 @@ func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) 
 	default:
 		return agent.ToolChoice{}, fmt.Errorf("unsupported tool type %q for call %q", definition.Type, call.FunctionCall.Name)
 	}
+}
+
+func memoryToolChoiceFromInput(definition toolregistry.Definition, call llms.ToolCall, raw json.RawMessage, input agent.ToolSelectionInput, summary string, idempotency domain.ToolIdempotency) agent.ToolChoice {
+	choice := structuredToolChoiceFromInput(definition, call, raw, input, summary)
+	choice.RunMode = domain.ToolRunModeWaitForExit
+	choice.Idempotency = idempotency
+	choice.ProcessScope = domain.ProcessScopeStopOnFinish
+	return choice
+}
+
+func forgetMemorySummary(args memorytool.ForgetRequest) string {
+	ids := trimStringList(args.MemoryIDs, 20)
+	if len(ids) > 0 {
+		return "forget memory " + strings.Join(ids, ", ")
+	}
+	tags := trimStringList(args.Tags, 20)
+	if len(tags) > 0 {
+		return "forget memory tags " + strings.Join(tags, ", ")
+	}
+	if scope := strings.TrimSpace(args.Scope); scope != "" {
+		return "forget memory scope " + scope
+	}
+	return "forget memory"
 }
 
 func decodeToolArguments(toolName string, raw json.RawMessage, target any) error {

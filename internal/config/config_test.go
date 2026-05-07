@@ -28,8 +28,6 @@ func TestLoadRequiresExplicitConfigValues(t *testing.T) {
 
 	for _, field := range []string{
 		"general.workspace_root",
-		"project.id",
-		"project.name",
 		"llm.provider",
 		"llm.base_url",
 		"llm.model_reasoning",
@@ -196,6 +194,99 @@ func TestLoadParsesLLMSecretFields(t *testing.T) {
 	}
 	if cfg.LLM.TranscriptionModel != "gpt-4o-mini-transcribe" {
 		t.Fatalf("unexpected transcription model: %s", cfg.LLM.TranscriptionModel)
+	}
+}
+
+func TestLoadDefaultsStorageAndMemory(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	data := []byte(`
+{
+  "general": {
+    "workspace_root": "."
+  },
+  "llm": {
+    "provider": "openai",
+    "base_url": "http://127.0.0.1:4000",
+    "model_reasoning": "gpt-5.4",
+    "model_fast": "gpt-5.4-mini",
+    "transcription_model": "gpt-4o-mini-transcribe"
+  },
+  "temporal": {
+    "host_port": "127.0.0.1:7233",
+    "namespace": "default",
+    "task_queue": "opencto",
+    "continue_as_new_after_events": 1000
+  },
+  "observability": {
+    "log_level": "INFO"
+  }
+}
+`)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Storage.Provider != "sqlite" {
+		t.Fatalf("expected sqlite storage provider, got %q", cfg.Storage.Provider)
+	}
+	if !cfg.Memory.Enabled || cfg.Memory.AutoContextLimit != 5 {
+		t.Fatalf("unexpected memory defaults: %#v", cfg.Memory)
+	}
+	if !cfg.Conversation.Enabled || cfg.Conversation.HistoryLimit != 10 || cfg.Conversation.MaxContextChars != 8000 {
+		t.Fatalf("unexpected conversation defaults: %#v", cfg.Conversation)
+	}
+}
+
+func TestLoadParsesConversationConfig(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	data := []byte(`
+{
+  "general": {
+    "workspace_root": "."
+  },
+  "conversation": {
+    "enabled": false,
+    "history_limit": 12,
+    "max_context_chars": 4000
+  },
+  "llm": {
+    "provider": "openai",
+    "base_url": "http://127.0.0.1:4000",
+    "model_reasoning": "gpt-5.4",
+    "model_fast": "gpt-5.4-mini",
+    "transcription_model": "gpt-4o-mini-transcribe"
+  },
+  "temporal": {
+    "host_port": "127.0.0.1:7233",
+    "namespace": "default",
+    "task_queue": "opencto",
+    "continue_as_new_after_events": 1000
+  },
+  "observability": {
+    "log_level": "INFO"
+  }
+}
+`)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Conversation.Enabled || cfg.Conversation.HistoryLimit != 12 || cfg.Conversation.MaxContextChars != 4000 {
+		t.Fatalf("unexpected conversation config: %#v", cfg.Conversation)
 	}
 }
 

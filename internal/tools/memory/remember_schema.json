@@ -1,0 +1,42 @@
+{
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "required": ["content", "scope", "kind", "tags", "confidence", "pinned", "reason"],
+    "properties": {
+        "content": {
+            "type": "string",
+            "description": "Durable memory content to store. Keep it concise and factual."
+        },
+        "scope": {
+            "type": "string",
+            "enum": ["project", "global"],
+            "description": "Use project for this project only. Use global for cross-project user preferences or standing instructions."
+        },
+        "kind": {
+            "type": "string",
+            "description": "Short category such as preference, decision, fact, instruction, credential-note, or workflow."
+        },
+        "tags": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            },
+            "description": "Optional short lowercase tags for filtering and review."
+        },
+        "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Confidence that this memory should be reused later. Defaults to 1."
+        },
+        "pinned": {
+            "type": "boolean",
+            "description": "Whether this memory should be preferred in fallback context."
+        },
+        "reason": {
+            "type": "string",
+            "description": "Why this should be remembered."
+        }
+    },
+    "additionalProperties": false
+}

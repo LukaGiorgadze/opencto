@@ -14,13 +14,22 @@ import (
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
 	skillcatalog "github.com/opencto/opencto/internal/skills"
+	"github.com/opencto/opencto/internal/storage"
 	exectool "github.com/opencto/opencto/internal/tools/exec"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
 )
 
 type stubProjectStore struct {
-	pending []domain.WorkItem
+	pending              []domain.WorkItem
+	memories             []domain.Memory
+	updateResult         domain.MemoryUpdateResult
+	updateRequests       *[]domain.MemoryUpdateRequest
+	forgetResult         domain.MemoryForgetResult
+	forgetRequests       *[]domain.MemoryForgetRequest
+	conversationsByScope map[storage.ConversationScope][]domain.ConversationMessage
+	conversationQueries  *[]storage.ConversationQuery
+	upsertedConversation *[]domain.ConversationMessage
 }
 
 type stubEngine struct {
@@ -58,15 +67,31 @@ func (r *captureReporter) NotifyTyping(_ context.Context, event domain.Event) er
 	return r.typingErr
 }
 
-func (s stubProjectStore) Append(context.Context, domain.Event) error {
+func (s stubProjectStore) Close() error {
 	return nil
 }
 
-func (s stubProjectStore) ListPending(context.Context, string) ([]domain.WorkItem, error) {
+func (s stubProjectStore) Migrate(context.Context) error {
+	return nil
+}
+
+func (s stubProjectStore) VerifySchema(context.Context) error {
+	return nil
+}
+
+func (s stubProjectStore) EnsureProject(context.Context, domain.Project) error {
+	return nil
+}
+
+func (s stubProjectStore) AppendEvent(context.Context, domain.Event) (storage.EventAppendResult, error) {
+	return storage.EventAppendResult{Inserted: true}, nil
+}
+
+func (s stubProjectStore) ListPendingWorkItems(context.Context, string) ([]domain.WorkItem, error) {
 	return append([]domain.WorkItem(nil), s.pending...), nil
 }
 
-func (s stubProjectStore) UpsertWorkItem(context.Context, domain.WorkItem) error {
+func (s stubProjectStore) UpsertWorkItems(context.Context, []domain.WorkItem) error {
 	return nil
 }
 
@@ -76,6 +101,93 @@ func (s stubProjectStore) UpsertExecutionAttempt(context.Context, domain.Executi
 
 func (s stubProjectStore) UpsertToolInvocation(context.Context, domain.ToolInvocation) error {
 	return nil
+}
+
+func (s stubProjectStore) UpsertConversationMessage(_ context.Context, message domain.ConversationMessage) error {
+	if s.upsertedConversation != nil {
+		*s.upsertedConversation = append(*s.upsertedConversation, message)
+	}
+	return nil
+}
+
+func (s stubProjectStore) ListConversationMessages(_ context.Context, query storage.ConversationQuery) ([]domain.ConversationMessage, error) {
+	if s.conversationQueries != nil {
+		*s.conversationQueries = append(*s.conversationQueries, query)
+	}
+	source := s.conversationsByScope[query.Scope]
+	if len(source) == 0 {
+		return nil, nil
+	}
+	limit := storage.DefaultConversationHistoryLimit(query.Limit)
+	if limit > len(source) {
+		limit = len(source)
+	}
+	return append([]domain.ConversationMessage(nil), source[:limit]...), nil
+}
+
+func (s stubProjectStore) RememberMemory(context.Context, domain.Memory) (domain.Memory, error) {
+	return domain.Memory{}, nil
+}
+
+func (s stubProjectStore) SearchMemories(context.Context, domain.MemorySearchRequest) ([]domain.Memory, error) {
+	return append([]domain.Memory(nil), s.memories...), nil
+}
+
+func (s stubProjectStore) UpdateMemory(_ context.Context, request domain.MemoryUpdateRequest) (domain.MemoryUpdateResult, error) {
+	if s.updateRequests != nil {
+		*s.updateRequests = append(*s.updateRequests, request)
+	}
+	return s.updateResult, nil
+}
+
+func (s stubProjectStore) ForgetMemory(context.Context, string, string) (bool, error) {
+	return false, nil
+}
+
+func (s stubProjectStore) ForgetMemories(_ context.Context, request domain.MemoryForgetRequest) (domain.MemoryForgetResult, error) {
+	if s.forgetRequests != nil {
+		*s.forgetRequests = append(*s.forgetRequests, request)
+	}
+	return s.forgetResult, nil
+}
+
+func idsFromConversation(messages []domain.ConversationMessage) []string {
+	ids := make([]string, 0, len(messages))
+	for _, message := range messages {
+		ids = append(ids, message.ID)
+	}
+	return ids
+}
+
+func TestPersistEventCarriesControlMetadataToConversationMessage(t *testing.T) {
+	t.Parallel()
+
+	upserted := []domain.ConversationMessage{}
+	activities := Activities{
+		Store: stubProjectStore{upsertedConversation: &upserted},
+	}
+	err := activities.PersistEvent(context.Background(), PersistEventRequest{
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "project-1",
+			ChannelID:   "channel-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			Body:        "/stop",
+			Metadata:    domain.Metadata{domain.MetadataKeyControl: "cancel"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("persist event: %v", err)
+	}
+	if len(upserted) != 1 {
+		t.Fatalf("expected one conversation message, got %#v", upserted)
+	}
+	if upserted[0].Metadata[domain.MetadataKeyControl] != "cancel" {
+		t.Fatalf("expected control metadata to be carried, got %#v", upserted[0].Metadata)
+	}
+	if upserted[0].ChannelID != "channel-1" || upserted[0].ChannelType != domain.ChannelTypeDiscord {
+		t.Fatalf("expected channel scope to be carried, got %#v", upserted[0])
+	}
 }
 
 func TestReportResponseIncludesAttachments(t *testing.T) {
@@ -187,6 +299,287 @@ func TestLoadContextReturnsProjectAndActiveWorkItems(t *testing.T) {
 	}
 	if len(loaded.Skills) != 1 || loaded.Skills[0].ID != "go-testing" {
 		t.Fatalf("expected project skill to be discovered, got %#v", loaded.Skills)
+	}
+}
+
+func TestLoadContextIncludesBoundedMemoryWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	memory := domain.Memory{
+		ID:        "memory-1",
+		ProjectID: "default",
+		Scope:     domain.MemoryScopeProject,
+		Kind:      "preference",
+		Content:   "Use SQLite for local storage.",
+	}
+	activities := Activities{
+		Store:         stubProjectStore{memories: []domain.Memory{memory}},
+		Project:       domain.Project{ID: "default", Name: "OpenCTO"},
+		MemoryEnabled: true,
+		MemoryLimit:   5,
+	}
+	loaded, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:        "event-1",
+		ProjectID: "default",
+		Body:      "what storage should we use?",
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if len(loaded.Memory) != 1 || loaded.Memory[0].ID != "memory-1" {
+		t.Fatalf("expected memory to be loaded, got %#v", loaded.Memory)
+	}
+}
+
+func TestExecuteMemoryToolForgetsByMemoryIDs(t *testing.T) {
+	t.Parallel()
+
+	var forgetRequests []domain.MemoryForgetRequest
+	activities := Activities{
+		Store: stubProjectStore{
+			forgetResult:   domain.MemoryForgetResult{DeletedMemoryIDs: []string{"memory-1", "memory-2"}},
+			forgetRequests: &forgetRequests,
+		},
+		MemoryEnabled: true,
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "default",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemoryForget,
+			Intent:     "forget cleanup memories",
+			Input:      []byte(`{"memory_ids":["memory-1","memory-2","memory-2",""],"tags":[],"scope":"all"}`),
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute memory forget: %v", err)
+	}
+	if len(forgetRequests) != 1 {
+		t.Fatalf("expected one forget request, got %d", len(forgetRequests))
+	}
+	request := forgetRequests[0]
+	if strings.Join(request.MemoryIDs, ",") != "memory-1,memory-2" {
+		t.Fatalf("unexpected forget memory ids: %#v", request.MemoryIDs)
+	}
+	if len(request.Scopes) != 2 || request.Scopes[0] != domain.MemoryScopeProject || request.Scopes[1] != domain.MemoryScopeGlobal {
+		t.Fatalf("unexpected forget scopes: %#v", request.Scopes)
+	}
+	if len(request.Tags) != 0 {
+		t.Fatalf("unexpected forget tags: %#v", request.Tags)
+	}
+	if result.Metadata["deleted_count"] != "2" || !strings.Contains(result.Observation, "deleted_count: 2") {
+		t.Fatalf("unexpected forget result: %#v", result)
+	}
+}
+
+func TestExecuteMemoryToolForgetsByCombinedFilters(t *testing.T) {
+	t.Parallel()
+
+	var forgetRequests []domain.MemoryForgetRequest
+	activities := Activities{
+		Store: stubProjectStore{
+			forgetResult:   domain.MemoryForgetResult{DeletedMemoryIDs: []string{"memory-1"}},
+			forgetRequests: &forgetRequests,
+		},
+		MemoryEnabled: true,
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "default",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemoryForget,
+			Intent:     "forget cleanup memories",
+			Input:      []byte(`{"memory_ids":["memory-1"],"tags":["Cleanup"],"scope":"project"}`),
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute combined memory forget: %v", err)
+	}
+	if len(forgetRequests) != 1 {
+		t.Fatalf("expected one forget request, got %d", len(forgetRequests))
+	}
+	request := forgetRequests[0]
+	if strings.Join(request.MemoryIDs, ",") != "memory-1" {
+		t.Fatalf("unexpected forget memory ids: %#v", request.MemoryIDs)
+	}
+	if strings.Join(request.Tags, ",") != "cleanup" {
+		t.Fatalf("unexpected forget tags: %#v", request.Tags)
+	}
+	if len(request.Scopes) != 1 || request.Scopes[0] != domain.MemoryScopeProject {
+		t.Fatalf("unexpected forget scopes: %#v", request.Scopes)
+	}
+	if result.Metadata["deleted_count"] != "1" {
+		t.Fatalf("unexpected forget result: %#v", result)
+	}
+}
+
+func TestExecuteMemoryToolUpdatesMemory(t *testing.T) {
+	t.Parallel()
+
+	var updateRequests []domain.MemoryUpdateRequest
+	activities := Activities{
+		Store: stubProjectStore{
+			updateResult: domain.MemoryUpdateResult{
+				Updated: true,
+				Memory: domain.Memory{
+					ID:         "memory-1",
+					ProjectID:  "default",
+					Scope:      domain.MemoryScopeProject,
+					Kind:       "preference",
+					Content:    "Use SQLite for durable local state.",
+					Tags:       []string{"storage", "sqlite"},
+					Confidence: 0.8,
+					Pinned:     true,
+					UpdatedAt:  time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC),
+				},
+			},
+			updateRequests: &updateRequests,
+		},
+		MemoryEnabled: true,
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "default",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemoryUpdate,
+			Intent:     "update stale memory",
+			Input:      []byte(`{"memory_id":"memory-1","content":"Use SQLite for durable local state.","kind":"preference","tags_mode":"replace","tags":["SQLite","storage"],"confidence_mode":"set","confidence":0.8,"pinned_mode":"set","pinned":true,"reason":"newer decision"}`),
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute memory update: %v", err)
+	}
+	if len(updateRequests) != 1 {
+		t.Fatalf("expected one update request, got %d", len(updateRequests))
+	}
+	request := updateRequests[0]
+	if request.ProjectID != "default" || request.MemoryID != "memory-1" {
+		t.Fatalf("unexpected update request target: %#v", request)
+	}
+	if request.Content != "Use SQLite for durable local state." || request.Kind != "preference" {
+		t.Fatalf("unexpected content update: %#v", request)
+	}
+	if !request.ReplaceTags || strings.Join(request.Tags, ",") != "sqlite,storage" {
+		t.Fatalf("unexpected tag update: %#v", request)
+	}
+	if request.Confidence == nil || *request.Confidence != 0.8 {
+		t.Fatalf("unexpected confidence update: %#v", request.Confidence)
+	}
+	if request.Pinned == nil || !*request.Pinned {
+		t.Fatalf("unexpected pinned update: %#v", request.Pinned)
+	}
+	if result.Metadata["updated"] != "true" || !strings.Contains(result.Observation, "Updated memory.") {
+		t.Fatalf("unexpected update result: %#v", result)
+	}
+	if !strings.Contains(result.Observation, "memory_id: memory-1") || !strings.Contains(result.Observation, "confidence: 0.80") {
+		t.Fatalf("expected formatted memory observation, got %q", result.Observation)
+	}
+}
+
+func TestLoadContextIncludesScopedConversationHistory(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	queries := []storage.ConversationQuery{}
+	activities := Activities{
+		Store: stubProjectStore{
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeThread: {
+					{ID: "thread-1", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "thread", CreatedAt: base},
+					{ID: "thread-2", ProjectID: "default", Role: domain.ConversationRoleTool, Body: "tool", CreatedAt: base.Add(time.Second)},
+				},
+				storage.ConversationScopeChannel: {
+					{ID: "channel-1", ProjectID: "default", Role: domain.ConversationRoleAssistant, Body: "channel", CreatedAt: base.Add(2 * time.Second)},
+				},
+			},
+			conversationQueries: &queries,
+		},
+		Project:                     domain.Project{ID: "default", Name: "OpenCTO"},
+		ConversationEnabled:         true,
+		ConversationLimit:           3,
+		ConversationMaxContextChars: 8000,
+	}
+	loaded, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:          "current-event",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		ThreadID:    "thread-1",
+		Body:        "continue",
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if got := idsFromConversation(loaded.Conversation); strings.Join(got, ",") != "thread-1,thread-2,channel-1" {
+		t.Fatalf("unexpected conversation history: %#v", loaded.Conversation)
+	}
+	if len(queries) != 2 || queries[0].Scope != storage.ConversationScopeThread || queries[1].Scope != storage.ConversationScopeChannel {
+		t.Fatalf("unexpected conversation queries: %#v", queries)
+	}
+	for _, query := range queries {
+		if query.ExcludeEventID != "current-event" {
+			t.Fatalf("expected current event to be excluded, got %#v", query)
+		}
+		if !query.ExcludeControl {
+			t.Fatalf("expected control messages to be excluded from normal history, got %#v", query)
+		}
+	}
+}
+
+func TestLoadContextUsesProjectConversationOnlyWithoutChannel(t *testing.T) {
+	t.Parallel()
+
+	queries := []storage.ConversationQuery{}
+	activities := Activities{
+		Store: stubProjectStore{
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeProject: {
+					{ID: "project-1", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "local prior"},
+				},
+			},
+			conversationQueries: &queries,
+		},
+		Project:             domain.Project{ID: "default", Name: "OpenCTO"},
+		ConversationEnabled: true,
+		ConversationLimit:   10,
+	}
+	loaded, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:        "current-event",
+		ProjectID: "default",
+		Body:      "continue",
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if got := idsFromConversation(loaded.Conversation); strings.Join(got, ",") != "project-1" {
+		t.Fatalf("unexpected project conversation history: %#v", loaded.Conversation)
+	}
+	if len(queries) != 1 || queries[0].Scope != storage.ConversationScopeProject {
+		t.Fatalf("unexpected conversation queries: %#v", queries)
 	}
 }
 

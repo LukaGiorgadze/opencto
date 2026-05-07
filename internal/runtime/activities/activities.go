@@ -11,36 +11,32 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/temporal"
 
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/config"
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/runtime/scheduled"
 	skillcatalog "github.com/opencto/opencto/internal/skills"
+	"github.com/opencto/opencto/internal/storage"
 	toolregistry "github.com/opencto/opencto/internal/tools"
 	edittool "github.com/opencto/opencto/internal/tools/edit"
 	exectool "github.com/opencto/opencto/internal/tools/exec"
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
+	memorytool "github.com/opencto/opencto/internal/tools/memory"
 	readtool "github.com/opencto/opencto/internal/tools/read"
 	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
 	skilltool "github.com/opencto/opencto/internal/tools/skill"
 	writetool "github.com/opencto/opencto/internal/tools/write"
 	"github.com/opencto/opencto/internal/workspace"
 )
-
-type ProjectStore interface {
-	Append(context.Context, domain.Event) error
-	ListPending(context.Context, string) ([]domain.WorkItem, error)
-	UpsertWorkItem(context.Context, domain.WorkItem) error
-	UpsertExecutionAttempt(context.Context, domain.ExecutionAttempt) error
-	UpsertToolInvocation(context.Context, domain.ToolInvocation) error
-}
 
 type Reporter interface {
 	Report(context.Context, domain.Event, domain.ReportMessage) error
@@ -55,27 +51,32 @@ type TypingReporter interface {
 }
 
 type Activities struct {
-	Store         ProjectStore
-	Engine        agent.Engine
-	Exec          exectool.Executor
-	Edit          edittool.Executor
-	Glob          globtool.Executor
-	Grep          greptool.Executor
-	Read          readtool.Executor
-	Schedule      scheduletool.Executor
-	Skill         skilltool.Executor
-	Write         writetool.Executor
-	Reporter      Reporter
-	EventEnqueuer EventEnqueuer
-	Project       domain.Project
-	WorkspaceRoot string
-	OpenCTORoot   string
-	SkillsRoot    string
-	StateDir      string
-	ExecTailBytes int64
-	ExecGrace     time.Duration
-	HeartbeatGap  time.Duration
-	Logger        *slog.Logger
+	Store                       storage.RuntimeStore
+	Engine                      agent.Engine
+	Exec                        exectool.Executor
+	Edit                        edittool.Executor
+	Glob                        globtool.Executor
+	Grep                        greptool.Executor
+	Read                        readtool.Executor
+	Schedule                    scheduletool.Executor
+	Skill                       skilltool.Executor
+	Write                       writetool.Executor
+	Reporter                    Reporter
+	EventEnqueuer               EventEnqueuer
+	Project                     domain.Project
+	WorkspaceRoot               string
+	OpenCTORoot                 string
+	SkillsRoot                  string
+	StateDir                    string
+	MemoryEnabled               bool
+	MemoryLimit                 int
+	ConversationEnabled         bool
+	ConversationLimit           int
+	ConversationMaxContextChars int
+	ExecTailBytes               int64
+	ExecGrace                   time.Duration
+	HeartbeatGap                time.Duration
+	Logger                      *slog.Logger
 }
 
 type NextActionRequest struct {
@@ -129,6 +130,21 @@ type ResponseSessionRequest struct {
 	MaxDurationSeconds     int          `json:"max_duration_seconds,omitempty"`
 }
 
+type PersistEventRequest struct {
+	Event domain.Event `json:"event"`
+}
+
+type PersistNextActionRequest struct {
+	Event      domain.Event     `json:"event"`
+	NextAction agent.NextAction `json:"next_action"`
+	Status     string           `json:"status,omitempty"`
+}
+
+type PersistToolResultRequest struct {
+	Event  domain.Event      `json:"event"`
+	Result ExecuteToolResult `json:"result"`
+}
+
 type ExecuteToolResult struct {
 	Cycle            int                       `json:"cycle"`
 	WorkItemID       string                    `json:"work_item_id,omitempty"`
@@ -145,6 +161,8 @@ type ExecuteToolResult struct {
 	ResultCode       string                    `json:"result_code,omitempty"`
 	Metadata         map[string]string         `json:"metadata,omitempty"`
 	Processes        []domain.ProcessReference `json:"processes,omitempty"`
+	ExecutionAttempt domain.ExecutionAttempt   `json:"execution_attempt,omitempty"`
+	ToolInvocation   domain.ToolInvocation     `json:"tool_invocation,omitempty"`
 }
 
 const (
@@ -196,7 +214,29 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event) (agent
 	var activeWorkItems []domain.WorkItem
 	if a.Store != nil {
 		var err error
-		activeWorkItems, err = a.Store.ListPending(ctx, event.ProjectID)
+		activeWorkItems, err = a.Store.ListPendingWorkItems(ctx, event.ProjectID)
+		if err != nil {
+			return agent.Context{}, err
+		}
+	}
+	var memories []domain.Memory
+	if a.Store != nil && a.MemoryEnabled {
+		var err error
+		memories, err = a.Store.SearchMemories(ctx, domain.MemorySearchRequest{
+			ProjectID:      strings.TrimSpace(event.ProjectID),
+			Query:          strings.TrimSpace(event.Body),
+			Scopes:         []domain.MemoryScope{domain.MemoryScopeProject, domain.MemoryScopeGlobal},
+			Limit:          storage.DefaultAutoContextLimit(a.MemoryLimit),
+			FallbackRecent: true,
+		})
+		if err != nil {
+			return agent.Context{}, err
+		}
+	}
+	var conversation []domain.ConversationMessage
+	if a.Store != nil && a.ConversationEnabled {
+		var err error
+		conversation, err = a.loadConversationHistory(ctx, event)
 		if err != nil {
 			return agent.Context{}, err
 		}
@@ -211,11 +251,101 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event) (agent
 		return agent.Context{}, err
 	}
 	return agent.Context{
-		Event:           event,
-		Project:         project,
-		ActiveWorkItems: activeWorkItems,
-		Skills:          availableSkills,
+		Event:                       event,
+		Project:                     project,
+		ActiveWorkItems:             activeWorkItems,
+		Memory:                      memories,
+		Conversation:                conversation,
+		ConversationMaxContextChars: storage.DefaultConversationMaxContextChars(a.ConversationMaxContextChars),
+		Skills:                      availableSkills,
 	}, nil
+}
+
+func (a *Activities) loadConversationHistory(ctx context.Context, event domain.Event) ([]domain.ConversationMessage, error) {
+	limit := storage.DefaultConversationHistoryLimit(a.ConversationLimit)
+	if limit > 50 {
+		limit = 50
+	}
+	roles := []domain.ConversationRole{
+		domain.ConversationRoleUser,
+		domain.ConversationRoleAssistant,
+		domain.ConversationRoleTool,
+	}
+	base := storage.ConversationQuery{
+		ProjectID:      strings.TrimSpace(event.ProjectID),
+		ChannelType:    event.ChannelType,
+		ChannelID:      strings.TrimSpace(event.ChannelID),
+		ThreadID:       strings.TrimSpace(event.ThreadID),
+		Roles:          roles,
+		Limit:          limit,
+		ExcludeEventID: strings.TrimSpace(event.ID),
+		ExcludeControl: true,
+	}
+	var messages []domain.ConversationMessage
+	seen := map[string]bool{}
+	appendMessages := func(scope storage.ConversationScope, remaining int) error {
+		if remaining <= 0 {
+			return nil
+		}
+		query := base
+		query.Scope = scope
+		query.Limit = remaining
+		found, err := a.Store.ListConversationMessages(ctx, query)
+		if err != nil {
+			return err
+		}
+		for _, message := range found {
+			if strings.TrimSpace(message.ID) == "" || seen[message.ID] {
+				continue
+			}
+			seen[message.ID] = true
+			messages = append(messages, message)
+		}
+		return nil
+	}
+	if strings.TrimSpace(event.ChannelID) != "" {
+		if strings.TrimSpace(event.ThreadID) != "" {
+			if err := appendMessages(storage.ConversationScopeThread, limit-len(messages)); err != nil {
+				return nil, err
+			}
+		}
+		if err := appendMessages(storage.ConversationScopeChannel, limit-len(messages)); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := appendMessages(storage.ConversationScopeProject, limit-len(messages)); err != nil {
+			return nil, err
+		}
+	}
+	sortConversationMessages(messages)
+	if len(messages) > limit {
+		messages = messages[len(messages)-limit:]
+	}
+	return messages, nil
+}
+
+func sortConversationMessages(messages []domain.ConversationMessage) {
+	sort.SliceStable(messages, func(i, j int) bool {
+		left := messages[i].CreatedAt
+		right := messages[j].CreatedAt
+		if left.Equal(right) {
+			return messages[i].ID < messages[j].ID
+		}
+		return left.Before(right)
+	})
+}
+
+func conversationUserMetadata(event domain.Event) domain.Metadata {
+	metadata := domain.Metadata{
+		"channel_type": string(event.ChannelType),
+		"channel_id":   strings.TrimSpace(event.ChannelID),
+		"actor_id":     strings.TrimSpace(event.ActorID),
+		"actor_name":   strings.TrimSpace(event.ActorName),
+	}
+	if control := strings.TrimSpace(event.Metadata[domain.MetadataKeyControl]); control != "" {
+		metadata[domain.MetadataKeyControl] = control
+	}
+	return metadata
 }
 
 func (a *Activities) activityLogger() *slog.Logger {
@@ -373,6 +503,165 @@ func (a *Activities) EnqueueScheduledEvent(ctx context.Context, request schedule
 	return nil
 }
 
+func (a *Activities) PersistEvent(ctx context.Context, request PersistEventRequest) error {
+	if a.Store == nil {
+		return nil
+	}
+	event := request.Event
+	if strings.TrimSpace(event.ProjectID) == "" {
+		event.ProjectID = strings.TrimSpace(a.Project.ID)
+	}
+	a.logActivityStep("PersistEvent", "begin",
+		slog.String("project_id", event.ProjectID),
+		slog.String("event_id", event.ID),
+	)
+	result, err := a.Store.AppendEvent(ctx, event)
+	if err != nil {
+		a.logActivityStep("PersistEvent", "error",
+			slog.String("project_id", event.ProjectID),
+			slog.String("event_id", event.ID),
+			slog.String("error", err.Error()),
+		)
+		return err
+	}
+	if result.Updated && result.Changed {
+		a.activityLogger().Warn("event id already existed with different content; stored event was updated",
+			slog.String("project_id", event.ProjectID),
+			slog.String("event_id", event.ID),
+		)
+	}
+	if strings.TrimSpace(event.Body) != "" {
+		message := domain.ConversationMessage{
+			ID:          stableActivityID("conversation-user", event.ProjectID, event.ID),
+			ProjectID:   event.ProjectID,
+			EventID:     event.ID,
+			Role:        domain.ConversationRoleUser,
+			ChannelType: event.ChannelType,
+			ChannelID:   strings.TrimSpace(event.ChannelID),
+			ThreadID:    strings.TrimSpace(event.ThreadID),
+			Body:        event.Body,
+			Metadata:    conversationUserMetadata(event),
+			CreatedAt:   firstNonZeroTime(event.CreatedAt, time.Now().UTC()),
+		}
+		if err := a.Store.UpsertConversationMessage(ctx, message); err != nil {
+			a.logActivityStep("PersistEvent", "conversation_error",
+				slog.String("project_id", event.ProjectID),
+				slog.String("event_id", event.ID),
+				slog.String("error", err.Error()),
+			)
+			return err
+		}
+	}
+	a.logActivityStep("PersistEvent", "done",
+		slog.String("project_id", event.ProjectID),
+		slog.String("event_id", event.ID),
+		slog.Bool("inserted", result.Inserted),
+		slog.Bool("updated", result.Updated),
+		slog.Bool("changed", result.Changed),
+	)
+	return nil
+}
+
+func (a *Activities) PersistNextAction(ctx context.Context, request PersistNextActionRequest) error {
+	if a.Store == nil {
+		return nil
+	}
+	event := request.Event
+	if strings.TrimSpace(event.ProjectID) == "" {
+		event.ProjectID = strings.TrimSpace(a.Project.ID)
+	}
+	a.logActivityStep("PersistNextAction", "begin",
+		slog.String("project_id", event.ProjectID),
+		slog.String("event_id", event.ID),
+		slog.String("status", request.Status),
+		slog.Int("work_items", len(request.NextAction.WorkItems)),
+	)
+	if err := a.persistNextAction(ctx, request.NextAction); err != nil {
+		a.logActivityStep("PersistNextAction", "work_items_error",
+			slog.String("project_id", event.ProjectID),
+			slog.String("event_id", event.ID),
+			slog.String("error", err.Error()),
+		)
+		return err
+	}
+	if isTerminalStatus(request.Status) {
+		message := strings.TrimSpace(request.NextAction.ResponseMessage)
+		if message != "" || len(request.NextAction.ResponseAttachments) > 0 {
+			metadata := domain.Metadata{"status": strings.TrimSpace(request.Status)}
+			if len(request.NextAction.ResponseAttachments) > 0 {
+				metadata["attachment_count"] = strconv.Itoa(len(request.NextAction.ResponseAttachments))
+			}
+			if err := a.Store.UpsertConversationMessage(ctx, domain.ConversationMessage{
+				ID:          stableActivityID("conversation-assistant", event.ProjectID, event.ID, request.Status),
+				ProjectID:   event.ProjectID,
+				EventID:     event.ID,
+				Role:        domain.ConversationRoleAssistant,
+				ChannelType: event.ChannelType,
+				ChannelID:   strings.TrimSpace(event.ChannelID),
+				ThreadID:    strings.TrimSpace(event.ThreadID),
+				Body:        message,
+				Metadata:    metadata,
+				CreatedAt:   time.Now().UTC(),
+			}); err != nil {
+				a.logActivityStep("PersistNextAction", "conversation_error",
+					slog.String("project_id", event.ProjectID),
+					slog.String("event_id", event.ID),
+					slog.String("error", err.Error()),
+				)
+				return err
+			}
+		}
+	}
+	a.logActivityStep("PersistNextAction", "done",
+		slog.String("project_id", event.ProjectID),
+		slog.String("event_id", event.ID),
+		slog.String("status", request.Status),
+	)
+	return nil
+}
+
+func (a *Activities) PersistToolResult(ctx context.Context, request PersistToolResultRequest) error {
+	if a.Store == nil {
+		return nil
+	}
+	event := request.Event
+	result := request.Result
+	if strings.TrimSpace(event.ProjectID) == "" {
+		event.ProjectID = strings.TrimSpace(result.ExecutionAttempt.ProjectID)
+	}
+	if strings.TrimSpace(event.ProjectID) == "" {
+		event.ProjectID = strings.TrimSpace(result.ToolInvocation.ProjectID)
+	}
+	records, err := toolPersistenceRecords(event, result)
+	if err != nil {
+		return err
+	}
+	a.logActivityStep("PersistToolResult", "begin",
+		slog.String("project_id", records.Attempt.ProjectID),
+		slog.String("work_item_id", records.Attempt.WorkItemID),
+		slog.String("tool_call_id", result.ToolCallID),
+		slog.String("tool_type", string(result.Tool)),
+	)
+	if err := a.Store.UpsertExecutionAttempt(ctx, records.Attempt); err != nil {
+		return err
+	}
+	if err := a.Store.UpsertToolInvocation(ctx, records.Invocation); err != nil {
+		return err
+	}
+	if strings.TrimSpace(records.Conversation.Body) != "" {
+		if err := a.Store.UpsertConversationMessage(ctx, records.Conversation); err != nil {
+			return err
+		}
+	}
+	a.logActivityStep("PersistToolResult", "done",
+		slog.String("project_id", records.Attempt.ProjectID),
+		slog.String("work_item_id", records.Attempt.WorkItemID),
+		slog.String("tool_call_id", result.ToolCallID),
+		slog.String("tool_type", string(result.Tool)),
+	)
+	return nil
+}
+
 func startResponseSessionHeartbeat(ctx context.Context, gap time.Duration, details any) func() {
 	if !activity.IsActivity(ctx) {
 		return func() {}
@@ -477,24 +766,6 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		return NextActionResult{}, fmt.Errorf("project_id is required")
 	}
 	event.ProjectID = projectID
-	if a.Store != nil && request.ExecutionCycle <= 1 && !request.ResumedFromPause {
-		a.logActivityStep("NextAction", "append_event_begin",
-			slog.String("project_id", projectID),
-			slog.String("event_id", event.ID),
-		)
-		if err := a.Store.Append(ctx, event); err != nil {
-			a.logActivityStep("NextAction", "append_event_error",
-				slog.String("project_id", projectID),
-				slog.String("event_id", event.ID),
-				slog.String("error", err.Error()),
-			)
-			return NextActionResult{}, err
-		}
-		a.logActivityStep("NextAction", "append_event_done",
-			slog.String("project_id", projectID),
-			slog.String("event_id", event.ID),
-		)
-	}
 
 	a.logActivityStep("NextAction", "load_context_begin",
 		slog.String("project_id", projectID),
@@ -717,18 +988,6 @@ func (a *Activities) prepareToolNextAction(ctx context.Context, nextAction agent
 	nextAction.ToolChoice = choice
 	nextAction.ResponseMessage = ""
 
-	a.logActivityStep("NextAction", "prepare_tool_persist_next_action_begin",
-		slog.String("work_item_id", workItemID),
-		slog.String("tool_call_id", choice.ToolCallID),
-	)
-	if err := a.persistNextAction(ctx, nextAction); err != nil {
-		a.logActivityStep("NextAction", "prepare_tool_persist_next_action_error",
-			slog.String("work_item_id", workItemID),
-			slog.String("tool_call_id", choice.ToolCallID),
-			slog.String("error", err.Error()),
-		)
-		return NextActionResult{}, err
-	}
 	a.logActivityStep("NextAction", "prepare_tool_done",
 		slog.String("work_item_id", workItemID),
 		slog.String("tool_call_id", choice.ToolCallID),
@@ -771,7 +1030,7 @@ func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, n
 	result, err := a.completeTask(ctx, event.ProjectID, event, nextAction, TaskCompletionRequest{
 		Status:    output.Status,
 		Processes: processes,
-	}, true, false)
+	}, false, false)
 	if err != nil {
 		return NextActionResult{}, err
 	}
@@ -941,29 +1200,118 @@ func (a *Activities) persistNextAction(ctx context.Context, nextAction agent.Nex
 		)
 		return nil
 	}
+	items := make([]domain.WorkItem, 0, len(nextAction.WorkItems))
 	for _, item := range nextAction.WorkItems {
 		if item.ID == "" {
 			a.logActivityStep("NextAction", "persist_next_action_skip_empty_work_item_id")
 			continue
 		}
-		a.logActivityStep("NextAction", "persist_next_action_upsert_work_item_begin",
-			slog.String("work_item_id", item.ID),
-			slog.String("status", string(item.Status)),
-		)
-		if err := a.Store.UpsertWorkItem(ctx, item); err != nil {
-			a.logActivityStep("NextAction", "persist_next_action_upsert_work_item_error",
-				slog.String("work_item_id", item.ID),
-				slog.String("status", string(item.Status)),
-				slog.String("error", err.Error()),
-			)
-			return err
-		}
-		a.logActivityStep("NextAction", "persist_next_action_upsert_work_item_done",
-			slog.String("work_item_id", item.ID),
-			slog.String("status", string(item.Status)),
-		)
+		items = append(items, item)
 	}
-	return nil
+	return a.Store.UpsertWorkItems(ctx, items)
+}
+
+func (a *Activities) ExecuteMemoryTool(ctx context.Context, request ExecuteToolRequest) (ExecuteToolResult, error) {
+	a.logActivityStep("ExecuteMemoryTool", "start",
+		slog.String("project_id", strings.TrimSpace(request.ProjectID)),
+		slog.String("work_item_id", strings.TrimSpace(request.WorkItemID)),
+		slog.String("tool_type", string(request.ToolChoice.Type)),
+		slog.String("tool_call_id", strings.TrimSpace(request.ToolChoice.ToolCallID)),
+	)
+	if a.Store == nil || !a.MemoryEnabled {
+		return ExecuteToolResult{}, temporal.NewNonRetryableApplicationError("memory store is not configured", "MemoryUnavailable", nil)
+	}
+	execution, err := newToolExecutionContext(request)
+	if err != nil {
+		return ExecuteToolResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+	}
+	attempt := domain.ExecutionAttempt{
+		ID:         execution.ExecutionAttemptID,
+		ProjectID:  execution.ProjectID,
+		WorkItemID: execution.WorkItemID,
+		Status:     domain.ExecutionStatusRunning,
+		Attempt:    execution.Cycle,
+		Tool:       request.ToolChoice.Type,
+		Summary:    request.ToolChoice.Intent,
+		StartedAt:  execution.StartedAt,
+		Metadata: map[string]string{
+			"execution_cycle": strconv.Itoa(execution.Cycle),
+			"tool_call_id":    execution.ToolCallID,
+		},
+	}
+	run, runErr := a.runMemoryTool(ctx, request.ToolChoice, execution)
+	completedAt := time.Now().UTC()
+	attempt.CompletedAt = &completedAt
+	attempt.OutputSummary = firstNonEmpty(run.Observation, "Memory tool completed.")
+	status := domain.ExecutionStatusSucceeded
+	resultCode := "0"
+	errorMessage := ""
+	if runErr != nil {
+		status = domain.ExecutionStatusFailed
+		resultCode = "1"
+		errorMessage = runErr.Error()
+		attempt.OutputSummary = firstNonEmpty(run.Observation, "Memory tool failed.")
+	}
+	attempt.Status = status
+	metadata := map[string]string{
+		"started_at":   execution.StartedAt.UTC().Format(time.RFC3339Nano),
+		"completed_at": completedAt.UTC().Format(time.RFC3339Nano),
+		"tool_call_id": execution.ToolCallID,
+	}
+	for key, value := range request.ToolChoice.Metadata {
+		if strings.TrimSpace(value) != "" {
+			metadata[key] = value
+		}
+	}
+	for key, value := range run.Metadata {
+		if strings.TrimSpace(value) != "" {
+			metadata[key] = value
+		}
+	}
+	attempt.Metadata = metadata
+	invocation := domain.ToolInvocation{
+		ID:                 execution.InvocationID,
+		ProjectID:          execution.ProjectID,
+		ExecutionAttemptID: execution.ExecutionAttemptID,
+		RequestedIntent:    request.ToolChoice.Intent,
+		ChosenTool:         request.ToolChoice.Type,
+		FallbackCandidates: execution.FallbackCandidates,
+		WorkingDirectory:   request.ToolChoice.WorkingDir,
+		TimeoutSeconds:     int(execution.Timeout.Seconds()),
+		InputSummary:       request.ToolChoice.InputSummary,
+		InputPayload:       cloneRawMessage(request.ToolChoice.Input),
+		OutputSummary:      attempt.OutputSummary,
+		OutputPayload:      cloneRawMessage(run.Payload),
+		ResultCode:         resultCode,
+		ErrorDetails:       errorMessage,
+		CreatedAt:          execution.StartedAt,
+		CompletedAt:        &completedAt,
+		Metadata:           metadata,
+	}
+	result := ExecuteToolResult{
+		Cycle:            attempt.Attempt,
+		WorkItemID:       execution.WorkItemID,
+		ToolCallID:       execution.ToolCallID,
+		Tool:             request.ToolChoice.Type,
+		Status:           status,
+		RequestedAction:  request.ToolChoice.Intent,
+		Input:            cloneRawMessage(request.ToolChoice.Input),
+		Observation:      attempt.OutputSummary,
+		Error:            errorMessage,
+		WorkingDirectory: invocation.WorkingDirectory,
+		ResultCode:       invocation.ResultCode,
+		Metadata:         metadata,
+		ExecutionAttempt: attempt,
+		ToolInvocation:   invocation,
+	}
+	result.ToolInvocation.OutputPayload = firstRawMessage(run.Payload, executeToolResultPayload(result))
+	a.logActivityStep("ExecuteMemoryTool", "done",
+		slog.String("project_id", execution.ProjectID),
+		slog.String("work_item_id", execution.WorkItemID),
+		slog.String("tool_call_id", execution.ToolCallID),
+		slog.String("status", string(status)),
+	)
+	return result, runErr
 }
 
 func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest) (ExecuteToolResult, error) {
@@ -1012,30 +1360,6 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 			"execution_cycle": strconv.Itoa(execution.Cycle),
 			"tool_call_id":    execution.ToolCallID,
 		},
-	}
-	if a.Store != nil {
-		a.logActivityStep("ExecuteTool", "upsert_execution_attempt_begin",
-			slog.String("project_id", execution.ProjectID),
-			slog.String("work_item_id", execution.WorkItemID),
-			slog.String("tool_call_id", execution.ToolCallID),
-			slog.String("attempt_id", attempt.ID),
-		)
-		if err := a.Store.UpsertExecutionAttempt(ctx, attempt); err != nil {
-			a.logActivityStep("ExecuteTool", "upsert_execution_attempt_error",
-				slog.String("project_id", execution.ProjectID),
-				slog.String("work_item_id", execution.WorkItemID),
-				slog.String("tool_call_id", execution.ToolCallID),
-				slog.String("attempt_id", attempt.ID),
-				slog.String("error", err.Error()),
-			)
-			return ExecuteToolResult{}, err
-		}
-		a.logActivityStep("ExecuteTool", "upsert_execution_attempt_done",
-			slog.String("project_id", execution.ProjectID),
-			slog.String("work_item_id", execution.WorkItemID),
-			slog.String("tool_call_id", execution.ToolCallID),
-			slog.String("attempt_id", attempt.ID),
-		)
 	}
 
 	a.logActivityStep("ExecuteTool", "tool_run_begin",
@@ -1092,6 +1416,7 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 		WorkingDirectory:   firstNonEmpty(toolResult.WorkingDirectory, request.ToolChoice.WorkingDir),
 		TimeoutSeconds:     int(execution.Timeout.Seconds()),
 		InputSummary:       request.ToolChoice.InputSummary,
+		InputPayload:       cloneRawMessage(resultInput),
 		OutputSummary:      toolResult.Observation,
 		ResultCode:         firstNonEmpty(toolResult.ResultCode, "0"),
 		CreatedAt:          execution.StartedAt,
@@ -1125,39 +1450,6 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 		attempt.OutputSummary = firstNonEmpty(toolResult.Observation, "Execution completed.")
 		invocation.OutputSummary = attempt.OutputSummary
 	}
-
-	if a.Store != nil {
-		a.logActivityStep("ExecuteTool", "persist_execution_records_begin",
-			slog.String("project_id", execution.ProjectID),
-			slog.String("work_item_id", execution.WorkItemID),
-			slog.String("tool_call_id", execution.ToolCallID),
-			slog.String("attempt_status", string(attempt.Status)),
-		)
-		if persistErr := a.Store.UpsertExecutionAttempt(ctx, attempt); persistErr != nil {
-			a.logActivityStep("ExecuteTool", "persist_execution_attempt_error",
-				slog.String("project_id", execution.ProjectID),
-				slog.String("work_item_id", execution.WorkItemID),
-				slog.String("tool_call_id", execution.ToolCallID),
-				slog.String("error", persistErr.Error()),
-			)
-			return ExecuteToolResult{}, persistErr
-		}
-		if persistErr := a.Store.UpsertToolInvocation(ctx, invocation); persistErr != nil {
-			a.logActivityStep("ExecuteTool", "persist_tool_invocation_error",
-				slog.String("project_id", execution.ProjectID),
-				slog.String("work_item_id", execution.WorkItemID),
-				slog.String("tool_call_id", execution.ToolCallID),
-				slog.String("error", persistErr.Error()),
-			)
-			return ExecuteToolResult{}, persistErr
-		}
-		a.logActivityStep("ExecuteTool", "persist_execution_records_done",
-			slog.String("project_id", execution.ProjectID),
-			slog.String("work_item_id", execution.WorkItemID),
-			slog.String("tool_call_id", execution.ToolCallID),
-			slog.String("attempt_status", string(attempt.Status)),
-		)
-	}
 	a.logActivityStep("ExecuteTool", "done",
 		slog.String("project_id", execution.ProjectID),
 		slog.String("work_item_id", execution.WorkItemID),
@@ -1166,7 +1458,7 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 		slog.String("result_code", invocation.ResultCode),
 	)
 
-	return ExecuteToolResult{
+	result := ExecuteToolResult{
 		Cycle:            attempt.Attempt,
 		WorkItemID:       execution.WorkItemID,
 		ToolCallID:       execution.ToolCallID,
@@ -1182,7 +1474,11 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 		ResultCode:       invocation.ResultCode,
 		Metadata:         invocation.Metadata,
 		Processes:        toolResult.Processes,
-	}, nil
+		ExecutionAttempt: attempt,
+		ToolInvocation:   invocation,
+	}
+	result.ToolInvocation.OutputPayload = executeToolResultPayload(result)
+	return result, nil
 }
 
 func (a *Activities) startExecProcess(ctx context.Context, request ExecuteToolRequest) (ExecuteToolResult, error) {
@@ -1210,11 +1506,6 @@ func (a *Activities) startExecProcess(ctx context.Context, request ExecuteToolRe
 			"run_mode":        string(domain.ToolRunModeStartBackground),
 			"process_scope":   string(processScope),
 		},
-	}
-	if a.Store != nil {
-		if err := a.Store.UpsertExecutionAttempt(ctx, attempt); err != nil {
-			return ExecuteToolResult{}, err
-		}
 	}
 	processID := stableActivityID("managed-process", execution.ProjectID, execution.WorkItemID, execution.ToolCallID)
 	stateDir := a.runtimeStateDir()
@@ -1282,20 +1573,13 @@ func (a *Activities) startExecProcess(ctx context.Context, request ExecuteToolRe
 		WorkingDirectory:   process.WorkingDirectory,
 		TimeoutSeconds:     int(execution.Timeout.Seconds()),
 		InputSummary:       choice.InputSummary,
+		InputPayload:       cloneRawMessage(choice.Input),
 		OutputSummary:      observation,
 		ResultCode:         resultCode,
 		ErrorDetails:       errorMessage,
 		CreatedAt:          execution.StartedAt,
 		CompletedAt:        &completedAt,
 		Metadata:           metadata,
-	}
-	if a.Store != nil {
-		if err := a.Store.UpsertExecutionAttempt(ctx, attempt); err != nil {
-			return ExecuteToolResult{}, err
-		}
-		if err := a.Store.UpsertToolInvocation(ctx, invocation); err != nil {
-			return ExecuteToolResult{}, err
-		}
 	}
 	processes := []domain.ProcessReference(nil)
 	if status == domain.ExecutionStatusSucceeded && strings.TrimSpace(process.ID) != "" {
@@ -1306,7 +1590,7 @@ func (a *Activities) startExecProcess(ctx context.Context, request ExecuteToolRe
 			Scope:       processScope,
 		}}
 	}
-	return ExecuteToolResult{
+	result := ExecuteToolResult{
 		Cycle:            execution.Cycle,
 		WorkItemID:       execution.WorkItemID,
 		ToolCallID:       execution.ToolCallID,
@@ -1322,7 +1606,11 @@ func (a *Activities) startExecProcess(ctx context.Context, request ExecuteToolRe
 		ResultCode:       resultCode,
 		Metadata:         metadata,
 		Processes:        processes,
-	}, nil
+		ExecutionAttempt: attempt,
+		ToolInvocation:   invocation,
+	}
+	result.ToolInvocation.OutputPayload = executeToolResultPayload(result)
+	return result, nil
 }
 
 func (a *Activities) runChosenTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
@@ -1690,6 +1978,218 @@ func decodeChoiceInput(choice agent.ToolChoice, target any) error {
 		return nil
 	default:
 		return err
+	}
+}
+
+type memoryToolRunResult struct {
+	Observation string
+	Payload     json.RawMessage
+	Metadata    map[string]string
+}
+
+func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (memoryToolRunResult, error) {
+	switch choice.Type {
+	case domain.ToolTypeMemoryRemember:
+		var req memorytool.RememberRequest
+		if err := decodeChoiceInput(choice, &req); err != nil {
+			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+		}
+		if strings.TrimSpace(req.Content) == "" {
+			err := fmt.Errorf("memory content is required")
+			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+		}
+		memory := domain.Memory{
+			ID:         stableActivityID("memory", execution.ProjectID, execution.ToolCallID, strings.TrimSpace(req.Content)),
+			ProjectID:  execution.ProjectID,
+			Scope:      memoryScope(req.Scope),
+			Kind:       firstNonEmpty(req.Kind, "fact"),
+			Content:    strings.TrimSpace(req.Content),
+			Tags:       req.Tags,
+			Source:     "tool",
+			SourceID:   execution.ToolCallID,
+			Actor:      strings.TrimSpace(execution.SourceEvent.ActorName),
+			Confidence: req.Confidence,
+			Pinned:     req.Pinned,
+			Metadata: domain.Metadata{
+				"event_id": strings.TrimSpace(execution.SourceEvent.ID),
+				"reason":   strings.TrimSpace(req.Reason),
+			},
+		}
+		if memory.Scope == domain.MemoryScopeGlobal {
+			memory.ProjectID = execution.ProjectID
+		}
+		remembered, err := a.Store.RememberMemory(ctx, memory)
+		if err != nil {
+			return memoryToolRunResult{}, err
+		}
+		payload := mustJSON(memorytool.RememberResult{Memory: remembered})
+		return memoryToolRunResult{
+			Observation: memoryDetailObservation("Remembered memory.", remembered),
+			Payload:     payload,
+			Metadata: map[string]string{
+				"memory_id": remembered.ID,
+				"scope":     string(remembered.Scope),
+			},
+		}, nil
+	case domain.ToolTypeMemorySearch:
+		var req memorytool.SearchRequest
+		if err := decodeChoiceInput(choice, &req); err != nil {
+			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+		}
+		tags := cleanMemoryTags(req.Tags)
+		memories, err := a.Store.SearchMemories(ctx, domain.MemorySearchRequest{
+			ProjectID: execution.ProjectID,
+			Query:     strings.TrimSpace(req.Query),
+			Scopes:    memorySearchScopes(req.Scope),
+			Tags:      tags,
+			Limit:     req.Limit,
+		})
+		if err != nil {
+			return memoryToolRunResult{}, err
+		}
+		payload := mustJSON(memorytool.SearchResult{Memories: memories})
+		return memoryToolRunResult{
+			Observation: memorySearchObservation(memories),
+			Payload:     payload,
+			Metadata: map[string]string{
+				"memory_count": strconv.Itoa(len(memories)),
+				"tags":         strings.Join(tags, ", "),
+			},
+		}, nil
+	case domain.ToolTypeMemoryUpdate:
+		var req memorytool.UpdateRequest
+		if err := decodeChoiceInput(choice, &req); err != nil {
+			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+		}
+		memoryID := strings.TrimSpace(req.MemoryID)
+		if memoryID == "" {
+			err := fmt.Errorf("memory_id is required")
+			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+		}
+		update := domain.MemoryUpdateRequest{
+			ProjectID: execution.ProjectID,
+			MemoryID:  memoryID,
+		}
+		hasUpdate := false
+		if content := strings.TrimSpace(req.Content); content != "" {
+			update.Content = content
+			hasUpdate = true
+		}
+		if kind := strings.TrimSpace(req.Kind); kind != "" {
+			update.Kind = kind
+			hasUpdate = true
+		}
+		switch mode := strings.ToLower(strings.TrimSpace(req.TagsMode)); mode {
+		case "", "keep":
+		case "replace":
+			update.ReplaceTags = true
+			update.Tags = cleanMemoryTags(req.Tags)
+			hasUpdate = true
+		default:
+			err := fmt.Errorf("unsupported tags_mode %q", req.TagsMode)
+			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+		}
+		switch mode := strings.ToLower(strings.TrimSpace(req.ConfidenceMode)); mode {
+		case "", "keep":
+		case "set":
+			if req.Confidence < 0 || req.Confidence > 1 {
+				err := fmt.Errorf("memory confidence must be between 0 and 1")
+				return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+			}
+			confidence := req.Confidence
+			update.Confidence = &confidence
+			hasUpdate = true
+		default:
+			err := fmt.Errorf("unsupported confidence_mode %q", req.ConfidenceMode)
+			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+		}
+		switch mode := strings.ToLower(strings.TrimSpace(req.PinnedMode)); mode {
+		case "", "keep":
+		case "set":
+			pinned := req.Pinned
+			update.Pinned = &pinned
+			hasUpdate = true
+		default:
+			err := fmt.Errorf("unsupported pinned_mode %q", req.PinnedMode)
+			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+		}
+		if !hasUpdate {
+			err := fmt.Errorf("at least one memory update field is required")
+			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+		}
+		result, err := a.Store.UpdateMemory(ctx, update)
+		if err != nil {
+			return memoryToolRunResult{}, err
+		}
+		payload := mustJSON(memorytool.UpdateResult{Memory: result.Memory, Updated: result.Updated})
+		observation := "Memory not found.\nmemory_id: " + memoryID
+		metadata := map[string]string{
+			"memory_id": memoryID,
+			"updated":   strconv.FormatBool(result.Updated),
+		}
+		if result.Updated {
+			observation = memoryDetailObservation("Updated memory.", result.Memory)
+			metadata["scope"] = string(result.Memory.Scope)
+			metadata["tags"] = strings.Join(result.Memory.Tags, ", ")
+		}
+		return memoryToolRunResult{
+			Observation: observation,
+			Payload:     payload,
+			Metadata:    metadata,
+		}, nil
+	case domain.ToolTypeMemoryForget:
+		var req memorytool.ForgetRequest
+		if err := decodeChoiceInput(choice, &req); err != nil {
+			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+		}
+		memoryIDs := cleanMemoryIDs(req.MemoryIDs)
+		tags := cleanMemoryTags(req.Tags)
+		scope := strings.ToLower(strings.TrimSpace(req.Scope))
+		if len(memoryIDs) == 0 && len(tags) == 0 && scope == "" {
+			err := fmt.Errorf("memory_ids, tags, or scope is required")
+			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+		}
+		scopes, scope, err := memoryForgetScopes(req.Scope)
+		if err != nil {
+			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+		}
+		result, err := a.Store.ForgetMemories(ctx, domain.MemoryForgetRequest{
+			ProjectID: execution.ProjectID,
+			MemoryIDs: memoryIDs,
+			Scopes:    scopes,
+			Tags:      tags,
+		})
+		if err != nil {
+			return memoryToolRunResult{}, err
+		}
+		deletedIDs := cleanMemoryIDs(result.DeletedMemoryIDs)
+		notFoundIDs := missingMemoryIDs(memoryIDs, deletedIDs)
+		deleted := len(deletedIDs) > 0
+		payload := mustJSON(memorytool.ForgetResult{
+			MemoryIDs:         memoryIDs,
+			Deleted:           deleted,
+			DeletedCount:      len(deletedIDs),
+			DeletedMemoryIDs:  deletedIDs,
+			NotFoundMemoryIDs: notFoundIDs,
+			Tags:              tags,
+			Scope:             scope,
+		})
+		observation := memoryForgetObservation(memoryIDs, deletedIDs, notFoundIDs, tags, scope)
+		return memoryToolRunResult{
+			Observation: observation,
+			Payload:     payload,
+			Metadata: map[string]string{
+				"memory_ids":    strings.Join(memoryIDs, ", "),
+				"deleted":       strconv.FormatBool(deleted),
+				"deleted_count": strconv.Itoa(len(deletedIDs)),
+				"deleted_ids":   strings.Join(deletedIDs, ", "),
+				"scope":         scope,
+				"tags":          strings.Join(tags, ", "),
+			},
+		}, nil
+	default:
+		err := fmt.Errorf("unsupported memory tool type %q", choice.Type)
+		return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
 	}
 }
 
@@ -2322,6 +2822,358 @@ func workspaceEnvironment(workspaceRoot, openCTORoot string) map[string]string {
 		return nil
 	}
 	return env
+}
+
+type toolPersistenceRecordSet struct {
+	Attempt      domain.ExecutionAttempt
+	Invocation   domain.ToolInvocation
+	Conversation domain.ConversationMessage
+}
+
+func toolPersistenceRecords(event domain.Event, result ExecuteToolResult) (toolPersistenceRecordSet, error) {
+	projectID := firstNonEmpty(event.ProjectID, result.ExecutionAttempt.ProjectID, result.ToolInvocation.ProjectID)
+	if projectID == "" {
+		return toolPersistenceRecordSet{}, fmt.Errorf("project_id is required for tool persistence")
+	}
+	workItemID := firstNonEmpty(result.WorkItemID, result.ExecutionAttempt.WorkItemID)
+	toolCallID := firstNonEmpty(result.ToolCallID, result.ToolInvocation.Metadata["tool_call_id"], result.ExecutionAttempt.Metadata["tool_call_id"])
+	if toolCallID == "" {
+		return toolPersistenceRecordSet{}, fmt.Errorf("tool_call_id is required for tool persistence")
+	}
+	now := time.Now().UTC()
+	attempt := result.ExecutionAttempt
+	if strings.TrimSpace(attempt.ID) == "" {
+		startedAt := now
+		if value := strings.TrimSpace(result.Metadata["started_at"]); value != "" {
+			if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
+				startedAt = parsed
+			}
+		}
+		completedAt := now
+		attempt = domain.ExecutionAttempt{
+			ID:            stableActivityID("execution-attempt", projectID, workItemID, toolCallID),
+			ProjectID:     projectID,
+			WorkItemID:    workItemID,
+			Status:        result.Status,
+			Attempt:       result.Cycle,
+			Tool:          result.Tool,
+			Summary:       result.RequestedAction,
+			OutputSummary: firstNonEmpty(result.Observation, result.Error),
+			Metadata:      cloneMetadata(result.Metadata),
+			StartedAt:     startedAt,
+			CompletedAt:   &completedAt,
+		}
+	}
+	if attempt.CompletedAt == nil && result.Status != domain.ExecutionStatusRunning {
+		completedAt := now
+		attempt.CompletedAt = &completedAt
+	}
+	if attempt.Metadata == nil {
+		attempt.Metadata = cloneMetadata(result.Metadata)
+	}
+	invocation := result.ToolInvocation
+	if strings.TrimSpace(invocation.ID) == "" {
+		invocation = domain.ToolInvocation{
+			ID:                 stableActivityID("tool-invocation", projectID, workItemID, toolCallID),
+			ProjectID:          projectID,
+			ExecutionAttemptID: attempt.ID,
+			RequestedIntent:    result.RequestedAction,
+			ChosenTool:         result.Tool,
+			WorkingDirectory:   result.WorkingDirectory,
+			InputPayload:       cloneRawMessage(result.Input),
+			OutputSummary:      firstNonEmpty(result.Observation, result.Error),
+			OutputPayload:      executeToolResultPayload(result),
+			ResultCode:         result.ResultCode,
+			ErrorDetails:       result.Error,
+			Metadata:           cloneMetadata(result.Metadata),
+			CreatedAt:          firstNonZeroTime(attempt.StartedAt, now),
+			CompletedAt:        attempt.CompletedAt,
+		}
+	}
+	if len(strings.TrimSpace(string(invocation.InputPayload))) == 0 {
+		invocation.InputPayload = cloneRawMessage(result.Input)
+	}
+	if len(strings.TrimSpace(string(invocation.OutputPayload))) == 0 {
+		invocation.OutputPayload = executeToolResultPayload(result)
+	}
+	if invocation.Metadata == nil {
+		invocation.Metadata = cloneMetadata(result.Metadata)
+	}
+	if invocation.Metadata == nil {
+		invocation.Metadata = domain.Metadata{}
+	}
+	invocation.Metadata["tool_call_id"] = toolCallID
+	conversation := domain.ConversationMessage{
+		ID:          stableActivityID("conversation-tool", projectID, event.ID, toolCallID),
+		ProjectID:   projectID,
+		EventID:     event.ID,
+		Role:        domain.ConversationRoleTool,
+		ChannelType: event.ChannelType,
+		ChannelID:   strings.TrimSpace(event.ChannelID),
+		ThreadID:    strings.TrimSpace(event.ThreadID),
+		Body:        toolConversationBody(result),
+		ToolCallID:  toolCallID,
+		Metadata: domain.Metadata{
+			"tool":        string(result.Tool),
+			"status":      string(result.Status),
+			"result_code": strings.TrimSpace(result.ResultCode),
+		},
+		CreatedAt: firstNonZeroTime(timeFromMetadata(result.Metadata, "completed_at"), now),
+	}
+	return toolPersistenceRecordSet{Attempt: attempt, Invocation: invocation, Conversation: conversation}, nil
+}
+
+func toolConversationBody(result ExecuteToolResult) string {
+	var parts []string
+	if result.RequestedAction != "" {
+		parts = append(parts, "requested_action: "+result.RequestedAction)
+	}
+	if result.Observation != "" {
+		parts = append(parts, "observation:\n"+result.Observation)
+	}
+	if result.Error != "" {
+		parts = append(parts, "error:\n"+result.Error)
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n\n"))
+}
+
+func executeToolResultPayload(result ExecuteToolResult) json.RawMessage {
+	payload := struct {
+		Cycle            int                       `json:"cycle"`
+		WorkItemID       string                    `json:"work_item_id,omitempty"`
+		ToolCallID       string                    `json:"tool_call_id,omitempty"`
+		Tool             domain.ToolType           `json:"tool,omitempty"`
+		Status           domain.ExecutionStatus    `json:"status"`
+		RequestedAction  string                    `json:"requested_action,omitempty"`
+		Command          string                    `json:"command,omitempty"`
+		Args             []string                  `json:"args,omitempty"`
+		Input            json.RawMessage           `json:"input,omitempty"`
+		Observation      string                    `json:"observation,omitempty"`
+		Error            string                    `json:"error,omitempty"`
+		WorkingDirectory string                    `json:"working_directory,omitempty"`
+		ResultCode       string                    `json:"result_code,omitempty"`
+		Metadata         map[string]string         `json:"metadata,omitempty"`
+		Processes        []domain.ProcessReference `json:"processes,omitempty"`
+	}{
+		Cycle:            result.Cycle,
+		WorkItemID:       result.WorkItemID,
+		ToolCallID:       result.ToolCallID,
+		Tool:             result.Tool,
+		Status:           result.Status,
+		RequestedAction:  result.RequestedAction,
+		Command:          result.Command,
+		Args:             result.Args,
+		Input:            cloneRawMessage(result.Input),
+		Observation:      result.Observation,
+		Error:            result.Error,
+		WorkingDirectory: result.WorkingDirectory,
+		ResultCode:       result.ResultCode,
+		Metadata:         result.Metadata,
+		Processes:        result.Processes,
+	}
+	return mustJSON(payload)
+}
+
+func memoryScope(value string) domain.MemoryScope {
+	switch domain.MemoryScope(strings.ToLower(strings.TrimSpace(value))) {
+	case domain.MemoryScopeGlobal:
+		return domain.MemoryScopeGlobal
+	default:
+		return domain.MemoryScopeProject
+	}
+}
+
+func memorySearchScopes(value string) []domain.MemoryScope {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case memorytool.ScopeProject:
+		return []domain.MemoryScope{domain.MemoryScopeProject}
+	case memorytool.ScopeGlobal:
+		return []domain.MemoryScope{domain.MemoryScopeGlobal}
+	default:
+		return []domain.MemoryScope{domain.MemoryScopeProject, domain.MemoryScopeGlobal}
+	}
+}
+
+func memoryForgetScopes(value string) ([]domain.MemoryScope, string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", memorytool.ScopeAll:
+		return []domain.MemoryScope{domain.MemoryScopeProject, domain.MemoryScopeGlobal}, memorytool.ScopeAll, nil
+	case memorytool.ScopeProject:
+		return []domain.MemoryScope{domain.MemoryScopeProject}, memorytool.ScopeProject, nil
+	case memorytool.ScopeGlobal:
+		return []domain.MemoryScope{domain.MemoryScopeGlobal}, memorytool.ScopeGlobal, nil
+	default:
+		return nil, "", fmt.Errorf("unsupported memory scope %q", value)
+	}
+}
+
+func memorySearchObservation(memories []domain.Memory) string {
+	if len(memories) == 0 {
+		return "No memories found."
+	}
+	var builder strings.Builder
+	_, _ = fmt.Fprintf(&builder, "Memory search results.\ncount: %d", len(memories))
+	for i, memory := range memories {
+		_, _ = fmt.Fprintf(&builder, "\n\n%d. ", i+1)
+		writeMemoryObservationFields(&builder, memory)
+	}
+	return builder.String()
+}
+
+func memoryDetailObservation(title string, memory domain.Memory) string {
+	var builder strings.Builder
+	builder.WriteString(title)
+	builder.WriteString("\n")
+	writeMemoryObservationFields(&builder, memory)
+	return builder.String()
+}
+
+func writeMemoryObservationFields(builder *strings.Builder, memory domain.Memory) {
+	_, _ = fmt.Fprintf(builder, "memory_id: %s\nscope: %s\nkind: %s\nconfidence: %.2f\npinned: %t",
+		strings.TrimSpace(memory.ID),
+		memory.Scope,
+		firstNonEmpty(memory.Kind, "fact"),
+		memory.Confidence,
+		memory.Pinned,
+	)
+	if !memory.UpdatedAt.IsZero() {
+		builder.WriteString("\nupdated_at: ")
+		builder.WriteString(memory.UpdatedAt.UTC().Format(time.RFC3339))
+	}
+	if len(memory.Tags) > 0 {
+		builder.WriteString("\ntags: ")
+		builder.WriteString(strings.Join(memory.Tags, ", "))
+	}
+	builder.WriteString("\ncontent:\n")
+	builder.WriteString(strings.TrimSpace(memory.Content))
+}
+
+func memoryForgetObservation(memoryIDs, deletedIDs, notFoundIDs, tags []string, scope string) string {
+	if len(memoryIDs) == 1 && len(tags) == 0 {
+		if len(deletedIDs) > 0 {
+			return "Forgot memory.\ndeleted_count: 1\nmemory_id: " + memoryIDs[0]
+		}
+		return "Memory not found.\nmemory_id: " + memoryIDs[0]
+	}
+
+	var builder strings.Builder
+	if len(deletedIDs) > 0 {
+		_, _ = fmt.Fprintf(&builder, "Forgot memories.\ndeleted_count: %d", len(deletedIDs))
+		builder.WriteString("\ndeleted_memory_ids: ")
+		builder.WriteString(strings.Join(deletedIDs, ", "))
+	} else {
+		builder.WriteString("No memories forgotten.")
+	}
+	if len(memoryIDs) > 0 {
+		builder.WriteString("\nrequested_memory_ids: ")
+		builder.WriteString(strings.Join(memoryIDs, ", "))
+	}
+	if len(notFoundIDs) > 0 {
+		builder.WriteString("\nnot_found_memory_ids: ")
+		builder.WriteString(strings.Join(notFoundIDs, ", "))
+	}
+	if len(tags) > 0 {
+		builder.WriteString("\ntags: ")
+		builder.WriteString(strings.Join(tags, ", "))
+	}
+	if strings.TrimSpace(scope) != "" {
+		builder.WriteString("\nscope: ")
+		builder.WriteString(scope)
+	}
+	return builder.String()
+}
+
+func cleanMemoryIDs(memoryIDs []string) []string {
+	cleaned := make([]string, 0, len(memoryIDs))
+	seen := map[string]bool{}
+	for _, memoryID := range memoryIDs {
+		memoryID = strings.TrimSpace(memoryID)
+		if memoryID == "" || seen[memoryID] {
+			continue
+		}
+		seen[memoryID] = true
+		cleaned = append(cleaned, memoryID)
+	}
+	return cleaned
+}
+
+func cleanMemoryTags(tags []string) []string {
+	cleaned := make([]string, 0, len(tags))
+	seen := map[string]bool{}
+	for _, tag := range tags {
+		tag = strings.ToLower(strings.TrimSpace(tag))
+		if tag == "" || seen[tag] {
+			continue
+		}
+		seen[tag] = true
+		cleaned = append(cleaned, tag)
+	}
+	sort.Strings(cleaned)
+	return cleaned
+}
+
+func missingMemoryIDs(requested, deleted []string) []string {
+	if len(requested) == 0 {
+		return nil
+	}
+	deletedSet := map[string]bool{}
+	for _, memoryID := range deleted {
+		deletedSet[memoryID] = true
+	}
+	var missing []string
+	for _, memoryID := range requested {
+		if !deletedSet[memoryID] {
+			missing = append(missing, memoryID)
+		}
+	}
+	return missing
+}
+
+func isTerminalStatus(status string) bool {
+	switch status {
+	case NextActionStatusCompleted, NextActionStatusBlocked, NextActionStatusFailed, NextActionStatusIgnored:
+		return true
+	default:
+		return false
+	}
+}
+
+func firstNonZeroTime(values ...time.Time) time.Time {
+	for _, value := range values {
+		if !value.IsZero() {
+			return value
+		}
+	}
+	return time.Time{}
+}
+
+func timeFromMetadata(metadata map[string]string, key string) time.Time {
+	value := strings.TrimSpace(metadata[key])
+	if value == "" {
+		return time.Time{}
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed
+}
+
+func mustJSON(value any) json.RawMessage {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return encoded
+}
+
+func firstRawMessage(values ...json.RawMessage) json.RawMessage {
+	for _, value := range values {
+		if strings.TrimSpace(string(value)) != "" {
+			return cloneRawMessage(value)
+		}
+	}
+	return nil
 }
 
 func firstNonEmpty(values ...string) string {

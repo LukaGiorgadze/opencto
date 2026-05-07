@@ -21,6 +21,10 @@ import (
 func registerTaskWorkflowActivities(env *testsuite.TestWorkflowEnvironment) {
 	env.RegisterActivityWithOptions((&activities.Activities{}).NextAction, activity.RegisterOptions{Name: "Activities.NextAction"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).ExecuteTool, activity.RegisterOptions{Name: "Activities.ExecuteTool"})
+	env.RegisterActivityWithOptions((&activities.Activities{}).ExecuteMemoryTool, activity.RegisterOptions{Name: "Activities.ExecuteMemoryTool"})
+	env.RegisterActivityWithOptions((&activities.Activities{}).PersistEvent, activity.RegisterOptions{Name: "Activities.PersistEvent"})
+	env.RegisterActivityWithOptions((&activities.Activities{}).PersistNextAction, activity.RegisterOptions{Name: "Activities.PersistNextAction"})
+	env.RegisterActivityWithOptions((&activities.Activities{}).PersistToolResult, activity.RegisterOptions{Name: "Activities.PersistToolResult"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).ResponseSession, activity.RegisterOptions{Name: "Activities.ResponseSession"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).ReportResponse, activity.RegisterOptions{Name: "Activities.ReportResponse"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).EnqueueScheduledEvent, activity.RegisterOptions{Name: scheduled.EnqueueScheduledEventName})
@@ -207,6 +211,69 @@ func TestTaskWorkflowExecutesMultipleToolChoicesAsSeparateActivities(t *testing.
 		Event:     event,
 	})
 
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("task workflow failed: %v", err)
+	}
+	env.AssertExpectations(t)
+}
+
+func TestTaskWorkflowRoutesMemoryToolsToMemoryActivity(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.TaskWorkflow)
+	registerTaskWorkflowActivities(env)
+
+	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "remember this"}
+	choice := agent.ToolChoice{
+		ToolCallID: "toolu_memory",
+		Type:       domain.ToolTypeMemoryRemember,
+		Intent:     "remember preference",
+		Input:      []byte(`{"content":"Use SQLite for local storage.","scope":"project","kind":"decision","tags":["storage"],"confidence":1,"pinned":false,"reason":"user preference"}`),
+		Metadata: map[string]string{
+			"tool_call_id":    "toolu_memory",
+			"execution_cycle": "1",
+		},
+	}
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{
+		NextAction: agent.NextAction{WorkItems: []domain.WorkItem{{
+			ID:        "wi-1",
+			ProjectID: "project-1",
+			Status:    domain.WorkItemStatusReady,
+		}}},
+		ToolChoice: &choice,
+		WorkItemID: "wi-1",
+		Status:     activities.NextActionStatusTool,
+	}, nil).Once()
+	env.OnActivity("Activities.ExecuteMemoryTool", mock.Anything, mock.MatchedBy(func(request activities.ExecuteToolRequest) bool {
+		return request.ToolChoice.Type == domain.ToolTypeMemoryRemember &&
+			request.ToolChoice.ToolCallID == "toolu_memory"
+	})).Return(activities.ExecuteToolResult{
+		Cycle:           1,
+		WorkItemID:      "wi-1",
+		ToolCallID:      "toolu_memory",
+		Tool:            domain.ToolTypeMemoryRemember,
+		Status:          domain.ExecutionStatusSucceeded,
+		RequestedAction: "remember preference",
+		Observation:     "Remembered memory.\nmemory_id: memory-1",
+		Metadata: map[string]string{
+			"tool_call_id": "toolu_memory",
+			"memory_id":    "memory-1",
+		},
+	}, nil).Once()
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
+		return request.ExecutionCycle == 2 &&
+			len(request.LastResults) == 1 &&
+			request.LastResults[0].Tool == domain.ToolTypeMemoryRemember
+	})).Return(activities.NextActionResult{
+		Status: activities.NextActionStatusCompleted,
+	}, nil).Once()
+
+	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{
+		ProjectID: "project-1",
+		Event:     event,
+	})
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatalf("task workflow failed: %v", err)
 	}
@@ -591,9 +658,16 @@ func TestTaskWorkflowPassesAdditionalContextSignalToNextAction(t *testing.T) {
 
 	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "do work"}
 	additional := domain.Event{ID: "event-2", ProjectID: "project-1", Body: "also check tests"}
+	persistedAdditional := false
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(workflows.SignalTaskAdditionalContext, workflows.AdditionalContextSignal{Event: additional})
 	}, 0)
+	env.OnActivity("Activities.PersistEvent", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		request := args.Get(1).(activities.PersistEventRequest)
+		if request.Event.ID == "event-2" && request.Event.Metadata[domain.MetadataKeyControl] == "" {
+			persistedAdditional = true
+		}
+	}).Return(nil)
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
 		return len(request.AdditionalEvents) == 1 && request.AdditionalEvents[0].ID == "event-2"
 	})).Return(activities.NextActionResult{
@@ -606,6 +680,9 @@ func TestTaskWorkflowPassesAdditionalContextSignalToNextAction(t *testing.T) {
 	})
 	if err := env.GetWorkflowError(); err != nil {
 		t.Fatalf("task workflow failed: %v", err)
+	}
+	if !persistedAdditional {
+		t.Fatalf("expected additional context signal to be persisted")
 	}
 	env.AssertExpectations(t)
 }
@@ -683,6 +760,68 @@ func TestProjectWorkflowReportsAfterTaskWorkflowCompletes(t *testing.T) {
 	}
 	if !reported {
 		t.Fatalf("expected project workflow to report after child task result")
+	}
+	env.AssertExpectations(t)
+}
+
+func TestProjectWorkflowContinuesAfterReportResponseFails(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ProjectWorkflow)
+	var seen []string
+	env.RegisterWorkflowWithOptions(func(_ workflow.Context, input workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		seen = append(seen, input.Event.ID)
+		return workflows.TaskWorkflowResult{
+			Completed:       true,
+			Status:          activities.NextActionStatusCompleted,
+			Event:           input.Event,
+			ResponseMessage: "done",
+			Report:          true,
+		}, nil
+	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+	env.RegisterActivityWithOptions((&activities.Activities{}).ReportResponse, activity.RegisterOptions{Name: "Activities.ReportResponse"})
+
+	env.OnActivity("Activities.ReportResponse", mock.Anything, mock.MatchedBy(func(request activities.ReportResponseRequest) bool {
+		return request.Event.ID == "event-1"
+	})).Return(errors.New("discord upload failed")).Once()
+	reportedSecond := false
+	env.OnActivity("Activities.ReportResponse", mock.Anything, mock.MatchedBy(func(request activities.ReportResponseRequest) bool {
+		reportedSecond = request.Event.ID == "event-2"
+		return reportedSecond
+	})).Run(func(mock.Arguments) {
+		env.CancelWorkflow()
+	}).Return(nil).Once()
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "project-1",
+			ChannelID:   "channel-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			Body:        "do work",
+		}})
+	}, 0)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:          "event-2",
+			ProjectID:   "project-1",
+			ChannelID:   "channel-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			Body:        "next work",
+		}})
+	}, time.Millisecond)
+
+	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	if strings.Join(seen, ",") != "event-1,event-2" {
+		t.Fatalf("expected workflow to continue with second event, got %#v", seen)
+	}
+	if !reportedSecond {
+		t.Fatalf("expected second event to be reported")
 	}
 	env.AssertExpectations(t)
 }

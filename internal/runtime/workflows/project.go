@@ -5,12 +5,15 @@ import (
 	"strings"
 	"time"
 
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/runtime/activities"
 	"github.com/opencto/opencto/internal/runtime/scheduled"
 )
+
+const reportResponseActivityTimeout = time.Minute
 
 func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: time.Minute})
@@ -44,9 +47,7 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 		for len(pendingReports) > 0 {
 			report := pendingReports[0]
 			pendingReports = pendingReports[1:]
-			if err := reportTaskResult(ctx, report); err != nil {
-				return err
-			}
+			reportTaskResult(ctx, report)
 		}
 
 		if input.ContinueAsNewAfterEvents > 0 && state.ProcessedEvents >= input.ContinueAsNewAfterEvents && len(active) == 0 {
@@ -110,19 +111,34 @@ type activeTask struct {
 	Event  domain.Event
 }
 
-func reportTaskResult(ctx workflow.Context, result TaskWorkflowResult) error {
+func reportTaskResult(ctx workflow.Context, result TaskWorkflowResult) {
 	report := domain.ReportMessage{
 		Text:        result.ResponseMessage,
 		Attachments: result.ResponseAttachments,
 	}
 	if !result.Report || report.Empty() {
-		return nil
+		return
 	}
-	return workflow.ExecuteActivity(ctx, "Activities.ReportResponse", activities.ReportResponseRequest{
+	reportCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		ScheduleToCloseTimeout: reportResponseActivityTimeout,
+		StartToCloseTimeout:    reportResponseActivityTimeout,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 1,
+		},
+	})
+	err := workflow.ExecuteActivity(reportCtx, "Activities.ReportResponse", activities.ReportResponseRequest{
 		Event:       result.Event,
 		Message:     report.Text,
 		Attachments: report.Attachments,
-	}).Get(ctx, nil)
+	}).Get(reportCtx, nil)
+	if err != nil {
+		workflow.GetLogger(ctx).Error(
+			"report response activity failed",
+			"project_id", result.Event.ProjectID,
+			"event_id", result.Event.ID,
+			"error", err.Error(),
+		)
+	}
 }
 
 func failedTaskWorkflowResult(event domain.Event, err error) TaskWorkflowResult {

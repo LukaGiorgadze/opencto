@@ -1,11 +1,14 @@
 package domain
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 )
 
 type Metadata map[string]string
+
+const MetadataKeyControl = "control"
 
 type Provenance struct {
 	Source     string    `json:"source"`
@@ -76,14 +79,18 @@ const (
 type ToolType string
 
 const (
-	ToolTypeExec     ToolType = "exec"
-	ToolTypeEdit     ToolType = "edit"
-	ToolTypeGlob     ToolType = "glob"
-	ToolTypeGrep     ToolType = "grep"
-	ToolTypeRead     ToolType = "read"
-	ToolTypeSchedule ToolType = "schedule"
-	ToolTypeSkill    ToolType = "skill"
-	ToolTypeWrite    ToolType = "write"
+	ToolTypeExec           ToolType = "exec"
+	ToolTypeEdit           ToolType = "edit"
+	ToolTypeGlob           ToolType = "glob"
+	ToolTypeGrep           ToolType = "grep"
+	ToolTypeMemoryForget   ToolType = "memory_forget"
+	ToolTypeMemoryRemember ToolType = "memory_remember"
+	ToolTypeMemorySearch   ToolType = "memory_search"
+	ToolTypeMemoryUpdate   ToolType = "memory_update"
+	ToolTypeRead           ToolType = "read"
+	ToolTypeSchedule       ToolType = "schedule"
+	ToolTypeSkill          ToolType = "skill"
+	ToolTypeWrite          ToolType = "write"
 )
 
 type Project struct {
@@ -112,6 +119,7 @@ type Event struct {
 	Kind        EventKind      `json:"kind"`
 	ChannelID   string         `json:"channel_id,omitempty"`
 	ChannelType ChannelType    `json:"channel_type,omitempty"`
+	ThreadID    string         `json:"thread_id,omitempty"`
 	ActorID     string         `json:"actor_id,omitempty"`
 	ActorName   string         `json:"actor_name,omitempty"`
 	Body        string         `json:"body"`
@@ -180,22 +188,106 @@ type ExecutionAttempt struct {
 }
 
 type ToolInvocation struct {
-	ID                 string     `json:"id"`
-	ProjectID          string     `json:"project_id"`
-	ExecutionAttemptID string     `json:"execution_attempt_id"`
-	RequestedIntent    string     `json:"requested_intent"`
-	ChosenTool         ToolType   `json:"chosen_tool"`
-	FallbackCandidates []ToolType `json:"fallback_candidates,omitempty"`
-	WorkingDirectory   string     `json:"working_directory,omitempty"`
-	TimeoutSeconds     int        `json:"timeout_seconds"`
-	InputSummary       string     `json:"input_summary,omitempty"`
-	OutputSummary      string     `json:"output_summary,omitempty"`
-	ResultCode         string     `json:"result_code,omitempty"`
-	ErrorDetails       string     `json:"error_details,omitempty"`
-	CompensationNotes  string     `json:"compensation_notes,omitempty"`
-	Metadata           Metadata   `json:"metadata,omitempty"`
-	CreatedAt          time.Time  `json:"created_at"`
-	CompletedAt        *time.Time `json:"completed_at,omitempty"`
+	ID                 string          `json:"id"`
+	ProjectID          string          `json:"project_id"`
+	ExecutionAttemptID string          `json:"execution_attempt_id"`
+	RequestedIntent    string          `json:"requested_intent"`
+	ChosenTool         ToolType        `json:"chosen_tool"`
+	FallbackCandidates []ToolType      `json:"fallback_candidates,omitempty"`
+	WorkingDirectory   string          `json:"working_directory,omitempty"`
+	TimeoutSeconds     int             `json:"timeout_seconds"`
+	InputSummary       string          `json:"input_summary,omitempty"`
+	InputPayload       json.RawMessage `json:"input_payload,omitempty"`
+	OutputSummary      string          `json:"output_summary,omitempty"`
+	OutputPayload      json.RawMessage `json:"output_payload,omitempty"`
+	ResultCode         string          `json:"result_code,omitempty"`
+	ErrorDetails       string          `json:"error_details,omitempty"`
+	CompensationNotes  string          `json:"compensation_notes,omitempty"`
+	Metadata           Metadata        `json:"metadata,omitempty"`
+	CreatedAt          time.Time       `json:"created_at"`
+	CompletedAt        *time.Time      `json:"completed_at,omitempty"`
+}
+
+type ConversationRole string
+
+const (
+	ConversationRoleUser      ConversationRole = "user"
+	ConversationRoleAssistant ConversationRole = "assistant"
+	ConversationRoleTool      ConversationRole = "tool"
+)
+
+type ConversationMessage struct {
+	ID          string           `json:"id"`
+	ProjectID   string           `json:"project_id"`
+	EventID     string           `json:"event_id,omitempty"`
+	Role        ConversationRole `json:"role"`
+	ChannelType ChannelType      `json:"channel_type,omitempty"`
+	ChannelID   string           `json:"channel_id,omitempty"`
+	ThreadID    string           `json:"thread_id,omitempty"`
+	Body        string           `json:"body,omitempty"`
+	ToolCallID  string           `json:"tool_call_id,omitempty"`
+	Metadata    Metadata         `json:"metadata,omitempty"`
+	CreatedAt   time.Time        `json:"created_at"`
+}
+
+type MemoryScope string
+
+const (
+	MemoryScopeProject MemoryScope = "project"
+	MemoryScopeGlobal  MemoryScope = "global"
+)
+
+type Memory struct {
+	ID         string      `json:"id"`
+	ProjectID  string      `json:"project_id,omitempty"`
+	Scope      MemoryScope `json:"scope"`
+	Kind       string      `json:"kind,omitempty"`
+	Content    string      `json:"content"`
+	Tags       []string    `json:"tags,omitempty"`
+	Source     string      `json:"source,omitempty"`
+	SourceID   string      `json:"source_id,omitempty"`
+	Actor      string      `json:"actor,omitempty"`
+	Confidence float64     `json:"confidence,omitempty"`
+	Pinned     bool        `json:"pinned,omitempty"`
+	Metadata   Metadata    `json:"metadata,omitempty"`
+	CreatedAt  time.Time   `json:"created_at"`
+	UpdatedAt  time.Time   `json:"updated_at"`
+}
+
+type MemorySearchRequest struct {
+	ProjectID      string        `json:"project_id,omitempty"`
+	Query          string        `json:"query,omitempty"`
+	Scopes         []MemoryScope `json:"scopes,omitempty"`
+	Tags           []string      `json:"tags,omitempty"`
+	Limit          int           `json:"limit,omitempty"`
+	FallbackRecent bool          `json:"fallback_recent,omitempty"`
+}
+
+type MemoryUpdateRequest struct {
+	ProjectID   string   `json:"project_id,omitempty"`
+	MemoryID    string   `json:"memory_id"`
+	Content     string   `json:"content,omitempty"`
+	Kind        string   `json:"kind,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	ReplaceTags bool     `json:"replace_tags,omitempty"`
+	Confidence  *float64 `json:"confidence,omitempty"`
+	Pinned      *bool    `json:"pinned,omitempty"`
+}
+
+type MemoryUpdateResult struct {
+	Memory  Memory `json:"memory"`
+	Updated bool   `json:"updated"`
+}
+
+type MemoryForgetRequest struct {
+	ProjectID string        `json:"project_id,omitempty"`
+	MemoryIDs []string      `json:"memory_ids,omitempty"`
+	Scopes    []MemoryScope `json:"scopes,omitempty"`
+	Tags      []string      `json:"tags,omitempty"`
+}
+
+type MemoryForgetResult struct {
+	DeletedMemoryIDs []string `json:"deleted_memory_ids,omitempty"`
 }
 
 type ProcessStatus string

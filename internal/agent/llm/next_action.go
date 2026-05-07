@@ -90,6 +90,12 @@ func buildNextActionMessages(input agent.NextActionInput) ([]llms.MessageContent
 	if reminder := skills.Reminder(input.Context.Skills); reminder != "" {
 		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, reminder))
 	}
+	if memory := memoryContextMessage(input.Context.Memory); memory != "" {
+		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, memory))
+	}
+	if history := conversationContextMessage(input.Context.Conversation, input.Context.ConversationMaxContextChars); history != "" {
+		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, history))
+	}
 	messages = append(messages, userMessage)
 	for index := 0; index < len(input.ObservationHistory); {
 		toolCallIDs := strings.TrimSpace(input.ObservationHistory[index].Metadata["tool_call_ids"])
@@ -167,6 +173,134 @@ func additionalUserMessages(events []domain.Event) ([]llms.MessageContent, error
 		}
 	}
 	return messages, nil
+}
+
+func memoryContextMessage(memories []domain.Memory) string {
+	if len(memories) == 0 {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString("Relevant remembered context. Treat this as retrieved context, not proof of current state. Verify anything operational before acting.")
+	for _, memory := range memories {
+		content := strings.TrimSpace(memory.Content)
+		if content == "" {
+			continue
+		}
+		builder.WriteString("\n- id: ")
+		builder.WriteString(strings.TrimSpace(memory.ID))
+		builder.WriteString("; scope: ")
+		builder.WriteString(string(memory.Scope))
+		if kind := strings.TrimSpace(memory.Kind); kind != "" {
+			builder.WriteString("; kind: ")
+			builder.WriteString(kind)
+		}
+		builder.WriteString("; content: ")
+		builder.WriteString(content)
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func conversationContextMessage(messages []domain.ConversationMessage, maxChars int) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	if maxChars <= 0 {
+		maxChars = 8000
+	}
+	header := "Recent conversation history. Use this as bounded context only; the current user request follows after this message."
+	if maxChars <= len(header) {
+		return truncateText(header, maxChars)
+	}
+	remaining := maxChars - len(header) - 1
+	selected := make([]string, 0, len(messages))
+	for i := len(messages) - 1; i >= 0 && remaining > 0; i-- {
+		entry := conversationHistoryEntry(messages[i], remaining)
+		if strings.TrimSpace(entry) == "" {
+			continue
+		}
+		if len(entry) > remaining {
+			entry = truncateText(entry, remaining)
+		}
+		selected = append(selected, entry)
+		remaining -= len(entry) + 1
+	}
+	if len(selected) == 0 {
+		return header
+	}
+	var builder strings.Builder
+	builder.WriteString(header)
+	for i := len(selected) - 1; i >= 0; i-- {
+		builder.WriteString("\n")
+		builder.WriteString(selected[i])
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func conversationHistoryEntry(message domain.ConversationMessage, budget int) string {
+	body := strings.TrimSpace(message.Body)
+	if body == "" {
+		return ""
+	}
+	label := conversationHistoryLabel(message)
+	bodyBudget := budget - len(label) - 2
+	if bodyBudget <= 0 {
+		return ""
+	}
+	if message.Role == domain.ConversationRoleTool && bodyBudget > 1200 {
+		bodyBudget = 1200
+	}
+	body = truncateText(body, bodyBudget)
+	return "- " + label + ": " + body
+}
+
+func conversationHistoryLabel(message domain.ConversationMessage) string {
+	switch message.Role {
+	case domain.ConversationRoleAssistant:
+		return "assistant"
+	case domain.ConversationRoleTool:
+		tool := strings.TrimSpace(message.Metadata["tool"])
+		status := strings.TrimSpace(message.Metadata["status"])
+		var parts []string
+		if tool != "" {
+			parts = append(parts, tool)
+		}
+		if status != "" {
+			parts = append(parts, status)
+		}
+		if len(parts) == 0 {
+			return "tool"
+		}
+		return "tool[" + strings.Join(parts, " ") + "]"
+	default:
+		return "user"
+	}
+}
+
+func truncateText(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if limit <= 0 || text == "" {
+		return ""
+	}
+	if len(text) <= limit {
+		return text
+	}
+	const suffix = " [truncated]"
+	if limit <= len(suffix) {
+		runes := []rune(text)
+		if len(runes) <= limit {
+			return text
+		}
+		return string(runes[:limit])
+	}
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	prefixLimit := limit - len(suffix)
+	if prefixLimit > len(runes) {
+		prefixLimit = len(runes)
+	}
+	return strings.TrimSpace(string(runes[:prefixLimit])) + suffix
 }
 
 func messageHasContent(message llms.MessageContent) bool {
