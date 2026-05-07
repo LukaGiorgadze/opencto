@@ -21,8 +21,10 @@ import (
 )
 
 type stubProjectStore struct {
-	pending  []domain.WorkItem
-	memories []domain.Memory
+	pending              []domain.WorkItem
+	memories             []domain.Memory
+	conversationsByScope map[storage.ConversationScope][]domain.ConversationMessage
+	conversationQueries  *[]storage.ConversationQuery
 }
 
 type stubEngine struct {
@@ -100,6 +102,21 @@ func (s stubProjectStore) UpsertConversationMessage(context.Context, domain.Conv
 	return nil
 }
 
+func (s stubProjectStore) ListConversationMessages(_ context.Context, query storage.ConversationQuery) ([]domain.ConversationMessage, error) {
+	if s.conversationQueries != nil {
+		*s.conversationQueries = append(*s.conversationQueries, query)
+	}
+	source := s.conversationsByScope[query.Scope]
+	if len(source) == 0 {
+		return nil, nil
+	}
+	limit := storage.DefaultConversationHistoryLimit(query.Limit)
+	if limit > len(source) {
+		limit = len(source)
+	}
+	return append([]domain.ConversationMessage(nil), source[:limit]...), nil
+}
+
 func (s stubProjectStore) RememberMemory(context.Context, domain.Memory) (domain.Memory, error) {
 	return domain.Memory{}, nil
 }
@@ -110,6 +127,14 @@ func (s stubProjectStore) SearchMemories(context.Context, domain.MemorySearchReq
 
 func (s stubProjectStore) ForgetMemory(context.Context, string, string) (bool, error) {
 	return false, nil
+}
+
+func idsFromConversation(messages []domain.ConversationMessage) []string {
+	ids := make([]string, 0, len(messages))
+	for _, message := range messages {
+		ids = append(ids, message.ID)
+	}
+	return ids
 }
 
 func TestReportResponseIncludesAttachments(t *testing.T) {
@@ -250,6 +275,86 @@ func TestLoadContextIncludesBoundedMemoryWhenEnabled(t *testing.T) {
 	}
 	if len(loaded.Memory) != 1 || loaded.Memory[0].ID != "memory-1" {
 		t.Fatalf("expected memory to be loaded, got %#v", loaded.Memory)
+	}
+}
+
+func TestLoadContextIncludesScopedConversationHistory(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	queries := []storage.ConversationQuery{}
+	activities := Activities{
+		Store: stubProjectStore{
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeThread: {
+					{ID: "thread-1", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "thread", CreatedAt: base},
+					{ID: "thread-2", ProjectID: "default", Role: domain.ConversationRoleTool, Body: "tool", CreatedAt: base.Add(time.Second)},
+				},
+				storage.ConversationScopeChannel: {
+					{ID: "channel-1", ProjectID: "default", Role: domain.ConversationRoleAssistant, Body: "channel", CreatedAt: base.Add(2 * time.Second)},
+				},
+			},
+			conversationQueries: &queries,
+		},
+		Project:                     domain.Project{ID: "default", Name: "OpenCTO"},
+		ConversationEnabled:         true,
+		ConversationLimit:           3,
+		ConversationMaxContextChars: 8000,
+	}
+	loaded, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:          "current-event",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		ThreadID:    "thread-1",
+		Body:        "continue",
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if got := idsFromConversation(loaded.Conversation); strings.Join(got, ",") != "thread-1,thread-2,channel-1" {
+		t.Fatalf("unexpected conversation history: %#v", loaded.Conversation)
+	}
+	if len(queries) != 2 || queries[0].Scope != storage.ConversationScopeThread || queries[1].Scope != storage.ConversationScopeChannel {
+		t.Fatalf("unexpected conversation queries: %#v", queries)
+	}
+	for _, query := range queries {
+		if query.ExcludeEventID != "current-event" {
+			t.Fatalf("expected current event to be excluded, got %#v", query)
+		}
+	}
+}
+
+func TestLoadContextUsesProjectConversationOnlyWithoutChannel(t *testing.T) {
+	t.Parallel()
+
+	queries := []storage.ConversationQuery{}
+	activities := Activities{
+		Store: stubProjectStore{
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeProject: {
+					{ID: "project-1", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "local prior"},
+				},
+			},
+			conversationQueries: &queries,
+		},
+		Project:             domain.Project{ID: "default", Name: "OpenCTO"},
+		ConversationEnabled: true,
+		ConversationLimit:   10,
+	}
+	loaded, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:        "current-event",
+		ProjectID: "default",
+		Body:      "continue",
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if got := idsFromConversation(loaded.Conversation); strings.Join(got, ",") != "project-1" {
+		t.Fatalf("unexpected project conversation history: %#v", loaded.Conversation)
+	}
+	if len(queries) != 1 || queries[0].Scope != storage.ConversationScopeProject {
+		t.Fatalf("unexpected conversation queries: %#v", queries)
 	}
 }
 

@@ -131,19 +131,22 @@ func main() {
 		}
 
 		activitySet := &activities.Activities{
-			Store:         store,
-			Engine:        engine,
-			Exec:          exec.NewSafeExecutor(logger),
-			Schedule:      scheduletool.NewTemporalExecutor(temporalClient.ScheduleClient(), cfg.Temporal.TaskQueue, logger),
-			Reporter:      reporter,
-			EventEnqueuer: dispatcher,
-			Project:       defaultProject,
-			WorkspaceRoot: cfg.General.WorkspaceRoot,
-			OpenCTORoot:   openCTORoot,
-			StateDir:      cfg.Runtime.StateDir,
-			MemoryEnabled: cfg.Memory.Enabled,
-			MemoryLimit:   cfg.Memory.AutoContextLimit,
-			Logger:        logger,
+			Store:                       store,
+			Engine:                      engine,
+			Exec:                        exec.NewSafeExecutor(logger),
+			Schedule:                    scheduletool.NewTemporalExecutor(temporalClient.ScheduleClient(), cfg.Temporal.TaskQueue, logger),
+			Reporter:                    reporter,
+			EventEnqueuer:               dispatcher,
+			Project:                     defaultProject,
+			WorkspaceRoot:               cfg.General.WorkspaceRoot,
+			OpenCTORoot:                 openCTORoot,
+			StateDir:                    cfg.Runtime.StateDir,
+			MemoryEnabled:               cfg.Memory.Enabled,
+			MemoryLimit:                 cfg.Memory.AutoContextLimit,
+			ConversationEnabled:         cfg.Conversation.Enabled,
+			ConversationLimit:           cfg.Conversation.HistoryLimit,
+			ConversationMaxContextChars: cfg.Conversation.MaxContextChars,
+			Logger:                      logger,
 		}
 
 		worker := runtime.NewWorker(temporalClient, cfg.Temporal.TaskQueue, activitySet)

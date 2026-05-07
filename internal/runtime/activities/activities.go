@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -50,29 +51,32 @@ type TypingReporter interface {
 }
 
 type Activities struct {
-	Store         storage.RuntimeStore
-	Engine        agent.Engine
-	Exec          exectool.Executor
-	Edit          edittool.Executor
-	Glob          globtool.Executor
-	Grep          greptool.Executor
-	Read          readtool.Executor
-	Schedule      scheduletool.Executor
-	Skill         skilltool.Executor
-	Write         writetool.Executor
-	Reporter      Reporter
-	EventEnqueuer EventEnqueuer
-	Project       domain.Project
-	WorkspaceRoot string
-	OpenCTORoot   string
-	SkillsRoot    string
-	StateDir      string
-	MemoryEnabled bool
-	MemoryLimit   int
-	ExecTailBytes int64
-	ExecGrace     time.Duration
-	HeartbeatGap  time.Duration
-	Logger        *slog.Logger
+	Store                       storage.RuntimeStore
+	Engine                      agent.Engine
+	Exec                        exectool.Executor
+	Edit                        edittool.Executor
+	Glob                        globtool.Executor
+	Grep                        greptool.Executor
+	Read                        readtool.Executor
+	Schedule                    scheduletool.Executor
+	Skill                       skilltool.Executor
+	Write                       writetool.Executor
+	Reporter                    Reporter
+	EventEnqueuer               EventEnqueuer
+	Project                     domain.Project
+	WorkspaceRoot               string
+	OpenCTORoot                 string
+	SkillsRoot                  string
+	StateDir                    string
+	MemoryEnabled               bool
+	MemoryLimit                 int
+	ConversationEnabled         bool
+	ConversationLimit           int
+	ConversationMaxContextChars int
+	ExecTailBytes               int64
+	ExecGrace                   time.Duration
+	HeartbeatGap                time.Duration
+	Logger                      *slog.Logger
 }
 
 type NextActionRequest struct {
@@ -229,6 +233,14 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event) (agent
 			return agent.Context{}, err
 		}
 	}
+	var conversation []domain.ConversationMessage
+	if a.Store != nil && a.ConversationEnabled {
+		var err error
+		conversation, err = a.loadConversationHistory(ctx, event)
+		if err != nil {
+			return agent.Context{}, err
+		}
+	}
 
 	project := a.Project
 	if strings.TrimSpace(project.ID) == "" {
@@ -239,12 +251,87 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event) (agent
 		return agent.Context{}, err
 	}
 	return agent.Context{
-		Event:           event,
-		Project:         project,
-		ActiveWorkItems: activeWorkItems,
-		Memory:          memories,
-		Skills:          availableSkills,
+		Event:                       event,
+		Project:                     project,
+		ActiveWorkItems:             activeWorkItems,
+		Memory:                      memories,
+		Conversation:                conversation,
+		ConversationMaxContextChars: storage.DefaultConversationMaxContextChars(a.ConversationMaxContextChars),
+		Skills:                      availableSkills,
 	}, nil
+}
+
+func (a *Activities) loadConversationHistory(ctx context.Context, event domain.Event) ([]domain.ConversationMessage, error) {
+	limit := storage.DefaultConversationHistoryLimit(a.ConversationLimit)
+	if limit > 50 {
+		limit = 50
+	}
+	roles := []domain.ConversationRole{
+		domain.ConversationRoleUser,
+		domain.ConversationRoleAssistant,
+		domain.ConversationRoleTool,
+	}
+	base := storage.ConversationQuery{
+		ProjectID:      strings.TrimSpace(event.ProjectID),
+		ChannelType:    event.ChannelType,
+		ChannelID:      strings.TrimSpace(event.ChannelID),
+		ThreadID:       strings.TrimSpace(event.ThreadID),
+		Roles:          roles,
+		Limit:          limit,
+		ExcludeEventID: strings.TrimSpace(event.ID),
+	}
+	var messages []domain.ConversationMessage
+	seen := map[string]bool{}
+	appendMessages := func(scope storage.ConversationScope, remaining int) error {
+		if remaining <= 0 {
+			return nil
+		}
+		query := base
+		query.Scope = scope
+		query.Limit = remaining
+		found, err := a.Store.ListConversationMessages(ctx, query)
+		if err != nil {
+			return err
+		}
+		for _, message := range found {
+			if strings.TrimSpace(message.ID) == "" || seen[message.ID] {
+				continue
+			}
+			seen[message.ID] = true
+			messages = append(messages, message)
+		}
+		return nil
+	}
+	if strings.TrimSpace(event.ChannelID) != "" {
+		if strings.TrimSpace(event.ThreadID) != "" {
+			if err := appendMessages(storage.ConversationScopeThread, limit-len(messages)); err != nil {
+				return nil, err
+			}
+		}
+		if err := appendMessages(storage.ConversationScopeChannel, limit-len(messages)); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := appendMessages(storage.ConversationScopeProject, limit-len(messages)); err != nil {
+			return nil, err
+		}
+	}
+	sortConversationMessages(messages)
+	if len(messages) > limit {
+		messages = messages[len(messages)-limit:]
+	}
+	return messages, nil
+}
+
+func sortConversationMessages(messages []domain.ConversationMessage) {
+	sort.SliceStable(messages, func(i, j int) bool {
+		left := messages[i].CreatedAt
+		right := messages[j].CreatedAt
+		if left.Equal(right) {
+			return messages[i].ID < messages[j].ID
+		}
+		return left.Before(right)
+	})
 }
 
 func (a *Activities) activityLogger() *slog.Logger {
@@ -431,11 +518,14 @@ func (a *Activities) PersistEvent(ctx context.Context, request PersistEventReque
 	}
 	if strings.TrimSpace(event.Body) != "" {
 		message := domain.ConversationMessage{
-			ID:        stableActivityID("conversation-user", event.ProjectID, event.ID),
-			ProjectID: event.ProjectID,
-			EventID:   event.ID,
-			Role:      domain.ConversationRoleUser,
-			Body:      event.Body,
+			ID:          stableActivityID("conversation-user", event.ProjectID, event.ID),
+			ProjectID:   event.ProjectID,
+			EventID:     event.ID,
+			Role:        domain.ConversationRoleUser,
+			ChannelType: event.ChannelType,
+			ChannelID:   strings.TrimSpace(event.ChannelID),
+			ThreadID:    strings.TrimSpace(event.ThreadID),
+			Body:        event.Body,
 			Metadata: domain.Metadata{
 				"channel_type": string(event.ChannelType),
 				"channel_id":   strings.TrimSpace(event.ChannelID),
@@ -493,13 +583,16 @@ func (a *Activities) PersistNextAction(ctx context.Context, request PersistNextA
 				metadata["attachment_count"] = strconv.Itoa(len(request.NextAction.ResponseAttachments))
 			}
 			if err := a.Store.UpsertConversationMessage(ctx, domain.ConversationMessage{
-				ID:        stableActivityID("conversation-assistant", event.ProjectID, event.ID, request.Status),
-				ProjectID: event.ProjectID,
-				EventID:   event.ID,
-				Role:      domain.ConversationRoleAssistant,
-				Body:      message,
-				Metadata:  metadata,
-				CreatedAt: time.Now().UTC(),
+				ID:          stableActivityID("conversation-assistant", event.ProjectID, event.ID, request.Status),
+				ProjectID:   event.ProjectID,
+				EventID:     event.ID,
+				Role:        domain.ConversationRoleAssistant,
+				ChannelType: event.ChannelType,
+				ChannelID:   strings.TrimSpace(event.ChannelID),
+				ThreadID:    strings.TrimSpace(event.ThreadID),
+				Body:        message,
+				Metadata:    metadata,
+				CreatedAt:   time.Now().UTC(),
 			}); err != nil {
 				a.logActivityStep("PersistNextAction", "conversation_error",
 					slog.String("project_id", event.ProjectID),
@@ -2699,12 +2792,15 @@ func toolPersistenceRecords(event domain.Event, result ExecuteToolResult) (toolP
 	}
 	invocation.Metadata["tool_call_id"] = toolCallID
 	conversation := domain.ConversationMessage{
-		ID:         stableActivityID("conversation-tool", projectID, event.ID, toolCallID),
-		ProjectID:  projectID,
-		EventID:    event.ID,
-		Role:       domain.ConversationRoleTool,
-		Body:       toolConversationBody(result),
-		ToolCallID: toolCallID,
+		ID:          stableActivityID("conversation-tool", projectID, event.ID, toolCallID),
+		ProjectID:   projectID,
+		EventID:     event.ID,
+		Role:        domain.ConversationRoleTool,
+		ChannelType: event.ChannelType,
+		ChannelID:   strings.TrimSpace(event.ChannelID),
+		ThreadID:    strings.TrimSpace(event.ThreadID),
+		Body:        toolConversationBody(result),
+		ToolCallID:  toolCallID,
 		Metadata: domain.Metadata{
 			"tool":        string(result.Tool),
 			"status":      string(result.Status),

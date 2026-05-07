@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/opencto/opencto/internal/domain"
+	"github.com/opencto/opencto/internal/storage"
 )
 
 func TestStoreMigratesAndVerifiesSchema(t *testing.T) {
@@ -132,6 +133,113 @@ func TestWorkItemsAndExecutionAuditRecords(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("expected one persisted invocation, got %d", count)
+	}
+}
+
+func TestConversationMessagesUseScopedHistory(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	messages := []domain.ConversationMessage{
+		{
+			ID:        "project-1",
+			ProjectID: "default",
+			EventID:   "project-event",
+			Role:      domain.ConversationRoleUser,
+			Body:      "unscoped project note",
+			CreatedAt: base,
+		},
+		{
+			ID:          "channel-1",
+			ProjectID:   "default",
+			EventID:     "channel-event",
+			Role:        domain.ConversationRoleAssistant,
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-a",
+			Body:        "same channel",
+			CreatedAt:   base.Add(time.Second),
+		},
+		{
+			ID:          "thread-1",
+			ProjectID:   "default",
+			EventID:     "thread-event",
+			Role:        domain.ConversationRoleTool,
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-a",
+			ThreadID:    "thread-a",
+			Body:        "same thread tool output",
+			CreatedAt:   base.Add(2 * time.Second),
+		},
+		{
+			ID:          "other-channel",
+			ProjectID:   "default",
+			EventID:     "other-event",
+			Role:        domain.ConversationRoleUser,
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-b",
+			Body:        "other channel",
+			CreatedAt:   base.Add(3 * time.Second),
+		},
+		{
+			ID:          "current",
+			ProjectID:   "default",
+			EventID:     "current-event",
+			Role:        domain.ConversationRoleUser,
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-a",
+			Body:        "current event",
+			CreatedAt:   base.Add(4 * time.Second),
+		},
+	}
+	for _, message := range messages {
+		if err := store.UpsertConversationMessage(ctx, message); err != nil {
+			t.Fatalf("upsert conversation message %s: %v", message.ID, err)
+		}
+	}
+
+	thread, err := store.ListConversationMessages(ctx, storage.ConversationQuery{
+		ProjectID:      "default",
+		ChannelType:    domain.ChannelTypeDiscord,
+		ChannelID:      "channel-a",
+		ThreadID:       "thread-a",
+		Scope:          storage.ConversationScopeThread,
+		Limit:          10,
+		ExcludeEventID: "current-event",
+	})
+	if err != nil {
+		t.Fatalf("list thread conversation: %v", err)
+	}
+	if len(thread) != 1 || thread[0].ID != "thread-1" || thread[0].Role != domain.ConversationRoleTool {
+		t.Fatalf("unexpected thread history: %#v", thread)
+	}
+
+	channel, err := store.ListConversationMessages(ctx, storage.ConversationQuery{
+		ProjectID:      "default",
+		ChannelType:    domain.ChannelTypeDiscord,
+		ChannelID:      "channel-a",
+		Scope:          storage.ConversationScopeChannel,
+		Limit:          10,
+		ExcludeEventID: "current-event",
+	})
+	if err != nil {
+		t.Fatalf("list channel conversation: %v", err)
+	}
+	if len(channel) != 1 || channel[0].ID != "channel-1" {
+		t.Fatalf("unexpected channel history: %#v", channel)
+	}
+
+	project, err := store.ListConversationMessages(ctx, storage.ConversationQuery{
+		ProjectID: "default",
+		Scope:     storage.ConversationScopeProject,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("list project conversation: %v", err)
+	}
+	if len(project) != 1 || project[0].ID != "project-1" {
+		t.Fatalf("unexpected project history: %#v", project)
 	}
 }
 

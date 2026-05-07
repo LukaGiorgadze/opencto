@@ -9,12 +9,14 @@ import (
 )
 
 type Context struct {
-	Event            domain.Event      `json:"event"`
-	Project          domain.Project    `json:"project"`
-	ActiveWorkItems  []domain.WorkItem `json:"active_work_items,omitempty"`
-	Memory           []domain.Memory   `json:"memory,omitempty"`
-	Skills           []skills.Summary  `json:"skills,omitempty"`
-	AdditionalEvents []domain.Event    `json:"additional_events,omitempty"`
+	Event                       domain.Event                 `json:"event"`
+	Project                     domain.Project               `json:"project"`
+	ActiveWorkItems             []domain.WorkItem            `json:"active_work_items,omitempty"`
+	Memory                      []domain.Memory              `json:"memory,omitempty"`
+	Conversation                []domain.ConversationMessage `json:"conversation,omitempty"`
+	ConversationMaxContextChars int                          `json:"conversation_max_context_chars,omitempty"`
+	Skills                      []skills.Summary             `json:"skills,omitempty"`
+	AdditionalEvents            []domain.Event               `json:"additional_events,omitempty"`
 }
 
 type ToolChoice struct {

@@ -22,7 +22,7 @@ import (
 
 const (
 	driverName           = "sqlite3"
-	currentSchemaVersion = 1
+	currentSchemaVersion = 2
 )
 
 type Store struct {
@@ -101,12 +101,14 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 	if err != nil {
 		return err
 	}
-	if !applied[currentSchemaVersion] {
-		if _, err := tx.ExecContext(ctx, migrationV1); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)`, currentSchemaVersion, formatTime(time.Now().UTC())); err != nil {
-			return err
+	for _, migration := range migrations {
+		if !applied[migration.version] {
+			if _, err := tx.ExecContext(ctx, migration.sql); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)`, migration.version, formatTime(time.Now().UTC())); err != nil {
+				return err
+			}
 		}
 	}
 	return tx.Commit()
@@ -143,6 +145,14 @@ func appliedMigrations(ctx context.Context, tx *sql.Tx) (map[int]bool, error) {
 		applied[version] = true
 	}
 	return applied, rows.Err()
+}
+
+var migrations = []struct {
+	version int
+	sql     string
+}{
+	{version: 1, sql: migrationV1},
+	{version: 2, sql: migrationV2},
 }
 
 const migrationV1 = `
@@ -252,14 +262,32 @@ CREATE TABLE IF NOT EXISTS memories (
 CREATE INDEX IF NOT EXISTS idx_memories_project_scope_updated ON memories(project_id, scope, updated_at);
 CREATE INDEX IF NOT EXISTS idx_memories_scope_updated ON memories(scope, updated_at);
 
-CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
-	memory_id UNINDEXED,
-	project_id UNINDEXED,
-	scope UNINDEXED,
-	content,
-	tags
-);
-`
+	CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+		memory_id UNINDEXED,
+		project_id UNINDEXED,
+		scope UNINDEXED,
+		content,
+		tags
+	);
+	`
+
+const migrationV2 = `
+	ALTER TABLE events ADD COLUMN thread_id TEXT NOT NULL DEFAULT '';
+
+	ALTER TABLE conversation_messages ADD COLUMN channel_type TEXT NOT NULL DEFAULT '';
+	ALTER TABLE conversation_messages ADD COLUMN channel_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE conversation_messages ADD COLUMN thread_id TEXT NOT NULL DEFAULT '';
+
+	UPDATE conversation_messages
+	SET
+		channel_type = COALESCE((SELECT events.channel_type FROM events WHERE events.id = conversation_messages.event_id), ''),
+		channel_id = COALESCE((SELECT events.channel_id FROM events WHERE events.id = conversation_messages.event_id), ''),
+		thread_id = COALESCE((SELECT events.thread_id FROM events WHERE events.id = conversation_messages.event_id), '')
+	WHERE event_id <> '';
+
+	CREATE INDEX IF NOT EXISTS idx_conversation_messages_project_scope_created
+	ON conversation_messages(project_id, channel_type, channel_id, thread_id, created_at);
+	`
 
 func (s *Store) EnsureProject(ctx context.Context, project domain.Project) error {
 	project.ID = strings.TrimSpace(project.ID)
@@ -308,14 +336,15 @@ func (s *Store) AppendEvent(ctx context.Context, event domain.Event) (storage.Ev
 
 	var existing eventRecord
 	err = s.db.QueryRowContext(ctx, `
-SELECT project_id, kind, channel_id, channel_type, actor_id, actor_name, body, metadata, payload, provenance, created_at
-FROM events
-WHERE id = ?
-`, event.ID).Scan(
+	SELECT project_id, kind, channel_id, channel_type, thread_id, actor_id, actor_name, body, metadata, payload, provenance, created_at
+	FROM events
+	WHERE id = ?
+	`, event.ID).Scan(
 		&existing.ProjectID,
 		&existing.Kind,
 		&existing.ChannelID,
 		&existing.ChannelType,
+		&existing.ThreadID,
 		&existing.ActorID,
 		&existing.ActorName,
 		&existing.Body,
@@ -326,9 +355,9 @@ WHERE id = ?
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		_, err = s.db.ExecContext(ctx, `
-INSERT INTO events(id, project_id, kind, channel_id, channel_type, actor_id, actor_name, body, metadata, payload, provenance, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, json(?), json(?), json(?), ?)
-`, event.ID, record.ProjectID, record.Kind, record.ChannelID, record.ChannelType, record.ActorID, record.ActorName, record.Body, record.Metadata, record.Payload, record.Provenance, record.CreatedAt)
+	INSERT INTO events(id, project_id, kind, channel_id, channel_type, thread_id, actor_id, actor_name, body, metadata, payload, provenance, created_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, json(?), json(?), json(?), ?)
+	`, event.ID, record.ProjectID, record.Kind, record.ChannelID, record.ChannelType, record.ThreadID, record.ActorID, record.ActorName, record.Body, record.Metadata, record.Payload, record.Provenance, record.CreatedAt)
 		return storage.EventAppendResult{Inserted: true}, err
 	}
 	if err != nil {
@@ -338,10 +367,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, json(?), json(?), json(?), ?)
 	changed := !existing.equal(record)
 	if changed {
 		_, err = s.db.ExecContext(ctx, `
-UPDATE events
-SET project_id = ?, kind = ?, channel_id = ?, channel_type = ?, actor_id = ?, actor_name = ?, body = ?, metadata = json(?), payload = json(?), provenance = json(?), created_at = ?
-WHERE id = ?
-`, record.ProjectID, record.Kind, record.ChannelID, record.ChannelType, record.ActorID, record.ActorName, record.Body, record.Metadata, record.Payload, record.Provenance, record.CreatedAt, event.ID)
+	UPDATE events
+	SET project_id = ?, kind = ?, channel_id = ?, channel_type = ?, thread_id = ?, actor_id = ?, actor_name = ?, body = ?, metadata = json(?), payload = json(?), provenance = json(?), created_at = ?
+	WHERE id = ?
+	`, record.ProjectID, record.Kind, record.ChannelID, record.ChannelType, record.ThreadID, record.ActorID, record.ActorName, record.Body, record.Metadata, record.Payload, record.Provenance, record.CreatedAt, event.ID)
 		if err != nil {
 			return storage.EventAppendResult{}, err
 		}
@@ -354,6 +383,7 @@ type eventRecord struct {
 	Kind        string
 	ChannelID   string
 	ChannelType string
+	ThreadID    string
 	ActorID     string
 	ActorName   string
 	Body        string
@@ -381,6 +411,7 @@ func eventRecordFromDomain(event domain.Event) (eventRecord, error) {
 		Kind:        string(event.Kind),
 		ChannelID:   strings.TrimSpace(event.ChannelID),
 		ChannelType: string(event.ChannelType),
+		ThreadID:    strings.TrimSpace(event.ThreadID),
 		ActorID:     strings.TrimSpace(event.ActorID),
 		ActorName:   strings.TrimSpace(event.ActorName),
 		Body:        event.Body,
@@ -396,6 +427,7 @@ func (r eventRecord) equal(other eventRecord) bool {
 		r.Kind == other.Kind &&
 		r.ChannelID == other.ChannelID &&
 		r.ChannelType == other.ChannelType &&
+		r.ThreadID == other.ThreadID &&
 		r.ActorID == other.ActorID &&
 		r.ActorName == other.ActorName &&
 		r.Body == other.Body &&
@@ -564,18 +596,129 @@ func (s *Store) UpsertConversationMessage(ctx context.Context, message domain.Co
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `
-INSERT INTO conversation_messages(id, project_id, event_id, role, body, tool_call_id, metadata, created_at)
-VALUES (?, ?, ?, ?, ?, ?, json(?), ?)
-ON CONFLICT(id) DO UPDATE SET
-	project_id = excluded.project_id,
-	event_id = excluded.event_id,
-	role = excluded.role,
-	body = excluded.body,
-	tool_call_id = excluded.tool_call_id,
-	metadata = excluded.metadata,
-	created_at = excluded.created_at
-`, message.ID, message.ProjectID, strings.TrimSpace(message.EventID), string(message.Role), message.Body, strings.TrimSpace(message.ToolCallID), metadata, formatTime(message.CreatedAt))
+	INSERT INTO conversation_messages(id, project_id, event_id, role, channel_type, channel_id, thread_id, body, tool_call_id, metadata, created_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, json(?), ?)
+	ON CONFLICT(id) DO UPDATE SET
+		project_id = excluded.project_id,
+		event_id = excluded.event_id,
+		role = excluded.role,
+		channel_type = excluded.channel_type,
+		channel_id = excluded.channel_id,
+		thread_id = excluded.thread_id,
+		body = excluded.body,
+		tool_call_id = excluded.tool_call_id,
+		metadata = excluded.metadata,
+		created_at = excluded.created_at
+	`, message.ID, message.ProjectID, strings.TrimSpace(message.EventID), string(message.Role), string(message.ChannelType), strings.TrimSpace(message.ChannelID), strings.TrimSpace(message.ThreadID), message.Body, strings.TrimSpace(message.ToolCallID), metadata, formatTime(message.CreatedAt))
 	return err
+}
+
+func (s *Store) ListConversationMessages(ctx context.Context, query storage.ConversationQuery) ([]domain.ConversationMessage, error) {
+	projectID := strings.TrimSpace(query.ProjectID)
+	if projectID == "" {
+		return nil, fmt.Errorf("conversation project id is required")
+	}
+	limit := storage.DefaultConversationHistoryLimit(query.Limit)
+	if limit > 100 {
+		limit = 100
+	}
+	where := []string{"project_id = ?"}
+	args := []any{projectID}
+	switch query.Scope {
+	case storage.ConversationScopeThread:
+		channelID := strings.TrimSpace(query.ChannelID)
+		threadID := strings.TrimSpace(query.ThreadID)
+		if channelID == "" || threadID == "" {
+			return nil, nil
+		}
+		where = append(where, "channel_type = ?", "channel_id = ?", "thread_id = ?")
+		args = append(args, string(query.ChannelType), channelID, threadID)
+	case storage.ConversationScopeChannel:
+		channelID := strings.TrimSpace(query.ChannelID)
+		if channelID == "" {
+			return nil, nil
+		}
+		where = append(where, "channel_type = ?", "channel_id = ?", "thread_id = ''")
+		args = append(args, string(query.ChannelType), channelID)
+	case storage.ConversationScopeProject:
+		where = append(where, "channel_id = ''", "thread_id = ''")
+	default:
+		return nil, fmt.Errorf("unsupported conversation scope %q", query.Scope)
+	}
+	if eventID := strings.TrimSpace(query.ExcludeEventID); eventID != "" {
+		where = append(where, "event_id <> ?")
+		args = append(args, eventID)
+	}
+	roles := normalizeConversationRoles(query.Roles)
+	if len(roles) > 0 {
+		placeholders := make([]string, 0, len(roles))
+		for _, role := range roles {
+			placeholders = append(placeholders, "?")
+			args = append(args, string(role))
+		}
+		where = append(where, "role IN ("+strings.Join(placeholders, ", ")+")")
+	}
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, `
+	SELECT id, project_id, event_id, role, channel_type, channel_id, thread_id, body, tool_call_id, metadata, created_at
+	FROM (
+		SELECT id, project_id, event_id, role, channel_type, channel_id, thread_id, body, tool_call_id, metadata, created_at
+		FROM conversation_messages
+		WHERE `+strings.Join(where, " AND ")+`
+		ORDER BY created_at DESC, id DESC
+		LIMIT ?
+	)
+	ORDER BY created_at ASC, id ASC
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanConversationMessages(rows)
+}
+
+func normalizeConversationRoles(roles []domain.ConversationRole) []domain.ConversationRole {
+	if len(roles) == 0 {
+		return []domain.ConversationRole{
+			domain.ConversationRoleUser,
+			domain.ConversationRoleAssistant,
+			domain.ConversationRoleTool,
+		}
+	}
+	seen := map[domain.ConversationRole]bool{}
+	normalized := make([]domain.ConversationRole, 0, len(roles))
+	for _, role := range roles {
+		switch role {
+		case domain.ConversationRoleUser, domain.ConversationRoleAssistant, domain.ConversationRoleTool:
+			if !seen[role] {
+				seen[role] = true
+				normalized = append(normalized, role)
+			}
+		}
+	}
+	return normalized
+}
+
+func scanConversationMessages(rows *sql.Rows) ([]domain.ConversationMessage, error) {
+	var messages []domain.ConversationMessage
+	for rows.Next() {
+		var message domain.ConversationMessage
+		var role string
+		var channelType string
+		var metadata string
+		var createdAt string
+		if err := rows.Scan(&message.ID, &message.ProjectID, &message.EventID, &role, &channelType, &message.ChannelID, &message.ThreadID, &message.Body, &message.ToolCallID, &metadata, &createdAt); err != nil {
+			return nil, err
+		}
+		message.Role = domain.ConversationRole(role)
+		message.ChannelType = domain.ChannelType(channelType)
+		if err := decodeJSON(metadata, &message.Metadata); err != nil {
+			return nil, err
+		}
+		message.CreatedAt = parseTime(createdAt)
+		messages = append(messages, message)
+	}
+	return messages, rows.Err()
 }
 
 func (s *Store) RememberMemory(ctx context.Context, memory domain.Memory) (domain.Memory, error) {

@@ -116,6 +116,7 @@ type Event struct {
 	Kind        EventKind      `json:"kind"`
 	ChannelID   string         `json:"channel_id,omitempty"`
 	ChannelType ChannelType    `json:"channel_type,omitempty"`
+	ThreadID    string         `json:"thread_id,omitempty"`
 	ActorID     string         `json:"actor_id,omitempty"`
 	ActorName   string         `json:"actor_name,omitempty"`
 	Body        string         `json:"body"`
@@ -213,14 +214,17 @@ const (
 )
 
 type ConversationMessage struct {
-	ID         string           `json:"id"`
-	ProjectID  string           `json:"project_id"`
-	EventID    string           `json:"event_id,omitempty"`
-	Role       ConversationRole `json:"role"`
-	Body       string           `json:"body,omitempty"`
-	ToolCallID string           `json:"tool_call_id,omitempty"`
-	Metadata   Metadata         `json:"metadata,omitempty"`
-	CreatedAt  time.Time        `json:"created_at"`
+	ID          string           `json:"id"`
+	ProjectID   string           `json:"project_id"`
+	EventID     string           `json:"event_id,omitempty"`
+	Role        ConversationRole `json:"role"`
+	ChannelType ChannelType      `json:"channel_type,omitempty"`
+	ChannelID   string           `json:"channel_id,omitempty"`
+	ThreadID    string           `json:"thread_id,omitempty"`
+	Body        string           `json:"body,omitempty"`
+	ToolCallID  string           `json:"tool_call_id,omitempty"`
+	Metadata    Metadata         `json:"metadata,omitempty"`
+	CreatedAt   time.Time        `json:"created_at"`
 }
 
 type MemoryScope string

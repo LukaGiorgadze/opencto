@@ -410,6 +410,51 @@ func TestBuildNextActionMessagesAddsMemoryAsUserContextBeforeCurrentRequest(t *t
 	}
 }
 
+func TestBuildNextActionMessagesAddsBoundedConversationHistory(t *testing.T) {
+	t.Parallel()
+
+	input := agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event: domain.Event{
+				ID:        "event-current",
+				ProjectID: "project-1",
+				Body:      "continue",
+			},
+			Conversation: []domain.ConversationMessage{
+				{ID: "old", Role: domain.ConversationRoleUser, Body: "older message that should be trimmed first"},
+				{ID: "assistant", Role: domain.ConversationRoleAssistant, Body: "use Open-Meteo"},
+				{ID: "tool", Role: domain.ConversationRoleTool, Body: strings.Repeat("weather-json ", 5), Metadata: domain.Metadata{"tool": "exec", "status": "succeeded"}},
+			},
+			ConversationMaxContextChars: 240,
+		},
+	}
+
+	messages, err := buildNextActionMessages(input)
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	if len(messages) != 3 {
+		t.Fatalf("expected system, conversation history, and user messages, got %d", len(messages))
+	}
+	history := messageText(messages[1])
+	if !strings.Contains(history, "Recent conversation history") ||
+		!strings.Contains(history, "assistant: use Open-Meteo") ||
+		!strings.Contains(history, "tool[exec succeeded]") {
+		t.Fatalf("unexpected conversation history:\n%s", history)
+	}
+	if strings.Contains(history, "older message that should be trimmed first") {
+		t.Fatalf("expected oldest history to be dropped under char cap:\n%s", history)
+	}
+	if len(history) > input.Context.ConversationMaxContextChars {
+		t.Fatalf("history exceeded cap: %d > %d\n%s", len(history), input.Context.ConversationMaxContextChars, history)
+	}
+	if got := messageText(messages[2]); got != "continue" {
+		t.Fatalf("unexpected user message: %q", got)
+	}
+}
+
 func TestBuildNextActionMessagesIncludesEventAttachments(t *testing.T) {
 	t.Parallel()
 

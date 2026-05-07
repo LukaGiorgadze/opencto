@@ -9,6 +9,11 @@
     "enabled": true,
     "auto_context_limit": 5
   },
+  "conversation": {
+    "enabled": true,
+    "history_limit": 10,
+    "max_context_chars": 8000
+  },
   "llm": {
     "provider": "openai",
     "base_url": "http://127.0.0.1:4000",

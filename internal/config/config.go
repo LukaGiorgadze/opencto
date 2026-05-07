@@ -24,6 +24,7 @@ type Config struct {
 	Runtime       RuntimeConfig       `json:"runtime"`
 	Storage       StorageConfig       `json:"storage"`
 	Memory        MemoryConfig        `json:"memory"`
+	Conversation  ConversationConfig  `json:"conversation"`
 	LLM           LLMConfig           `json:"llm"`
 	Temporal      TemporalConfig      `json:"temporal"`
 	Channels      ChannelsConfig      `json:"channels"`
@@ -31,15 +32,16 @@ type Config struct {
 }
 
 type fileConfig struct {
-	General       GeneralConfig       `json:"general"`
-	Project       ProjectConfig       `json:"project"`
-	Runtime       RuntimeConfig       `json:"runtime"`
-	Storage       StorageConfig       `json:"storage"`
-	Memory        memoryFileConfig    `json:"memory"`
-	LLM           llmFileConfig       `json:"llm"`
-	Temporal      TemporalConfig      `json:"temporal"`
-	Channels      ChannelsConfig      `json:"channels"`
-	Observability ObservabilityConfig `json:"observability"`
+	General       GeneralConfig          `json:"general"`
+	Project       ProjectConfig          `json:"project"`
+	Runtime       RuntimeConfig          `json:"runtime"`
+	Storage       StorageConfig          `json:"storage"`
+	Memory        memoryFileConfig       `json:"memory"`
+	Conversation  conversationFileConfig `json:"conversation"`
+	LLM           llmFileConfig          `json:"llm"`
+	Temporal      TemporalConfig         `json:"temporal"`
+	Channels      ChannelsConfig         `json:"channels"`
+	Observability ObservabilityConfig    `json:"observability"`
 }
 
 type llmFileConfig struct {
@@ -73,9 +75,21 @@ type MemoryConfig struct {
 	AutoContextLimit int  `json:"auto_context_limit"`
 }
 
+type ConversationConfig struct {
+	Enabled         bool `json:"enabled"`
+	HistoryLimit    int  `json:"history_limit"`
+	MaxContextChars int  `json:"max_context_chars"`
+}
+
 type memoryFileConfig struct {
 	Enabled          *bool `json:"enabled"`
 	AutoContextLimit int   `json:"auto_context_limit"`
+}
+
+type conversationFileConfig struct {
+	Enabled         *bool `json:"enabled"`
+	HistoryLimit    int   `json:"history_limit"`
+	MaxContextChars int   `json:"max_context_chars"`
 }
 
 type LLMConfig struct {
@@ -131,11 +145,12 @@ func Load(path string) (Config, error) {
 	}
 
 	cfg := Config{
-		General: raw.General,
-		Project: raw.Project,
-		Runtime: raw.Runtime,
-		Storage: normalizeStorage(raw.Storage),
-		Memory:  normalizeMemory(raw.Memory),
+		General:      raw.General,
+		Project:      raw.Project,
+		Runtime:      raw.Runtime,
+		Storage:      normalizeStorage(raw.Storage),
+		Memory:       normalizeMemory(raw.Memory),
+		Conversation: normalizeConversation(raw.Conversation),
 		LLM: LLMConfig{
 			Provider:           raw.LLM.Provider,
 			BaseURL:            raw.LLM.BaseURL,
@@ -206,6 +221,12 @@ func (c *Config) validate() error {
 	if c.Memory.AutoContextLimit < 1 || c.Memory.AutoContextLimit > 20 {
 		errs = append(errs, errors.New("memory.auto_context_limit must be between 1 and 20"))
 	}
+	if c.Conversation.HistoryLimit < 1 || c.Conversation.HistoryLimit > 50 {
+		errs = append(errs, errors.New("conversation.history_limit must be between 1 and 50"))
+	}
+	if c.Conversation.MaxContextChars < 1 || c.Conversation.MaxContextChars > 100000 {
+		errs = append(errs, errors.New("conversation.max_context_chars must be between 1 and 100000"))
+	}
 	if err := validateDiscordMessageLimits(c.Channels.Discord.OutboundMessages); err != nil {
 		errs = append(errs, err)
 	}
@@ -236,6 +257,26 @@ func normalizeMemory(value memoryFileConfig) MemoryConfig {
 	return MemoryConfig{
 		Enabled:          enabled,
 		AutoContextLimit: limit,
+	}
+}
+
+func normalizeConversation(value conversationFileConfig) ConversationConfig {
+	enabled := true
+	if value.Enabled != nil {
+		enabled = *value.Enabled
+	}
+	limit := value.HistoryLimit
+	if limit == 0 {
+		limit = 10
+	}
+	maxChars := value.MaxContextChars
+	if maxChars == 0 {
+		maxChars = 8000
+	}
+	return ConversationConfig{
+		Enabled:         enabled,
+		HistoryLimit:    limit,
+		MaxContextChars: maxChars,
 	}
 }
 
