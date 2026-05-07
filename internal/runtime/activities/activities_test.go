@@ -14,7 +14,6 @@ import (
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
 	skillcatalog "github.com/opencto/opencto/internal/skills"
-	browsertool "github.com/opencto/opencto/internal/tools/browser"
 	exectool "github.com/opencto/opencto/internal/tools/exec"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
@@ -257,15 +256,6 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 	activities := Activities{
 		WorkspaceRoot: dir,
 		SkillsRoot:    skillsRoot,
-		Browser: fakeBrowserExecutor{result: browsertool.Result{
-			Stdout:           "### Page\n- Page URL: http://localhost:3000\n",
-			ExitCode:         0,
-			WorkingDirectory: dir,
-			Executable:       "agent-browser",
-			Session:          "opencto-project-1-work-item-1",
-			Command:          "snapshot",
-			ArtifactPaths:    []string{filepath.Join(dir, ".agent-browser", "page.yml")},
-		}},
 		Grep: fakeGrepExecutor{result: greptool.Result{
 			Stdout:   filePath + ":hi\n",
 			ExitCode: 0,
@@ -335,25 +325,6 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 	}
 	if grepResult.Status != domain.ExecutionStatusSucceeded || !strings.Contains(grepResult.Observation, filePath+":hi") {
 		t.Fatalf("unexpected grep result: %#v", grepResult)
-	}
-
-	browserResult, err := activities.ExecuteTool(ctx, executeRequest(domain.ToolTypeBrowser, "browser-1", map[string]any{
-		"command":     "snapshot",
-		"args":        []string{},
-		"session":     "",
-		"timeout_ms":  0,
-		"idempotency": "read_only",
-		"description": "capture browser snapshot",
-		"destructive": false,
-	}))
-	if err != nil {
-		t.Fatalf("browser tool: %v", err)
-	}
-	if browserResult.Status != domain.ExecutionStatusSucceeded ||
-		!strings.Contains(browserResult.Observation, "Page URL") ||
-		browserResult.Metadata["browser_session"] != "opencto-project-1-work-item-1" ||
-		!strings.Contains(browserResult.Metadata["artifact_paths"], ".agent-browser") {
-		t.Fatalf("unexpected browser result: %#v", browserResult)
 	}
 
 	skillResult, err := activities.ExecuteTool(ctx, executeRequest(domain.ToolTypeSkill, "skill-1", map[string]any{
@@ -690,50 +661,6 @@ func TestExecuteExecUsesToolChoiceWorkingDir(t *testing.T) {
 	}
 }
 
-func TestExecuteBrowserUsesStateDirAndLogMetadata(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	stateDir := t.TempDir()
-	stdoutLog := filepath.Join(stateDir, "logs", "browser.stdout.log")
-	stderrLog := filepath.Join(stateDir, "logs", "browser.stderr.log")
-	var captured browsertool.Request
-	activities := Activities{
-		WorkspaceRoot: dir,
-		StateDir:      stateDir,
-		ExecTailBytes: 32,
-		Browser: fakeBrowserExecutor{
-			request: &captured,
-			result: browsertool.Result{
-				Stdout:           "recent browser output",
-				ExitCode:         0,
-				WorkingDirectory: dir,
-				Executable:       "agent-browser",
-				Session:          "opencto-project-1-work-item-1",
-				Command:          "snapshot",
-				StdoutLogPath:    stdoutLog,
-				StderrLogPath:    stderrLog,
-				StdoutTruncated:  true,
-			},
-		},
-	}
-	result, err := activities.ExecuteTool(context.Background(), executeRequest(domain.ToolTypeBrowser, "browser-logs", map[string]any{
-		"command": "snapshot",
-	}))
-	if err != nil {
-		t.Fatalf("browser tool: %v", err)
-	}
-	if captured.StateDir != stateDir || captured.TailBytes != 32 {
-		t.Fatalf("expected browser state dir and tail bytes, got %#v", captured)
-	}
-	if result.Metadata["stdout_log_path"] != stdoutLog || result.Metadata["stderr_log_path"] != stderrLog {
-		t.Fatalf("expected browser log metadata, got %#v", result.Metadata)
-	}
-	if result.Metadata["stdout_truncated"] != "true" || !strings.Contains(result.Observation, "output_truncated: true") {
-		t.Fatalf("expected browser truncation observation, got %#v", result)
-	}
-}
-
 func TestExecuteExecPromotesLongCommandToProcess(t *testing.T) {
 	if goruntime.GOOS == "windows" {
 		t.Skip("uses POSIX exec fixture")
@@ -911,19 +838,6 @@ type fakeGrepExecutor struct {
 }
 
 func (f fakeGrepExecutor) Run(context.Context, greptool.Request) (greptool.Result, error) {
-	return f.result, f.err
-}
-
-type fakeBrowserExecutor struct {
-	result  browsertool.Result
-	err     error
-	request *browsertool.Request
-}
-
-func (f fakeBrowserExecutor) Run(_ context.Context, req browsertool.Request) (browsertool.Result, error) {
-	if f.request != nil {
-		*f.request = req
-	}
 	return f.result, f.err
 }
 

@@ -81,7 +81,7 @@ Host timezone: {{- if .HostTimeZone }} {{ .HostTimeZone }}{{- else }} unresolved
 
 `$OPENCTO_WORKSPACE`: {{ .WorkspaceRoot }}
 - Meaning: Stores projects, artifacts, data, screenshots, logs, and related files.
-- Exec, browser, and runtime tool commands operate from `$OPENCTO_WORKSPACE` by default. Treat this as the current project workspace for user work unless the user explicitly asks to work on OpenCTO itself.
+- Exec and runtime tool commands operate from `$OPENCTO_WORKSPACE` by default. Treat this as the current project workspace for user work unless the user explicitly asks to work on OpenCTO itself.
 
 {{- if .Path }}
 PATH: {{ .Path }}

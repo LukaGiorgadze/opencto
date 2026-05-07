@@ -13,7 +13,6 @@ import (
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/skills"
 	toolregistry "github.com/opencto/opencto/internal/tools"
-	browsertool "github.com/opencto/opencto/internal/tools/browser"
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	readtool "github.com/opencto/opencto/internal/tools/read"
@@ -125,7 +124,7 @@ func TestBuildNextActionMessagesUsesOpenAIToolTranscript(t *testing.T) {
 		"It is not the default working directory for user project work.",
 		"`$OPENCTO_WORKSPACE`: /tmp/opencto",
 		"Meaning: Stores projects, artifacts, data, screenshots, logs, and related files.",
-		"Exec, browser, and runtime tool commands operate from `$OPENCTO_WORKSPACE` by default.",
+		"Exec and runtime tool commands operate from `$OPENCTO_WORKSPACE` by default.",
 		"Treat this as the current project workspace for user work",
 		"PATH: /usr/bin:/bin",
 	} {
@@ -494,7 +493,7 @@ func TestNextActionReturnsSingleToolChoice(t *testing.T) {
 	if output.ToolChoice.RunMode != domain.ToolRunModeWaitForExit || output.ToolChoice.Idempotency != domain.ToolIdempotencyReadOnly || output.ToolChoice.ProcessScope != domain.ProcessScopeStopOnFinish {
 		t.Fatalf("tool execution metadata was not preserved: %#v", output.ToolChoice)
 	}
-	if len(model.options.Tools) != 9 {
+	if len(model.options.Tools) != 8 {
 		t.Fatalf("expected all tool schemas, got %#v", model.options.Tools)
 	}
 }
@@ -568,13 +567,6 @@ func TestNextActionCombinesMultipleStructuredReadOnlyToolCalls(t *testing.T) {
 		firstArgs string
 		nextArgs  string
 	}{
-		{
-			name:      "browser",
-			toolName:  browsertool.BrowserToolName,
-			toolType:  domain.ToolTypeBrowser,
-			firstArgs: `{"command":"goto","args":["https://example.com"],"session":"","timeout_ms":5000,"idempotency":"read_only","description":"open example","destructive":false}`,
-			nextArgs:  `{"command":"snapshot","args":["-i","--json"],"session":"","timeout_ms":5000,"idempotency":"read_only","description":"inspect page","destructive":false}`,
-		},
 		{
 			name:      "read",
 			toolName:  readtool.ReadToolName,
@@ -829,45 +821,6 @@ func TestToolChoiceCapturesStructuredReadInput(t *testing.T) {
 	}
 	if choice.Metadata["model_tool"] != readtool.ReadToolName {
 		t.Fatalf("expected model tool metadata, got %#v", choice.Metadata)
-	}
-}
-
-func TestToolChoiceCapturesBrowserInputAndMetadata(t *testing.T) {
-	t.Parallel()
-
-	choice, err := toolChoiceFromToolCall(llms.ToolCall{
-		ID:   "toolu_browser",
-		Type: "function",
-		FunctionCall: &llms.FunctionCall{
-			Name:      browsertool.BrowserToolName,
-			Arguments: `{"command":"goto","args":["--save-session","http://localhost:3000"],"session":"","timeout_ms":5000,"idempotency":"read_only","description":"open the local app","destructive":true}`,
-		},
-	}, agent.ToolSelectionInput{
-		Runtime: agent.RuntimeContext{WorkspaceRoot: "/workspace"},
-	})
-	if err != nil {
-		t.Fatalf("tool choice: %v", err)
-	}
-	if choice.Type != domain.ToolTypeBrowser {
-		t.Fatalf("expected browser tool type, got %q", choice.Type)
-	}
-	if choice.Command != "goto" {
-		t.Fatalf("expected browser command, got %q", choice.Command)
-	}
-	if got := strings.Join(choice.Args, "\x00"); got != "--save-session\x00http://localhost:3000" {
-		t.Fatalf("unexpected browser args: %#v", choice.Args)
-	}
-	if choice.TimeoutMs != 5000 || choice.Idempotency != domain.ToolIdempotencyReadOnly || !choice.Destructive {
-		t.Fatalf("expected browser execution metadata, got %#v", choice)
-	}
-	if choice.Metadata["model_tool"] != browsertool.BrowserToolName {
-		t.Fatalf("expected browser metadata, got %#v", choice.Metadata)
-	}
-	if _, ok := choice.Metadata["work_item_id"]; ok {
-		t.Fatalf("browser metadata should not include model-supplied work item id: %#v", choice.Metadata)
-	}
-	if !strings.Contains(string(choice.Input), `"command":"goto"`) {
-		t.Fatalf("expected raw browser input to be preserved, got %s", choice.Input)
 	}
 }
 

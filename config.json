@@ -1,7 +1,7 @@
 {
   "project": {
     "id": "default",
-    "name": "OpenCTO",
+    "name": "Default Project",
     "workspace_root": "$HOME/.opencto"
   },
   "llm": {
