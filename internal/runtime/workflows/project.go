@@ -198,7 +198,11 @@ func handleProjectEventSignal(ctx workflow.Context, state *ProjectWorkflowState,
 		return
 	}
 
-	if token := planningTokenFromEvent(event); token != "" && routePlanningAnswer(ctx, active, token, event) {
+	if token := planningTokenFromEvent(event); token != "" {
+		if routePlanningAnswer(ctx, active, token, event) {
+			return
+		}
+		reportStalePlanningToken(ctx, event, token)
 		return
 	}
 
@@ -258,10 +262,28 @@ func routePlanningAnswer(ctx workflow.Context, active map[string]activeTask, tok
 		clearActiveWaitingToken(active, token)
 		return true
 	}
-	for _, task := range sortedActiveTasks(active) {
-		signalPlanningAnswer(ctx, task.WorkflowID, token, event)
+	return false
+}
+
+func reportStalePlanningToken(ctx workflow.Context, event domain.Event, token string) {
+	token = normalizePlanningToken(token)
+	if token == "" {
+		return
 	}
-	return true
+	reportCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		ScheduleToCloseTimeout: reportResponseActivityTimeout,
+		StartToCloseTimeout:    reportResponseActivityTimeout,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 1,
+		},
+	})
+	err := workflow.ExecuteActivity(reportCtx, "Activities.ReportResponse", activities.ReportResponseRequest{
+		Event:   event,
+		Message: "No active task is waiting for `" + token + "`. That planning reply looks stale, so I did not attach it to another task.",
+	}).Get(reportCtx, nil)
+	if err != nil {
+		workflow.GetLogger(ctx).Warn("report stale planning token failed", "token", token, "error", err.Error())
+	}
 }
 
 func activeTaskWorkflowIDByWaitToken(active map[string]activeTask, token string) string {
@@ -372,7 +394,7 @@ func trimRecentProjectEventIDs(state *ProjectWorkflowState) {
 
 func projectControlAction(event domain.Event) string {
 	if event.Metadata != nil {
-		switch strings.ToLower(strings.TrimSpace(event.Metadata["control"])) {
+		switch strings.ToLower(strings.TrimSpace(event.Metadata[domain.MetadataKeyControl])) {
 		case "cancel", "stop":
 			return "cancel"
 		case "interrupt":

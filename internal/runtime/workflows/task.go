@@ -408,7 +408,7 @@ func waitForPlanningAnswer(ctx workflow.Context, token string, additionalEvents 
 				return
 			}
 			*additionalEvents = append(*additionalEvents, signal.Event)
-			signalEvents = append(signalEvents, taskSignalEvent{Event: signal.Event})
+			signalEvents = append(signalEvents, taskSignalEvent{Event: signal.Event, Control: domain.MetadataControlPlanningAnswer})
 		})
 		selector.AddReceive(workflow.GetSignalChannel(ctx, SignalTaskAdditionalContext), func(c workflow.ReceiveChannel, more bool) {
 			var signal AdditionalContextSignal
@@ -417,7 +417,7 @@ func waitForPlanningAnswer(ctx workflow.Context, token string, additionalEvents 
 				return
 			}
 			*additionalEvents = append(*additionalEvents, signal.Event)
-			signalEvents = append(signalEvents, taskSignalEvent{Event: signal.Event})
+			signalEvents = append(signalEvents, taskSignalEvent{Event: signal.Event, Control: domain.MetadataControlPlanningAnswer})
 		})
 		selector.AddReceive(workflow.GetSignalChannel(ctx, SignalTaskCancel), func(c workflow.ReceiveChannel, more bool) {
 			var signal TaskControlSignal

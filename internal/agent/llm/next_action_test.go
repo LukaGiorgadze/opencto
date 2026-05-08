@@ -490,28 +490,21 @@ func TestBuildNextActionMessagesIncludesPendingPlanningContext(t *testing.T) {
 		"kind: plan",
 		"token: P-12345678",
 		"bare approval phrase only counts",
-		"current answer: approved via matching planning token/reply metadata",
-		"Do not call ProposePlan again",
+		"this task was resumed from a matching planning token or reply",
+		"Use the user's latest answer below to decide",
+		"Do not call ProposePlan again unless the user requested plan changes",
 		"Plan P-12345678: Create app",
 	} {
 		if !strings.Contains(pending, expected) {
 			t.Fatalf("pending context missing %q:\n%s", expected, pending)
 		}
 	}
-	additional := messageText(messages[3])
-	for _, expected := range []string{
-		"Runtime message metadata",
-		"planning_token: P-12345678",
-		"planning_token_source: reply",
-		"User message:\nDo it!",
-	} {
-		if !strings.Contains(additional, expected) {
-			t.Fatalf("additional message missing %q:\n%s", expected, additional)
-		}
+	if got := messageText(messages[3]); got != "Do it!" {
+		t.Fatalf("unexpected additional user message: %q", got)
 	}
 }
 
-func TestBuildNextActionMessagesShowsReplyMetadata(t *testing.T) {
+func TestBuildNextActionMessagesDoesNotExposeRoutingMetadata(t *testing.T) {
 	t.Parallel()
 
 	messages, err := buildNextActionMessages(agent.NextActionInput{
@@ -539,22 +532,23 @@ func TestBuildNextActionMessagesShowsReplyMetadata(t *testing.T) {
 		t.Fatalf("expected system and user messages, got %d", len(messages))
 	}
 	got := messageText(messages[1])
-	for _, expected := range []string{
+	if got != "Do it now!" {
+		t.Fatalf("expected only user-authored text, got:\n%s", got)
+	}
+	for _, garbage := range []string{
 		"Runtime message metadata",
-		"planning_token: P-12345678",
-		"planning_token_source: reply",
-		"reply_to_message_id: message-1",
-		"reply_to_channel_id: channel-1",
-		"reply_to_context_id: context-1",
-		"User message:\nDo it now!",
+		"planning_token",
+		"reply_to_message_id",
+		"reply_to_channel_id",
+		"reply_to_context_id",
 	} {
-		if !strings.Contains(got, expected) {
-			t.Fatalf("user message missing %q:\n%s", expected, got)
+		if strings.Contains(got, garbage) {
+			t.Fatalf("user message leaked routing metadata %q:\n%s", garbage, got)
 		}
 	}
 }
 
-func TestBuildNextActionMessagesTreatsTokenedNonApprovalAsRevisionContext(t *testing.T) {
+func TestBuildNextActionMessagesLeavesTokenedNonApprovalForModelDecision(t *testing.T) {
 	t.Parallel()
 
 	messages, err := buildNextActionMessages(agent.NextActionInput{
@@ -582,10 +576,13 @@ func TestBuildNextActionMessagesTreatsTokenedNonApprovalAsRevisionContext(t *tes
 		t.Fatalf("build next action messages: %v", err)
 	}
 	pending := messageText(messages[2])
-	if !strings.Contains(pending, "replied to this plan token but did not clearly approve it") {
-		t.Fatalf("expected revision context, got:\n%s", pending)
+	if !strings.Contains(pending, "this task was resumed from a matching planning token or reply") {
+		t.Fatalf("expected routed planning context, got:\n%s", pending)
 	}
-	if got := messageText(messages[3]); !strings.Contains(got, "User message:\nUse pnpm instead") {
+	if strings.Contains(pending, "did not clearly approve") || strings.Contains(pending, "approved via") {
+		t.Fatalf("pending context should not decide approval:\n%s", pending)
+	}
+	if got := messageText(messages[3]); got != "Use pnpm instead" {
 		t.Fatalf("unexpected additional user message: %q", got)
 	}
 }

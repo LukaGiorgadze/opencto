@@ -18,6 +18,10 @@ const (
 	MetadataKeyReplyToActorID      = "reply_to_actor_id"
 )
 
+const (
+	MetadataControlPlanningAnswer = "planning_answer"
+)
+
 type Provenance struct {
 	Source     string    `json:"source"`
 	SourceID   string    `json:"source_id,omitempty"`

@@ -698,6 +698,7 @@ func TestTaskWorkflowReportsAndWaitsForPlanningAnswer(t *testing.T) {
 
 	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "add auth"}
 	answer := domain.Event{ID: "event-2", ProjectID: "project-1", Body: "Q-12345678: use sessions"}
+	persistedPlanningAnswer := false
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(workflows.SignalTaskPlanningAnswer, workflows.PlanningAnswerSignal{
 			Token: "Q-12345678",
@@ -705,7 +706,12 @@ func TestTaskWorkflowReportsAndWaitsForPlanningAnswer(t *testing.T) {
 		})
 	}, time.Millisecond)
 
-	env.OnActivity("Activities.PersistEvent", mock.Anything, mock.Anything).Return(nil)
+	env.OnActivity("Activities.PersistEvent", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		request := args.Get(1).(activities.PersistEventRequest)
+		if request.Event.ID == "event-2" && request.Event.Metadata[domain.MetadataKeyControl] == domain.MetadataControlPlanningAnswer {
+			persistedPlanningAnswer = true
+		}
+	}).Return(nil)
 	env.OnActivity("Activities.ExtractMemory", mock.Anything, mock.Anything).Return(nil)
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
 		return request.ExecutionCycle == 1 && len(request.AdditionalEvents) == 0
@@ -751,6 +757,9 @@ func TestTaskWorkflowReportsAndWaitsForPlanningAnswer(t *testing.T) {
 	}
 	if !result.Completed || result.ResponseMessage != "approved" {
 		t.Fatalf("unexpected task result: %#v", result)
+	}
+	if !persistedPlanningAnswer {
+		t.Fatalf("expected planning answer to be persisted as consumed control metadata")
 	}
 	env.AssertExpectations(t)
 }
@@ -831,6 +840,66 @@ func TestProjectWorkflowRoutesTokenedAnswerToWaitingTask(t *testing.T) {
 	if !received {
 		t.Fatalf("expected tokened answer to route to waiting task")
 	}
+}
+
+func TestProjectWorkflowRejectsStalePlanningToken(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ProjectWorkflow)
+	env.RegisterActivityWithOptions((&activities.Activities{}).ReportResponse, activity.RegisterOptions{Name: "Activities.ReportResponse"})
+
+	var seen []string
+	received := false
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context, input workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		seen = append(seen, input.Event.ID)
+		if input.Event.ID != "event-1" {
+			return workflows.TaskWorkflowResult{Completed: true}, nil
+		}
+		selector := workflow.NewSelector(ctx)
+		selector.AddReceive(workflow.GetSignalChannel(ctx, workflows.SignalTaskPlanningAnswer), func(c workflow.ReceiveChannel, more bool) {
+			var signal workflows.PlanningAnswerSignal
+			c.Receive(ctx, &signal)
+			received = true
+		})
+		selector.AddFuture(workflow.NewTimer(ctx, 10*365*24*time.Hour), func(workflow.Future) {})
+		selector.Select(ctx)
+		return workflows.TaskWorkflowResult{Completed: true}, nil
+	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{ID: "event-1", ProjectID: "project-1", Body: "do work"}})
+	}, 0)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalProjectTaskWaiting, workflows.PlanningWaitSignal{
+			EventID: "event-1",
+			Token:   "Q-11111111",
+			Kind:    "question",
+			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", Body: "do work"},
+		})
+	}, time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{ID: "event-2", ProjectID: "project-1", Body: "Q-99999999: stale answer"}})
+	}, 2*time.Millisecond)
+	env.OnActivity("Activities.ReportResponse", mock.Anything, mock.MatchedBy(func(request activities.ReportResponseRequest) bool {
+		return request.Event.ID == "event-2" && strings.Contains(request.Message, "Q-99999999")
+	})).Return(nil).Once()
+	env.RegisterDelayedCallback(func() {
+		env.CancelWorkflow()
+	}, 5*time.Millisecond)
+
+	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	if received {
+		t.Fatalf("stale token should not be signaled to active tasks")
+	}
+	if strings.Join(seen, ",") != "event-1" {
+		t.Fatalf("stale token should not start a new task, got %#v", seen)
+	}
+	env.AssertExpectations(t)
 }
 
 func TestProjectWorkflowRoutesReplyMetadataTokenToWaitingTask(t *testing.T) {

@@ -254,11 +254,8 @@ func pendingPlanningContextMessage(nextAction agent.NextAction, additionalEvents
 	builder.WriteString(token)
 	if kind == "plan" {
 		builder.WriteString("\n- approval rule: mutate only after an answer explicitly approves this token. A bare approval phrase only counts when this task was resumed by matching token or reply metadata.")
-		switch planningApprovalContext(additionalEvents, token) {
-		case "approved":
-			builder.WriteString("\n- current answer: approved via matching planning token/reply metadata. Do not call ProposePlan again; continue with execution tools according to the approved plan.")
-		case "tokened":
-			builder.WriteString("\n- current answer: replied to this plan token but did not clearly approve it. Treat it as requested changes or clarification, not approval.")
+		if hasRoutedPlanningAnswer(additionalEvents, token) {
+			builder.WriteString("\n- current answer: this task was resumed from a matching planning token or reply. Use the user's latest answer below to decide whether to execute, revise, or ask a follow-up. Do not call ProposePlan again unless the user requested plan changes.")
 		}
 	}
 	if response := truncateText(nextAction.ResponseMessage, 6000); response != "" {
@@ -268,40 +265,25 @@ func pendingPlanningContextMessage(nextAction agent.NextAction, additionalEvents
 	return strings.TrimSpace(builder.String())
 }
 
-func planningApprovalContext(events []domain.Event, token string) string {
+func hasRoutedPlanningAnswer(events []domain.Event, token string) bool {
 	token = normalizeLLMPlanningToken(token)
 	if token == "" {
-		return ""
+		return false
 	}
 	for _, event := range events {
 		if explicitLLMPlanApprovalBody(event.Body, token) {
-			return "approved"
+			return true
 		}
-		if normalizeLLMPlanningToken(event.Metadata[domain.MetadataKeyPlanningToken]) != token {
-			continue
+		if normalizeLLMPlanningToken(event.Metadata[domain.MetadataKeyPlanningToken]) == token {
+			return true
 		}
-		if llmPlanApprovalPhrase(event.Body) {
-			return "approved"
-		}
-		return "tokened"
 	}
-	return ""
+	return false
 }
 
 func explicitLLMPlanApprovalBody(body string, token string) bool {
 	fields := strings.Fields(strings.TrimSpace(body))
 	return len(fields) >= 2 && strings.EqualFold(fields[0], "approve") && normalizeLLMPlanningToken(fields[1]) == token
-}
-
-func llmPlanApprovalPhrase(body string) bool {
-	normalized := strings.ToLower(strings.Trim(strings.TrimSpace(body), "`.,!?:; "))
-	normalized = strings.Join(strings.Fields(normalized), " ")
-	switch normalized {
-	case "approve", "approved", "yes", "y", "ok", "okay", "do it", "do it now", "do it please", "please do it", "please do it now", "go ahead", "proceed", "run it", "run it now", "ship it", "looks good", "lgtm", "yes please", "please proceed", "please do":
-		return true
-	default:
-		return false
-	}
 }
 
 func normalizeLLMPlanningToken(token string) string {
