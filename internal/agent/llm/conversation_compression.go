@@ -11,6 +11,7 @@ import (
 
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
+	"github.com/opencto/opencto/internal/textclean"
 )
 
 type OpenAIConversationCompressor struct {
@@ -113,14 +114,23 @@ func conversationSummarySource(messages []domain.ConversationMessage, maxChars i
 	if maxChars <= 0 {
 		maxChars = 12000
 	}
-	items := compactConversationHistoryItems(messages)
 	var builder strings.Builder
-	for _, item := range items {
+	for index := 0; index < len(messages); {
 		remaining := maxChars - builder.Len()
 		if remaining <= 0 {
 			break
 		}
-		entry := conversationHistoryItemEntry(item, remaining)
+		var entry string
+		if item, count, ok := compactEditToolHistory(messages[index:]); ok {
+			entry = conversationCompressionItemEntry(item, remaining)
+			index += count
+		} else if item, count, ok := compactExactToolHistory(messages[index:]); ok {
+			entry = conversationCompressionItemEntry(item, remaining)
+			index += count
+		} else {
+			entry = conversationCompressionMessageEntry(messages[index], remaining)
+			index++
+		}
 		if strings.TrimSpace(entry) == "" {
 			continue
 		}
@@ -130,6 +140,78 @@ func conversationSummarySource(messages []domain.ConversationMessage, maxChars i
 		builder.WriteString(entry)
 	}
 	return strings.TrimSpace(builder.String())
+}
+
+func conversationCompressionMessageEntry(message domain.ConversationMessage, budget int) string {
+	item := conversationHistoryMessageItem(message)
+	if message.Role == domain.ConversationRoleTool {
+		item.Body = conversationCompressionToolBody(message)
+	}
+	return conversationCompressionItemEntry(item, budget)
+}
+
+func conversationCompressionItemEntry(item conversationHistoryItem, budget int) string {
+	body := strings.TrimSpace(textclean.TerminalOutput(item.Body))
+	label := strings.TrimSpace(item.Label)
+	if body == "" || label == "" {
+		return ""
+	}
+	bodyBudget := budget - len(label) - 4
+	if bodyBudget <= 0 {
+		return ""
+	}
+	if item.Role == domain.ConversationRoleTool && bodyBudget > 700 {
+		bodyBudget = 700
+	}
+	body = truncateTextPlain(body, bodyBudget)
+	return "- " + label + ": " + body
+}
+
+func conversationCompressionToolBody(message domain.ConversationMessage) string {
+	body := strings.TrimSpace(message.Body)
+	tool := strings.TrimSpace(message.Metadata["tool"])
+	var parts []string
+	if requested := conversationBodyValue(body, "requested_action"); requested != "" {
+		parts = append(parts, "requested_action: "+requested)
+	}
+	switch tool {
+	case string(domain.ToolTypeRead):
+		appendCompressionValue(&parts, "file", firstNonEmpty(message.Metadata["file_path"], conversationBodyValue(body, "file")))
+		appendCompressionValue(&parts, "lines", firstNonEmpty(readLinesMetadata(message.Metadata), conversationBodyValue(body, "lines")))
+		appendCompressionValue(&parts, "bytes", firstNonEmpty(message.Metadata["bytes_read"], conversationBodyValue(body, "bytes")))
+		appendCompressionValue(&parts, "truncated", firstNonEmpty(message.Metadata["truncated"], conversationBodyValue(body, "truncated")))
+		parts = append(parts, "content: omitted from compression source")
+	case string(domain.ToolTypeExec):
+		appendCompressionValue(&parts, "result_code", message.Metadata["result_code"])
+		appendCompressionValue(&parts, "stdout_log_path", firstNonEmpty(message.Metadata["stdout_log_path"], conversationBodyValue(body, "stdout_log_path")))
+		appendCompressionValue(&parts, "stderr_log_path", firstNonEmpty(message.Metadata["stderr_log_path"], conversationBodyValue(body, "stderr_log_path")))
+		appendCompressionValue(&parts, "output_truncated", firstNonEmpty(message.Metadata["stdout_truncated"], message.Metadata["stderr_truncated"], conversationBodyValue(body, "output_truncated")))
+	default:
+		if observed := conversationBodyValue(body, "observation"); observed != "" {
+			parts = append(parts, "observation: "+truncateTextPlain(observed, 500))
+		}
+	}
+	if len(parts) == 0 {
+		return truncateTextPlain(body, 700)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func appendCompressionValue(parts *[]string, key string, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	*parts = append(*parts, key+": "+value)
+}
+
+func readLinesMetadata(metadata domain.Metadata) string {
+	linesRead := strings.TrimSpace(metadata["lines_read"])
+	totalLines := strings.TrimSpace(metadata["total_lines"])
+	if linesRead == "" || totalLines == "" {
+		return ""
+	}
+	return linesRead + "/" + totalLines
 }
 
 func parseConversationCompressionOutput(content string, maxChars int) (agent.ConversationCompressionOutput, error) {
@@ -143,7 +225,7 @@ func parseConversationCompressionOutput(content string, maxChars int) (agent.Con
 	}
 	output.Summary = strings.TrimSpace(output.Summary)
 	if maxChars > 0 && len(output.Summary) > maxChars {
-		output.Summary = truncateText(output.Summary, maxChars)
+		output.Summary = truncateTextPlain(output.Summary, maxChars)
 	}
 	return output, nil
 }

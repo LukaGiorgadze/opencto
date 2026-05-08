@@ -3872,14 +3872,28 @@ func toolPersistenceRecords(event domain.Event, result ExecuteToolResult) (toolP
 		ThreadID:    strings.TrimSpace(event.ThreadID),
 		Body:        toolConversationBody(result),
 		ToolCallID:  toolCallID,
-		Metadata: domain.Metadata{
-			"tool":        string(result.Tool),
-			"status":      string(result.Status),
-			"result_code": strings.TrimSpace(result.ResultCode),
-		},
-		CreatedAt: firstNonZeroTime(timeFromMetadata(result.Metadata, "completed_at"), now),
+		Metadata:    toolConversationMetadata(result),
+		CreatedAt:   firstNonZeroTime(timeFromMetadata(result.Metadata, "completed_at"), now),
 	}
 	return toolPersistenceRecordSet{Attempt: attempt, Invocation: invocation, Conversation: conversation}, nil
+}
+
+func toolConversationMetadata(result ExecuteToolResult) domain.Metadata {
+	metadata := domain.Metadata{}
+	for key, value := range result.Metadata {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			continue
+		}
+		metadata[key] = value
+	}
+	metadata["tool"] = string(result.Tool)
+	metadata["status"] = string(result.Status)
+	if code := strings.TrimSpace(result.ResultCode); code != "" {
+		metadata["result_code"] = code
+	}
+	return metadata
 }
 
 func toolConversationBody(result ExecuteToolResult) string {

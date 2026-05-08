@@ -693,6 +693,24 @@ func truncateText(text string, limit int) string {
 	return strings.TrimSpace(string(runes[:prefixLimit])) + suffix
 }
 
+func truncateTextPlain(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if limit <= 0 || text == "" {
+		return ""
+	}
+	if len(text) <= limit {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	if limit > len(runes) {
+		limit = len(runes)
+	}
+	return strings.TrimSpace(string(runes[:limit]))
+}
+
 func messageHasContent(message llms.MessageContent) bool {
 	for _, part := range message.Parts {
 		switch value := part.(type) {
