@@ -55,6 +55,14 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			MaximumAttempts: 1,
 		},
 	}
+	conversationCompressionAO := workflow.ActivityOptions{
+		StartToCloseTimeout: 2 * time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:    2 * time.Second,
+			BackoffCoefficient: 2.0,
+			MaximumAttempts:    3,
+		},
+	}
 	sessionAO := workflow.ActivityOptions{
 		StartToCloseTimeout: responseSessionMaxDuration,
 		HeartbeatTimeout:    responseSessionHeartbeatGap,
@@ -68,6 +76,7 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 	toolCtx := workflow.WithActivityOptions(ctx, toolAO)
 	persistenceCtx := workflow.WithActivityOptions(ctx, persistenceAO)
 	memoryExtractionCtx := workflow.WithActivityOptions(ctx, memoryExtractionAO)
+	conversationCompressionCtx := workflow.WithActivityOptions(ctx, conversationCompressionAO)
 	sessionCtx := workflow.WithActivityOptions(ctx, sessionAO)
 	session := startResponseSession(ctx, sessionCtx, input.ProjectID, input.Event)
 	defer func() {
@@ -89,6 +98,9 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 		}
 		if err := extractMemory(memoryExtractionCtx, activities.ExtractMemoryRequest{Event: input.Event}); err != nil {
 			workflow.GetLogger(ctx).Warn("memory extraction failed", "error", err)
+		}
+		if err := compressConversation(conversationCompressionCtx, activities.CompressConversationRequest{Event: input.Event}); err != nil {
+			workflow.GetLogger(ctx).Warn("conversation compression failed", "error", err)
 		}
 	}
 
@@ -236,6 +248,10 @@ func persistEvent(ctx workflow.Context, request activities.PersistEventRequest) 
 
 func extractMemory(ctx workflow.Context, request activities.ExtractMemoryRequest) error {
 	return workflow.ExecuteActivity(ctx, "Activities.ExtractMemory", request).Get(ctx, nil)
+}
+
+func compressConversation(ctx workflow.Context, request activities.CompressConversationRequest) error {
+	return workflow.ExecuteActivity(ctx, "Activities.CompressConversation", request).Get(ctx, nil)
 }
 
 func persistNextAction(ctx workflow.Context, request activities.PersistNextActionRequest) error {

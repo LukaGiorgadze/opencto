@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/opencto/opencto/internal/domain"
 )
@@ -13,8 +14,11 @@ const (
 	ProviderSQLite = "sqlite"
 
 	defaultAutoContextLimit            = 5
-	defaultConversationHistoryLimit    = 10
-	defaultConversationMaxContextChars = 8000
+	defaultConversationHistoryLimit    = 20
+	defaultConversationMaxContextChars = 20000
+	defaultConversationSummaryTrigger  = 24000
+	defaultConversationSummaryMaxChars = 6000
+	defaultConversationSummaryRecent   = 10
 )
 
 var ErrMemoryPolicyRejected = errors.New("memory rejected by policy")
@@ -38,6 +42,8 @@ type RuntimeStore interface {
 	UpsertConversationThread(context.Context, domain.ConversationThread) error
 	UpsertConversationMessage(context.Context, domain.ConversationMessage) error
 	ListConversationMessages(context.Context, ConversationQuery) ([]domain.ConversationMessage, error)
+	UpsertConversationSummary(context.Context, domain.ConversationSummary) error
+	ListConversationSummaries(context.Context, ConversationSummaryQuery) ([]domain.ConversationSummary, error)
 	RememberMemory(context.Context, domain.Memory) (domain.Memory, error)
 	SearchMemories(context.Context, domain.MemorySearchRequest) ([]domain.Memory, error)
 	ListMemories(context.Context, domain.MemoryListRequest) ([]domain.Memory, error)
@@ -64,8 +70,20 @@ type ConversationQuery struct {
 	Scope          ConversationScope
 	Roles          []domain.ConversationRole
 	Limit          int
+	AfterCreatedAt time.Time
+	AfterID        string
+	OldestFirst    bool
 	ExcludeEventID string
 	ExcludeControl bool
+}
+
+type ConversationSummaryQuery struct {
+	ProjectID   string
+	ChannelType domain.ChannelType
+	ChannelID   string
+	ThreadID    string
+	Scope       domain.ConversationSummaryScope
+	Limit       int
 }
 
 func DefaultDBPath(workspaceRoot string) string {
@@ -93,6 +111,27 @@ func DefaultConversationHistoryLimit(limit int) int {
 func DefaultConversationMaxContextChars(limit int) int {
 	if limit <= 0 {
 		return defaultConversationMaxContextChars
+	}
+	return limit
+}
+
+func DefaultConversationSummaryTriggerChars(limit int) int {
+	if limit <= 0 {
+		return defaultConversationSummaryTrigger
+	}
+	return limit
+}
+
+func DefaultConversationSummaryMaxChars(limit int) int {
+	if limit <= 0 {
+		return defaultConversationSummaryMaxChars
+	}
+	return limit
+}
+
+func DefaultConversationSummaryRecentMessages(limit int) int {
+	if limit <= 0 {
+		return defaultConversationSummaryRecent
 	}
 	return limit
 }

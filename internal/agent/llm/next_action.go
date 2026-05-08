@@ -96,8 +96,12 @@ func buildNextActionMessages(input agent.NextActionInput) ([]llms.MessageContent
 	if memory := memoryContextMessage(input.Context.Memory); memory != "" {
 		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, memory))
 	}
+	summaryBudget, historyBudget := conversationContextBudgets(input.Context.ConversationMaxContextChars, len(input.Context.ConversationSummaries) > 0)
+	if summaries := conversationSummaryContextMessage(input.Context.ConversationSummaries, summaryBudget); summaries != "" {
+		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, summaries))
+	}
 	conversation := conversationWithoutCurrentEvents(input.Context.Conversation, input.Context.Event, input.Context.AdditionalEvents)
-	if history := conversationContextMessage(conversation, input.Context.ConversationMaxContextChars); history != "" {
+	if history := conversationContextMessage(conversation, historyBudget); history != "" {
 		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, history))
 	}
 	messages = append(messages, userMessage)
@@ -282,6 +286,76 @@ func conversationContextMessage(messages []domain.ConversationMessage, maxChars 
 		builder.WriteString(selected[i])
 	}
 	return strings.TrimSpace(builder.String())
+}
+
+func conversationContextBudgets(maxChars int, hasSummaries bool) (int, int) {
+	if maxChars <= 0 {
+		maxChars = 8000
+	}
+	if !hasSummaries {
+		return 0, maxChars
+	}
+	summaryBudget := maxChars * 4 / 10
+	if summaryBudget < 1000 {
+		summaryBudget = maxChars / 2
+	}
+	historyBudget := maxChars - summaryBudget
+	if historyBudget < 1000 {
+		historyBudget = maxChars / 2
+	}
+	return summaryBudget, historyBudget
+}
+
+func conversationSummaryContextMessage(summaries []domain.ConversationSummary, maxChars int) string {
+	if len(summaries) == 0 {
+		return ""
+	}
+	if maxChars <= 0 {
+		maxChars = 6000
+	}
+	header := "Conversation summary. Use this as bounded context only; recent raw conversation and the current user request follow."
+	if maxChars <= len(header) {
+		return truncateText(header, maxChars)
+	}
+	remaining := maxChars - len(header) - 1
+	selected := make([]string, 0, len(summaries))
+	for _, summary := range summaries {
+		if remaining <= 0 {
+			break
+		}
+		entry := conversationSummaryEntry(summary, remaining)
+		if strings.TrimSpace(entry) == "" {
+			continue
+		}
+		if len(entry) > remaining {
+			entry = truncateText(entry, remaining)
+		}
+		selected = append(selected, entry)
+		remaining -= len(entry) + 1
+	}
+	if len(selected) == 0 {
+		return header
+	}
+	var builder strings.Builder
+	builder.WriteString(header)
+	for _, entry := range selected {
+		builder.WriteString("\n")
+		builder.WriteString(entry)
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func conversationSummaryEntry(summary domain.ConversationSummary, budget int) string {
+	body := strings.TrimSpace(summary.Summary)
+	if body == "" {
+		return ""
+	}
+	label := "summary[" + string(summary.Scope) + "]"
+	bodyBudget := budget - len(label) - 4
+	if bodyBudget <= 0 {
+		return ""
+	}
+	return "- " + label + ": " + truncateText(body, bodyBudget)
 }
 
 func pendingPlanningContextMessage(nextAction agent.NextAction, additionalEvents []domain.Event) string {

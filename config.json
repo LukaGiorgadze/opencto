@@ -18,15 +18,20 @@
   },
   "conversation": {
     "enabled": true,
-    "history_limit": 10,
-    "max_context_chars": 8000
+    "history_limit": 20,
+    "max_context_chars": 20000,
+    "summary_enabled": true,
+    "summary_trigger_chars": 24000,
+    "summary_max_chars": 6000,
+    "summary_recent_messages": 10
   },
   "llm": {
     "provider": "openai",
     "base_url": "http://127.0.0.1:4000",
     "model_reasoning": "gpt-5.4-nano",
     "model_fast": "gpt-5.4-nano",
-    "transcription_model": "gpt-4o-mini-transcribe"
+    "model_summary": "gpt-5.4-nano",
+    "model_transcription": "gpt-4o-mini-transcribe"
   },
   "temporal": {
     "host_port": "127.0.0.1:7233",

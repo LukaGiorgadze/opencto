@@ -14,6 +14,7 @@ type Context struct {
 	ActiveWorkItems             []domain.WorkItem            `json:"active_work_items,omitempty"`
 	Memory                      []domain.Memory              `json:"memory,omitempty"`
 	Conversation                []domain.ConversationMessage `json:"conversation,omitempty"`
+	ConversationSummaries       []domain.ConversationSummary `json:"conversation_summaries,omitempty"`
 	ConversationMaxContextChars int                          `json:"conversation_max_context_chars,omitempty"`
 	Skills                      []skills.Summary             `json:"skills,omitempty"`
 	AdditionalEvents            []domain.Event               `json:"additional_events,omitempty"`
@@ -148,4 +149,19 @@ type MemoryCandidate struct {
 
 type MemoryExtractor interface {
 	ExtractMemories(context.Context, MemoryExtractionInput) (MemoryExtractionOutput, error)
+}
+
+type ConversationCompressionInput struct {
+	ProjectID       string                          `json:"project_id"`
+	Scope           domain.ConversationSummaryScope `json:"scope"`
+	Messages        []domain.ConversationMessage    `json:"messages"`
+	MaxSummaryChars int                             `json:"max_summary_chars"`
+}
+
+type ConversationCompressionOutput struct {
+	Summary string `json:"summary"`
+}
+
+type ConversationCompressor interface {
+	CompressConversation(context.Context, ConversationCompressionInput) (ConversationCompressionOutput, error)
 }

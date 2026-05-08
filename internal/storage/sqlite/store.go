@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	currentSchemaVersion = 5
+	currentSchemaVersion = 6
 	memoryVectorDims     = 1536
 )
 
@@ -164,6 +164,7 @@ var migrations = []migration{
 	{version: 3, sql: migrationV3},
 	{version: 4, sql: migrationV4, apply: applyMemoryUserScopeMigration},
 	{version: 5, sql: migrationV5, apply: applyThreadScopeMigration},
+	{version: 6, sql: migrationV6},
 }
 
 func applyMigration(ctx context.Context, db *sql.DB, migration migration) error {
@@ -315,6 +316,33 @@ CREATE TABLE IF NOT EXISTS conversation_threads (
 );
 CREATE INDEX IF NOT EXISTS idx_conversation_threads_project_updated ON conversation_threads(project_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_conversation_threads_project_channel ON conversation_threads(project_id, channel_type, channel_id);
+`
+
+const conversationSummariesSchemaSQL = `
+CREATE TABLE IF NOT EXISTS conversation_summaries (
+	id TEXT PRIMARY KEY,
+	project_id TEXT NOT NULL,
+	channel_type TEXT NOT NULL DEFAULT '',
+	channel_id TEXT NOT NULL DEFAULT '',
+	thread_id TEXT NOT NULL DEFAULT '',
+	scope TEXT NOT NULL CHECK (scope IN ('project', 'channel', 'thread')),
+	summary TEXT NOT NULL,
+	from_message_id TEXT NOT NULL,
+	to_message_id TEXT NOT NULL,
+	from_created_at TEXT NOT NULL,
+	to_created_at TEXT NOT NULL,
+	message_count INTEGER NOT NULL DEFAULT 0,
+	source_chars INTEGER NOT NULL DEFAULT 0,
+	metadata TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata)),
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_conversation_summaries_project_scope_to
+ON conversation_summaries(project_id, scope, to_created_at, to_message_id);
+CREATE INDEX IF NOT EXISTS idx_conversation_summaries_channel_to
+ON conversation_summaries(project_id, channel_type, channel_id, scope, to_created_at, to_message_id);
+CREATE INDEX IF NOT EXISTS idx_conversation_summaries_thread_to
+ON conversation_summaries(project_id, channel_type, channel_id, thread_id, scope, to_created_at, to_message_id);
 `
 
 func tableHasColumn(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
@@ -571,6 +599,8 @@ CREATE INDEX IF NOT EXISTS idx_memories_user_scope_updated ON memories(user_id, 
 CREATE INDEX IF NOT EXISTS idx_memories_thread_scope_updated ON memories(project_id, thread_id, scope, updated_at);
 CREATE INDEX IF NOT EXISTS idx_memories_scope_updated ON memories(scope, updated_at);
 `
+
+const migrationV6 = conversationSummariesSchemaSQL
 
 func (s *Store) EnsureProject(ctx context.Context, project domain.Project) error {
 	project.ID = strings.TrimSpace(project.ID)
@@ -956,8 +986,12 @@ func (s *Store) ListConversationMessages(ctx context.Context, query storage.Conv
 		return nil, fmt.Errorf("conversation project id is required")
 	}
 	limit := storage.DefaultConversationHistoryLimit(query.Limit)
-	if limit > 100 {
-		limit = 100
+	maxLimit := 100
+	if query.OldestFirst {
+		maxLimit = 500
+	}
+	if limit > maxLimit {
+		limit = maxLimit
 	}
 	where := []string{"project_id = ?"}
 	args := []any{projectID}
@@ -989,6 +1023,11 @@ func (s *Store) ListConversationMessages(ctx context.Context, query storage.Conv
 	if query.ExcludeControl {
 		where = append(where, "COALESCE(json_extract(metadata, '$."+domain.MetadataKeyControl+"'), '') = ''")
 	}
+	if !query.AfterCreatedAt.IsZero() {
+		where = append(where, "(created_at > ? OR (created_at = ? AND id > ?))")
+		after := formatTime(query.AfterCreatedAt)
+		args = append(args, after, after, strings.TrimSpace(query.AfterID))
+	}
 	roles := normalizeConversationRoles(query.Roles)
 	if len(roles) > 0 {
 		placeholders := make([]string, 0, len(roles))
@@ -999,17 +1038,27 @@ func (s *Store) ListConversationMessages(ctx context.Context, query storage.Conv
 		where = append(where, "role IN ("+strings.Join(placeholders, ", ")+")")
 	}
 	args = append(args, limit)
-	rows, err := s.db.QueryContext(ctx, `
+	querySQL := `
+SELECT id, project_id, event_id, role, channel_type, channel_id, thread_id, body, tool_call_id, metadata, created_at
+FROM (
 	SELECT id, project_id, event_id, role, channel_type, channel_id, thread_id, body, tool_call_id, metadata, created_at
-	FROM (
-		SELECT id, project_id, event_id, role, channel_type, channel_id, thread_id, body, tool_call_id, metadata, created_at
-		FROM conversation_messages
-		WHERE `+strings.Join(where, " AND ")+`
-		ORDER BY created_at DESC, id DESC
-		LIMIT ?
-	)
-	ORDER BY created_at ASC, id ASC
-	`, args...)
+	FROM conversation_messages
+	WHERE ` + strings.Join(where, " AND ") + `
+	ORDER BY created_at DESC, id DESC
+	LIMIT ?
+)
+ORDER BY created_at ASC, id ASC
+`
+	if query.OldestFirst {
+		querySQL = `
+SELECT id, project_id, event_id, role, channel_type, channel_id, thread_id, body, tool_call_id, metadata, created_at
+FROM conversation_messages
+WHERE ` + strings.Join(where, " AND ") + `
+ORDER BY created_at ASC, id ASC
+LIMIT ?
+`
+	}
+	rows, err := s.db.QueryContext(ctx, querySQL, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1059,6 +1108,151 @@ func scanConversationMessages(rows *sql.Rows) ([]domain.ConversationMessage, err
 		messages = append(messages, message)
 	}
 	return messages, rows.Err()
+}
+
+func (s *Store) UpsertConversationSummary(ctx context.Context, summary domain.ConversationSummary) error {
+	summary.ProjectID = strings.TrimSpace(summary.ProjectID)
+	summary.ChannelID = strings.TrimSpace(summary.ChannelID)
+	summary.ThreadID = strings.TrimSpace(summary.ThreadID)
+	summary.Summary = strings.TrimSpace(summary.Summary)
+	summary.FromMessageID = strings.TrimSpace(summary.FromMessageID)
+	summary.ToMessageID = strings.TrimSpace(summary.ToMessageID)
+	if summary.ProjectID == "" {
+		return fmt.Errorf("conversation summary project id is required")
+	}
+	if summary.Summary == "" {
+		return fmt.Errorf("conversation summary body is required")
+	}
+	switch summary.Scope {
+	case domain.ConversationSummaryScopeProject:
+		summary.ChannelType = ""
+		summary.ChannelID = ""
+		summary.ThreadID = ""
+	case domain.ConversationSummaryScopeChannel:
+		if summary.ChannelType == "" || summary.ChannelID == "" {
+			return fmt.Errorf("conversation channel summary requires channel type and id")
+		}
+		summary.ThreadID = ""
+	case domain.ConversationSummaryScopeThread:
+		if summary.ChannelType == "" || summary.ChannelID == "" || summary.ThreadID == "" {
+			return fmt.Errorf("conversation thread summary requires channel type, channel id, and thread id")
+		}
+	default:
+		return fmt.Errorf("unsupported conversation summary scope %q", summary.Scope)
+	}
+	if summary.FromMessageID == "" || summary.ToMessageID == "" {
+		return fmt.Errorf("conversation summary message range is required")
+	}
+	if summary.FromCreatedAt.IsZero() || summary.ToCreatedAt.IsZero() {
+		return fmt.Errorf("conversation summary message timestamps are required")
+	}
+	if summary.ID == "" {
+		summary.ID = stableStoreID("conversation-summary", summary.ProjectID, string(summary.Scope), string(summary.ChannelType), summary.ChannelID, summary.ThreadID, summary.FromMessageID, summary.ToMessageID)
+	}
+	now := time.Now().UTC()
+	if summary.CreatedAt.IsZero() {
+		summary.CreatedAt = now
+	}
+	if summary.UpdatedAt.IsZero() {
+		summary.UpdatedAt = now
+	}
+	metadata, err := encodeJSON(summary.Metadata, "{}")
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO conversation_summaries(id, project_id, channel_type, channel_id, thread_id, scope, summary, from_message_id, to_message_id, from_created_at, to_created_at, message_count, source_chars, metadata, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, json(?), ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+	summary = excluded.summary,
+	message_count = excluded.message_count,
+	source_chars = excluded.source_chars,
+	metadata = excluded.metadata,
+	updated_at = excluded.updated_at
+`, strings.TrimSpace(summary.ID), summary.ProjectID, string(summary.ChannelType), summary.ChannelID, summary.ThreadID, string(summary.Scope), summary.Summary, summary.FromMessageID, summary.ToMessageID, formatTime(summary.FromCreatedAt), formatTime(summary.ToCreatedAt), summary.MessageCount, summary.SourceChars, metadata, formatTime(summary.CreatedAt), formatTime(summary.UpdatedAt))
+	return err
+}
+
+func (s *Store) ListConversationSummaries(ctx context.Context, query storage.ConversationSummaryQuery) ([]domain.ConversationSummary, error) {
+	projectID := strings.TrimSpace(query.ProjectID)
+	if projectID == "" {
+		return nil, fmt.Errorf("conversation summary project id is required")
+	}
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 3
+	}
+	if limit > 20 {
+		limit = 20
+	}
+	where := []string{"project_id = ?", "scope = ?"}
+	args := []any{projectID, string(query.Scope)}
+	switch query.Scope {
+	case domain.ConversationSummaryScopeProject:
+		where = append(where, "channel_id = ''", "thread_id = ''")
+	case domain.ConversationSummaryScopeChannel:
+		channelID := strings.TrimSpace(query.ChannelID)
+		if channelID == "" {
+			return nil, nil
+		}
+		where = append(where, "channel_type = ?", "channel_id = ?", "thread_id = ''")
+		args = append(args, string(query.ChannelType), channelID)
+	case domain.ConversationSummaryScopeThread:
+		channelID := strings.TrimSpace(query.ChannelID)
+		threadID := strings.TrimSpace(query.ThreadID)
+		if channelID == "" || threadID == "" {
+			return nil, nil
+		}
+		where = append(where, "channel_type = ?", "channel_id = ?", "thread_id = ?")
+		args = append(args, string(query.ChannelType), channelID, threadID)
+	default:
+		return nil, fmt.Errorf("unsupported conversation summary scope %q", query.Scope)
+	}
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, project_id, channel_type, channel_id, thread_id, scope, summary, from_message_id, to_message_id, from_created_at, to_created_at, message_count, source_chars, metadata, created_at, updated_at
+FROM (
+	SELECT id, project_id, channel_type, channel_id, thread_id, scope, summary, from_message_id, to_message_id, from_created_at, to_created_at, message_count, source_chars, metadata, created_at, updated_at
+	FROM conversation_summaries
+	WHERE `+strings.Join(where, " AND ")+`
+	ORDER BY to_created_at DESC, to_message_id DESC
+	LIMIT ?
+)
+ORDER BY to_created_at ASC, to_message_id ASC
+`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanConversationSummaries(rows)
+}
+
+func scanConversationSummaries(rows *sql.Rows) ([]domain.ConversationSummary, error) {
+	var summaries []domain.ConversationSummary
+	for rows.Next() {
+		var summary domain.ConversationSummary
+		var channelType string
+		var scope string
+		var metadata string
+		var fromCreatedAt string
+		var toCreatedAt string
+		var createdAt string
+		var updatedAt string
+		if err := rows.Scan(&summary.ID, &summary.ProjectID, &channelType, &summary.ChannelID, &summary.ThreadID, &scope, &summary.Summary, &summary.FromMessageID, &summary.ToMessageID, &fromCreatedAt, &toCreatedAt, &summary.MessageCount, &summary.SourceChars, &metadata, &createdAt, &updatedAt); err != nil {
+			return nil, err
+		}
+		summary.ChannelType = domain.ChannelType(channelType)
+		summary.Scope = domain.ConversationSummaryScope(scope)
+		if err := decodeJSON(metadata, &summary.Metadata); err != nil {
+			return nil, err
+		}
+		summary.FromCreatedAt = parseTime(fromCreatedAt)
+		summary.ToCreatedAt = parseTime(toCreatedAt)
+		summary.CreatedAt = parseTime(createdAt)
+		summary.UpdatedAt = parseTime(updatedAt)
+		summaries = append(summaries, summary)
+	}
+	return summaries, rows.Err()
 }
 
 func (s *Store) RememberMemory(ctx context.Context, memory domain.Memory) (domain.Memory, error) {

@@ -728,6 +728,49 @@ func TestBuildNextActionMessagesAddsBoundedConversationHistory(t *testing.T) {
 	}
 }
 
+func TestBuildNextActionMessagesAddsConversationSummaries(t *testing.T) {
+	t.Parallel()
+
+	input := agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event: domain.Event{
+				ID:        "event-current",
+				ProjectID: "project-1",
+				Body:      "continue",
+			},
+			ConversationSummaries: []domain.ConversationSummary{{
+				ID:      "summary-1",
+				Scope:   domain.ConversationSummaryScopeProject,
+				Summary: "Earlier discussion selected SQLite and memory tools.",
+			}},
+			Conversation: []domain.ConversationMessage{{
+				ID:   "recent",
+				Role: domain.ConversationRoleAssistant,
+				Body: "I can implement the next step.",
+			}},
+			ConversationMaxContextChars: 4000,
+		},
+	}
+
+	messages, err := buildNextActionMessages(input)
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	if len(messages) != 4 {
+		t.Fatalf("expected system, summary, history, and user messages, got %d", len(messages))
+	}
+	summary := messageText(messages[1])
+	if !strings.Contains(summary, "Conversation summary") || !strings.Contains(summary, "summary[project]") {
+		t.Fatalf("unexpected summary context:\n%s", summary)
+	}
+	history := messageText(messages[2])
+	if !strings.Contains(history, "Recent conversation history") || !strings.Contains(history, "assistant: I can implement") {
+		t.Fatalf("unexpected history context:\n%s", history)
+	}
+}
+
 func TestBuildNextActionMessagesExcludesCurrentAndAdditionalEventsFromHistory(t *testing.T) {
 	t.Parallel()
 

@@ -384,6 +384,97 @@ func TestConversationMessagesUseScopedHistory(t *testing.T) {
 	if len(project) != 1 || project[0].ID != "project-1" {
 		t.Fatalf("unexpected project history: %#v", project)
 	}
+
+	oldest, err := store.ListConversationMessages(ctx, storage.ConversationQuery{
+		ProjectID:      "default",
+		ChannelType:    domain.ChannelTypeDiscord,
+		ChannelID:      "channel-a",
+		Scope:          storage.ConversationScopeChannel,
+		Limit:          10,
+		AfterCreatedAt: base.Add(time.Second),
+		AfterID:        "channel-1",
+		OldestFirst:    true,
+		ExcludeControl: true,
+	})
+	if err != nil {
+		t.Fatalf("list oldest conversation: %v", err)
+	}
+	if len(oldest) != 1 || oldest[0].ID != "current" {
+		t.Fatalf("unexpected oldest-first history: %#v", oldest)
+	}
+}
+
+func TestConversationSummariesUseScopedHistory(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	summaries := []domain.ConversationSummary{
+		{
+			ID:            "project-summary",
+			ProjectID:     "default",
+			Scope:         domain.ConversationSummaryScopeProject,
+			Summary:       "Project-level context.",
+			FromMessageID: "p1",
+			ToMessageID:   "p2",
+			FromCreatedAt: base,
+			ToCreatedAt:   base.Add(time.Minute),
+			MessageCount:  2,
+			SourceChars:   200,
+			CreatedAt:     base,
+			UpdatedAt:     base,
+		},
+		{
+			ID:            "thread-summary",
+			ProjectID:     "default",
+			ChannelType:   domain.ChannelTypeDiscord,
+			ChannelID:     "channel-a",
+			ThreadID:      "thread-a",
+			Scope:         domain.ConversationSummaryScopeThread,
+			Summary:       "Thread-level context.",
+			FromMessageID: "t1",
+			ToMessageID:   "t2",
+			FromCreatedAt: base.Add(time.Hour),
+			ToCreatedAt:   base.Add(time.Hour + time.Minute),
+			MessageCount:  2,
+			SourceChars:   300,
+			CreatedAt:     base,
+			UpdatedAt:     base,
+		},
+	}
+	for _, summary := range summaries {
+		if err := store.UpsertConversationSummary(ctx, summary); err != nil {
+			t.Fatalf("upsert summary %s: %v", summary.ID, err)
+		}
+	}
+
+	thread, err := store.ListConversationSummaries(ctx, storage.ConversationSummaryQuery{
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-a",
+		ThreadID:    "thread-a",
+		Scope:       domain.ConversationSummaryScopeThread,
+		Limit:       5,
+	})
+	if err != nil {
+		t.Fatalf("list thread summaries: %v", err)
+	}
+	if len(thread) != 1 || thread[0].ID != "thread-summary" {
+		t.Fatalf("unexpected thread summaries: %#v", thread)
+	}
+
+	project, err := store.ListConversationSummaries(ctx, storage.ConversationSummaryQuery{
+		ProjectID: "default",
+		Scope:     domain.ConversationSummaryScopeProject,
+		Limit:     5,
+	})
+	if err != nil {
+		t.Fatalf("list project summaries: %v", err)
+	}
+	if len(project) != 1 || project[0].ID != "project-summary" {
+		t.Fatalf("unexpected project summaries: %#v", project)
+	}
 }
 
 func TestUpsertConversationThread(t *testing.T) {

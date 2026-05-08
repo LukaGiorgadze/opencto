@@ -36,6 +36,9 @@ type stubProjectStore struct {
 	forgetRequests       *[]domain.MemoryForgetRequest
 	conversationsByScope map[storage.ConversationScope][]domain.ConversationMessage
 	conversationQueries  *[]storage.ConversationQuery
+	summariesByScope     map[domain.ConversationSummaryScope][]domain.ConversationSummary
+	summaryQueries       *[]storage.ConversationSummaryQuery
+	upsertedSummaries    *[]domain.ConversationSummary
 	upsertedThreads      *[]domain.ConversationThread
 	upsertedConversation *[]domain.ConversationMessage
 }
@@ -64,6 +67,19 @@ func (e stubMemoryExtractor) ExtractMemories(_ context.Context, input agent.Memo
 		*e.input = input
 	}
 	return e.output, e.err
+}
+
+type stubConversationCompressor struct {
+	output agent.ConversationCompressionOutput
+	err    error
+	input  *agent.ConversationCompressionInput
+}
+
+func (c stubConversationCompressor) CompressConversation(_ context.Context, input agent.ConversationCompressionInput) (agent.ConversationCompressionOutput, error) {
+	if c.input != nil {
+		*c.input = input
+	}
+	return c.output, c.err
 }
 
 type fakeEmbedder struct {
@@ -179,11 +195,42 @@ func (s stubProjectStore) ListConversationMessages(_ context.Context, query stor
 	if len(source) == 0 {
 		return nil, nil
 	}
+	filtered := make([]domain.ConversationMessage, 0, len(source))
+	for _, message := range source {
+		if !query.AfterCreatedAt.IsZero() {
+			if message.CreatedAt.Before(query.AfterCreatedAt) || (message.CreatedAt.Equal(query.AfterCreatedAt) && message.ID <= query.AfterID) {
+				continue
+			}
+		}
+		filtered = append(filtered, message)
+	}
 	limit := storage.DefaultConversationHistoryLimit(query.Limit)
-	if limit > len(source) {
+	if limit > len(filtered) {
+		limit = len(filtered)
+	}
+	return append([]domain.ConversationMessage(nil), filtered[:limit]...), nil
+}
+
+func (s stubProjectStore) UpsertConversationSummary(_ context.Context, summary domain.ConversationSummary) error {
+	if s.upsertedSummaries != nil {
+		*s.upsertedSummaries = append(*s.upsertedSummaries, summary)
+	}
+	return nil
+}
+
+func (s stubProjectStore) ListConversationSummaries(_ context.Context, query storage.ConversationSummaryQuery) ([]domain.ConversationSummary, error) {
+	if s.summaryQueries != nil {
+		*s.summaryQueries = append(*s.summaryQueries, query)
+	}
+	source := s.summariesByScope[query.Scope]
+	if len(source) == 0 {
+		return nil, nil
+	}
+	limit := query.Limit
+	if limit <= 0 || limit > len(source) {
 		limit = len(source)
 	}
-	return append([]domain.ConversationMessage(nil), source[:limit]...), nil
+	return append([]domain.ConversationSummary(nil), source[:limit]...), nil
 }
 
 func (s stubProjectStore) RememberMemory(_ context.Context, memory domain.Memory) (domain.Memory, error) {
@@ -1380,6 +1427,56 @@ func TestLoadContextIncludesScopedConversationHistory(t *testing.T) {
 	}
 }
 
+func TestLoadContextIncludesThreadAndFallbackConversationSummaries(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	queries := []storage.ConversationSummaryQuery{}
+	activities := Activities{
+		Store: stubProjectStore{
+			summariesByScope: map[domain.ConversationSummaryScope][]domain.ConversationSummary{
+				domain.ConversationSummaryScopeThread: {
+					{ID: "thread-summary", ProjectID: "default", Scope: domain.ConversationSummaryScopeThread, Summary: "thread", ToCreatedAt: base},
+				},
+				domain.ConversationSummaryScopeChannel: {
+					{ID: "channel-summary", ProjectID: "default", Scope: domain.ConversationSummaryScopeChannel, Summary: "channel", ToCreatedAt: base.Add(time.Second)},
+				},
+				domain.ConversationSummaryScopeProject: {
+					{ID: "project-summary", ProjectID: "default", Scope: domain.ConversationSummaryScopeProject, Summary: "project", ToCreatedAt: base.Add(2 * time.Second)},
+				},
+			},
+			summaryQueries: &queries,
+		},
+		ConversationEnabled:        true,
+		ConversationSummaryEnabled: true,
+	}
+
+	loaded, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:          "event-1",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-a",
+		ThreadID:    "thread-a",
+		Body:        "continue",
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	got := make([]string, 0, len(loaded.ConversationSummaries))
+	for _, summary := range loaded.ConversationSummaries {
+		got = append(got, summary.ID)
+	}
+	if strings.Join(got, ",") != "thread-summary,channel-summary,project-summary" {
+		t.Fatalf("unexpected summaries: %#v", loaded.ConversationSummaries)
+	}
+	if len(queries) != 3 ||
+		queries[0].Scope != domain.ConversationSummaryScopeThread ||
+		queries[1].Scope != domain.ConversationSummaryScopeChannel ||
+		queries[2].Scope != domain.ConversationSummaryScopeProject {
+		t.Fatalf("unexpected summary queries: %#v", queries)
+	}
+}
+
 func TestLoadContextUsesProjectConversationOnlyWithoutChannel(t *testing.T) {
 	t.Parallel()
 
@@ -1729,6 +1826,64 @@ func TestNextActionPassesEventChannelToEngine(t *testing.T) {
 	}
 	if input.ChannelType != domain.ChannelTypeLocal {
 		t.Fatalf("expected local channel, got %q", input.ChannelType)
+	}
+}
+
+func TestCompressConversationSummarizesOlderMessages(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	var messages []domain.ConversationMessage
+	for i := 0; i < 6; i++ {
+		messages = append(messages, domain.ConversationMessage{
+			ID:          fmt.Sprintf("message-%d", i),
+			ProjectID:   "default",
+			Role:        domain.ConversationRoleUser,
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-a",
+			Body:        strings.Repeat("context ", 30),
+			CreatedAt:   base.Add(time.Duration(i) * time.Minute),
+		})
+	}
+	upserted := []domain.ConversationSummary{}
+	compressorInput := agent.ConversationCompressionInput{}
+	activities := Activities{
+		Store: stubProjectStore{
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeChannel: messages,
+			},
+			upsertedSummaries: &upserted,
+		},
+		ConversationCompressor:      stubConversationCompressor{output: agent.ConversationCompressionOutput{Summary: "Older channel context."}, input: &compressorInput},
+		ConversationEnabled:         true,
+		ConversationSummaryEnabled:  true,
+		ConversationSummaryTrigger:  100,
+		ConversationSummaryMaxChars: 1000,
+		ConversationSummaryRecent:   2,
+	}
+
+	result, err := activities.CompressConversation(context.Background(), CompressConversationRequest{
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "default",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("compress conversation: %v", err)
+	}
+	if !result.Summarized || result.MessageCount != 4 {
+		t.Fatalf("unexpected compression result: %#v", result)
+	}
+	if len(compressorInput.Messages) != 4 || compressorInput.Messages[3].ID != "message-3" {
+		t.Fatalf("expected compressor to leave recent messages raw, got %#v", compressorInput.Messages)
+	}
+	if len(upserted) != 1 || upserted[0].Summary != "Older channel context." || upserted[0].ToMessageID != "message-3" {
+		t.Fatalf("unexpected upserted summary: %#v", upserted)
+	}
+	if upserted[0].Scope != domain.ConversationSummaryScopeChannel || upserted[0].ChannelID != "channel-a" {
+		t.Fatalf("unexpected summary scope: %#v", upserted[0])
 	}
 }
 

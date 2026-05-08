@@ -288,6 +288,33 @@ type ConversationThread struct {
 	LastMessageAt time.Time   `json:"last_message_at"`
 }
 
+type ConversationSummaryScope string
+
+const (
+	ConversationSummaryScopeProject ConversationSummaryScope = "project"
+	ConversationSummaryScopeChannel ConversationSummaryScope = "channel"
+	ConversationSummaryScopeThread  ConversationSummaryScope = "thread"
+)
+
+type ConversationSummary struct {
+	ID            string                   `json:"id"`
+	ProjectID     string                   `json:"project_id"`
+	ChannelType   ChannelType              `json:"channel_type,omitempty"`
+	ChannelID     string                   `json:"channel_id,omitempty"`
+	ThreadID      string                   `json:"thread_id,omitempty"`
+	Scope         ConversationSummaryScope `json:"scope"`
+	Summary       string                   `json:"summary"`
+	FromMessageID string                   `json:"from_message_id"`
+	ToMessageID   string                   `json:"to_message_id"`
+	FromCreatedAt time.Time                `json:"from_created_at"`
+	ToCreatedAt   time.Time                `json:"to_created_at"`
+	MessageCount  int                      `json:"message_count"`
+	SourceChars   int                      `json:"source_chars"`
+	Metadata      Metadata                 `json:"metadata,omitempty"`
+	CreatedAt     time.Time                `json:"created_at"`
+	UpdatedAt     time.Time                `json:"updated_at"`
+}
+
 type MemoryScope string
 
 const (

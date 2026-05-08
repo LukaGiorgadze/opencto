@@ -69,6 +69,7 @@ type Activities struct {
 	EventEnqueuer               EventEnqueuer
 	MemoryEmbedder              embedding.Embedder
 	MemoryExtractor             agent.MemoryExtractor
+	ConversationCompressor      agent.ConversationCompressor
 	Project                     domain.Project
 	WorkspaceRoot               string
 	OpenCTORoot                 string
@@ -80,6 +81,10 @@ type Activities struct {
 	ConversationEnabled         bool
 	ConversationLimit           int
 	ConversationMaxContextChars int
+	ConversationSummaryEnabled  bool
+	ConversationSummaryTrigger  int
+	ConversationSummaryMaxChars int
+	ConversationSummaryRecent   int
 	ExecTailBytes               int64
 	ExecGrace                   time.Duration
 	HeartbeatGap                time.Duration
@@ -157,6 +162,18 @@ type ExtractMemoryResult struct {
 	Candidates int `json:"candidates"`
 	Remembered int `json:"remembered"`
 	Rejected   int `json:"rejected"`
+}
+
+type CompressConversationRequest struct {
+	Event domain.Event `json:"event"`
+}
+
+type CompressConversationResult struct {
+	Summarized   bool   `json:"summarized"`
+	SummaryID    string `json:"summary_id,omitempty"`
+	Scope        string `json:"scope,omitempty"`
+	MessageCount int    `json:"message_count,omitempty"`
+	SourceChars  int    `json:"source_chars,omitempty"`
 }
 
 type PersistNextActionRequest struct {
@@ -266,11 +283,18 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event, conver
 		memories = excludeMemoriesFromSource(memories, event.ID)
 	}
 	var conversation []domain.ConversationMessage
+	var conversationSummaries []domain.ConversationSummary
 	if a.Store != nil && a.ConversationEnabled {
 		var err error
 		conversation, err = a.loadConversationHistory(ctx, conversationEvent)
 		if err != nil {
 			return agent.Context{}, err
+		}
+		if a.ConversationSummaryEnabled {
+			conversationSummaries, err = a.loadConversationSummaries(ctx, conversationEvent)
+			if err != nil {
+				return agent.Context{}, err
+			}
 		}
 	}
 
@@ -288,6 +312,7 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event, conver
 		ActiveWorkItems:             activeWorkItems,
 		Memory:                      memories,
 		Conversation:                conversation,
+		ConversationSummaries:       conversationSummaries,
 		ConversationMaxContextChars: storage.DefaultConversationMaxContextChars(a.ConversationMaxContextChars),
 		Skills:                      availableSkills,
 	}, nil
@@ -305,17 +330,12 @@ func (a *Activities) loadConversationHistory(ctx context.Context, event domain.E
 	if limit > 50 {
 		limit = 50
 	}
-	roles := []domain.ConversationRole{
-		domain.ConversationRoleUser,
-		domain.ConversationRoleAssistant,
-		domain.ConversationRoleTool,
-	}
 	base := storage.ConversationQuery{
 		ProjectID:      strings.TrimSpace(event.ProjectID),
 		ChannelType:    event.ChannelType,
 		ChannelID:      strings.TrimSpace(event.ChannelID),
 		ThreadID:       strings.TrimSpace(event.ThreadID),
-		Roles:          roles,
+		Roles:          conversationRoles(),
 		Limit:          limit,
 		ExcludeEventID: strings.TrimSpace(event.ID),
 		ExcludeControl: true,
@@ -371,6 +391,55 @@ func sortConversationMessages(messages []domain.ConversationMessage) {
 		}
 		return left.Before(right)
 	})
+}
+
+func (a *Activities) loadConversationSummaries(ctx context.Context, event domain.Event) ([]domain.ConversationSummary, error) {
+	base := storage.ConversationSummaryQuery{
+		ProjectID:   strings.TrimSpace(event.ProjectID),
+		ChannelType: event.ChannelType,
+		ChannelID:   strings.TrimSpace(event.ChannelID),
+		ThreadID:    strings.TrimSpace(event.ThreadID),
+	}
+	type summaryScopeQuery struct {
+		scope domain.ConversationSummaryScope
+		limit int
+	}
+	var scopes []summaryScopeQuery
+	if strings.TrimSpace(event.ChannelID) != "" {
+		if strings.TrimSpace(event.ThreadID) != "" {
+			scopes = append(scopes,
+				summaryScopeQuery{scope: domain.ConversationSummaryScopeThread, limit: 3},
+				summaryScopeQuery{scope: domain.ConversationSummaryScopeChannel, limit: 1},
+				summaryScopeQuery{scope: domain.ConversationSummaryScopeProject, limit: 1},
+			)
+		} else {
+			scopes = append(scopes,
+				summaryScopeQuery{scope: domain.ConversationSummaryScopeChannel, limit: 3},
+				summaryScopeQuery{scope: domain.ConversationSummaryScopeProject, limit: 1},
+			)
+		}
+	} else {
+		scopes = append(scopes, summaryScopeQuery{scope: domain.ConversationSummaryScopeProject, limit: 3})
+	}
+	var summaries []domain.ConversationSummary
+	seen := map[string]bool{}
+	for _, item := range scopes {
+		query := base
+		query.Scope = item.scope
+		query.Limit = item.limit
+		found, err := a.Store.ListConversationSummaries(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		for _, summary := range found {
+			if strings.TrimSpace(summary.ID) == "" || seen[summary.ID] {
+				continue
+			}
+			seen[summary.ID] = true
+			summaries = append(summaries, summary)
+		}
+	}
+	return summaries, nil
 }
 
 func conversationUserMetadata(event domain.Event) domain.Metadata {
@@ -1005,6 +1074,150 @@ func (a *Activities) ExtractMemory(ctx context.Context, request ExtractMemoryReq
 		slog.Int("rejected", result.Rejected),
 	)
 	return result, nil
+}
+
+func (a *Activities) CompressConversation(ctx context.Context, request CompressConversationRequest) (CompressConversationResult, error) {
+	if a.Store == nil || !a.ConversationEnabled || !a.ConversationSummaryEnabled || a.ConversationCompressor == nil {
+		return CompressConversationResult{}, nil
+	}
+	event := inferDiscordThreadContext(request.Event)
+	if strings.TrimSpace(event.ProjectID) == "" {
+		event.ProjectID = strings.TrimSpace(a.Project.ID)
+	}
+	if strings.TrimSpace(event.ProjectID) == "" {
+		return CompressConversationResult{}, nil
+	}
+	summaryScope, conversationScope := conversationCompressionScopes(event)
+	query := storage.ConversationSummaryQuery{
+		ProjectID:   strings.TrimSpace(event.ProjectID),
+		ChannelType: event.ChannelType,
+		ChannelID:   strings.TrimSpace(event.ChannelID),
+		ThreadID:    strings.TrimSpace(event.ThreadID),
+		Scope:       summaryScope,
+		Limit:       1,
+	}
+	latest, err := a.Store.ListConversationSummaries(ctx, query)
+	if err != nil {
+		return CompressConversationResult{}, err
+	}
+	var afterCreatedAt time.Time
+	var afterID string
+	if len(latest) > 0 {
+		last := latest[len(latest)-1]
+		afterCreatedAt = last.ToCreatedAt
+		afterID = last.ToMessageID
+	}
+	messages, err := a.Store.ListConversationMessages(ctx, storage.ConversationQuery{
+		ProjectID:      strings.TrimSpace(event.ProjectID),
+		ChannelType:    event.ChannelType,
+		ChannelID:      strings.TrimSpace(event.ChannelID),
+		ThreadID:       strings.TrimSpace(event.ThreadID),
+		Scope:          conversationScope,
+		Roles:          conversationRoles(),
+		Limit:          500,
+		AfterCreatedAt: afterCreatedAt,
+		AfterID:        afterID,
+		OldestFirst:    true,
+		ExcludeControl: true,
+	})
+	if err != nil {
+		return CompressConversationResult{}, err
+	}
+	recent := storage.DefaultConversationSummaryRecentMessages(a.ConversationSummaryRecent)
+	if len(messages) <= recent {
+		return CompressConversationResult{Scope: string(summaryScope), MessageCount: len(messages)}, nil
+	}
+	candidates := messages[:len(messages)-recent]
+	sourceChars := conversationSourceChars(candidates)
+	trigger := storage.DefaultConversationSummaryTriggerChars(a.ConversationSummaryTrigger)
+	if sourceChars < trigger {
+		return CompressConversationResult{Scope: string(summaryScope), MessageCount: len(candidates), SourceChars: sourceChars}, nil
+	}
+	output, err := a.ConversationCompressor.CompressConversation(ctx, agent.ConversationCompressionInput{
+		ProjectID:       strings.TrimSpace(event.ProjectID),
+		Scope:           summaryScope,
+		Messages:        candidates,
+		MaxSummaryChars: storage.DefaultConversationSummaryMaxChars(a.ConversationSummaryMaxChars),
+	})
+	if err != nil {
+		return CompressConversationResult{}, err
+	}
+	summaryText := strings.TrimSpace(output.Summary)
+	if summaryText == "" {
+		return CompressConversationResult{Scope: string(summaryScope), MessageCount: len(candidates), SourceChars: sourceChars}, nil
+	}
+	first := candidates[0]
+	last := candidates[len(candidates)-1]
+	now := time.Now().UTC()
+	summary := domain.ConversationSummary{
+		ID:            stableActivityID("conversation-summary", event.ProjectID, string(summaryScope), string(event.ChannelType), event.ChannelID, event.ThreadID, first.ID, last.ID),
+		ProjectID:     event.ProjectID,
+		ChannelType:   event.ChannelType,
+		ChannelID:     strings.TrimSpace(event.ChannelID),
+		ThreadID:      strings.TrimSpace(event.ThreadID),
+		Scope:         summaryScope,
+		Summary:       summaryText,
+		FromMessageID: strings.TrimSpace(first.ID),
+		ToMessageID:   strings.TrimSpace(last.ID),
+		FromCreatedAt: first.CreatedAt,
+		ToCreatedAt:   last.CreatedAt,
+		MessageCount:  len(candidates),
+		SourceChars:   sourceChars,
+		Metadata:      domain.Metadata{"source": "conversation_compressor"},
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := a.Store.UpsertConversationSummary(ctx, summary); err != nil {
+		return CompressConversationResult{}, err
+	}
+	a.logActivityStep("CompressConversation", "done",
+		slog.String("project_id", event.ProjectID),
+		slog.String("event_id", event.ID),
+		slog.String("scope", string(summaryScope)),
+		slog.String("summary_id", summary.ID),
+		slog.Int("message_count", len(candidates)),
+		slog.Int("source_chars", sourceChars),
+	)
+	return CompressConversationResult{
+		Summarized:   true,
+		SummaryID:    summary.ID,
+		Scope:        string(summaryScope),
+		MessageCount: len(candidates),
+		SourceChars:  sourceChars,
+	}, nil
+}
+
+func conversationCompressionScopes(event domain.Event) (domain.ConversationSummaryScope, storage.ConversationScope) {
+	if strings.TrimSpace(event.ChannelID) != "" {
+		if strings.TrimSpace(event.ThreadID) != "" {
+			return domain.ConversationSummaryScopeThread, storage.ConversationScopeThread
+		}
+		return domain.ConversationSummaryScopeChannel, storage.ConversationScopeChannel
+	}
+	return domain.ConversationSummaryScopeProject, storage.ConversationScopeProject
+}
+
+func conversationRoles() []domain.ConversationRole {
+	return []domain.ConversationRole{
+		domain.ConversationRoleUser,
+		domain.ConversationRoleAssistant,
+		domain.ConversationRoleTool,
+	}
+}
+
+func conversationSourceChars(messages []domain.ConversationMessage) int {
+	total := 0
+	for _, message := range messages {
+		total += len(strings.TrimSpace(message.Body))
+		if tool := strings.TrimSpace(message.Metadata["tool"]); tool != "" {
+			total += len(tool)
+		}
+		if status := strings.TrimSpace(message.Metadata["status"]); status != "" {
+			total += len(status)
+		}
+		total += len(message.Role)
+	}
+	return total
 }
 
 func (a *Activities) PersistNextAction(ctx context.Context, request PersistNextActionRequest) error {
