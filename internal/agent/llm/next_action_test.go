@@ -398,11 +398,11 @@ func TestBuildNextActionMessagesIncludesMemoryCrudPolicy(t *testing.T) {
 	}
 	systemPrompt := messageText(messages[0])
 	for _, expected := range []string{
-		"Search memory before writing",
-		"Use `MemoryUpdate` when an existing memory should change",
-		"Use `MemoryRemember` for new durable facts",
-		"Use `MemoryForget` only when the user asks to forget/delete memory",
-		"Use `MemoryList` for read-only memory inspection",
+		"Search memory before proposing changes",
+		"Use `memory_propose_update` when an existing memory should change",
+		"Use `memory_propose_add` for new durable facts",
+		"Use `memory_propose_forget` only when the user asks to forget/delete memory",
+		"Use `memory_list` for read-only memory inspection",
 		"Store durable preferences even when the user does not literally say \"remember\"",
 		"Prefer project scope for current repo",
 		"Prefer user scope for identity",
@@ -868,14 +868,14 @@ func TestToolChoicePreservesCommandAndArgsForDirectExecution(t *testing.T) {
 	}
 }
 
-func TestToolChoiceCapturesMemoryUpdateInput(t *testing.T) {
+func TestToolChoiceCapturesMemoryProposeUpdateInput(t *testing.T) {
 	t.Parallel()
 
 	choice, err := toolChoiceFromToolCall(llms.ToolCall{
 		ID:   "toolu_memory_update",
 		Type: "function",
 		FunctionCall: &llms.FunctionCall{
-			Name:      memorytool.UpdateToolName,
+			Name:      memorytool.ProposeUpdateToolName,
 			Arguments: `{"memory_id":"memory-123","content":"","kind":"","tags_mode":"keep","tags":[],"confidence_mode":"set","confidence":0,"pinned_mode":"set","pinned":false,"reason":"lower confidence and unpin"}`,
 		},
 	}, agent.ToolSelectionInput{
@@ -884,10 +884,10 @@ func TestToolChoiceCapturesMemoryUpdateInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tool choice: %v", err)
 	}
-	if choice.Type != domain.ToolTypeMemoryUpdate {
+	if choice.Type != domain.ToolTypeMemoryProposeUpdate {
 		t.Fatalf("expected memory update type, got %q", choice.Type)
 	}
-	if choice.Intent != "update memory memory-123" {
+	if choice.Intent != "propose memory update memory-123" {
 		t.Fatalf("unexpected memory update summary: %q", choice.Intent)
 	}
 	if choice.RunMode != domain.ToolRunModeWaitForExit || choice.Idempotency != domain.ToolIdempotencyNonIdempotent || choice.ProcessScope != domain.ProcessScopeStopOnFinish {

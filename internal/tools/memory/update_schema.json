@@ -5,7 +5,7 @@
     "properties": {
         "memory_id": {
             "type": "string",
-            "description": "Exact memory id to update. Search memory first if unknown; update existing durable memory instead of forgetting and recreating it."
+            "description": "Exact memory id to propose updating. Search memory first if unknown; update existing durable memory instead of forgetting and recreating it. The backend validates, saves, and re-embeds accepted proposals."
         },
         "content": {
             "type": "string",
@@ -49,7 +49,7 @@
         },
         "reason": {
             "type": "string",
-            "description": "Why this memory is being updated."
+            "description": "Why this memory should be updated."
         }
     },
     "additionalProperties": false

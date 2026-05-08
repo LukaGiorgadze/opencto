@@ -5,7 +5,7 @@
     "properties": {
         "query": {
             "type": "string",
-            "description": "Search query for remembered project, user, or global context. Search before writing memory when a related memory may already exist."
+            "description": "Search query for remembered project, user, or global context. Search before proposing memory changes when a related memory may already exist."
         },
         "scope": {
             "type": "string",

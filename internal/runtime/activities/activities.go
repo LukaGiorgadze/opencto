@@ -65,12 +65,14 @@ type Activities struct {
 	Reporter                    Reporter
 	EventEnqueuer               EventEnqueuer
 	MemoryEmbedder              embedding.Embedder
+	MemoryExtractor             agent.MemoryExtractor
 	Project                     domain.Project
 	WorkspaceRoot               string
 	OpenCTORoot                 string
 	SkillsRoot                  string
 	StateDir                    string
 	MemoryEnabled               bool
+	MemoryAutoExtractEnabled    bool
 	MemoryLimit                 int
 	ConversationEnabled         bool
 	ConversationLimit           int
@@ -134,6 +136,16 @@ type ResponseSessionRequest struct {
 
 type PersistEventRequest struct {
 	Event domain.Event `json:"event"`
+}
+
+type ExtractMemoryRequest struct {
+	Event domain.Event `json:"event"`
+}
+
+type ExtractMemoryResult struct {
+	Candidates int `json:"candidates"`
+	Remembered int `json:"remembered"`
+	Rejected   int `json:"rejected"`
 }
 
 type PersistNextActionRequest struct {
@@ -380,6 +392,44 @@ func memoryMetadata(event domain.Event, reason string) domain.Metadata {
 	return metadata
 }
 
+func shouldSkipMemoryExtraction(event domain.Event) bool {
+	if event.Kind != "" && event.Kind != domain.EventKindMessage {
+		return true
+	}
+	if strings.TrimSpace(event.Metadata[domain.MetadataKeyControl]) != "" {
+		return true
+	}
+	return strings.TrimSpace(event.Body) == ""
+}
+
+func autoExtractedMemory(event domain.Event, userID string, candidate agent.MemoryCandidate) (domain.Memory, bool) {
+	content := strings.TrimSpace(candidate.Content)
+	if content == "" {
+		return domain.Memory{}, false
+	}
+	scope := candidate.Scope
+	switch scope {
+	case domain.MemoryScopeGlobal, domain.MemoryScopeProject, domain.MemoryScopeUser:
+	default:
+		return domain.Memory{}, false
+	}
+	return domain.Memory{
+		ID:         stableActivityID("auto-memory", event.ProjectID, userID, string(scope), content),
+		ProjectID:  strings.TrimSpace(event.ProjectID),
+		UserID:     strings.TrimSpace(userID),
+		Scope:      scope,
+		Kind:       strings.TrimSpace(candidate.Kind),
+		Content:    content,
+		Tags:       cleanMemoryTags(candidate.Tags),
+		Source:     "auto_memory",
+		SourceID:   strings.TrimSpace(event.ID),
+		Actor:      strings.TrimSpace(event.ActorName),
+		Confidence: candidate.Confidence,
+		Pinned:     candidate.Pinned,
+		Metadata:   memoryMetadata(event, candidate.Reason),
+	}, true
+}
+
 func (a *Activities) activityLogger() *slog.Logger {
 	if a.Logger != nil {
 		return a.Logger
@@ -592,6 +642,91 @@ func (a *Activities) PersistEvent(ctx context.Context, request PersistEventReque
 		slog.Bool("changed", result.Changed),
 	)
 	return nil
+}
+
+func (a *Activities) ExtractMemory(ctx context.Context, request ExtractMemoryRequest) (ExtractMemoryResult, error) {
+	if a.Store == nil || !a.MemoryEnabled || !a.MemoryAutoExtractEnabled || a.MemoryExtractor == nil {
+		return ExtractMemoryResult{}, nil
+	}
+	event := request.Event
+	if shouldSkipMemoryExtraction(event) {
+		return ExtractMemoryResult{}, nil
+	}
+	if strings.TrimSpace(event.ProjectID) == "" {
+		event.ProjectID = strings.TrimSpace(a.Project.ID)
+	}
+	if strings.TrimSpace(event.ProjectID) == "" || strings.TrimSpace(event.Body) == "" {
+		return ExtractMemoryResult{}, nil
+	}
+
+	userID := eventUserID(event)
+	existing, err := a.searchMemories(ctx, domain.MemorySearchRequest{
+		ProjectID:      event.ProjectID,
+		UserID:         userID,
+		Query:          strings.TrimSpace(event.Body),
+		Scopes:         []domain.MemoryScope{domain.MemoryScopeGlobal, domain.MemoryScopeProject, domain.MemoryScopeUser},
+		Limit:          5,
+		FallbackRecent: true,
+	})
+	if err != nil {
+		a.logActivityStep("ExtractMemory", "search_failed",
+			slog.String("project_id", event.ProjectID),
+			slog.String("event_id", event.ID),
+			slog.String("error", err.Error()),
+		)
+		existing = nil
+	}
+
+	output, err := a.MemoryExtractor.ExtractMemories(ctx, agent.MemoryExtractionInput{
+		ProjectID:        event.ProjectID,
+		Event:            event,
+		ExistingMemories: existing,
+	})
+	if err != nil {
+		a.logActivityStep("ExtractMemory", "extract_failed",
+			slog.String("project_id", event.ProjectID),
+			slog.String("event_id", event.ID),
+			slog.String("error", err.Error()),
+		)
+		return ExtractMemoryResult{}, nil
+	}
+
+	result := ExtractMemoryResult{Candidates: len(output.Candidates)}
+	for _, candidate := range output.Candidates {
+		memory, ok := autoExtractedMemory(event, userID, candidate)
+		if !ok {
+			result.Rejected++
+			continue
+		}
+		remembered, err := a.Store.RememberMemory(ctx, memory)
+		if err != nil {
+			if errors.Is(err, storage.ErrMemoryPolicyRejected) {
+				result.Rejected++
+				a.logActivityStep("ExtractMemory", "policy_rejected",
+					slog.String("project_id", event.ProjectID),
+					slog.String("event_id", event.ID),
+					slog.String("reason", memoryPolicyRejectionReason(err)),
+				)
+				continue
+			}
+			a.logActivityStep("ExtractMemory", "remember_failed",
+				slog.String("project_id", event.ProjectID),
+				slog.String("event_id", event.ID),
+				slog.String("error", err.Error()),
+			)
+			continue
+		}
+		result.Remembered++
+		a.upsertMemoryEmbedding(ctx, remembered)
+	}
+	a.logActivityStep("ExtractMemory", "done",
+		slog.String("project_id", event.ProjectID),
+		slog.String("event_id", event.ID),
+		slog.Int("candidates", result.Candidates),
+		slog.Int("remembered", result.Remembered),
+		slog.Int("rejected", result.Rejected),
+	)
+	return result, nil
 }
 
 func (a *Activities) PersistNextAction(ctx context.Context, request PersistNextActionRequest) error {
@@ -2035,8 +2170,8 @@ type memoryToolRunResult struct {
 
 func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (memoryToolRunResult, error) {
 	switch choice.Type {
-	case domain.ToolTypeMemoryRemember:
-		var req memorytool.RememberRequest
+	case domain.ToolTypeMemoryProposeAdd:
+		var req memorytool.ProposeAddRequest
 		if err := decodeChoiceInput(choice, &req); err != nil {
 			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
 		}
@@ -2070,9 +2205,9 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 			return memoryToolRunResult{}, err
 		}
 		a.upsertMemoryEmbedding(ctx, remembered)
-		payload := mustJSON(memorytool.RememberResult{Memory: remembered})
+		payload := mustJSON(memorytool.ProposeAddResult{Memory: remembered})
 		return memoryToolRunResult{
-			Observation: memoryDetailObservation("Remembered memory.", remembered),
+			Observation: memoryDetailObservation("Accepted memory add proposal.", remembered),
 			Payload:     payload,
 			Metadata: map[string]string{
 				"memory_id": remembered.ID,
@@ -2138,8 +2273,8 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 				"tags":         strings.Join(tags, ", "),
 			},
 		}, nil
-	case domain.ToolTypeMemoryUpdate:
-		var req memorytool.UpdateRequest
+	case domain.ToolTypeMemoryProposeUpdate:
+		var req memorytool.ProposeUpdateRequest
 		if err := decodeChoiceInput(choice, &req); err != nil {
 			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
 		}
@@ -2207,7 +2342,7 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 			}
 			return memoryToolRunResult{}, err
 		}
-		payload := mustJSON(memorytool.UpdateResult{Memory: result.Memory, Updated: result.Updated})
+		payload := mustJSON(memorytool.ProposeUpdateResult{Memory: result.Memory, Updated: result.Updated})
 		observation := "Memory not found.\nmemory_id: " + memoryID
 		metadata := map[string]string{
 			"memory_id": memoryID,
@@ -2217,7 +2352,7 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 			if memoryUpdateAffectsEmbedding(update) {
 				a.upsertMemoryEmbedding(ctx, result.Memory)
 			}
-			observation = memoryDetailObservation("Updated memory.", result.Memory)
+			observation = memoryDetailObservation("Accepted memory update proposal.", result.Memory)
 			metadata["scope"] = string(result.Memory.Scope)
 			metadata["tags"] = strings.Join(result.Memory.Tags, ", ")
 		}
@@ -2226,8 +2361,8 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 			Payload:     payload,
 			Metadata:    metadata,
 		}, nil
-	case domain.ToolTypeMemoryForget:
-		var req memorytool.ForgetRequest
+	case domain.ToolTypeMemoryProposeForget:
+		var req memorytool.ProposeForgetRequest
 		if err := decodeChoiceInput(choice, &req); err != nil {
 			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
 		}
@@ -2255,7 +2390,7 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 		deletedIDs := cleanMemoryIDs(result.DeletedMemoryIDs)
 		notFoundIDs := missingMemoryIDs(memoryIDs, deletedIDs)
 		deleted := len(deletedIDs) > 0
-		payload := mustJSON(memorytool.ForgetResult{
+		payload := mustJSON(memorytool.ProposeForgetResult{
 			MemoryIDs:         memoryIDs,
 			Deleted:           deleted,
 			DeletedCount:      len(deletedIDs),

@@ -52,6 +52,19 @@ func (e stubEngine) NextAction(_ context.Context, input agent.NextActionInput) (
 	return e.output, e.err
 }
 
+type stubMemoryExtractor struct {
+	output agent.MemoryExtractionOutput
+	err    error
+	input  *agent.MemoryExtractionInput
+}
+
+func (e stubMemoryExtractor) ExtractMemories(_ context.Context, input agent.MemoryExtractionInput) (agent.MemoryExtractionOutput, error) {
+	if e.input != nil {
+		*e.input = input
+	}
+	return e.output, e.err
+}
+
 type fakeEmbedder struct {
 	vector []float32
 	inputs *[]string
@@ -253,6 +266,140 @@ func TestPersistEventCarriesControlMetadataToConversationMessage(t *testing.T) {
 	}
 	if upserted[0].ChannelID != "channel-1" || upserted[0].ChannelType != domain.ChannelTypeDiscord {
 		t.Fatalf("expected channel scope to be carried, got %#v", upserted[0])
+	}
+}
+
+func TestExtractMemoryStoresAutoCandidate(t *testing.T) {
+	t.Parallel()
+
+	remembered := []domain.Memory{}
+	searchRequests := []domain.MemorySearchRequest{}
+	var extractorInput agent.MemoryExtractionInput
+	activities := Activities{
+		Store: stubProjectStore{
+			memories: []domain.Memory{{
+				ID:      "memory-existing",
+				Scope:   domain.MemoryScopeProject,
+				Kind:    "instruction",
+				Content: "Existing project instruction.",
+			}},
+			remembered:     &remembered,
+			searchRequests: &searchRequests,
+		},
+		MemoryEnabled:            true,
+		MemoryAutoExtractEnabled: true,
+		MemoryExtractor: stubMemoryExtractor{
+			input: &extractorInput,
+			output: agent.MemoryExtractionOutput{Candidates: []agent.MemoryCandidate{{
+				Scope:      domain.MemoryScopeUser,
+				Kind:       "preference",
+				Content:    "The user prefers short implementation plans before code changes.",
+				Tags:       []string{"planning"},
+				Confidence: 0.8,
+				Reason:     "The user gave a durable collaboration preference.",
+			}}},
+		},
+	}
+
+	result, err := activities.ExtractMemory(context.Background(), ExtractMemoryRequest{
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "project-1",
+			Kind:        domain.EventKindMessage,
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			ActorID:     "actor-1",
+			ActorName:   "Luka",
+			Body:        "before coding, give me a short plan",
+		},
+	})
+	if err != nil {
+		t.Fatalf("extract memory: %v", err)
+	}
+	if result.Candidates != 1 || result.Remembered != 1 || result.Rejected != 0 {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if len(searchRequests) != 1 {
+		t.Fatalf("expected one memory search request, got %#v", searchRequests)
+	}
+	if searchRequests[0].UserID != "discord:actor-1" {
+		t.Fatalf("expected discord user id in search, got %#v", searchRequests[0])
+	}
+	if len(extractorInput.ExistingMemories) != 1 {
+		t.Fatalf("expected existing memories to be passed to extractor, got %#v", extractorInput.ExistingMemories)
+	}
+	if len(remembered) != 1 {
+		t.Fatalf("expected remembered memory, got %#v", remembered)
+	}
+	memory := remembered[0]
+	if memory.Scope != domain.MemoryScopeUser || memory.UserID != "discord:actor-1" || memory.Source != "auto_memory" || memory.SourceID != "event-1" {
+		t.Fatalf("unexpected remembered memory: %#v", memory)
+	}
+	if memory.Metadata["reason"] != "The user gave a durable collaboration preference." || memory.Metadata["actor_name"] != "Luka" {
+		t.Fatalf("unexpected memory metadata: %#v", memory.Metadata)
+	}
+}
+
+func TestExtractMemorySkipsControlMessages(t *testing.T) {
+	t.Parallel()
+
+	var extractorInput agent.MemoryExtractionInput
+	activities := Activities{
+		Store:                    stubProjectStore{},
+		MemoryEnabled:            true,
+		MemoryAutoExtractEnabled: true,
+		MemoryExtractor:          stubMemoryExtractor{input: &extractorInput},
+	}
+	result, err := activities.ExtractMemory(context.Background(), ExtractMemoryRequest{
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "project-1",
+			Kind:      domain.EventKindMessage,
+			Body:      "cancel",
+			Metadata:  domain.Metadata{domain.MetadataKeyControl: "cancel"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("extract memory: %v", err)
+	}
+	if result != (ExtractMemoryResult{}) {
+		t.Fatalf("expected empty result, got %#v", result)
+	}
+	if extractorInput.Event.ID != "" {
+		t.Fatalf("expected extractor to be skipped, got %#v", extractorInput)
+	}
+}
+
+func TestExtractMemoryTreatsPolicyRejectionAsNonFatal(t *testing.T) {
+	t.Parallel()
+
+	activities := Activities{
+		Store: stubProjectStore{
+			rememberErr: fmt.Errorf("%w: content appears to describe temporary task state", storage.ErrMemoryPolicyRejected),
+		},
+		MemoryEnabled:            true,
+		MemoryAutoExtractEnabled: true,
+		MemoryExtractor: stubMemoryExtractor{
+			output: agent.MemoryExtractionOutput{Candidates: []agent.MemoryCandidate{{
+				Scope:   domain.MemoryScopeProject,
+				Kind:    "fact",
+				Content: "Use this temporary migration approach today.",
+			}}},
+		},
+	}
+	result, err := activities.ExtractMemory(context.Background(), ExtractMemoryRequest{
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "project-1",
+			Kind:      domain.EventKindMessage,
+			Body:      "use this temporary migration approach today",
+		},
+	})
+	if err != nil {
+		t.Fatalf("extract memory: %v", err)
+	}
+	if result.Candidates != 1 || result.Remembered != 0 || result.Rejected != 1 {
+		t.Fatalf("unexpected result: %#v", result)
 	}
 }
 
@@ -463,7 +610,7 @@ func TestExecuteMemoryToolForgetsByMemoryIDs(t *testing.T) {
 		},
 		ToolChoice: agent.ToolChoice{
 			ToolCallID: "toolu_memory",
-			Type:       domain.ToolTypeMemoryForget,
+			Type:       domain.ToolTypeMemoryProposeForget,
 			Intent:     "forget cleanup memories",
 			Input:      []byte(`{"memory_ids":["memory-1","memory-2","memory-2",""],"tags":[],"scope":"all"}`),
 			Metadata: map[string]string{
@@ -512,7 +659,7 @@ func TestExecuteMemoryToolForgetsByCombinedFilters(t *testing.T) {
 		},
 		ToolChoice: agent.ToolChoice{
 			ToolCallID: "toolu_memory",
-			Type:       domain.ToolTypeMemoryForget,
+			Type:       domain.ToolTypeMemoryProposeForget,
 			Intent:     "forget cleanup memories",
 			Input:      []byte(`{"memory_ids":["memory-1"],"tags":["Cleanup"],"scope":"project"}`),
 			Metadata: map[string]string{
@@ -625,7 +772,7 @@ func TestExecuteMemoryToolUpdatesMemory(t *testing.T) {
 		},
 		ToolChoice: agent.ToolChoice{
 			ToolCallID: "toolu_memory",
-			Type:       domain.ToolTypeMemoryUpdate,
+			Type:       domain.ToolTypeMemoryProposeUpdate,
 			Intent:     "update stale memory",
 			Input:      []byte(`{"memory_id":"memory-1","content":"Use SQLite for durable local state.","kind":"preference","tags_mode":"replace","tags":["SQLite","storage"],"confidence_mode":"set","confidence":0.8,"pinned_mode":"set","pinned":true,"reason":"newer decision"}`),
 			Metadata: map[string]string{
@@ -655,7 +802,7 @@ func TestExecuteMemoryToolUpdatesMemory(t *testing.T) {
 	if request.Pinned == nil || !*request.Pinned {
 		t.Fatalf("unexpected pinned update: %#v", request.Pinned)
 	}
-	if result.Metadata["updated"] != "true" || !strings.Contains(result.Observation, "Updated memory.") {
+	if result.Metadata["updated"] != "true" || !strings.Contains(result.Observation, "Accepted memory update proposal.") {
 		t.Fatalf("unexpected update result: %#v", result)
 	}
 	if !strings.Contains(result.Observation, "memory_id: memory-1") || !strings.Contains(result.Observation, "confidence: 0.80") {
@@ -694,7 +841,7 @@ func TestExecuteMemoryToolUpdatesZeroConfidenceAndUnpins(t *testing.T) {
 		},
 		ToolChoice: agent.ToolChoice{
 			ToolCallID: "toolu_memory",
-			Type:       domain.ToolTypeMemoryUpdate,
+			Type:       domain.ToolTypeMemoryProposeUpdate,
 			Intent:     "lower confidence and unpin",
 			Input:      []byte(`{"memory_id":"memory-1","content":"","kind":"","tags_mode":"keep","tags":[],"confidence_mode":"set","confidence":0,"pinned_mode":"set","pinned":false,"reason":"stale memory"}`),
 			Metadata: map[string]string{
@@ -749,7 +896,7 @@ func TestExecuteMemoryToolRememberUpsertsEmbedding(t *testing.T) {
 		},
 		ToolChoice: agent.ToolChoice{
 			ToolCallID: "toolu_memory",
-			Type:       domain.ToolTypeMemoryRemember,
+			Type:       domain.ToolTypeMemoryProposeAdd,
 			Intent:     "remember storage preference",
 			Input:      []byte(`{"content":"Use SQLite for local state.","scope":"project","kind":"preference","tags":["storage","sqlite"],"confidence":1,"pinned":true,"reason":"user preference"}`),
 			Metadata: map[string]string{
@@ -803,7 +950,7 @@ func TestExecuteMemoryToolReturnsPolicyRejectionObservation(t *testing.T) {
 		Event:      domain.Event{ID: "event-1", ProjectID: "default"},
 		ToolChoice: agent.ToolChoice{
 			ToolCallID: "toolu_memory",
-			Type:       domain.ToolTypeMemoryRemember,
+			Type:       domain.ToolTypeMemoryProposeAdd,
 			Intent:     "remember secret",
 			Input:      []byte(`{"content":"The API key is secret.","scope":"project","kind":"fact","tags":[],"confidence":1,"pinned":false,"reason":"test"}`),
 			Metadata: map[string]string{

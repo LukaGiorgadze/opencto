@@ -23,6 +23,7 @@ func registerTaskWorkflowActivities(env *testsuite.TestWorkflowEnvironment) {
 	env.RegisterActivityWithOptions((&activities.Activities{}).ExecuteTool, activity.RegisterOptions{Name: "Activities.ExecuteTool"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).ExecuteMemoryTool, activity.RegisterOptions{Name: "Activities.ExecuteMemoryTool"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).PersistEvent, activity.RegisterOptions{Name: "Activities.PersistEvent"})
+	env.RegisterActivityWithOptions((&activities.Activities{}).ExtractMemory, activity.RegisterOptions{Name: "Activities.ExtractMemory"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).PersistNextAction, activity.RegisterOptions{Name: "Activities.PersistNextAction"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).PersistToolResult, activity.RegisterOptions{Name: "Activities.PersistToolResult"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).ResponseSession, activity.RegisterOptions{Name: "Activities.ResponseSession"})
@@ -228,8 +229,8 @@ func TestTaskWorkflowRoutesMemoryToolsToMemoryActivity(t *testing.T) {
 	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "remember this"}
 	choice := agent.ToolChoice{
 		ToolCallID: "toolu_memory",
-		Type:       domain.ToolTypeMemoryRemember,
-		Intent:     "remember preference",
+		Type:       domain.ToolTypeMemoryProposeAdd,
+		Intent:     "propose memory add preference",
 		Input:      []byte(`{"content":"Use SQLite for local storage.","scope":"project","kind":"decision","tags":["storage"],"confidence":1,"pinned":false,"reason":"user preference"}`),
 		Metadata: map[string]string{
 			"tool_call_id":    "toolu_memory",
@@ -247,16 +248,16 @@ func TestTaskWorkflowRoutesMemoryToolsToMemoryActivity(t *testing.T) {
 		Status:     activities.NextActionStatusTool,
 	}, nil).Once()
 	env.OnActivity("Activities.ExecuteMemoryTool", mock.Anything, mock.MatchedBy(func(request activities.ExecuteToolRequest) bool {
-		return request.ToolChoice.Type == domain.ToolTypeMemoryRemember &&
+		return request.ToolChoice.Type == domain.ToolTypeMemoryProposeAdd &&
 			request.ToolChoice.ToolCallID == "toolu_memory"
 	})).Return(activities.ExecuteToolResult{
 		Cycle:           1,
 		WorkItemID:      "wi-1",
 		ToolCallID:      "toolu_memory",
-		Tool:            domain.ToolTypeMemoryRemember,
+		Tool:            domain.ToolTypeMemoryProposeAdd,
 		Status:          domain.ExecutionStatusSucceeded,
-		RequestedAction: "remember preference",
-		Observation:     "Remembered memory.\nmemory_id: memory-1",
+		RequestedAction: "propose memory add preference",
+		Observation:     "Accepted memory add proposal.\nmemory_id: memory-1",
 		Metadata: map[string]string{
 			"tool_call_id": "toolu_memory",
 			"memory_id":    "memory-1",
@@ -265,7 +266,7 @@ func TestTaskWorkflowRoutesMemoryToolsToMemoryActivity(t *testing.T) {
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
 		return request.ExecutionCycle == 2 &&
 			len(request.LastResults) == 1 &&
-			request.LastResults[0].Tool == domain.ToolTypeMemoryRemember
+			request.LastResults[0].Tool == domain.ToolTypeMemoryProposeAdd
 	})).Return(activities.NextActionResult{
 		Status: activities.NextActionStatusCompleted,
 	}, nil).Once()

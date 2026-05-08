@@ -105,12 +105,12 @@ func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) 
 			summary += " in " + path
 		}
 		return structuredToolChoiceFromInput(definition, call, raw, input, summary), nil
-	case domain.ToolTypeMemoryRemember:
-		var args memorytool.RememberRequest
+	case domain.ToolTypeMemoryProposeAdd:
+		var args memorytool.ProposeAddRequest
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
 			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
 		}
-		return memoryToolChoiceFromInput(definition, call, raw, input, "remember "+strings.TrimSpace(args.Content), domain.ToolIdempotencyNonIdempotent), nil
+		return memoryToolChoiceFromInput(definition, call, raw, input, "propose memory add "+strings.TrimSpace(args.Content), domain.ToolIdempotencyNonIdempotent), nil
 	case domain.ToolTypeMemorySearch:
 		var args memorytool.SearchRequest
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
@@ -123,14 +123,14 @@ func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) 
 			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
 		}
 		return memoryToolChoiceFromInput(definition, call, raw, input, listMemorySummary(args), domain.ToolIdempotencyReadOnly), nil
-	case domain.ToolTypeMemoryUpdate:
-		var args memorytool.UpdateRequest
+	case domain.ToolTypeMemoryProposeUpdate:
+		var args memorytool.ProposeUpdateRequest
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
 			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
 		}
-		return memoryToolChoiceFromInput(definition, call, raw, input, "update memory "+strings.TrimSpace(args.MemoryID), domain.ToolIdempotencyNonIdempotent), nil
-	case domain.ToolTypeMemoryForget:
-		var args memorytool.ForgetRequest
+		return memoryToolChoiceFromInput(definition, call, raw, input, "propose memory update "+strings.TrimSpace(args.MemoryID), domain.ToolIdempotencyNonIdempotent), nil
+	case domain.ToolTypeMemoryProposeForget:
+		var args memorytool.ProposeForgetRequest
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
 			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
 		}
@@ -160,19 +160,19 @@ func memoryToolChoiceFromInput(definition toolregistry.Definition, call llms.Too
 	return choice
 }
 
-func forgetMemorySummary(args memorytool.ForgetRequest) string {
+func forgetMemorySummary(args memorytool.ProposeForgetRequest) string {
 	ids := trimStringList(args.MemoryIDs, 20)
 	if len(ids) > 0 {
-		return "forget memory " + strings.Join(ids, ", ")
+		return "propose memory forget " + strings.Join(ids, ", ")
 	}
 	tags := trimStringList(args.Tags, 20)
 	if len(tags) > 0 {
-		return "forget memory tags " + strings.Join(tags, ", ")
+		return "propose memory forget tags " + strings.Join(tags, ", ")
 	}
 	if scope := strings.TrimSpace(args.Scope); scope != "" {
-		return "forget memory scope " + scope
+		return "propose memory forget scope " + scope
 	}
-	return "forget memory"
+	return "propose memory forget"
 }
 
 func listMemorySummary(args memorytool.ListRequest) string {

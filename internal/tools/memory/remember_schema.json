@@ -5,7 +5,7 @@
     "properties": {
         "content": {
             "type": "string",
-            "description": "New durable memory content to store. Keep it concise and factual; do not store transient task progress, command output, logs, or one-off errors."
+            "description": "New durable memory content to propose. Keep it concise and factual; do not store transient task progress, command output, logs, or one-off errors. The backend validates, dedupes, saves, and embeds accepted proposals."
         },
         "scope": {
             "type": "string",
@@ -35,7 +35,7 @@
         },
         "reason": {
             "type": "string",
-            "description": "Why this should be remembered."
+            "description": "Why this should be remembered and reused later."
         }
     },
     "additionalProperties": false

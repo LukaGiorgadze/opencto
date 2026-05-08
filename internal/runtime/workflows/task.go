@@ -49,6 +49,12 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			MaximumInterval:    30 * time.Second,
 		},
 	}
+	memoryExtractionAO := workflow.ActivityOptions{
+		StartToCloseTimeout: time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 1,
+		},
+	}
 	sessionAO := workflow.ActivityOptions{
 		StartToCloseTimeout: responseSessionMaxDuration,
 		HeartbeatTimeout:    responseSessionHeartbeatGap,
@@ -61,6 +67,7 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 	nextActionCtx := workflow.WithActivityOptions(ctx, nextActionAO)
 	toolCtx := workflow.WithActivityOptions(ctx, toolAO)
 	persistenceCtx := workflow.WithActivityOptions(ctx, persistenceAO)
+	memoryExtractionCtx := workflow.WithActivityOptions(ctx, memoryExtractionAO)
 	sessionCtx := workflow.WithActivityOptions(ctx, sessionAO)
 	session := startResponseSession(ctx, sessionCtx, input.ProjectID, input.Event)
 	defer stopResponseSession(ctx, session)
@@ -77,6 +84,9 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 	if !input.ResumedFromPause {
 		if err := persistEvent(persistenceCtx, activities.PersistEventRequest{Event: input.Event}); err != nil {
 			return TaskWorkflowResult{}, err
+		}
+		if err := extractMemory(memoryExtractionCtx, activities.ExtractMemoryRequest{Event: input.Event}); err != nil {
+			workflow.GetLogger(ctx).Warn("memory extraction failed", "error", err)
 		}
 	}
 
@@ -195,6 +205,10 @@ func persistEvent(ctx workflow.Context, request activities.PersistEventRequest) 
 	return workflow.ExecuteActivity(ctx, "Activities.PersistEvent", request).Get(ctx, nil)
 }
 
+func extractMemory(ctx workflow.Context, request activities.ExtractMemoryRequest) error {
+	return workflow.ExecuteActivity(ctx, "Activities.ExtractMemory", request).Get(ctx, nil)
+}
+
 func persistNextAction(ctx workflow.Context, request activities.PersistNextActionRequest) error {
 	return workflow.ExecuteActivity(ctx, "Activities.PersistNextAction", request).Get(ctx, nil)
 }
@@ -307,7 +321,7 @@ func executeToolStep(ctx workflow.Context, toolCtx workflow.Context, persistence
 
 func isMemoryTool(toolType domain.ToolType) bool {
 	switch toolType {
-	case domain.ToolTypeMemoryRemember, domain.ToolTypeMemorySearch, domain.ToolTypeMemoryList, domain.ToolTypeMemoryUpdate, domain.ToolTypeMemoryForget:
+	case domain.ToolTypeMemoryProposeAdd, domain.ToolTypeMemorySearch, domain.ToolTypeMemoryList, domain.ToolTypeMemoryProposeUpdate, domain.ToolTypeMemoryProposeForget:
 		return true
 	default:
 		return false

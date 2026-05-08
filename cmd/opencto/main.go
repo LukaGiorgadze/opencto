@@ -75,6 +75,7 @@ func main() {
 	var reporter activities.Reporter = local.NewReporter(logger)
 	engine := buildNextActionEngine(cfg, logger)
 	memoryEmbedder := buildMemoryEmbedder(cfg, logger)
+	memoryExtractor := buildMemoryExtractor(cfg, logger)
 
 	if *mode == "worker" || *mode == "serve" {
 		dbPath := storage.DefaultDBPath(cfg.General.WorkspaceRoot)
@@ -140,11 +141,13 @@ func main() {
 			Reporter:                    reporter,
 			EventEnqueuer:               dispatcher,
 			MemoryEmbedder:              memoryEmbedder,
+			MemoryExtractor:             memoryExtractor,
 			Project:                     defaultProject,
 			WorkspaceRoot:               cfg.General.WorkspaceRoot,
 			OpenCTORoot:                 openCTORoot,
 			StateDir:                    cfg.Runtime.StateDir,
 			MemoryEnabled:               cfg.Memory.Enabled,
+			MemoryAutoExtractEnabled:    cfg.Memory.AutoExtractEnabled,
 			MemoryLimit:                 cfg.Memory.AutoContextLimit,
 			ConversationEnabled:         cfg.Conversation.Enabled,
 			ConversationLimit:           cfg.Conversation.HistoryLimit,
@@ -256,4 +259,30 @@ func buildMemoryEmbedder(cfg config.Config, logger *slog.Logger) embedding.Embed
 		slog.String("api_key_source", string(source)),
 	)
 	return embedder
+}
+
+func buildMemoryExtractor(cfg config.Config, logger *slog.Logger) agent.MemoryExtractor {
+	if !cfg.Memory.Enabled || !cfg.Memory.AutoExtractEnabled {
+		return nil
+	}
+	if cfg.LLM.Provider != "" && cfg.LLM.Provider != "openai" {
+		logger.Warn("unsupported memory extraction llm provider configured", slog.String("provider", cfg.LLM.Provider))
+		return nil
+	}
+	apiKey, source, err := agentllm.ResolveOpenAIAPIKey(cfg.LLM)
+	if err != nil {
+		logger.Warn("openai memory extraction api key is not configured", slog.String("error", err.Error()))
+		return nil
+	}
+	extractor, err := agentllm.NewOpenAIMemoryExtractor(apiKey, cfg.LLM.BaseURL, cfg.LLM.ModelFast)
+	if err != nil {
+		logger.Warn("failed to initialize memory extractor", slog.String("error", err.Error()))
+		return nil
+	}
+	logger.Info("memory extractor configured",
+		slog.String("base_url", cfg.LLM.BaseURL),
+		slog.String("model", cfg.LLM.ModelFast),
+		slog.String("api_key_source", string(source)),
+	)
+	return extractor
 }

@@ -79,19 +79,19 @@ const (
 type ToolType string
 
 const (
-	ToolTypeExec           ToolType = "exec"
-	ToolTypeEdit           ToolType = "edit"
-	ToolTypeGlob           ToolType = "glob"
-	ToolTypeGrep           ToolType = "grep"
-	ToolTypeMemoryForget   ToolType = "memory_forget"
-	ToolTypeMemoryList     ToolType = "memory_list"
-	ToolTypeMemoryRemember ToolType = "memory_remember"
-	ToolTypeMemorySearch   ToolType = "memory_search"
-	ToolTypeMemoryUpdate   ToolType = "memory_update"
-	ToolTypeRead           ToolType = "read"
-	ToolTypeSchedule       ToolType = "schedule"
-	ToolTypeSkill          ToolType = "skill"
-	ToolTypeWrite          ToolType = "write"
+	ToolTypeExec                ToolType = "exec"
+	ToolTypeEdit                ToolType = "edit"
+	ToolTypeGlob                ToolType = "glob"
+	ToolTypeGrep                ToolType = "grep"
+	ToolTypeMemoryList          ToolType = "memory_list"
+	ToolTypeMemoryProposeAdd    ToolType = "memory_propose_add"
+	ToolTypeMemoryProposeForget ToolType = "memory_propose_forget"
+	ToolTypeMemoryProposeUpdate ToolType = "memory_propose_update"
+	ToolTypeMemorySearch        ToolType = "memory_search"
+	ToolTypeRead                ToolType = "read"
+	ToolTypeSchedule            ToolType = "schedule"
+	ToolTypeSkill               ToolType = "skill"
+	ToolTypeWrite               ToolType = "write"
 )
 
 type Project struct {

@@ -9,7 +9,7 @@ const (
 	ScopeAll     = "all"
 )
 
-type RememberRequest struct {
+type ProposeAddRequest struct {
 	Content    string   `json:"content"`
 	Scope      string   `json:"scope,omitempty"`
 	Kind       string   `json:"kind,omitempty"`
@@ -19,7 +19,7 @@ type RememberRequest struct {
 	Reason     string   `json:"reason,omitempty"`
 }
 
-type RememberResult struct {
+type ProposeAddResult struct {
 	Memory domain.Memory `json:"memory"`
 }
 
@@ -45,7 +45,7 @@ type ListResult struct {
 	Memories []domain.Memory `json:"memories"`
 }
 
-type UpdateRequest struct {
+type ProposeUpdateRequest struct {
 	MemoryID       string   `json:"memory_id"`
 	Content        string   `json:"content,omitempty"`
 	Kind           string   `json:"kind,omitempty"`
@@ -58,18 +58,18 @@ type UpdateRequest struct {
 	Reason         string   `json:"reason,omitempty"`
 }
 
-type UpdateResult struct {
+type ProposeUpdateResult struct {
 	Memory  domain.Memory `json:"memory"`
 	Updated bool          `json:"updated"`
 }
 
-type ForgetRequest struct {
+type ProposeForgetRequest struct {
 	MemoryIDs []string `json:"memory_ids,omitempty"`
 	Tags      []string `json:"tags,omitempty"`
 	Scope     string   `json:"scope,omitempty"`
 }
 
-type ForgetResult struct {
+type ProposeForgetResult struct {
 	MemoryIDs         []string `json:"memory_ids,omitempty"`
 	Deleted           bool     `json:"deleted"`
 	DeletedCount      int      `json:"deleted_count"`
