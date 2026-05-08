@@ -358,8 +358,8 @@ func TestBuildNextActionMessagesAddsSkillReminderAsUserMessage(t *testing.T) {
 		t.Fatalf("expected skill reminder as human message, got %q", messages[1].Role)
 	}
 	systemPrompt := messageText(messages[0])
-	if !strings.Contains(systemPrompt, "skills/<skill_id>/SKILL.md") {
-		t.Fatalf("system prompt should include concise skill path rule:\n%s", systemPrompt)
+	if !strings.Contains(systemPrompt, "read an advertised top-level skill by exact ID") {
+		t.Fatalf("system prompt should include concise skill loading rule:\n%s", systemPrompt)
 	}
 	if strings.Contains(systemPrompt, "go-testing") || strings.Contains(systemPrompt, "Use when adding or fixing Go tests.") {
 		t.Fatalf("system prompt should not include skill catalog entries:\n%s", systemPrompt)

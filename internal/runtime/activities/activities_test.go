@@ -368,6 +368,43 @@ func TestLoadContextReturnsProjectAndActiveWorkItems(t *testing.T) {
 	}
 }
 
+func TestLoadContextDiscoversWorkspaceAndBuiltInSkills(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	openCTORoot := t.TempDir()
+	writeActivitySkill(t, filepath.Join(workspaceRoot, "skills"), "workspace-only", "# Workspace Only\n\nUse when workspace skills apply.\n")
+	writeActivitySkill(t, filepath.Join(workspaceRoot, ".agents", "skills"), "agents-only", "# Agents Only\n\nUse when cross-client skills apply.\n")
+	writeActivitySkill(t, filepath.Join(openCTORoot, "skills"), "built-in-only", "# Built In Only\n\nUse when built-in skills apply.\n")
+	writeActivitySkill(t, filepath.Join(openCTORoot, "skills"), "shadowed", "# Built In Shadowed\n\nUse the built-in workflow.\n")
+	writeActivitySkill(t, filepath.Join(workspaceRoot, "skills"), "shadowed", "# Workspace Shadowed\n\nUse the workspace workflow.\n")
+
+	loaded, err := (&Activities{
+		WorkspaceRoot: workspaceRoot,
+		OpenCTORoot:   openCTORoot,
+	}).LoadContext(context.Background(), domain.Event{
+		ID:        "event-1",
+		ProjectID: "default",
+		Body:      "do it",
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+
+	got := map[string]skillcatalog.Summary{}
+	for _, summary := range loaded.Skills {
+		got[summary.ID] = summary
+	}
+	for _, id := range []string{"workspace-only", "agents-only", "built-in-only", "shadowed"} {
+		if _, ok := got[id]; !ok {
+			t.Fatalf("expected skill %q in %#v", id, loaded.Skills)
+		}
+	}
+	if got["shadowed"].Name != "Workspace Shadowed" {
+		t.Fatalf("expected workspace skill to shadow built-in skill, got %#v", got["shadowed"])
+	}
+}
+
 func TestLoadContextIncludesBoundedMemoryWhenEnabled(t *testing.T) {
 	t.Parallel()
 
@@ -1048,6 +1085,34 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 	}
 }
 
+func TestExecuteToolLoadsWorkspaceSkillBeforeBuiltInSkill(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	openCTORoot := t.TempDir()
+	writeActivitySkill(t, filepath.Join(workspaceRoot, "skills"), "go-testing", "# Workspace Go Testing\n\nUse the workspace workflow.\n")
+	writeActivitySkill(t, filepath.Join(openCTORoot, "skills"), "go-testing", "# Built In Go Testing\n\nUse the built-in workflow.\n")
+
+	result, err := (&Activities{
+		WorkspaceRoot: workspaceRoot,
+		OpenCTORoot:   openCTORoot,
+	}).ExecuteTool(context.Background(), executeRequest(domain.ToolTypeSkill, "skill-1", map[string]any{
+		"skill_id": "go-testing",
+	}))
+	if err != nil {
+		t.Fatalf("skill tool: %v", err)
+	}
+	if result.Status != domain.ExecutionStatusSucceeded || !strings.Contains(result.Observation, "# Workspace Go Testing") {
+		t.Fatalf("unexpected skill result: %#v", result)
+	}
+	if strings.Contains(result.Observation, "# Built In Go Testing") {
+		t.Fatalf("expected workspace skill to shadow built-in skill, got %q", result.Observation)
+	}
+	if !strings.Contains(filepath.ToSlash(result.Metadata["skill_path"]), "/skills/go-testing/SKILL.md") {
+		t.Fatalf("unexpected skill metadata: %#v", result.Metadata)
+	}
+}
+
 func TestExecuteGlobUsesCwdForRelativePath(t *testing.T) {
 	t.Parallel()
 
@@ -1507,6 +1572,17 @@ func executeRequest(toolType domain.ToolType, callID string, input map[string]an
 				"tool_call_id":    callID,
 			},
 		},
+	}
+}
+
+func writeActivitySkill(t *testing.T, root, id, content string) {
+	t.Helper()
+	dir := filepath.Join(root, id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir skill fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, skillcatalog.SkillFileName), []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill fixture: %v", err)
 	}
 }
 

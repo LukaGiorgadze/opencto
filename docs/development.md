@@ -62,6 +62,18 @@ approve <approval-id>
 reject <approval-id> optional comment
 ```
 
+## Skills
+
+OpenCTO discovers top-level Agent Skills from these roots, in precedence order:
+
+1. `$OPENCTO_WORKSPACE/skills`
+2. `$OPENCTO_WORKSPACE/.agents/skills`
+3. `$OPENCTO_ROOT/skills`
+
+Each skill is a directory containing `SKILL.md`. Workspace skills are user-defined and may shadow built-in skills with the same ID. Keep supporting files under the skill directory, such as `references/`, `scripts/`, or `assets/`, and refer to them relative to the skill directory.
+
+`LoadSkill` only loads advertised top-level skill IDs. If a loaded skill points to supporting files, use the file tools to read those paths directly.
+
 ## Persistence
 
 OpenCTO uses SQLite for local runtime storage.

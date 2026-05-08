@@ -69,6 +69,84 @@ func TestDefaultRootUsesSkills(t *testing.T) {
 	}
 }
 
+func TestRuntimeRootsIncludesWorkspaceUserSkillsBeforeBuiltIns(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	openCTORoot := t.TempDir()
+
+	roots := RuntimeRoots(workspaceRoot, openCTORoot)
+	want := []string{
+		filepath.Join(workspaceRoot, "skills"),
+		filepath.Join(workspaceRoot, ".agents", "skills"),
+		filepath.Join(openCTORoot, "skills"),
+	}
+	if strings.Join(roots, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("unexpected roots:\nwant: %#v\n got: %#v", want, roots)
+	}
+}
+
+func TestRuntimeRootsDeduplicatesWhenWorkspaceIsOpenCTORoot(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	roots := RuntimeRoots(root, root)
+	want := []string{
+		filepath.Join(root, "skills"),
+		filepath.Join(root, ".agents", "skills"),
+	}
+	if strings.Join(roots, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("unexpected roots:\nwant: %#v\n got: %#v", want, roots)
+	}
+}
+
+func TestDiscoverRuntimeRootsIncludesWorkspaceAgentsAndBuiltIns(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	openCTORoot := t.TempDir()
+	writeSkill(t, filepath.Join(workspaceRoot, ".agents", "skills"), "workspace-skill", "# Workspace Skill\n\nUse when handling workspace-specific work.\n")
+	writeSkill(t, filepath.Join(openCTORoot, "skills"), "built-in-skill", "# Built In Skill\n\nUse when handling built-in work.\n")
+
+	summaries, err := Discover(context.Background(), RuntimeRoots(workspaceRoot, openCTORoot)...)
+	if err != nil {
+		t.Fatalf("discover runtime skills: %v", err)
+	}
+	got := map[string]string{}
+	for _, summary := range summaries {
+		got[summary.ID] = summary.Path
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected two skills, got %#v", summaries)
+	}
+	if !strings.Contains(filepath.ToSlash(got["workspace-skill"]), "/.agents/skills/workspace-skill/SKILL.md") {
+		t.Fatalf("expected workspace .agents skill path, got %#v", got)
+	}
+	if !strings.Contains(filepath.ToSlash(got["built-in-skill"]), "/skills/built-in-skill/SKILL.md") {
+		t.Fatalf("expected built-in skill path, got %#v", got)
+	}
+}
+
+func TestLoadFromRuntimeRootsPrefersWorkspaceSkill(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	openCTORoot := t.TempDir()
+	writeSkill(t, filepath.Join(workspaceRoot, "skills"), "go-testing", "# Workspace Go Testing\n\nUse the workspace-defined workflow.\n")
+	writeSkill(t, filepath.Join(openCTORoot, "skills"), "go-testing", "# Built In Go Testing\n\nUse the built-in workflow.\n")
+
+	skill, err := LoadFromRoots(context.Background(), "go-testing", RuntimeRoots(workspaceRoot, openCTORoot)...)
+	if err != nil {
+		t.Fatalf("load skill: %v", err)
+	}
+	if skill.Name != "Workspace Go Testing" || !strings.Contains(skill.Content, "workspace-defined") {
+		t.Fatalf("expected workspace skill to shadow built-in skill, got %#v", skill)
+	}
+	if !strings.Contains(filepath.ToSlash(skill.Path), "/skills/go-testing/SKILL.md") {
+		t.Fatalf("unexpected skill path: %q", skill.Path)
+	}
+}
+
 func TestLoadSkillRejectsInvalidID(t *testing.T) {
 	t.Parallel()
 

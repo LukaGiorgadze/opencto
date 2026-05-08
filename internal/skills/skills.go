@@ -14,6 +14,7 @@ import (
 
 const (
 	DefaultDirName = "skills"
+	AgentsDirName  = ".agents"
 	SkillFileName  = "SKILL.md"
 	MaxSkillBytes  = 64 * 1024
 )
@@ -45,6 +46,24 @@ func DefaultRoot() string {
 
 func DefaultRoots() []string {
 	return []string{DefaultRoot()}
+}
+
+func RuntimeRoots(workspaceRoot, openCTORoot string) []string {
+	var roots []string
+	if workspaceRoot = strings.TrimSpace(workspaceRoot); workspaceRoot != "" {
+		workspaceRoot = filepath.Clean(workspaceRoot)
+		roots = append(roots,
+			filepath.Join(workspaceRoot, DefaultDirName),
+			filepath.Join(workspaceRoot, AgentsDirName, DefaultDirName),
+		)
+	}
+	if openCTORoot = strings.TrimSpace(openCTORoot); openCTORoot != "" {
+		roots = append(roots, filepath.Join(filepath.Clean(openCTORoot), DefaultDirName))
+	}
+	if len(roots) == 0 {
+		return DefaultRoots()
+	}
+	return uniqueRoots(roots)
 }
 
 func Discover(ctx context.Context, roots ...string) ([]Summary, error) {
@@ -187,6 +206,20 @@ func skillRoot(root string) string {
 		return DefaultRoot()
 	}
 	return filepath.Clean(root)
+}
+
+func uniqueRoots(roots []string) []string {
+	seen := map[string]bool{}
+	unique := make([]string, 0, len(roots))
+	for _, root := range roots {
+		root = skillRoot(root)
+		if seen[root] {
+			continue
+		}
+		seen[root] = true
+		unique = append(unique, root)
+	}
+	return unique
 }
 
 func readSkillFile(path string) (string, error) {

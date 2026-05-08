@@ -2834,7 +2834,7 @@ func (a *Activities) skillsRoots() []string {
 	if strings.TrimSpace(a.SkillsRoot) != "" {
 		return []string{a.SkillsRoot}
 	}
-	return skillcatalog.DefaultRoots()
+	return skillcatalog.RuntimeRoots(a.WorkspaceRoot, a.OpenCTORoot)
 }
 
 func processStartObservation(process domain.ManagedProcess) string {
