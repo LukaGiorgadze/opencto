@@ -14,6 +14,7 @@ type Context struct {
 	ActiveWorkItems             []domain.WorkItem            `json:"active_work_items,omitempty"`
 	Memory                      []domain.Memory              `json:"memory,omitempty"`
 	Conversation                []domain.ConversationMessage `json:"conversation,omitempty"`
+	ConversationSummaries       []domain.ConversationSummary `json:"conversation_summaries,omitempty"`
 	ConversationMaxContextChars int                          `json:"conversation_max_context_chars,omitempty"`
 	Skills                      []skills.Summary             `json:"skills,omitempty"`
 	AdditionalEvents            []domain.Event               `json:"additional_events,omitempty"`
@@ -73,6 +74,8 @@ type NextActionOutput struct {
 	ToolChoice    *ToolChoice        `json:"tool_choice,omitempty"`
 	ToolChoices   []ToolChoice       `json:"tool_choices,omitempty"`
 	WorkItemID    string             `json:"work_item_id,omitempty"`
+	WaitingToken  string             `json:"waiting_token,omitempty"`
+	WaitingKind   string             `json:"waiting_kind,omitempty"`
 	Observation   *ExecutionFeedback `json:"observation,omitempty"`
 	Status        string             `json:"status"`
 	AssistantText string             `json:"assistant_text,omitempty"`
@@ -83,6 +86,8 @@ type NextAction struct {
 	ToolChoice          ToolChoice                `json:"tool_choice,omitempty,omitzero"`
 	ResponseMessage     string                    `json:"response_message,omitempty"`
 	ResponseAttachments []domain.ReportAttachment `json:"response_attachments,omitempty"`
+	WaitingToken        string                    `json:"waiting_token,omitempty"`
+	WaitingKind         string                    `json:"waiting_kind,omitempty"`
 }
 
 type RuntimeContext struct {
@@ -144,4 +149,19 @@ type MemoryCandidate struct {
 
 type MemoryExtractor interface {
 	ExtractMemories(context.Context, MemoryExtractionInput) (MemoryExtractionOutput, error)
+}
+
+type ConversationCompressionInput struct {
+	ProjectID       string                          `json:"project_id"`
+	Scope           domain.ConversationSummaryScope `json:"scope"`
+	Messages        []domain.ConversationMessage    `json:"messages"`
+	MaxSummaryChars int                             `json:"max_summary_chars"`
+}
+
+type ConversationCompressionOutput struct {
+	Summary string `json:"summary"`
+}
+
+type ConversationCompressor interface {
+	CompressConversation(context.Context, ConversationCompressionInput) (ConversationCompressionOutput, error)
 }

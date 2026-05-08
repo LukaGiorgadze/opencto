@@ -52,6 +52,9 @@ func TestOpenAIMemoryExtractorParsesCandidate(t *testing.T) {
 	if len(model.messages) != 2 || !strings.Contains(messageText(model.messages[0]), "casual personal facts unrelated to OpenCTO technical work") {
 		t.Fatalf("expected memory policy prompt, got %#v", model.messages)
 	}
+	if !strings.Contains(messageText(model.messages[0]), "casual opinions, comparisons") {
+		t.Fatalf("expected prompt to reject casual opinions, got %#v", model.messages)
+	}
 	userPrompt := messageText(model.messages[1])
 	if strings.Contains(userPrompt, "Luka") {
 		t.Fatalf("extractor prompt should not include actor identity metadata: %q", userPrompt)
@@ -78,6 +81,20 @@ func TestParseMemoryExtractionOutputFiltersInvalidCandidates(t *testing.T) {
 	}
 	if candidate.Confidence != 0.8 {
 		t.Fatalf("expected default confidence, got %v", candidate.Confidence)
+	}
+}
+
+func TestParseMemoryExtractionOutputAllowsThreadScope(t *testing.T) {
+	t.Parallel()
+
+	output, err := parseMemoryExtractionOutput(`{"candidates":[
+		{"scope":"thread","kind":"decision","content":"Use orange accents in this Discord thread.","confidence":0.7}
+	]}`)
+	if err != nil {
+		t.Fatalf("parse output: %v", err)
+	}
+	if len(output.Candidates) != 1 || output.Candidates[0].Scope != domain.MemoryScopeThread {
+		t.Fatalf("expected thread candidate, got %#v", output.Candidates)
 	}
 }
 

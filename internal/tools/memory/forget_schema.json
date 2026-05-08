@@ -19,8 +19,8 @@
         },
         "scope": {
             "type": "string",
-            "enum": ["project", "user", "global", "all"],
-            "description": "Scope filter for deletion. Use all to include all visible memory."
+            "enum": ["thread", "project", "user", "global", "all"],
+            "description": "Scope filter for deletion. Use all to include all visible memory; in a Discord thread, all defaults to thread-only memory."
         }
     },
     "additionalProperties": false

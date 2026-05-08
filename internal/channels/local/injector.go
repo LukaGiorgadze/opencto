@@ -65,12 +65,12 @@ func NewReporter(logger *slog.Logger) *Reporter {
 	return &Reporter{logger: logger}
 }
 
-func (r *Reporter) Report(_ context.Context, event domain.Event, report domain.ReportMessage) error {
+func (r *Reporter) Report(_ context.Context, event domain.Event, report domain.ReportMessage) ([]domain.ReportReceipt, error) {
 	r.logger.Info("local report",
 		slog.String("project_id", event.ProjectID),
 		slog.String("event_id", event.ID),
 		slog.String("message", report.Text),
 		slog.Int("attachments", len(report.Attachments)),
 	)
-	return nil
+	return nil, nil
 }

@@ -11,6 +11,7 @@ import (
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	memorytool "github.com/opencto/opencto/internal/tools/memory"
+	planningtool "github.com/opencto/opencto/internal/tools/planning"
 	readtool "github.com/opencto/opencto/internal/tools/read"
 	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
 	skilltool "github.com/opencto/opencto/internal/tools/skill"
@@ -76,6 +77,18 @@ var definitions = []Definition{
 		Type:        domain.ToolTypeMemorySearch,
 		Description: memorytool.SearchToolDescription,
 		Schema:      memorytool.SearchToolSchema(),
+	},
+	{
+		Name:        planningtool.AskUserQuestionToolName,
+		Type:        domain.ToolTypeAskUserQuestion,
+		Description: planningtool.AskUserQuestionToolDescription,
+		Schema:      planningtool.AskUserQuestionToolSchema(),
+	},
+	{
+		Name:        planningtool.ProposePlanToolName,
+		Type:        domain.ToolTypeProposePlan,
+		Description: planningtool.ProposePlanToolDescription,
+		Schema:      planningtool.ProposePlanToolSchema(),
 	},
 	{
 		Name:        memorytool.ListToolName,

@@ -9,8 +9,8 @@
         },
         "scope": {
             "type": "string",
-            "enum": ["project", "user", "global"],
-            "description": "Use project for project-shared facts. Use user for preferences or facts about the current user. Use global only for shared rules or facts that should apply across users."
+            "enum": ["thread", "project", "user", "global"],
+            "description": "Use thread for facts or preferences that should apply only inside the current Discord thread. Use project for project-shared facts. Use user for preferences or facts about the current user. Use global only for shared rules or facts that should apply across users."
         },
         "kind": {
             "type": "string",

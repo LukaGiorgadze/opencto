@@ -2,6 +2,8 @@ package llm
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -13,7 +15,9 @@ import (
 	"github.com/opencto/opencto/internal/agent/prompts"
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/skills"
+	"github.com/opencto/opencto/internal/textclean"
 	toolregistry "github.com/opencto/opencto/internal/tools"
+	planningtool "github.com/opencto/opencto/internal/tools/planning"
 )
 
 type nextActionPromptData struct {
@@ -92,10 +96,18 @@ func buildNextActionMessages(input agent.NextActionInput) ([]llms.MessageContent
 	if memory := memoryContextMessage(input.Context.Memory); memory != "" {
 		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, memory))
 	}
-	if history := conversationContextMessage(input.Context.Conversation, input.Context.ConversationMaxContextChars); history != "" {
+	summaryBudget, historyBudget := conversationContextBudgets(input.Context.ConversationMaxContextChars, len(input.Context.ConversationSummaries) > 0)
+	if summaries := conversationSummaryContextMessage(input.Context.ConversationSummaries, summaryBudget); summaries != "" {
+		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, summaries))
+	}
+	conversation := conversationWithoutCurrentEvents(input.Context.Conversation, input.Context.Event, input.Context.AdditionalEvents)
+	if history := conversationContextMessage(conversation, historyBudget); history != "" {
 		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, history))
 	}
 	messages = append(messages, userMessage)
+	if pending := pendingPlanningContextMessage(input.NextAction, input.Context.AdditionalEvents); pending != "" {
+		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, pending))
+	}
 	for index := 0; index < len(input.ObservationHistory); {
 		toolCallIDs := strings.TrimSpace(input.ObservationHistory[index].Metadata["tool_call_ids"])
 		if strings.Contains(toolCallIDs, ",") {
@@ -129,6 +141,9 @@ func buildNextActionMessages(input agent.NextActionInput) ([]llms.MessageContent
 	messages = append(messages, additionalMessages...)
 	if input.ForceFinal {
 		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, "Execution cycle limit reached. Do not call tools. Respond naturally with a concise summary of what happened and what remains."))
+	}
+	if err := validateToolTranscriptMessages(messages); err != nil {
+		return nil, err
 	}
 	return messages, nil
 }
@@ -198,6 +213,44 @@ func memoryContextMessage(memories []domain.Memory) string {
 	return strings.TrimSpace(builder.String())
 }
 
+func conversationWithoutCurrentEvents(messages []domain.ConversationMessage, current domain.Event, additional []domain.Event) []domain.ConversationMessage {
+	if len(messages) == 0 {
+		return nil
+	}
+	excluded := map[string]bool{}
+	if id := strings.TrimSpace(current.ID); id != "" {
+		excluded[id] = true
+	}
+	for _, event := range additional {
+		if id := strings.TrimSpace(event.ID); id != "" {
+			excluded[id] = true
+		}
+	}
+	if len(excluded) == 0 {
+		return append([]domain.ConversationMessage(nil), messages...)
+	}
+	filtered := make([]domain.ConversationMessage, 0, len(messages))
+	for _, message := range messages {
+		if conversationMessageDuplicatesCurrentEvent(message, excluded) {
+			continue
+		}
+		filtered = append(filtered, message)
+	}
+	return filtered
+}
+
+func conversationMessageDuplicatesCurrentEvent(message domain.ConversationMessage, excluded map[string]bool) bool {
+	if !excluded[strings.TrimSpace(message.EventID)] {
+		return false
+	}
+	switch message.Role {
+	case domain.ConversationRoleAssistant:
+		return false
+	default:
+		return true
+	}
+}
+
 func conversationContextMessage(messages []domain.ConversationMessage, maxChars int) string {
 	if len(messages) == 0 {
 		return ""
@@ -209,10 +262,11 @@ func conversationContextMessage(messages []domain.ConversationMessage, maxChars 
 	if maxChars <= len(header) {
 		return truncateText(header, maxChars)
 	}
+	items := compactConversationHistoryItems(messages)
 	remaining := maxChars - len(header) - 1
-	selected := make([]string, 0, len(messages))
-	for i := len(messages) - 1; i >= 0 && remaining > 0; i-- {
-		entry := conversationHistoryEntry(messages[i], remaining)
+	selected := make([]string, 0, len(items))
+	for i := len(items) - 1; i >= 0 && remaining > 0; i-- {
+		entry := conversationHistoryItemEntry(items[i], remaining)
 		if strings.TrimSpace(entry) == "" {
 			continue
 		}
@@ -234,17 +288,199 @@ func conversationContextMessage(messages []domain.ConversationMessage, maxChars 
 	return strings.TrimSpace(builder.String())
 }
 
-func conversationHistoryEntry(message domain.ConversationMessage, budget int) string {
-	body := strings.TrimSpace(message.Body)
+func conversationContextBudgets(maxChars int, hasSummaries bool) (int, int) {
+	if maxChars <= 0 {
+		maxChars = 8000
+	}
+	if !hasSummaries {
+		return 0, maxChars
+	}
+	summaryBudget := maxChars * 4 / 10
+	if summaryBudget < 1000 {
+		summaryBudget = maxChars / 2
+	}
+	historyBudget := maxChars - summaryBudget
+	if historyBudget < 1000 {
+		historyBudget = maxChars / 2
+	}
+	return summaryBudget, historyBudget
+}
+
+func conversationSummaryContextMessage(summaries []domain.ConversationSummary, maxChars int) string {
+	if len(summaries) == 0 {
+		return ""
+	}
+	if maxChars <= 0 {
+		maxChars = 6000
+	}
+	header := "Conversation summary. Use this as bounded context only; recent raw conversation and the current user request follow."
+	if maxChars <= len(header) {
+		return truncateText(header, maxChars)
+	}
+	remaining := maxChars - len(header) - 1
+	selected := make([]string, 0, len(summaries))
+	for _, summary := range summaries {
+		if remaining <= 0 {
+			break
+		}
+		entry := conversationSummaryEntry(summary, remaining)
+		if strings.TrimSpace(entry) == "" {
+			continue
+		}
+		if len(entry) > remaining {
+			entry = truncateText(entry, remaining)
+		}
+		selected = append(selected, entry)
+		remaining -= len(entry) + 1
+	}
+	if len(selected) == 0 {
+		return header
+	}
+	var builder strings.Builder
+	builder.WriteString(header)
+	for _, entry := range selected {
+		builder.WriteString("\n")
+		builder.WriteString(entry)
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func conversationSummaryEntry(summary domain.ConversationSummary, budget int) string {
+	body := strings.TrimSpace(summary.Summary)
 	if body == "" {
 		return ""
 	}
-	label := conversationHistoryLabel(message)
-	bodyBudget := budget - len(label) - 2
+	label := "summary[" + string(summary.Scope) + "]"
+	bodyBudget := budget - len(label) - 4
 	if bodyBudget <= 0 {
 		return ""
 	}
-	if message.Role == domain.ConversationRoleTool && bodyBudget > 1200 {
+	return "- " + label + ": " + truncateText(body, bodyBudget)
+}
+
+func pendingPlanningContextMessage(nextAction agent.NextAction, additionalEvents []domain.Event) string {
+	token := strings.TrimSpace(nextAction.WaitingToken)
+	kind := strings.TrimSpace(nextAction.WaitingKind)
+	if kind == "" {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString("Current pending planning state. This is runtime context for the active task, not a new user request.")
+	builder.WriteString("\n- kind: ")
+	builder.WriteString(kind)
+	if token != "" {
+		builder.WriteString("\n- token: ")
+		builder.WriteString(token)
+	}
+	if kind == "plan" {
+		builder.WriteString("\n- approval rule: mutate only after the runtime marks the current scoped reply/thread answer as approved.")
+		if hasRuntimePlanApproval(additionalEvents) {
+			builder.WriteString("\n- current answer: runtime marked the scoped reply/thread answer as approved. Continue with implementation; do not call ProposePlan again unless the user requested plan changes.")
+		} else if hasRoutedPlanningAnswer(additionalEvents, token) {
+			builder.WriteString("\n- current answer: this task was resumed from a scoped reply/thread or matching token. Use the user's latest answer below to decide whether to revise or ask a follow-up. Do not implement unless runtime approval metadata is present.")
+		}
+	}
+	if response := truncateText(nextAction.ResponseMessage, 6000); response != "" {
+		builder.WriteString("\n\nPrompt previously shown to the user:\n")
+		builder.WriteString(response)
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func hasRoutedPlanningAnswer(events []domain.Event, token string) bool {
+	token = normalizeLLMPlanningToken(token)
+	for _, event := range events {
+		if token != "" {
+			if explicitLLMPlanApprovalBody(event.Body, token) {
+				return true
+			}
+			if normalizeLLMPlanningToken(event.Metadata[domain.MetadataKeyPlanningToken]) == token {
+				return true
+			}
+		}
+		switch event.Metadata[domain.MetadataKeyControl] {
+		case domain.MetadataControlPlanningAnswer, domain.MetadataControlTaskReply:
+			return true
+		}
+	}
+	return false
+}
+
+func hasRuntimePlanApproval(events []domain.Event) bool {
+	for _, event := range events {
+		if event.Metadata[domain.MetadataKeyWaitingKind] == "plan" &&
+			event.Metadata[domain.MetadataKeyApprovalDecision] == domain.MetadataApprovalApproved {
+			return true
+		}
+	}
+	return false
+}
+
+func explicitLLMPlanApprovalBody(body string, token string) bool {
+	fields := strings.Fields(strings.TrimSpace(body))
+	return len(fields) >= 2 && strings.EqualFold(fields[0], "approve") && normalizeLLMPlanningToken(fields[1]) == token
+}
+
+func normalizeLLMPlanningToken(token string) string {
+	token = strings.Trim(strings.TrimSpace(token), "`.,:;()[]{}")
+	return strings.ToUpper(token)
+}
+
+type conversationHistoryItem struct {
+	Role  domain.ConversationRole
+	Label string
+	Body  string
+}
+
+func compactConversationHistoryItems(messages []domain.ConversationMessage) []conversationHistoryItem {
+	items := make([]conversationHistoryItem, 0, len(messages))
+	for index := 0; index < len(messages); {
+		if item, count, ok := compactEditToolHistory(messages[index:]); ok {
+			items = append(items, item)
+			index += count
+			continue
+		}
+		if item, count, ok := compactExactToolHistory(messages[index:]); ok {
+			items = append(items, item)
+			index += count
+			continue
+		}
+		item := conversationHistoryMessageItem(messages[index])
+		if strings.TrimSpace(item.Body) != "" {
+			items = append(items, item)
+		}
+		index++
+	}
+	return items
+}
+
+func conversationHistoryMessageItem(message domain.ConversationMessage) conversationHistoryItem {
+	body := strings.TrimSpace(textclean.TerminalOutput(message.Body))
+	if body == "" {
+		return conversationHistoryItem{}
+	}
+	return conversationHistoryItem{
+		Role:  message.Role,
+		Label: conversationHistoryLabel(message),
+		Body:  body,
+	}
+}
+
+func conversationHistoryEntry(message domain.ConversationMessage, budget int) string {
+	return conversationHistoryItemEntry(conversationHistoryMessageItem(message), budget)
+}
+
+func conversationHistoryItemEntry(item conversationHistoryItem, budget int) string {
+	body := strings.TrimSpace(textclean.TerminalOutput(item.Body))
+	label := strings.TrimSpace(item.Label)
+	if body == "" || label == "" {
+		return ""
+	}
+	bodyBudget := budget - len(label) - 4
+	if bodyBudget <= 0 {
+		return ""
+	}
+	if item.Role == domain.ConversationRoleTool && bodyBudget > 1200 {
 		bodyBudget = 1200
 	}
 	body = truncateText(body, bodyBudget)
@@ -274,6 +510,162 @@ func conversationHistoryLabel(message domain.ConversationMessage) string {
 	}
 }
 
+type compactEditToolInfo struct {
+	Label           string
+	FilePath        string
+	Replacements    int
+	HasReplacements bool
+	BytesWritten    int
+	HasBytesWritten bool
+}
+
+func compactEditToolHistory(messages []domain.ConversationMessage) (conversationHistoryItem, int, bool) {
+	if len(messages) == 0 {
+		return conversationHistoryItem{}, 0, false
+	}
+	first, ok := compactEditToolInfoFromMessage(messages[0])
+	if !ok {
+		return conversationHistoryItem{}, 0, false
+	}
+	infos := []compactEditToolInfo{first}
+	for index := 1; index < len(messages); index++ {
+		next, ok := compactEditToolInfoFromMessage(messages[index])
+		if !ok || next.Label != first.Label || next.FilePath != first.FilePath {
+			break
+		}
+		infos = append(infos, next)
+	}
+	if len(infos) < 2 {
+		return conversationHistoryItem{}, 0, false
+	}
+	return conversationHistoryItem{
+		Role:  domain.ConversationRoleTool,
+		Label: first.Label + " x" + strconv.Itoa(len(infos)),
+		Body:  compactEditToolBody(infos),
+	}, len(infos), true
+}
+
+func compactEditToolInfoFromMessage(message domain.ConversationMessage) (compactEditToolInfo, bool) {
+	if !compactableSuccessfulToolMessage(message) || strings.TrimSpace(message.Metadata["tool"]) != string(domain.ToolTypeEdit) {
+		return compactEditToolInfo{}, false
+	}
+	body := strings.TrimSpace(message.Body)
+	filePath := firstNonEmpty(
+		strings.TrimSpace(message.Metadata["file_path"]),
+		conversationBodyValue(body, "edited"),
+	)
+	if filePath == "" {
+		return compactEditToolInfo{}, false
+	}
+	info := compactEditToolInfo{
+		Label:    conversationHistoryLabel(message),
+		FilePath: filePath,
+	}
+	if value, ok := conversationHistoryInt(firstNonEmpty(message.Metadata["replacements"], conversationBodyValue(body, "replacements"))); ok {
+		info.Replacements = value
+		info.HasReplacements = true
+	}
+	if value, ok := conversationHistoryInt(firstNonEmpty(message.Metadata["bytes_written"], conversationBodyValue(body, "bytes_written"))); ok {
+		info.BytesWritten = value
+		info.HasBytesWritten = true
+	}
+	return info, true
+}
+
+func compactEditToolBody(infos []compactEditToolInfo) string {
+	parts := []string{"edited: " + infos[0].FilePath}
+	replacements := make([]int, 0, len(infos))
+	bytesWritten := make([]int, 0, len(infos))
+	for _, info := range infos {
+		if info.HasReplacements {
+			replacements = append(replacements, info.Replacements)
+		}
+		if info.HasBytesWritten {
+			bytesWritten = append(bytesWritten, info.BytesWritten)
+		}
+	}
+	if value := compactIntValues(replacements); value != "" {
+		parts = append(parts, "replacements: "+value)
+	}
+	if value := compactIntValues(bytesWritten); value != "" {
+		parts = append(parts, "bytes_written: "+value)
+	}
+	return strings.Join(parts, "; ")
+}
+
+func compactExactToolHistory(messages []domain.ConversationMessage) (conversationHistoryItem, int, bool) {
+	if len(messages) == 0 || !compactableSuccessfulToolMessage(messages[0]) {
+		return conversationHistoryItem{}, 0, false
+	}
+	first := conversationHistoryMessageItem(messages[0])
+	count := 1
+	for count < len(messages) && compactableSuccessfulToolMessage(messages[count]) {
+		next := conversationHistoryMessageItem(messages[count])
+		if next.Label != first.Label || strings.TrimSpace(next.Body) != strings.TrimSpace(first.Body) {
+			break
+		}
+		count++
+	}
+	if count < 2 {
+		return conversationHistoryItem{}, 0, false
+	}
+	first.Label += " x" + strconv.Itoa(count)
+	return first, count, true
+}
+
+func compactableSuccessfulToolMessage(message domain.ConversationMessage) bool {
+	if message.Role != domain.ConversationRoleTool {
+		return false
+	}
+	if strings.TrimSpace(message.Metadata["status"]) != string(domain.ExecutionStatusSucceeded) {
+		return false
+	}
+	if code := strings.TrimSpace(message.Metadata["result_code"]); code != "" && code != "0" {
+		return false
+	}
+	body := strings.ToLower(strings.TrimSpace(message.Body))
+	return !strings.Contains("\n"+body, "\nerror:")
+}
+
+func conversationBodyValue(body string, key string) string {
+	prefix := strings.TrimSpace(key) + ":"
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return ""
+}
+
+func conversationHistoryInt(value string) (int, bool) {
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 0, false
+	}
+	return parsed, true
+}
+
+func compactIntValues(values []int) string {
+	if len(values) == 0 {
+		return ""
+	}
+	minValue := values[0]
+	maxValue := values[0]
+	for _, value := range values[1:] {
+		if value < minValue {
+			minValue = value
+		}
+		if value > maxValue {
+			maxValue = value
+		}
+	}
+	if minValue == maxValue {
+		return strconv.Itoa(minValue)
+	}
+	return strconv.Itoa(minValue) + "-" + strconv.Itoa(maxValue)
+}
+
 func truncateText(text string, limit int) string {
 	text = strings.TrimSpace(text)
 	if limit <= 0 || text == "" {
@@ -301,6 +693,24 @@ func truncateText(text string, limit int) string {
 	return strings.TrimSpace(string(runes[:prefixLimit])) + suffix
 }
 
+func truncateTextPlain(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if limit <= 0 || text == "" {
+		return ""
+	}
+	if len(text) <= limit {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	if limit > len(runes) {
+		limit = len(runes)
+	}
+	return strings.TrimSpace(string(runes[:limit]))
+}
+
 func messageHasContent(message llms.MessageContent) bool {
 	for _, part := range message.Parts {
 		switch value := part.(type) {
@@ -320,15 +730,7 @@ func nextActionTranscriptMessages(feedbacks ...agent.ExecutionFeedback) ([]llms.
 		return nil, nil
 	}
 
-	assistantText := strings.TrimSpace(feedbacks[0].Metadata["assistant_text"])
-	if assistantText == "" {
-		assistantText = strings.TrimSpace(feedbacks[0].RequestedAction)
-	}
-	if assistantText == "" {
-		assistantText = "I will run the next command step."
-	}
-
-	parts := []llms.ContentPart{llms.TextContent{Text: assistantText}}
+	parts := make([]llms.ContentPart, 0, len(feedbacks))
 	results := make([]llms.MessageContent, 0, len(feedbacks))
 	for _, feedback := range feedbacks {
 		toolCallID := executionFeedbackToolCallID(feedback)
@@ -364,7 +766,83 @@ func nextActionTranscriptMessages(feedbacks ...agent.ExecutionFeedback) ([]llms.
 	return append([]llms.MessageContent{assistant}, results...), nil
 }
 
+func validateToolTranscriptMessages(messages []llms.MessageContent) error {
+	pendingToolCalls := map[string]bool{}
+	for index, message := range messages {
+		switch message.Role {
+		case llms.ChatMessageTypeAI:
+			if len(pendingToolCalls) > 0 {
+				return fmt.Errorf("%w: assistant tool calls missing results before message %d: %s", agent.ErrInvalidNextAction, index, pendingToolCallList(pendingToolCalls))
+			}
+			toolCalls, err := messageToolCallIDs(message, index)
+			if err != nil {
+				return err
+			}
+			pendingToolCalls = toolCalls
+		case llms.ChatMessageTypeTool:
+			toolCallID, ok := messageToolResponseID(message)
+			if !ok {
+				return fmt.Errorf("%w: tool message %d must contain exactly one tool response", agent.ErrInvalidNextAction, index)
+			}
+			if toolCallID == "" || !pendingToolCalls[toolCallID] {
+				return fmt.Errorf("%w: tool response %q at message %d has no preceding assistant tool call", agent.ErrInvalidNextAction, toolCallID, index)
+			}
+			delete(pendingToolCalls, toolCallID)
+		default:
+			if len(pendingToolCalls) > 0 {
+				return fmt.Errorf("%w: assistant tool calls missing results before message %d: %s", agent.ErrInvalidNextAction, index, pendingToolCallList(pendingToolCalls))
+			}
+			pendingToolCalls = map[string]bool{}
+		}
+	}
+	if len(pendingToolCalls) > 0 {
+		return fmt.Errorf("%w: assistant tool calls missing results at end of messages: %s", agent.ErrInvalidNextAction, pendingToolCallList(pendingToolCalls))
+	}
+	return nil
+}
+
+func messageToolCallIDs(message llms.MessageContent, messageIndex int) (map[string]bool, error) {
+	ids := map[string]bool{}
+	for _, part := range message.Parts {
+		call, ok := part.(llms.ToolCall)
+		if !ok {
+			continue
+		}
+		id := strings.TrimSpace(call.ID)
+		if id == "" {
+			return nil, fmt.Errorf("%w: assistant tool call at message %d is missing id", agent.ErrInvalidNextAction, messageIndex)
+		}
+		if call.FunctionCall == nil || strings.TrimSpace(call.FunctionCall.Name) == "" {
+			return nil, fmt.Errorf("%w: assistant tool call %q at message %d is missing function", agent.ErrInvalidNextAction, id, messageIndex)
+		}
+		ids[id] = true
+	}
+	return ids, nil
+}
+
+func messageToolResponseID(message llms.MessageContent) (string, bool) {
+	if len(message.Parts) != 1 {
+		return "", false
+	}
+	response, ok := message.Parts[0].(llms.ToolCallResponse)
+	if !ok {
+		return "", false
+	}
+	return strings.TrimSpace(response.ToolCallID), true
+}
+
+func pendingToolCallList(ids map[string]bool) string {
+	values := make([]string, 0, len(ids))
+	for id := range ids {
+		values = append(values, id)
+	}
+	return strings.Join(values, ",")
+}
+
 func nextActionToolOutput(choice *llms.ContentChoice, input agent.NextActionInput) (agent.NextActionOutput, error) {
+	if output, handled, err := nextActionWaitingOutput(choice.ToolCalls, input); handled || err != nil {
+		return output, err
+	}
 	selectionInput := agent.ToolSelectionInput{
 		ProjectID:      input.ProjectID,
 		Context:        input.Context,
@@ -401,6 +879,235 @@ func nextActionToolOutput(choice *llms.ContentChoice, input agent.NextActionInpu
 		output.ToolChoices = toolChoices
 	}
 	return output, nil
+}
+
+func nextActionWaitingOutput(calls []llms.ToolCall, input agent.NextActionInput) (agent.NextActionOutput, bool, error) {
+	if len(calls) == 0 {
+		return agent.NextActionOutput{}, false, nil
+	}
+	var planningCalls []llms.ToolCall
+	for _, call := range calls {
+		if call.FunctionCall == nil {
+			continue
+		}
+		if isPlanningToolName(call.FunctionCall.Name) {
+			planningCalls = append(planningCalls, call)
+		}
+	}
+	if len(planningCalls) == 0 {
+		return agent.NextActionOutput{}, false, nil
+	}
+	if len(planningCalls) != len(calls) || len(planningCalls) != 1 {
+		return agent.NextActionOutput{}, true, fmt.Errorf("%w: planning pseudo-tools must be called alone", agent.ErrInvalidToolChoice)
+	}
+
+	call := planningCalls[0]
+	switch call.FunctionCall.Name {
+	case planningtool.AskUserQuestionToolName:
+		return askUserQuestionWaitingOutput(call, input)
+	case planningtool.ProposePlanToolName:
+		return proposePlanWaitingOutput(call, input)
+	default:
+		return agent.NextActionOutput{}, true, fmt.Errorf("%w: unsupported planning pseudo-tool %q", agent.ErrInvalidToolChoice, call.FunctionCall.Name)
+	}
+}
+
+func isPlanningToolName(name string) bool {
+	switch name {
+	case planningtool.AskUserQuestionToolName, planningtool.ProposePlanToolName:
+		return true
+	default:
+		return false
+	}
+}
+
+func askUserQuestionWaitingOutput(call llms.ToolCall, input agent.NextActionInput) (agent.NextActionOutput, bool, error) {
+	definition, ok := toolregistry.DefinitionByName(planningtool.AskUserQuestionToolName)
+	if !ok {
+		return agent.NextActionOutput{}, true, fmt.Errorf("planning question tool is not registered")
+	}
+	var request planningtool.AskUserQuestionRequest
+	raw := json.RawMessage(strings.TrimSpace(call.FunctionCall.Arguments))
+	if err := decodeToolArguments(definition.Name, raw, &request); err != nil {
+		return agent.NextActionOutput{}, true, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
+	}
+	if err := validateAskUserQuestion(request); err != nil {
+		return agent.NextActionOutput{}, true, err
+	}
+	token := waitingTokenForChannel("Q", input, call.ID)
+	message := formatAskUserQuestion(token, request, input.ChannelType)
+	nextAction := input.NextAction
+	nextAction.ResponseMessage = message
+	nextAction.WaitingToken = token
+	nextAction.WaitingKind = "question"
+	return agent.NextActionOutput{
+		NextAction:   nextAction,
+		WaitingToken: token,
+		WaitingKind:  "question",
+		Status:       "waiting",
+	}, true, nil
+}
+
+func proposePlanWaitingOutput(call llms.ToolCall, input agent.NextActionInput) (agent.NextActionOutput, bool, error) {
+	definition, ok := toolregistry.DefinitionByName(planningtool.ProposePlanToolName)
+	if !ok {
+		return agent.NextActionOutput{}, true, fmt.Errorf("propose plan tool is not registered")
+	}
+	var request planningtool.ProposePlanRequest
+	raw := json.RawMessage(strings.TrimSpace(call.FunctionCall.Arguments))
+	if err := decodeToolArguments(definition.Name, raw, &request); err != nil {
+		return agent.NextActionOutput{}, true, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
+	}
+	if err := validateProposePlan(request); err != nil {
+		return agent.NextActionOutput{}, true, err
+	}
+	token := waitingTokenForChannel("P", input, call.ID)
+	message := formatProposedPlan(token, request, input.ChannelType)
+	nextAction := input.NextAction
+	nextAction.ResponseMessage = message
+	nextAction.WaitingToken = token
+	nextAction.WaitingKind = "plan"
+	return agent.NextActionOutput{
+		NextAction:   nextAction,
+		WaitingToken: token,
+		WaitingKind:  "plan",
+		Status:       "waiting",
+	}, true, nil
+}
+
+func validateAskUserQuestion(request planningtool.AskUserQuestionRequest) error {
+	if strings.TrimSpace(request.Question) == "" {
+		return fmt.Errorf("%w: planning question is required", agent.ErrInvalidNextAction)
+	}
+	if len(request.Options) < 2 || len(request.Options) > 4 {
+		return fmt.Errorf("%w: planning question requires 2-4 options", agent.ErrInvalidNextAction)
+	}
+	for _, option := range request.Options {
+		if strings.TrimSpace(option.Label) == "" || strings.TrimSpace(option.Description) == "" {
+			return fmt.Errorf("%w: planning question options require label and description", agent.ErrInvalidNextAction)
+		}
+	}
+	return nil
+}
+
+func validateProposePlan(request planningtool.ProposePlanRequest) error {
+	if strings.TrimSpace(request.Title) == "" || strings.TrimSpace(request.Summary) == "" {
+		return fmt.Errorf("%w: proposed plan requires title and summary", agent.ErrInvalidNextAction)
+	}
+	if len(nonEmptyList(request.Build)) == 0 || len(nonEmptyList(request.Steps)) == 0 || len(nonEmptyList(request.Verification)) == 0 {
+		return fmt.Errorf("%w: proposed plan requires build, steps, and verification items", agent.ErrInvalidNextAction)
+	}
+	return nil
+}
+
+func waitingToken(prefix string, input agent.NextActionInput, callID string) string {
+	hash := sha1.Sum([]byte(strings.Join([]string{
+		strings.TrimSpace(prefix),
+		strings.TrimSpace(input.ProjectID),
+		strings.TrimSpace(input.Context.Event.ID),
+		strconv.Itoa(input.ExecutionCycle),
+		strings.TrimSpace(callID),
+	}, "\x00")))
+	return strings.ToUpper(strings.TrimSpace(prefix)) + "-" + hex.EncodeToString(hash[:])[:8]
+}
+
+func waitingTokenForChannel(prefix string, input agent.NextActionInput, callID string) string {
+	if input.ChannelType == domain.ChannelTypeDiscord {
+		return ""
+	}
+	return waitingToken(prefix, input, callID)
+}
+
+func formatAskUserQuestion(token string, request planningtool.AskUserQuestionRequest, channelType domain.ChannelType) string {
+	var builder strings.Builder
+	if channelType == domain.ChannelTypeDiscord {
+		builder.WriteString("**Question**")
+	} else {
+		builder.WriteString("**Question ")
+		builder.WriteString(token)
+		builder.WriteString("**")
+	}
+	if header := strings.TrimSpace(request.Header); header != "" {
+		builder.WriteString("\n")
+		builder.WriteString(header)
+	}
+	builder.WriteString("\n\n")
+	builder.WriteString(strings.TrimSpace(request.Question))
+	builder.WriteString("\n\nOptions:")
+	for index, option := range request.Options {
+		builder.WriteString("\n")
+		builder.WriteString(strconv.Itoa(index + 1))
+		builder.WriteString(". ")
+		builder.WriteString(strings.TrimSpace(option.Label))
+		builder.WriteString(": ")
+		builder.WriteString(strings.TrimSpace(option.Description))
+	}
+	if channelType == domain.ChannelTypeDiscord {
+		builder.WriteString("\n\nReply to this message, or write in its thread, with your answer.")
+	} else {
+		builder.WriteString("\n\nReply with `")
+		builder.WriteString(token)
+		builder.WriteString(": <answer>`.")
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func formatProposedPlan(token string, request planningtool.ProposePlanRequest, channelType domain.ChannelType) string {
+	var builder strings.Builder
+	if channelType == domain.ChannelTypeDiscord {
+		builder.WriteString("**Plan: ")
+		builder.WriteString(strings.TrimSpace(request.Title))
+		builder.WriteString("**\n\n")
+	} else {
+		builder.WriteString("**Plan ")
+		builder.WriteString(token)
+		builder.WriteString(": ")
+		builder.WriteString(strings.TrimSpace(request.Title))
+		builder.WriteString("**\n\n")
+	}
+	builder.WriteString(strings.TrimSpace(request.Summary))
+	writePlanSection(&builder, "Build", request.Build)
+	writePlanSection(&builder, "Skip", request.Skip)
+	writePlanSection(&builder, "Risks", request.Risks)
+	writePlanSection(&builder, "Tradeoffs", request.Tradeoffs)
+	writePlanSection(&builder, "Architecture", request.Architecture)
+	writePlanSection(&builder, "Steps", request.Steps)
+	writePlanSection(&builder, "Verification", request.Verification)
+	if channelType == domain.ChannelTypeDiscord {
+		builder.WriteString("\n\nReply to this message, or write in its thread, to approve or revise.")
+	} else {
+		builder.WriteString("\n\nReply with `approve ")
+		builder.WriteString(token)
+		builder.WriteString("` to let OpenCTO implement this plan, or `")
+		builder.WriteString(token)
+		builder.WriteString(": <changes>` to revise it.")
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func writePlanSection(builder *strings.Builder, title string, items []string) {
+	cleaned := nonEmptyList(items)
+	if len(cleaned) == 0 {
+		return
+	}
+	builder.WriteString("\n\n")
+	builder.WriteString(title)
+	builder.WriteString(":")
+	for _, item := range cleaned {
+		builder.WriteString("\n- ")
+		builder.WriteString(item)
+	}
+}
+
+func nonEmptyList(values []string) []string {
+	cleaned := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			cleaned = append(cleaned, value)
+		}
+	}
+	return cleaned
 }
 
 func nextActionTerminalFromContent(content string, input agent.NextActionInput) (agent.NextActionOutput, error) {

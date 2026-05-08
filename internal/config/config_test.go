@@ -32,7 +32,8 @@ func TestLoadRequiresExplicitConfigValues(t *testing.T) {
 		"llm.base_url",
 		"llm.model_reasoning",
 		"llm.model_fast",
-		"llm.transcription_model",
+		"llm.model_summary",
+		"llm.model_transcription",
 		"temporal.host_port",
 		"temporal.namespace",
 		"temporal.task_queue",
@@ -63,7 +64,7 @@ func TestLoadDerivesRuntimeStateDirFromConfiguredWorkspace(t *testing.T) {
     "base_url": "http://127.0.0.1:4000",
     "model_reasoning": "gpt-5.4",
     "model_fast": "gpt-5.4-mini",
-    "transcription_model": "gpt-4o-mini-transcribe"
+    "model_transcription": "gpt-4o-mini-transcribe"
   },
   "temporal": {
     "host_port": "127.0.0.1:7233",
@@ -113,7 +114,7 @@ func TestLoadExpandsWorkspaceRootHome(t *testing.T) {
     "base_url": "http://127.0.0.1:4000",
     "model_reasoning": "gpt-5.4",
     "model_fast": "gpt-5.4-mini",
-    "transcription_model": "gpt-4o-mini-transcribe"
+    "model_transcription": "gpt-4o-mini-transcribe"
   },
   "temporal": {
     "host_port": "127.0.0.1:7233",
@@ -164,7 +165,7 @@ func TestLoadParsesLLMSecretFields(t *testing.T) {
     "base_url": "http://127.0.0.1:4000",
     "model_reasoning": "gpt-5.4",
     "model_fast": "gpt-5.4-mini",
-    "transcription_model": "gpt-4o-mini-transcribe"
+    "model_transcription": "gpt-4o-mini-transcribe"
   },
   "temporal": {
     "host_port": "127.0.0.1:7233",
@@ -192,8 +193,11 @@ func TestLoadParsesLLMSecretFields(t *testing.T) {
 	if cfg.LLM.BaseURL != "http://127.0.0.1:4000" {
 		t.Fatalf("unexpected llm base url: %s", cfg.LLM.BaseURL)
 	}
-	if cfg.LLM.TranscriptionModel != "gpt-4o-mini-transcribe" {
-		t.Fatalf("unexpected transcription model: %s", cfg.LLM.TranscriptionModel)
+	if cfg.LLM.ModelTranscription != "gpt-4o-mini-transcribe" {
+		t.Fatalf("unexpected transcription model: %s", cfg.LLM.ModelTranscription)
+	}
+	if cfg.LLM.ModelSummary != "gpt-5.4-mini" {
+		t.Fatalf("expected summary model to default to fast model, got %s", cfg.LLM.ModelSummary)
 	}
 }
 
@@ -212,7 +216,7 @@ func TestLoadDefaultsStorageAndMemory(t *testing.T) {
     "base_url": "http://127.0.0.1:4000",
     "model_reasoning": "gpt-5.4",
     "model_fast": "gpt-5.4-mini",
-    "transcription_model": "gpt-4o-mini-transcribe"
+    "model_transcription": "gpt-4o-mini-transcribe"
   },
   "temporal": {
     "host_port": "127.0.0.1:7233",
@@ -242,7 +246,9 @@ func TestLoadDefaultsStorageAndMemory(t *testing.T) {
 	if !cfg.Memory.Embedding.Enabled || cfg.Memory.Embedding.Provider != "openai" || cfg.Memory.Embedding.Model != "text-embedding-3-small" || cfg.Memory.Embedding.Dimensions != 1536 {
 		t.Fatalf("unexpected memory embedding defaults: %#v", cfg.Memory.Embedding)
 	}
-	if !cfg.Conversation.Enabled || cfg.Conversation.HistoryLimit != 10 || cfg.Conversation.MaxContextChars != 8000 {
+	if !cfg.Conversation.Enabled || cfg.Conversation.HistoryLimit != 20 || cfg.Conversation.MaxContextChars != 20000 ||
+		!cfg.Conversation.SummaryEnabled || cfg.Conversation.SummaryTriggerChars != 24000 ||
+		cfg.Conversation.SummaryMaxChars != 6000 || cfg.Conversation.SummaryRecentMessages != 10 {
 		t.Fatalf("unexpected conversation defaults: %#v", cfg.Conversation)
 	}
 }
@@ -273,7 +279,7 @@ func TestLoadParsesMemoryEmbeddingConfig(t *testing.T) {
     "base_url": "http://127.0.0.1:4000",
     "model_reasoning": "gpt-5.4",
     "model_fast": "gpt-5.4-mini",
-    "transcription_model": "gpt-4o-mini-transcribe"
+    "model_transcription": "gpt-4o-mini-transcribe"
   },
   "temporal": {
     "host_port": "127.0.0.1:7233",
@@ -315,14 +321,18 @@ func TestLoadParsesConversationConfig(t *testing.T) {
   "conversation": {
     "enabled": false,
     "history_limit": 12,
-    "max_context_chars": 4000
+    "max_context_chars": 4000,
+    "summary_enabled": false,
+    "summary_trigger_chars": 5000,
+    "summary_max_chars": 2000,
+    "summary_recent_messages": 7
   },
   "llm": {
     "provider": "openai",
     "base_url": "http://127.0.0.1:4000",
     "model_reasoning": "gpt-5.4",
     "model_fast": "gpt-5.4-mini",
-    "transcription_model": "gpt-4o-mini-transcribe"
+    "model_transcription": "gpt-4o-mini-transcribe"
   },
   "temporal": {
     "host_port": "127.0.0.1:7233",
@@ -343,7 +353,9 @@ func TestLoadParsesConversationConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if cfg.Conversation.Enabled || cfg.Conversation.HistoryLimit != 12 || cfg.Conversation.MaxContextChars != 4000 {
+	if cfg.Conversation.Enabled || cfg.Conversation.HistoryLimit != 12 || cfg.Conversation.MaxContextChars != 4000 ||
+		cfg.Conversation.SummaryEnabled || cfg.Conversation.SummaryTriggerChars != 5000 ||
+		cfg.Conversation.SummaryMaxChars != 2000 || cfg.Conversation.SummaryRecentMessages != 7 {
 		t.Fatalf("unexpected conversation config: %#v", cfg.Conversation)
 	}
 }
@@ -367,7 +379,7 @@ func TestLoadParsesDiscordOutboundAttachmentLimits(t *testing.T) {
 	    "base_url": "http://127.0.0.1:4000",
 	    "model_reasoning": "gpt-5.4",
 	    "model_fast": "gpt-5.4-mini",
-	    "transcription_model": "gpt-4o-mini-transcribe"
+	    "model_transcription": "gpt-4o-mini-transcribe"
 	  },
 	  "temporal": {
 	    "host_port": "127.0.0.1:7233",
@@ -430,7 +442,7 @@ func TestLoadDefaultsDiscordOutboundMessageLimits(t *testing.T) {
     "base_url": "http://127.0.0.1:4000",
     "model_reasoning": "gpt-5.4",
     "model_fast": "gpt-5.4-mini",
-    "transcription_model": "gpt-4o-mini-transcribe"
+    "model_transcription": "gpt-4o-mini-transcribe"
   },
   "temporal": {
     "host_port": "127.0.0.1:7233",
@@ -475,7 +487,7 @@ func TestLoadRejectsInvalidDiscordOutboundMessageLimits(t *testing.T) {
     "base_url": "http://127.0.0.1:4000",
     "model_reasoning": "gpt-5.4",
     "model_fast": "gpt-5.4-mini",
-    "transcription_model": "gpt-4o-mini-transcribe"
+    "model_transcription": "gpt-4o-mini-transcribe"
   },
   "temporal": {
     "host_port": "127.0.0.1:7233",
@@ -527,7 +539,7 @@ func TestLoadRejectsNonPositiveTemporalConfigValues(t *testing.T) {
     "base_url": "http://127.0.0.1:4000",
     "model_reasoning": "gpt-5.4",
     "model_fast": "gpt-5.4-mini",
-    "transcription_model": "gpt-4o-mini-transcribe"
+    "model_transcription": "gpt-4o-mini-transcribe"
   },
   "temporal": {
     "host_port": "127.0.0.1:7233",

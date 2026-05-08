@@ -64,7 +64,7 @@ func memoryExtractionSystemPrompt() string {
 You extract durable OpenCTO memory candidates from a single user message.
 
 Return only JSON:
-{"candidates":[{"scope":"project|user|global","kind":"fact|preference|instruction|decision|constraint|identity|workflow|reference|feedback|project|user","content":"...","tags":["..."],"confidence":0.8,"pinned":false,"reason":"..."}]}
+{"candidates":[{"scope":"thread|project|user|global","kind":"fact|preference|instruction|decision|constraint|identity|workflow|reference|feedback|project|user","content":"...","tags":["..."],"confidence":0.8,"pinned":false,"reason":"..."}]}
 
 Use an empty candidates array when nothing should be saved.
 
@@ -72,10 +72,11 @@ Save only durable information that is likely useful for future OpenCTO technical
 - explicit requests to remember durable information that affects future OpenCTO collaboration
 - stable identity or communication facts that affect collaboration, such as preferred name, role, or communication style
 - stable project decisions, constraints, product goals, external references, deployment/process details
-- user working preferences that affect future technical collaboration
+- explicit or clearly operational user working preferences that affect future technical collaboration
 - standing instructions such as always/never/by default/from now on
 
 Do not save:
+- casual opinions, comparisons, reactions, preferences, or beliefs unless the user frames them as a durable instruction, default, project decision, or future collaboration preference
 - casual personal facts unrelated to OpenCTO technical work, such as where someone lives, unless it directly affects scheduling, operations, compliance, or technical workflow
 - temporary choices: for now, today, this task, this migration, just this once
 - logs, diffs, command output, stack traces, secrets, tokens, passwords, API keys
@@ -83,6 +84,7 @@ Do not save:
 - one-off conversation details or random trivia
 
 Scopes:
+- thread: facts/preferences/decisions useful only inside the current Discord thread
 - project: facts/preferences/decisions shared by the current project
 - user: preferences/facts belonging only to the current user
 - global: rare shared rules or facts that should apply across users
@@ -97,6 +99,7 @@ Examples:
 - "Always ask before broad refactors." -> user preference memory.
 - "Production incidents live in Linear project INFRA." -> project reference memory.
 - "I live in Tbilisi." -> no memory unless it affects scheduling, operations, compliance, or technical workflow.
+- Casual comparative statements without durable intent -> no memory.
 
 Keep content concise. Do not duplicate existing memories.
 `)
@@ -108,6 +111,10 @@ func memoryExtractionUserPrompt(input agent.MemoryExtractionInput) string {
 	builder.WriteString(strings.TrimSpace(input.ProjectID))
 	builder.WriteString("\nChannel: ")
 	builder.WriteString(string(input.Event.ChannelType))
+	if threadID := strings.TrimSpace(input.Event.ThreadID); threadID != "" {
+		builder.WriteString("\nThread ID: ")
+		builder.WriteString(threadID)
+	}
 	builder.WriteString("\n\nUser message:\n")
 	builder.WriteString(strings.TrimSpace(input.Event.Body))
 	if len(input.ExistingMemories) > 0 {
@@ -158,7 +165,7 @@ func parseMemoryExtractionOutput(content string) (agent.MemoryExtractionOutput, 
 			candidate.Confidence = 1
 		}
 		switch candidate.Scope {
-		case domain.MemoryScopeProject, domain.MemoryScopeUser, domain.MemoryScopeGlobal:
+		case domain.MemoryScopeThread, domain.MemoryScopeProject, domain.MemoryScopeUser, domain.MemoryScopeGlobal:
 		default:
 			continue
 		}

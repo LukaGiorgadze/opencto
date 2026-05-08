@@ -5,8 +5,8 @@
     "properties": {
         "scope": {
             "type": "string",
-            "enum": ["project", "user", "global", "all"],
-            "description": "Memory scope to list. User scope is limited to the current user."
+            "enum": ["thread", "project", "user", "global", "all"],
+            "description": "Memory scope to list. Thread scope is limited to the current Discord thread; user scope is limited to the current user. In a Discord thread, all defaults to thread-only memory."
         },
         "kind": {
             "type": "string",

@@ -52,6 +52,8 @@ type llmFileConfig struct {
 	BaseURL            string `json:"base_url"`
 	ModelReasoning     string `json:"model_reasoning"`
 	ModelFast          string `json:"model_fast"`
+	ModelSummary       string `json:"model_summary"`
+	ModelTranscription string `json:"model_transcription"`
 	TranscriptionModel string `json:"transcription_model"`
 	APIKey             string `json:"api_key"`
 }
@@ -81,9 +83,13 @@ type MemoryConfig struct {
 }
 
 type ConversationConfig struct {
-	Enabled         bool `json:"enabled"`
-	HistoryLimit    int  `json:"history_limit"`
-	MaxContextChars int  `json:"max_context_chars"`
+	Enabled               bool `json:"enabled"`
+	HistoryLimit          int  `json:"history_limit"`
+	MaxContextChars       int  `json:"max_context_chars"`
+	SummaryEnabled        bool `json:"summary_enabled"`
+	SummaryTriggerChars   int  `json:"summary_trigger_chars"`
+	SummaryMaxChars       int  `json:"summary_max_chars"`
+	SummaryRecentMessages int  `json:"summary_recent_messages"`
 }
 
 type memoryFileConfig struct {
@@ -108,9 +114,13 @@ type MemoryEmbeddingConfig struct {
 }
 
 type conversationFileConfig struct {
-	Enabled         *bool `json:"enabled"`
-	HistoryLimit    int   `json:"history_limit"`
-	MaxContextChars int   `json:"max_context_chars"`
+	Enabled               *bool `json:"enabled"`
+	HistoryLimit          int   `json:"history_limit"`
+	MaxContextChars       int   `json:"max_context_chars"`
+	SummaryEnabled        *bool `json:"summary_enabled"`
+	SummaryTriggerChars   int   `json:"summary_trigger_chars"`
+	SummaryMaxChars       int   `json:"summary_max_chars"`
+	SummaryRecentMessages int   `json:"summary_recent_messages"`
 }
 
 type LLMConfig struct {
@@ -118,7 +128,8 @@ type LLMConfig struct {
 	BaseURL            string `json:"base_url"`
 	ModelReasoning     string `json:"model_reasoning"`
 	ModelFast          string `json:"model_fast"`
-	TranscriptionModel string `json:"transcription_model"`
+	ModelSummary       string `json:"model_summary"`
+	ModelTranscription string `json:"model_transcription"`
 	APIKey             string `json:"api_key"`
 }
 
@@ -177,7 +188,8 @@ func Load(path string) (Config, error) {
 			BaseURL:            raw.LLM.BaseURL,
 			ModelReasoning:     raw.LLM.ModelReasoning,
 			ModelFast:          raw.LLM.ModelFast,
-			TranscriptionModel: raw.LLM.TranscriptionModel,
+			ModelSummary:       firstNonEmpty(raw.LLM.ModelSummary, raw.LLM.ModelFast),
+			ModelTranscription: firstNonEmpty(raw.LLM.ModelTranscription, raw.LLM.TranscriptionModel),
 			APIKey:             raw.LLM.APIKey,
 		},
 		Temporal:      raw.Temporal,
@@ -223,7 +235,8 @@ func (c *Config) validate() error {
 	requireString(c.LLM.BaseURL, "llm.base_url")
 	requireString(c.LLM.ModelReasoning, "llm.model_reasoning")
 	requireString(c.LLM.ModelFast, "llm.model_fast")
-	requireString(c.LLM.TranscriptionModel, "llm.transcription_model")
+	requireString(c.LLM.ModelSummary, "llm.model_summary")
+	requireString(c.LLM.ModelTranscription, "llm.model_transcription")
 	requireString(c.Temporal.HostPort, "temporal.host_port")
 	requireString(c.Temporal.Namespace, "temporal.namespace")
 	requireString(c.Temporal.TaskQueue, "temporal.task_queue")
@@ -258,6 +271,15 @@ func (c *Config) validate() error {
 	}
 	if c.Conversation.MaxContextChars < 1 || c.Conversation.MaxContextChars > 100000 {
 		errs = append(errs, errors.New("conversation.max_context_chars must be between 1 and 100000"))
+	}
+	if c.Conversation.SummaryTriggerChars < 1000 || c.Conversation.SummaryTriggerChars > 500000 {
+		errs = append(errs, errors.New("conversation.summary_trigger_chars must be between 1000 and 500000"))
+	}
+	if c.Conversation.SummaryMaxChars < 1000 || c.Conversation.SummaryMaxChars > 50000 {
+		errs = append(errs, errors.New("conversation.summary_max_chars must be between 1000 and 50000"))
+	}
+	if c.Conversation.SummaryRecentMessages < 1 || c.Conversation.SummaryRecentMessages > 50 {
+		errs = append(errs, errors.New("conversation.summary_recent_messages must be between 1 and 50"))
 	}
 	if err := validateDiscordMessageLimits(c.Channels.Discord.OutboundMessages); err != nil {
 		errs = append(errs, err)
@@ -333,17 +355,43 @@ func normalizeConversation(value conversationFileConfig) ConversationConfig {
 	}
 	limit := value.HistoryLimit
 	if limit == 0 {
-		limit = 10
+		limit = 20
 	}
 	maxChars := value.MaxContextChars
 	if maxChars == 0 {
-		maxChars = 8000
+		maxChars = 20000
+	}
+	triggerChars := value.SummaryTriggerChars
+	if triggerChars == 0 {
+		triggerChars = 24000
+	}
+	summaryMaxChars := value.SummaryMaxChars
+	if summaryMaxChars == 0 {
+		summaryMaxChars = 6000
+	}
+	recentMessages := value.SummaryRecentMessages
+	if recentMessages == 0 {
+		recentMessages = 10
 	}
 	return ConversationConfig{
-		Enabled:         enabled,
-		HistoryLimit:    limit,
-		MaxContextChars: maxChars,
+		Enabled:               enabled,
+		HistoryLimit:          limit,
+		MaxContextChars:       maxChars,
+		SummaryEnabled:        defaultBool(value.SummaryEnabled, true),
+		SummaryTriggerChars:   triggerChars,
+		SummaryMaxChars:       summaryMaxChars,
+		SummaryRecentMessages: recentMessages,
 	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func normalizeMessageLimits(value, defaults MessageLimitsConfig) MessageLimitsConfig {

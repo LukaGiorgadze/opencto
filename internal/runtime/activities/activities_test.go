@@ -36,6 +36,10 @@ type stubProjectStore struct {
 	forgetRequests       *[]domain.MemoryForgetRequest
 	conversationsByScope map[storage.ConversationScope][]domain.ConversationMessage
 	conversationQueries  *[]storage.ConversationQuery
+	summariesByScope     map[domain.ConversationSummaryScope][]domain.ConversationSummary
+	summaryQueries       *[]storage.ConversationSummaryQuery
+	upsertedSummaries    *[]domain.ConversationSummary
+	upsertedThreads      *[]domain.ConversationThread
 	upsertedConversation *[]domain.ConversationMessage
 }
 
@@ -63,6 +67,19 @@ func (e stubMemoryExtractor) ExtractMemories(_ context.Context, input agent.Memo
 		*e.input = input
 	}
 	return e.output, e.err
+}
+
+type stubConversationCompressor struct {
+	output agent.ConversationCompressionOutput
+	err    error
+	input  *agent.ConversationCompressionInput
+}
+
+func (c stubConversationCompressor) CompressConversation(_ context.Context, input agent.ConversationCompressionInput) (agent.ConversationCompressionOutput, error) {
+	if c.input != nil {
+		*c.input = input
+	}
+	return c.output, c.err
 }
 
 type fakeEmbedder struct {
@@ -100,15 +117,16 @@ func (e fakeEmbedder) Dimensions() int {
 type captureReporter struct {
 	reports      []domain.ReportMessage
 	messages     []string
+	receipts     []domain.ReportReceipt
 	typingEvents []domain.Event
 	typingErr    error
 	onTyping     func()
 }
 
-func (r *captureReporter) Report(_ context.Context, _ domain.Event, report domain.ReportMessage) error {
+func (r *captureReporter) Report(_ context.Context, _ domain.Event, report domain.ReportMessage) ([]domain.ReportReceipt, error) {
 	r.reports = append(r.reports, report)
 	r.messages = append(r.messages, report.Text)
-	return nil
+	return append([]domain.ReportReceipt(nil), r.receipts...), nil
 }
 
 func (r *captureReporter) NotifyTyping(_ context.Context, event domain.Event) error {
@@ -155,6 +173,13 @@ func (s stubProjectStore) UpsertToolInvocation(context.Context, domain.ToolInvoc
 	return nil
 }
 
+func (s stubProjectStore) UpsertConversationThread(_ context.Context, thread domain.ConversationThread) error {
+	if s.upsertedThreads != nil {
+		*s.upsertedThreads = append(*s.upsertedThreads, thread)
+	}
+	return nil
+}
+
 func (s stubProjectStore) UpsertConversationMessage(_ context.Context, message domain.ConversationMessage) error {
 	if s.upsertedConversation != nil {
 		*s.upsertedConversation = append(*s.upsertedConversation, message)
@@ -170,11 +195,42 @@ func (s stubProjectStore) ListConversationMessages(_ context.Context, query stor
 	if len(source) == 0 {
 		return nil, nil
 	}
+	filtered := make([]domain.ConversationMessage, 0, len(source))
+	for _, message := range source {
+		if !query.AfterCreatedAt.IsZero() {
+			if message.CreatedAt.Before(query.AfterCreatedAt) || (message.CreatedAt.Equal(query.AfterCreatedAt) && message.ID <= query.AfterID) {
+				continue
+			}
+		}
+		filtered = append(filtered, message)
+	}
 	limit := storage.DefaultConversationHistoryLimit(query.Limit)
-	if limit > len(source) {
+	if limit > len(filtered) {
+		limit = len(filtered)
+	}
+	return append([]domain.ConversationMessage(nil), filtered[:limit]...), nil
+}
+
+func (s stubProjectStore) UpsertConversationSummary(_ context.Context, summary domain.ConversationSummary) error {
+	if s.upsertedSummaries != nil {
+		*s.upsertedSummaries = append(*s.upsertedSummaries, summary)
+	}
+	return nil
+}
+
+func (s stubProjectStore) ListConversationSummaries(_ context.Context, query storage.ConversationSummaryQuery) ([]domain.ConversationSummary, error) {
+	if s.summaryQueries != nil {
+		*s.summaryQueries = append(*s.summaryQueries, query)
+	}
+	source := s.summariesByScope[query.Scope]
+	if len(source) == 0 {
+		return nil, nil
+	}
+	limit := query.Limit
+	if limit <= 0 || limit > len(source) {
 		limit = len(source)
 	}
-	return append([]domain.ConversationMessage(nil), source[:limit]...), nil
+	return append([]domain.ConversationSummary(nil), source[:limit]...), nil
 }
 
 func (s stubProjectStore) RememberMemory(_ context.Context, memory domain.Memory) (domain.Memory, error) {
@@ -269,6 +325,39 @@ func TestPersistEventCarriesControlMetadataToConversationMessage(t *testing.T) {
 	}
 }
 
+func TestPersistEventUpsertsConversationThread(t *testing.T) {
+	t.Parallel()
+
+	upsertedThreads := []domain.ConversationThread{}
+	activities := Activities{
+		Store: stubProjectStore{upsertedThreads: &upsertedThreads},
+	}
+	err := activities.PersistEvent(context.Background(), PersistEventRequest{
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "project-1",
+			ChannelID:   "thread-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ThreadID:    "thread-1",
+			Body:        "thread answer",
+			CreatedAt:   time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
+		},
+	})
+	if err != nil {
+		t.Fatalf("persist event: %v", err)
+	}
+	if len(upsertedThreads) != 1 {
+		t.Fatalf("expected one thread upsert, got %#v", upsertedThreads)
+	}
+	thread := upsertedThreads[0]
+	if thread.ProjectID != "project-1" || thread.ChannelID != "thread-1" || thread.ThreadID != "thread-1" || thread.EventID != "event-1" {
+		t.Fatalf("unexpected thread upsert: %#v", thread)
+	}
+	if thread.LastMessageAt.IsZero() {
+		t.Fatalf("expected last message time to be set: %#v", thread)
+	}
+}
+
 func TestExtractMemoryStoresAutoCandidate(t *testing.T) {
 	t.Parallel()
 
@@ -340,6 +429,78 @@ func TestExtractMemoryStoresAutoCandidate(t *testing.T) {
 	}
 }
 
+func TestExtractMemoryStoresThreadScopedCandidate(t *testing.T) {
+	t.Parallel()
+
+	remembered := []domain.Memory{}
+	searchRequests := []domain.MemorySearchRequest{}
+	activities := Activities{
+		Store: stubProjectStore{
+			remembered:     &remembered,
+			searchRequests: &searchRequests,
+		},
+		MemoryEnabled:            true,
+		MemoryAutoExtractEnabled: true,
+		MemoryExtractor: stubMemoryExtractor{
+			output: agent.MemoryExtractionOutput{Candidates: []agent.MemoryCandidate{{
+				Scope:      domain.MemoryScopeThread,
+				Kind:       "decision",
+				Content:    "Use a compact orange theme in this thread.",
+				Tags:       []string{"theme"},
+				Confidence: 0.8,
+			}}},
+		},
+	}
+
+	result, err := activities.ExtractMemory(context.Background(), ExtractMemoryRequest{
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "project-1",
+			Kind:        domain.EventKindMessage,
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "thread-1",
+			ThreadID:    "thread-1",
+			ActorID:     "actor-1",
+			Body:        "use orange here",
+		},
+	})
+	if err != nil {
+		t.Fatalf("extract memory: %v", err)
+	}
+	if result.Remembered != 1 || len(remembered) != 1 {
+		t.Fatalf("expected remembered thread memory, got result=%#v memories=%#v", result, remembered)
+	}
+	if remembered[0].Scope != domain.MemoryScopeThread || remembered[0].ThreadID != "thread-1" {
+		t.Fatalf("unexpected remembered thread memory: %#v", remembered[0])
+	}
+	firstMemoryID := remembered[0].ID
+	_, err = activities.ExtractMemory(context.Background(), ExtractMemoryRequest{
+		Event: domain.Event{
+			ID:          "event-2",
+			ProjectID:   "project-1",
+			Kind:        domain.EventKindMessage,
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "thread-2",
+			ThreadID:    "thread-2",
+			ActorID:     "actor-1",
+			Body:        "use orange here too",
+		},
+	})
+	if err != nil {
+		t.Fatalf("extract second thread memory: %v", err)
+	}
+	if len(remembered) != 2 || remembered[1].ID == firstMemoryID {
+		t.Fatalf("thread-scoped memories should include thread id in stable identity: %#v", remembered)
+	}
+	if len(searchRequests) != 2 ||
+		searchRequests[0].ThreadID != "thread-1" ||
+		searchRequests[1].ThreadID != "thread-2" ||
+		len(searchRequests[0].Scopes) != 1 ||
+		searchRequests[0].Scopes[0] != domain.MemoryScopeThread {
+		t.Fatalf("expected thread-only existing memory search, got %#v", searchRequests)
+	}
+}
+
 func TestExtractMemorySkipsControlMessages(t *testing.T) {
 	t.Parallel()
 
@@ -408,7 +569,7 @@ func TestReportResponseIncludesAttachments(t *testing.T) {
 
 	reporter := &captureReporter{}
 	activities := Activities{Reporter: reporter}
-	err := activities.ReportResponse(context.Background(), ReportResponseRequest{
+	result, err := activities.ReportResponse(context.Background(), ReportResponseRequest{
 		Event: domain.Event{
 			ID:        "event-1",
 			ProjectID: "project-1",
@@ -421,12 +582,125 @@ func TestReportResponseIncludesAttachments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("report response: %v", err)
 	}
+	if len(result.Receipts) != 0 {
+		t.Fatalf("unexpected receipts: %#v", result.Receipts)
+	}
 	if len(reporter.reports) != 1 {
 		t.Fatalf("expected one report, got %d", len(reporter.reports))
 	}
 	report := reporter.reports[0]
 	if report.Text != "see attached" || len(report.Attachments) != 1 || report.Attachments[0].Path != "/workspace/screenshot.png" {
 		t.Fatalf("unexpected report: %#v", report)
+	}
+}
+
+func TestReportResponsePersistsWaitingPromptForDiscordThread(t *testing.T) {
+	t.Parallel()
+
+	upserted := []domain.ConversationMessage{}
+	upsertedThreads := []domain.ConversationThread{}
+	reporter := &captureReporter{
+		receipts: []domain.ReportReceipt{{
+			MessageID: "bot-prompt-1",
+			ChannelID: "channel-1",
+			ContextID: "guild-1",
+		}},
+	}
+	activities := Activities{
+		Reporter: reporter,
+		Store: stubProjectStore{
+			upsertedConversation: &upserted,
+			upsertedThreads:      &upsertedThreads,
+		},
+	}
+	_, err := activities.ReportResponse(context.Background(), ReportResponseRequest{
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "project-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+		},
+		Message:     "Reply to this message, or write in its thread, with your answer.",
+		WaitingKind: "question",
+	})
+	if err != nil {
+		t.Fatalf("report response: %v", err)
+	}
+	if len(upserted) != 2 {
+		t.Fatalf("expected source-channel and future-thread conversation rows, got %#v", upserted)
+	}
+	got := map[string]domain.ConversationMessage{}
+	for _, message := range upserted {
+		got[message.ChannelID+"|"+message.ThreadID] = message
+	}
+	if _, ok := got["channel-1|"]; !ok {
+		t.Fatalf("expected prompt stored in the source channel, got %#v", upserted)
+	}
+	threadPrompt, ok := got["bot-prompt-1|bot-prompt-1"]
+	if !ok {
+		t.Fatalf("expected prompt stored for the Discord message thread, got %#v", upserted)
+	}
+	if threadPrompt.Role != domain.ConversationRoleAssistant ||
+		threadPrompt.Metadata[domain.MetadataKeyWaitingKind] != "question" ||
+		threadPrompt.Metadata["message_id"] != "bot-prompt-1" {
+		t.Fatalf("unexpected thread prompt conversation row: %#v", threadPrompt)
+	}
+	if len(upsertedThreads) != 1 || upsertedThreads[0].ThreadID != "bot-prompt-1" || upsertedThreads[0].RootMessageID != "bot-prompt-1" {
+		t.Fatalf("expected future Discord thread ownership, got %#v", upsertedThreads)
+	}
+}
+
+func TestReportResponsePersistsNormalDiscordReportForFutureThread(t *testing.T) {
+	t.Parallel()
+
+	upserted := []domain.ConversationMessage{}
+	upsertedThreads := []domain.ConversationThread{}
+	reporter := &captureReporter{
+		receipts: []domain.ReportReceipt{{
+			MessageID: "bot-message-1",
+			ChannelID: "channel-1",
+			ContextID: "guild-1",
+		}},
+	}
+	activities := Activities{
+		Reporter: reporter,
+		Store: stubProjectStore{
+			upsertedConversation: &upserted,
+			upsertedThreads:      &upsertedThreads,
+		},
+	}
+	_, err := activities.ReportResponse(context.Background(), ReportResponseRequest{
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "project-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+		},
+		Message: "Here is what I currently have saved in memory.",
+	})
+	if err != nil {
+		t.Fatalf("report response: %v", err)
+	}
+	if len(upserted) != 1 {
+		t.Fatalf("expected only the future-thread conversation row, got %#v", upserted)
+	}
+	got := map[string]domain.ConversationMessage{}
+	for _, message := range upserted {
+		got[message.ChannelID+"|"+message.ThreadID] = message
+	}
+	threadMessage, ok := got["bot-message-1|bot-message-1"]
+	if !ok {
+		t.Fatalf("expected normal report stored for the Discord message thread, got %#v", upserted)
+	}
+	if threadMessage.Role != domain.ConversationRoleAssistant ||
+		threadMessage.Body != "Here is what I currently have saved in memory." ||
+		threadMessage.Metadata["source"] != "report_response" ||
+		threadMessage.Metadata["message_id"] != "bot-message-1" ||
+		threadMessage.Metadata[domain.MetadataKeyWaitingKind] != "" {
+		t.Fatalf("unexpected future thread conversation row: %#v", threadMessage)
+	}
+	if len(upsertedThreads) != 1 || upsertedThreads[0].ThreadID != "bot-message-1" || upsertedThreads[0].RootMessageID != "bot-message-1" {
+		t.Fatalf("expected future Discord thread ownership, got %#v", upsertedThreads)
 	}
 }
 
@@ -444,6 +718,26 @@ func TestFullObservationIncludesAllStreamsAndError(t *testing.T) {
 	expected := "stdout:\ncommand output\n\nstderr:\ncommand failed\nwith stderr\n\nerror:\nexit status 1"
 	if observation != expected {
 		t.Fatalf("unexpected observation: %q", observation)
+	}
+}
+
+func TestFullObservationCleansTerminalControls(t *testing.T) {
+	observation := fullObservation(
+		"vite build\x1b[2K\rtransforming...\x1b]0;ignored title\a done\x00",
+		"warn: \x1b[31mred\x1b[0m",
+		errors.New("exit\x1b[2K\rstatus 1"),
+	)
+	if strings.Contains(observation, "\x1b") ||
+		strings.Contains(observation, "\r") ||
+		strings.Contains(observation, "[2K") ||
+		strings.Contains(observation, "ignored title") ||
+		strings.Contains(observation, "\x00") {
+		t.Fatalf("expected terminal controls to be removed, got %q", observation)
+	}
+	if !strings.Contains(observation, "vite build\ntransforming... done") ||
+		!strings.Contains(observation, "warn: red") ||
+		!strings.Contains(observation, "exit\nstatus 1") {
+		t.Fatalf("expected readable output to remain, got %q", observation)
 	}
 }
 
@@ -587,6 +881,79 @@ func TestLoadContextIncludesBoundedMemoryWhenEnabled(t *testing.T) {
 	}
 	if len(searchRequests[0].Scopes) != 3 || searchRequests[0].Scopes[1] != domain.MemoryScopeUser {
 		t.Fatalf("expected memory search to include user scope, got %#v", searchRequests[0].Scopes)
+	}
+}
+
+func TestLoadContextUsesOnlyThreadMemoryInThread(t *testing.T) {
+	t.Parallel()
+
+	var searchRequests []domain.MemorySearchRequest
+	activities := Activities{
+		Store:         stubProjectStore{searchRequests: &searchRequests},
+		Project:       domain.Project{ID: "default", Name: "OpenCTO"},
+		MemoryEnabled: true,
+		MemoryLimit:   5,
+	}
+	_, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:          "event-1",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "thread-1",
+		ThreadID:    "thread-1",
+		ActorID:     "user-1",
+		Body:        "continue here",
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if len(searchRequests) != 1 {
+		t.Fatalf("expected one memory search, got %#v", searchRequests)
+	}
+	request := searchRequests[0]
+	if request.ThreadID != "thread-1" || len(request.Scopes) != 1 || request.Scopes[0] != domain.MemoryScopeThread {
+		t.Fatalf("expected thread-only memory search, got %#v", request)
+	}
+}
+
+func TestLoadContextExcludesMemoryFromCurrentEvent(t *testing.T) {
+	t.Parallel()
+
+	memories := []domain.Memory{
+		{
+			ID:        "current-event-memory",
+			ProjectID: "default",
+			Scope:     domain.MemoryScopeProject,
+			Kind:      "preference",
+			Content:   "Current event memory should not echo into the same turn.",
+			SourceID:  "event-1",
+		},
+		{
+			ID:        "older-memory",
+			ProjectID: "default",
+			Scope:     domain.MemoryScopeProject,
+			Kind:      "preference",
+			Content:   "Older memory remains available.",
+			SourceID:  "event-0",
+		},
+	}
+	activities := Activities{
+		Store:         stubProjectStore{memories: memories},
+		Project:       domain.Project{ID: "default", Name: "OpenCTO"},
+		MemoryEnabled: true,
+		MemoryLimit:   5,
+	}
+	loaded, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:          "event-1",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ActorID:     "user-1",
+		Body:        "current user message",
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if len(loaded.Memory) != 1 || loaded.Memory[0].ID != "older-memory" {
+		t.Fatalf("expected same-event memory to be excluded, got %#v", loaded.Memory)
 	}
 }
 
@@ -736,6 +1103,47 @@ func TestExecuteMemoryToolListsCurrentUserMemories(t *testing.T) {
 	}
 	if len(listRequests) != 1 || listRequests[0].UserID != "discord:user-1" || listRequests[0].Scopes[0] != domain.MemoryScopeUser {
 		t.Fatalf("unexpected list request: %#v", listRequests)
+	}
+}
+
+func TestExecuteMemoryToolDefaultsToThreadScopeInThread(t *testing.T) {
+	t.Parallel()
+
+	var listRequests []domain.MemoryListRequest
+	activities := Activities{
+		Store:         stubProjectStore{listRequests: &listRequests},
+		MemoryEnabled: true,
+	}
+	_, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "default",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "thread-1",
+			ThreadID:    "thread-1",
+			ActorID:     "user-1",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemoryList,
+			Intent:     "list memory",
+			Input:      []byte(`{"scope":"all","kind":"","tags":[],"limit":10}`),
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute memory list: %v", err)
+	}
+	if len(listRequests) != 1 {
+		t.Fatalf("expected one list request, got %#v", listRequests)
+	}
+	request := listRequests[0]
+	if request.ThreadID != "thread-1" || len(request.Scopes) != 1 || request.Scopes[0] != domain.MemoryScopeThread {
+		t.Fatalf("expected thread-scoped list request, got %#v", request)
 	}
 }
 
@@ -1003,10 +1411,10 @@ func TestLoadContextIncludesScopedConversationHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load context: %v", err)
 	}
-	if got := idsFromConversation(loaded.Conversation); strings.Join(got, ",") != "thread-1,thread-2,channel-1" {
+	if got := idsFromConversation(loaded.Conversation); strings.Join(got, ",") != "thread-1,thread-2" {
 		t.Fatalf("unexpected conversation history: %#v", loaded.Conversation)
 	}
-	if len(queries) != 2 || queries[0].Scope != storage.ConversationScopeThread || queries[1].Scope != storage.ConversationScopeChannel {
+	if len(queries) != 1 || queries[0].Scope != storage.ConversationScopeThread {
 		t.Fatalf("unexpected conversation queries: %#v", queries)
 	}
 	for _, query := range queries {
@@ -1016,6 +1424,56 @@ func TestLoadContextIncludesScopedConversationHistory(t *testing.T) {
 		if !query.ExcludeControl {
 			t.Fatalf("expected control messages to be excluded from normal history, got %#v", query)
 		}
+	}
+}
+
+func TestLoadContextIncludesThreadAndFallbackConversationSummaries(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	queries := []storage.ConversationSummaryQuery{}
+	activities := Activities{
+		Store: stubProjectStore{
+			summariesByScope: map[domain.ConversationSummaryScope][]domain.ConversationSummary{
+				domain.ConversationSummaryScopeThread: {
+					{ID: "thread-summary", ProjectID: "default", Scope: domain.ConversationSummaryScopeThread, Summary: "thread", ToCreatedAt: base},
+				},
+				domain.ConversationSummaryScopeChannel: {
+					{ID: "channel-summary", ProjectID: "default", Scope: domain.ConversationSummaryScopeChannel, Summary: "channel", ToCreatedAt: base.Add(time.Second)},
+				},
+				domain.ConversationSummaryScopeProject: {
+					{ID: "project-summary", ProjectID: "default", Scope: domain.ConversationSummaryScopeProject, Summary: "project", ToCreatedAt: base.Add(2 * time.Second)},
+				},
+			},
+			summaryQueries: &queries,
+		},
+		ConversationEnabled:        true,
+		ConversationSummaryEnabled: true,
+	}
+
+	loaded, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:          "event-1",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-a",
+		ThreadID:    "thread-a",
+		Body:        "continue",
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	got := make([]string, 0, len(loaded.ConversationSummaries))
+	for _, summary := range loaded.ConversationSummaries {
+		got = append(got, summary.ID)
+	}
+	if strings.Join(got, ",") != "thread-summary,channel-summary,project-summary" {
+		t.Fatalf("unexpected summaries: %#v", loaded.ConversationSummaries)
+	}
+	if len(queries) != 3 ||
+		queries[0].Scope != domain.ConversationSummaryScopeThread ||
+		queries[1].Scope != domain.ConversationSummaryScopeChannel ||
+		queries[2].Scope != domain.ConversationSummaryScopeProject {
+		t.Fatalf("unexpected summary queries: %#v", queries)
 	}
 }
 
@@ -1368,6 +1826,288 @@ func TestNextActionPassesEventChannelToEngine(t *testing.T) {
 	}
 	if input.ChannelType != domain.ChannelTypeLocal {
 		t.Fatalf("expected local channel, got %q", input.ChannelType)
+	}
+}
+
+func TestCompressConversationSummarizesOlderMessages(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	var messages []domain.ConversationMessage
+	for i := 0; i < 6; i++ {
+		messages = append(messages, domain.ConversationMessage{
+			ID:          fmt.Sprintf("message-%d", i),
+			ProjectID:   "default",
+			Role:        domain.ConversationRoleUser,
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-a",
+			Body:        strings.Repeat("context ", 30),
+			CreatedAt:   base.Add(time.Duration(i) * time.Minute),
+		})
+	}
+	upserted := []domain.ConversationSummary{}
+	compressorInput := agent.ConversationCompressionInput{}
+	activities := Activities{
+		Store: stubProjectStore{
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeChannel: messages,
+			},
+			upsertedSummaries: &upserted,
+		},
+		ConversationCompressor:      stubConversationCompressor{output: agent.ConversationCompressionOutput{Summary: "Older channel context."}, input: &compressorInput},
+		ConversationEnabled:         true,
+		ConversationSummaryEnabled:  true,
+		ConversationSummaryTrigger:  100,
+		ConversationSummaryMaxChars: 1000,
+		ConversationSummaryRecent:   2,
+	}
+
+	result, err := activities.CompressConversation(context.Background(), CompressConversationRequest{
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "default",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("compress conversation: %v", err)
+	}
+	if !result.Summarized || result.MessageCount != 4 {
+		t.Fatalf("unexpected compression result: %#v", result)
+	}
+	if len(compressorInput.Messages) != 4 || compressorInput.Messages[3].ID != "message-3" {
+		t.Fatalf("expected compressor to leave recent messages raw, got %#v", compressorInput.Messages)
+	}
+	if len(upserted) != 1 || upserted[0].Summary != "Older channel context." || upserted[0].ToMessageID != "message-3" {
+		t.Fatalf("unexpected upserted summary: %#v", upserted)
+	}
+	if upserted[0].Scope != domain.ConversationSummaryScopeChannel || upserted[0].ChannelID != "channel-a" {
+		t.Fatalf("unexpected summary scope: %#v", upserted[0])
+	}
+}
+
+func TestNextActionLoadsConversationFromLatestAdditionalThreadEvent(t *testing.T) {
+	t.Parallel()
+
+	var input agent.NextActionInput
+	queries := []storage.ConversationQuery{}
+	base := time.Date(2026, 5, 8, 15, 0, 0, 0, time.UTC)
+	activities := Activities{
+		Engine: stubEngine{
+			output: agent.NextActionOutput{
+				NextAction: agent.NextAction{ResponseMessage: "done"},
+				Status:     NextActionStatusCompleted,
+			},
+			input: &input,
+		},
+		Store: stubProjectStore{
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeThread: {
+					{
+						ID:          "prompt-1",
+						ProjectID:   "project-1",
+						Role:        domain.ConversationRoleAssistant,
+						ChannelType: domain.ChannelTypeDiscord,
+						ChannelID:   "bot-prompt-1",
+						ThreadID:    "bot-prompt-1",
+						Body:        "where should I create it?",
+						CreatedAt:   base,
+					},
+				},
+			},
+			conversationQueries: &queries,
+		},
+		ConversationEnabled: true,
+	}
+	event := domain.Event{
+		ID:          "event-1",
+		ProjectID:   "project-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		Body:        "create react/vite app",
+	}
+	threadReply := domain.Event{
+		ID:          "event-2",
+		ProjectID:   "project-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "bot-prompt-1",
+		Body:        "1",
+		Metadata:    domain.Metadata{domain.MetadataKeyControl: domain.MetadataControlPlanningAnswer},
+	}
+	_, err := activities.NextAction(context.Background(), NextActionRequest{
+		ProjectID:        "project-1",
+		Event:            event,
+		AdditionalEvents: []domain.Event{threadReply},
+		ExecutionCycle:   2,
+	})
+	if err != nil {
+		t.Fatalf("next action: %v", err)
+	}
+	if len(queries) == 0 || queries[0].Scope != storage.ConversationScopeThread ||
+		queries[0].ChannelID != "bot-prompt-1" ||
+		queries[0].ThreadID != "bot-prompt-1" ||
+		queries[0].ExcludeEventID != "event-2" {
+		t.Fatalf("expected conversation query to use latest thread event, got %#v", queries)
+	}
+	if len(input.Context.Conversation) != 1 || input.Context.Conversation[0].Body != "where should I create it?" {
+		t.Fatalf("expected thread conversation in engine input, got %#v", input.Context.Conversation)
+	}
+	if len(input.Context.AdditionalEvents) != 1 || input.Context.AdditionalEvents[0].Body != "1" {
+		t.Fatalf("expected routed thread reply in additional events, got %#v", input.Context.AdditionalEvents)
+	}
+}
+
+func TestNextActionRequiresExplicitPlanApprovalBeforeMutatingTool(t *testing.T) {
+	t.Parallel()
+
+	activities := Activities{
+		Engine: stubEngine{output: agent.NextActionOutput{
+			ToolChoice: &agent.ToolChoice{
+				ToolCallID:  "toolu_edit",
+				Type:        domain.ToolTypeExec,
+				Intent:      "edit files",
+				Command:     "go",
+				Args:        []string{"fmt", "./..."},
+				Idempotency: domain.ToolIdempotencyIdempotent,
+				Metadata: map[string]string{
+					"tool_call_id": "toolu_edit",
+				},
+			},
+			Status: NextActionStatusTool,
+		}},
+	}
+
+	result, err := activities.NextAction(context.Background(), NextActionRequest{
+		ProjectID: "project-1",
+		Event:     domain.Event{ID: "event-1", ProjectID: "project-1", Body: "add auth"},
+		NextAction: agent.NextAction{
+			WaitingKind:  "plan",
+			WaitingToken: "P-12345678",
+		},
+		AdditionalEvents: []domain.Event{{
+			ID:        "event-2",
+			ProjectID: "project-1",
+			Body:      "P-12345678: change the storage approach",
+		}},
+		ExecutionCycle: 2,
+	})
+	if err != nil {
+		t.Fatalf("next action: %v", err)
+	}
+	if result.Status != NextActionStatusWaiting {
+		t.Fatalf("expected waiting status, got %#v", result)
+	}
+	if result.ToolChoice != nil || len(result.ToolChoices) != 0 {
+		t.Fatalf("mutating tool should be blocked until approval: %#v", result)
+	}
+	if result.WaitingToken != "P-12345678" || !strings.Contains(result.NextAction.ResponseMessage, "approve P-12345678") {
+		t.Fatalf("expected explicit approval prompt, got %#v", result)
+	}
+}
+
+func TestNextActionAllowsPlanApprovalFromReplyMetadata(t *testing.T) {
+	t.Parallel()
+
+	activities := Activities{
+		Engine: stubEngine{output: agent.NextActionOutput{
+			ToolChoice: &agent.ToolChoice{
+				ToolCallID:  "toolu_edit",
+				Type:        domain.ToolTypeExec,
+				Intent:      "edit files",
+				Command:     "go",
+				Args:        []string{"fmt", "./..."},
+				Idempotency: domain.ToolIdempotencyIdempotent,
+				Metadata: map[string]string{
+					"tool_call_id": "toolu_edit",
+				},
+			},
+			Status: NextActionStatusTool,
+		}},
+	}
+
+	result, err := activities.NextAction(context.Background(), NextActionRequest{
+		ProjectID: "project-1",
+		Event:     domain.Event{ID: "event-1", ProjectID: "project-1", Body: "add auth"},
+		NextAction: agent.NextAction{
+			WaitingKind:  "plan",
+			WaitingToken: "P-12345678",
+		},
+		AdditionalEvents: []domain.Event{{
+			ID:        "event-2",
+			ProjectID: "project-1",
+			Body:      "Do it now!",
+			Metadata: domain.Metadata{
+				domain.MetadataKeyControl:          domain.MetadataControlPlanningAnswer,
+				domain.MetadataKeyWaitingKind:      "plan",
+				domain.MetadataKeyApprovalDecision: domain.MetadataApprovalApproved,
+			},
+		}},
+		ExecutionCycle: 2,
+	})
+	if err != nil {
+		t.Fatalf("next action: %v", err)
+	}
+	if result.Status != NextActionStatusTool {
+		t.Fatalf("expected mutating tool after reply approval metadata, got %#v", result)
+	}
+	if result.ToolChoice == nil || result.ToolChoice.Command != "go" {
+		t.Fatalf("expected tool choice to pass through: %#v", result.ToolChoice)
+	}
+}
+
+func TestNextActionBlocksUntokenedPlanApprovalPhraseFromMutating(t *testing.T) {
+	t.Parallel()
+
+	base := time.Now()
+	activities := Activities{
+		Store: stubProjectStore{
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeProject: {
+					{
+						ID:        "conversation-1",
+						ProjectID: "project-1",
+						Role:      domain.ConversationRoleAssistant,
+						Body:      "Plan P-19ec437d: Create React+Vite example app\nReply with `approve P-19ec437d`.",
+						CreatedAt: base,
+					},
+				},
+			},
+		},
+		ConversationEnabled: true,
+		ConversationLimit:   10,
+		Engine: stubEngine{output: agent.NextActionOutput{
+			ToolChoice: &agent.ToolChoice{
+				ToolCallID:  "toolu_edit",
+				Type:        domain.ToolTypeExec,
+				Intent:      "edit files",
+				Command:     "go",
+				Args:        []string{"fmt", "./..."},
+				Idempotency: domain.ToolIdempotencyIdempotent,
+				Metadata: map[string]string{
+					"tool_call_id": "toolu_edit",
+				},
+			},
+			Status: NextActionStatusTool,
+		}},
+	}
+
+	result, err := activities.NextAction(context.Background(), NextActionRequest{
+		ProjectID:      "project-1",
+		Event:          domain.Event{ID: "event-2", ProjectID: "project-1", Body: "Do it!"},
+		ExecutionCycle: 1,
+	})
+	if err != nil {
+		t.Fatalf("next action: %v", err)
+	}
+	if result.Status != NextActionStatusCompleted {
+		t.Fatalf("expected completed clarification instead of mutation, got %#v", result)
+	}
+	if result.ToolChoice != nil || len(result.ToolChoices) != 0 {
+		t.Fatalf("untokened approval phrase should not run a mutating tool: %#v", result)
+	}
+	if !strings.Contains(result.NextAction.ResponseMessage, "approve P-19EC437D") {
+		t.Fatalf("expected explicit token guidance, got %#v", result.NextAction.ResponseMessage)
 	}
 }
 

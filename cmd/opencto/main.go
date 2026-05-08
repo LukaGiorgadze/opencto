@@ -76,6 +76,7 @@ func main() {
 	engine := buildNextActionEngine(cfg, logger)
 	memoryEmbedder := buildMemoryEmbedder(cfg, logger)
 	memoryExtractor := buildMemoryExtractor(cfg, logger)
+	conversationCompressor := buildConversationCompressor(cfg, logger)
 
 	if *mode == "worker" || *mode == "serve" {
 		dbPath := storage.DefaultDBPath(cfg.General.WorkspaceRoot)
@@ -142,6 +143,7 @@ func main() {
 			EventEnqueuer:               dispatcher,
 			MemoryEmbedder:              memoryEmbedder,
 			MemoryExtractor:             memoryExtractor,
+			ConversationCompressor:      conversationCompressor,
 			Project:                     defaultProject,
 			WorkspaceRoot:               cfg.General.WorkspaceRoot,
 			OpenCTORoot:                 openCTORoot,
@@ -152,6 +154,10 @@ func main() {
 			ConversationEnabled:         cfg.Conversation.Enabled,
 			ConversationLimit:           cfg.Conversation.HistoryLimit,
 			ConversationMaxContextChars: cfg.Conversation.MaxContextChars,
+			ConversationSummaryEnabled:  cfg.Conversation.SummaryEnabled,
+			ConversationSummaryTrigger:  cfg.Conversation.SummaryTriggerChars,
+			ConversationSummaryMaxChars: cfg.Conversation.SummaryMaxChars,
+			ConversationSummaryRecent:   cfg.Conversation.SummaryRecentMessages,
 			Logger:                      logger,
 		}
 
@@ -214,7 +220,7 @@ func buildNextActionEngine(cfg config.Config, logger *slog.Logger) agent.Engine 
 		logger.Warn("openai api key is loaded directly from config; prefer environment variables for local and production safety")
 	}
 
-	engine, err := agentllm.NewOpenAIEngine(apiKey, cfg.LLM.BaseURL, cfg.LLM.ModelReasoning, cfg.LLM.ModelFast, cfg.LLM.TranscriptionModel)
+	engine, err := agentllm.NewOpenAIEngine(apiKey, cfg.LLM.BaseURL, cfg.LLM.ModelReasoning, cfg.LLM.ModelFast, cfg.LLM.ModelTranscription)
 	if err != nil {
 		logger.Warn("failed to initialize openai next action engine", slog.String("error", err.Error()))
 		return unavailable(err.Error())
@@ -223,7 +229,7 @@ func buildNextActionEngine(cfg config.Config, logger *slog.Logger) agent.Engine 
 		slog.String("base_url", cfg.LLM.BaseURL),
 		slog.String("model_reasoning", cfg.LLM.ModelReasoning),
 		slog.String("model_fast", cfg.LLM.ModelFast),
-		slog.String("transcription_model", cfg.LLM.TranscriptionModel),
+		slog.String("model_transcription", cfg.LLM.ModelTranscription),
 		slog.String("api_key_source", string(source)),
 	)
 	return engine
@@ -285,4 +291,30 @@ func buildMemoryExtractor(cfg config.Config, logger *slog.Logger) agent.MemoryEx
 		slog.String("api_key_source", string(source)),
 	)
 	return extractor
+}
+
+func buildConversationCompressor(cfg config.Config, logger *slog.Logger) agent.ConversationCompressor {
+	if !cfg.Conversation.Enabled || !cfg.Conversation.SummaryEnabled {
+		return nil
+	}
+	if cfg.LLM.Provider != "" && cfg.LLM.Provider != "openai" {
+		logger.Warn("unsupported conversation compression llm provider configured", slog.String("provider", cfg.LLM.Provider))
+		return nil
+	}
+	apiKey, source, err := agentllm.ResolveOpenAIAPIKey(cfg.LLM)
+	if err != nil {
+		logger.Warn("openai conversation compression api key is not configured", slog.String("error", err.Error()))
+		return nil
+	}
+	compressor, err := agentllm.NewOpenAIConversationCompressor(apiKey, cfg.LLM.BaseURL, cfg.LLM.ModelSummary)
+	if err != nil {
+		logger.Warn("failed to initialize conversation compressor", slog.String("error", err.Error()))
+		return nil
+	}
+	logger.Info("conversation compressor configured",
+		slog.String("base_url", cfg.LLM.BaseURL),
+		slog.String("model", cfg.LLM.ModelSummary),
+		slog.String("api_key_source", string(source)),
+	)
+	return compressor
 }

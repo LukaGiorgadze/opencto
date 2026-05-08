@@ -25,6 +25,7 @@ func NewWorker(client client.Client, taskQueue string, activities *activities.Ac
 	w.RegisterActivityWithOptions(activities.ExecuteMemoryTool, activity.RegisterOptions{Name: "Activities.ExecuteMemoryTool"})
 	w.RegisterActivityWithOptions(activities.PersistEvent, activity.RegisterOptions{Name: "Activities.PersistEvent"})
 	w.RegisterActivityWithOptions(activities.ExtractMemory, activity.RegisterOptions{Name: "Activities.ExtractMemory"})
+	w.RegisterActivityWithOptions(activities.CompressConversation, activity.RegisterOptions{Name: "Activities.CompressConversation"})
 	w.RegisterActivityWithOptions(activities.PersistNextAction, activity.RegisterOptions{Name: "Activities.PersistNextAction"})
 	w.RegisterActivityWithOptions(activities.PersistToolResult, activity.RegisterOptions{Name: "Activities.PersistToolResult"})
 	w.RegisterActivityWithOptions(activities.ResponseSession, activity.RegisterOptions{Name: "Activities.ResponseSession"})
