@@ -34,6 +34,17 @@ type SearchResult struct {
 	Memories []domain.Memory `json:"memories"`
 }
 
+type ListRequest struct {
+	Scope string   `json:"scope,omitempty"`
+	Kind  string   `json:"kind,omitempty"`
+	Tags  []string `json:"tags,omitempty"`
+	Limit int      `json:"limit,omitempty"`
+}
+
+type ListResult struct {
+	Memories []domain.Memory `json:"memories"`
+}
+
 type UpdateRequest struct {
 	MemoryID       string   `json:"memory_id"`
 	Content        string   `json:"content,omitempty"`

@@ -1012,6 +1012,44 @@ func (s *Store) SearchMemories(ctx context.Context, request domain.MemorySearchR
 	return memories, nil
 }
 
+func (s *Store) ListMemories(ctx context.Context, request domain.MemoryListRequest) ([]domain.Memory, error) {
+	limit := request.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	projectID := strings.TrimSpace(request.ProjectID)
+	userID := strings.TrimSpace(request.UserID)
+	scopes := normalizeMemoryScopes(request.Scopes)
+	tags := cleanTags(request.Tags)
+	scopeSQL, args := memoryVisibilitySQL(projectID, userID, scopes)
+	tagSQL, tagArgs := memoryTagsSQL(tags)
+	if kind := strings.TrimSpace(request.Kind); kind != "" {
+		normalized, err := normalizeMemoryKind(kind)
+		if err != nil {
+			return nil, err
+		}
+		scopeSQL += " AND m.kind = ?"
+		args = append(args, normalized)
+	}
+	args = append(args, tagArgs...)
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, project_id, user_id, scope, kind, content, tags, source, source_id, actor, confidence, pinned, metadata, created_at, updated_at
+FROM memories m
+WHERE `+scopeSQL+tagSQL+`
+ORDER BY pinned DESC, updated_at DESC
+LIMIT ?
+`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanMemories(rows)
+}
+
 func (s *Store) searchMemoriesFTS(ctx context.Context, projectID, userID string, scopes []domain.MemoryScope, query string, tags []string, limit int) ([]domain.Memory, error) {
 	scopeSQL, args := memoryVisibilitySQL(projectID, userID, scopes)
 	tagSQL, tagArgs := memoryTagsSQL(tags)

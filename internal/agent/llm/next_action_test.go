@@ -402,6 +402,7 @@ func TestBuildNextActionMessagesIncludesMemoryCrudPolicy(t *testing.T) {
 		"Use `MemoryUpdate` when an existing memory should change",
 		"Use `MemoryRemember` for new durable facts",
 		"Use `MemoryForget` only when the user asks to forget/delete memory",
+		"Use `MemoryList` for read-only memory inspection",
 		"Store durable preferences even when the user does not literally say \"remember\"",
 		"Prefer project scope for current repo",
 		"Prefer user scope for identity",
@@ -894,6 +895,33 @@ func TestToolChoiceCapturesMemoryUpdateInput(t *testing.T) {
 	}
 	if !strings.Contains(string(choice.Input), `"confidence":0`) || !strings.Contains(string(choice.Input), `"pinned":false`) {
 		t.Fatalf("expected raw memory update input to preserve zero/false values, got %s", choice.Input)
+	}
+}
+
+func TestToolChoiceCapturesMemoryListInput(t *testing.T) {
+	t.Parallel()
+
+	choice, err := toolChoiceFromToolCall(llms.ToolCall{
+		ID:   "toolu_memory_list",
+		Type: "function",
+		FunctionCall: &llms.FunctionCall{
+			Name:      memorytool.ListToolName,
+			Arguments: `{"scope":"user","kind":"preference","tags":["communication"],"limit":10}`,
+		},
+	}, agent.ToolSelectionInput{
+		Runtime: agent.RuntimeContext{WorkspaceRoot: "/workspace"},
+	})
+	if err != nil {
+		t.Fatalf("tool choice: %v", err)
+	}
+	if choice.Type != domain.ToolTypeMemoryList {
+		t.Fatalf("expected memory list type, got %q", choice.Type)
+	}
+	if choice.Intent != "list user memory kind preference" {
+		t.Fatalf("unexpected memory list summary: %q", choice.Intent)
+	}
+	if choice.RunMode != domain.ToolRunModeWaitForExit || choice.Idempotency != domain.ToolIdempotencyReadOnly || choice.ProcessScope != domain.ProcessScopeStopOnFinish {
+		t.Fatalf("unexpected memory list execution metadata: %#v", choice)
 	}
 }
 

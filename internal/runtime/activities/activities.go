@@ -1278,10 +1278,21 @@ func (a *Activities) ExecuteMemoryTool(ctx context.Context, request ExecuteToolR
 	status := domain.ExecutionStatusSucceeded
 	resultCode := "0"
 	errorMessage := ""
+	if run.Status != "" {
+		status = run.Status
+	}
+	if strings.TrimSpace(run.ResultCode) != "" {
+		resultCode = strings.TrimSpace(run.ResultCode)
+	}
+	if strings.TrimSpace(run.Error) != "" {
+		errorMessage = strings.TrimSpace(run.Error)
+	}
 	if runErr != nil {
 		status = domain.ExecutionStatusFailed
 		resultCode = "1"
 		errorMessage = runErr.Error()
+		attempt.OutputSummary = firstNonEmpty(run.Observation, "Memory tool failed.")
+	} else if status == domain.ExecutionStatusFailed {
 		attempt.OutputSummary = firstNonEmpty(run.Observation, "Memory tool failed.")
 	}
 	attempt.Status = status
@@ -2017,6 +2028,9 @@ type memoryToolRunResult struct {
 	Observation string
 	Payload     json.RawMessage
 	Metadata    map[string]string
+	Status      domain.ExecutionStatus
+	ResultCode  string
+	Error       string
 }
 
 func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (memoryToolRunResult, error) {
@@ -2051,7 +2065,7 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 		remembered, err := a.Store.RememberMemory(ctx, memory)
 		if err != nil {
 			if errors.Is(err, storage.ErrMemoryPolicyRejected) {
-				return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "MemoryPolicyRejected", err)
+				return memoryPolicyRejectedResult(err), nil
 			}
 			return memoryToolRunResult{}, err
 		}
@@ -2088,6 +2102,39 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 			Payload:     payload,
 			Metadata: map[string]string{
 				"memory_count": strconv.Itoa(len(memories)),
+				"tags":         strings.Join(tags, ", "),
+			},
+		}, nil
+	case domain.ToolTypeMemoryList:
+		var req memorytool.ListRequest
+		if err := decodeChoiceInput(choice, &req); err != nil {
+			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+		}
+		tags := cleanMemoryTags(req.Tags)
+		scopes := memorySearchScopes(req.Scope)
+		memories, err := a.Store.ListMemories(ctx, domain.MemoryListRequest{
+			ProjectID: execution.ProjectID,
+			UserID:    eventUserID(execution.SourceEvent),
+			Scopes:    scopes,
+			Kind:      strings.TrimSpace(req.Kind),
+			Tags:      tags,
+			Limit:     req.Limit,
+		})
+		if err != nil {
+			return memoryToolRunResult{}, err
+		}
+		scope := strings.ToLower(strings.TrimSpace(req.Scope))
+		if scope == "" {
+			scope = memorytool.ScopeAll
+		}
+		payload := mustJSON(memorytool.ListResult{Memories: memories})
+		return memoryToolRunResult{
+			Observation: memoryListObservation(memories, scope, strings.TrimSpace(req.Kind), tags),
+			Payload:     payload,
+			Metadata: map[string]string{
+				"memory_count": strconv.Itoa(len(memories)),
+				"scope":        scope,
+				"kind":         strings.TrimSpace(req.Kind),
 				"tags":         strings.Join(tags, ", "),
 			},
 		}, nil
@@ -2156,7 +2203,7 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 		result, err := a.Store.UpdateMemory(ctx, update)
 		if err != nil {
 			if errors.Is(err, storage.ErrMemoryPolicyRejected) {
-				return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "MemoryPolicyRejected", err)
+				return memoryPolicyRejectedResult(err), nil
 			}
 			return memoryToolRunResult{}, err
 		}
@@ -3128,12 +3175,63 @@ func memoryUpdateAffectsEmbedding(update domain.MemoryUpdateRequest) bool {
 	return strings.TrimSpace(update.Content) != "" || strings.TrimSpace(update.Kind) != "" || update.ReplaceTags
 }
 
+func memoryPolicyRejectedResult(err error) memoryToolRunResult {
+	reason := memoryPolicyRejectionReason(err)
+	return memoryToolRunResult{
+		Observation: "Memory rejected by policy: " + reason,
+		Payload: mustJSON(map[string]any{
+			"rejected": true,
+			"reason":   reason,
+		}),
+		Metadata: map[string]string{
+			"policy_rejected": "true",
+			"reason":          reason,
+		},
+		Status:     domain.ExecutionStatusFailed,
+		ResultCode: "policy_rejected",
+		Error:      reason,
+	}
+}
+
+func memoryPolicyRejectionReason(err error) string {
+	if err == nil {
+		return "memory rejected by policy"
+	}
+	reason := strings.TrimSpace(err.Error())
+	reason = strings.TrimPrefix(reason, storage.ErrMemoryPolicyRejected.Error()+": ")
+	if reason == "" {
+		return "memory rejected by policy"
+	}
+	return reason
+}
+
 func memorySearchObservation(memories []domain.Memory) string {
 	if len(memories) == 0 {
 		return "No memories found."
 	}
 	var builder strings.Builder
 	_, _ = fmt.Fprintf(&builder, "Memory search results.\ncount: %d", len(memories))
+	for i, memory := range memories {
+		_, _ = fmt.Fprintf(&builder, "\n\n%d. ", i+1)
+		writeMemoryObservationFields(&builder, memory)
+	}
+	return builder.String()
+}
+
+func memoryListObservation(memories []domain.Memory, scope, kind string, tags []string) string {
+	if len(memories) == 0 {
+		return "No memories found.\nscope: " + firstNonEmpty(scope, memorytool.ScopeAll)
+	}
+	var builder strings.Builder
+	_, _ = fmt.Fprintf(&builder, "Memory list.\ncount: %d\nscope: %s", len(memories), firstNonEmpty(scope, memorytool.ScopeAll))
+	if strings.TrimSpace(kind) != "" {
+		builder.WriteString("\nkind: ")
+		builder.WriteString(strings.TrimSpace(kind))
+	}
+	if len(tags) > 0 {
+		builder.WriteString("\ntags: ")
+		builder.WriteString(strings.Join(tags, ", "))
+	}
 	for i, memory := range memories {
 		_, _ = fmt.Fprintf(&builder, "\n\n%d. ", i+1)
 		writeMemoryObservationFields(&builder, memory)

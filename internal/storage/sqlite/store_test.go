@@ -944,6 +944,49 @@ func TestMemoryUserScopeIsVisibleOnlyToUser(t *testing.T) {
 	requireMemoryIDs(t, memoryIDs(found), "user-two-memory")
 }
 
+func TestListMemoriesFiltersVisibleRecentMemory(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := time.Now().UTC()
+	memories := []domain.Memory{
+		{ID: "project-old", ProjectID: "default", Scope: domain.MemoryScopeProject, Kind: "preference", Content: "Project prefers readable migration files.", Tags: []string{"database"}, CreatedAt: now, UpdatedAt: now},
+		{ID: "user-new", UserID: "discord:user-1", Scope: domain.MemoryScopeUser, Kind: "preference", Content: "User prefers concise technical explanations.", Tags: []string{"communication"}, CreatedAt: now, UpdatedAt: now.Add(time.Second)},
+		{ID: "other-user", UserID: "discord:user-2", Scope: domain.MemoryScopeUser, Kind: "preference", Content: "User prefers detailed technical explanations.", Tags: []string{"communication"}, CreatedAt: now, UpdatedAt: now.Add(2 * time.Second)},
+		{ID: "global-constraint", Scope: domain.MemoryScopeGlobal, Kind: "constraint", Content: "Deployments require explicit approval.", Tags: []string{"deployment"}, Pinned: true, CreatedAt: now, UpdatedAt: now.Add(3 * time.Second)},
+	}
+	for _, memory := range memories {
+		if _, err := store.RememberMemory(ctx, memory); err != nil {
+			t.Fatalf("remember %s: %v", memory.ID, err)
+		}
+	}
+
+	found, err := store.ListMemories(ctx, domain.MemoryListRequest{
+		ProjectID: "default",
+		UserID:    "discord:user-1",
+		Scopes:    []domain.MemoryScope{domain.MemoryScopeProject, domain.MemoryScopeUser, domain.MemoryScopeGlobal},
+		Kind:      "preference",
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("list memories: %v", err)
+	}
+	requireMemoryIDs(t, memoryIDs(found), "project-old", "user-new")
+
+	found, err = store.ListMemories(ctx, domain.MemoryListRequest{
+		ProjectID: "default",
+		UserID:    "discord:user-1",
+		Scopes:    []domain.MemoryScope{domain.MemoryScopeUser},
+		Tags:      []string{"communication"},
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("list user memories: %v", err)
+	}
+	requireMemoryIDs(t, memoryIDs(found), "user-new")
+}
+
 func TestRememberMemoryAppliesPolicyGate(t *testing.T) {
 	t.Parallel()
 

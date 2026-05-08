@@ -84,6 +84,7 @@ const (
 	ToolTypeGlob           ToolType = "glob"
 	ToolTypeGrep           ToolType = "grep"
 	ToolTypeMemoryForget   ToolType = "memory_forget"
+	ToolTypeMemoryList     ToolType = "memory_list"
 	ToolTypeMemoryRemember ToolType = "memory_remember"
 	ToolTypeMemorySearch   ToolType = "memory_search"
 	ToolTypeMemoryUpdate   ToolType = "memory_update"
@@ -268,6 +269,15 @@ type MemorySearchRequest struct {
 	EmbeddingDimensions int           `json:"embedding_dimensions,omitempty"`
 	Limit               int           `json:"limit,omitempty"`
 	FallbackRecent      bool          `json:"fallback_recent,omitempty"`
+}
+
+type MemoryListRequest struct {
+	ProjectID string        `json:"project_id,omitempty"`
+	UserID    string        `json:"user_id,omitempty"`
+	Scopes    []MemoryScope `json:"scopes,omitempty"`
+	Kind      string        `json:"kind,omitempty"`
+	Tags      []string      `json:"tags,omitempty"`
+	Limit     int           `json:"limit,omitempty"`
 }
 
 type MemoryUpdateRequest struct {

@@ -40,3 +40,6 @@ agent-browser skills get agentcore         # AWS Bedrock AgentCore cloud browser
 
 Run `agent-browser skills list` to see everything available on the
 installed version.
+
+## Artifacts
+Save screenshots under `$OPENCTO_WORKSPACE/screenshots/` unless the user asks for another location.

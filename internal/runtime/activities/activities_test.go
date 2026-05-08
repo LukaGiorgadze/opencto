@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	goruntime "runtime"
@@ -25,7 +26,9 @@ type stubProjectStore struct {
 	pending              []domain.WorkItem
 	memories             []domain.Memory
 	remembered           *[]domain.Memory
+	rememberErr          error
 	searchRequests       *[]domain.MemorySearchRequest
+	listRequests         *[]domain.MemoryListRequest
 	updateResult         domain.MemoryUpdateResult
 	updateRequests       *[]domain.MemoryUpdateRequest
 	embeddingRequests    *[]domain.MemoryEmbedding
@@ -165,12 +168,22 @@ func (s stubProjectStore) RememberMemory(_ context.Context, memory domain.Memory
 	if s.remembered != nil {
 		*s.remembered = append(*s.remembered, memory)
 	}
+	if s.rememberErr != nil {
+		return domain.Memory{}, s.rememberErr
+	}
 	return memory, nil
 }
 
 func (s stubProjectStore) SearchMemories(_ context.Context, request domain.MemorySearchRequest) ([]domain.Memory, error) {
 	if s.searchRequests != nil {
 		*s.searchRequests = append(*s.searchRequests, request)
+	}
+	return append([]domain.Memory(nil), s.memories...), nil
+}
+
+func (s stubProjectStore) ListMemories(_ context.Context, request domain.MemoryListRequest) ([]domain.Memory, error) {
+	if s.listRequests != nil {
+		*s.listRequests = append(*s.listRequests, request)
 	}
 	return append([]domain.Memory(nil), s.memories...), nil
 }
@@ -491,6 +504,57 @@ func TestExecuteMemoryToolForgetsByCombinedFilters(t *testing.T) {
 	}
 }
 
+func TestExecuteMemoryToolListsCurrentUserMemories(t *testing.T) {
+	t.Parallel()
+
+	var listRequests []domain.MemoryListRequest
+	activities := Activities{
+		Store: stubProjectStore{
+			memories: []domain.Memory{{
+				ID:         "memory-1",
+				ProjectID:  "default",
+				UserID:     "discord:user-1",
+				Scope:      domain.MemoryScopeUser,
+				Kind:       "preference",
+				Content:    "User prefers concise technical explanations.",
+				Tags:       []string{"communication"},
+				Confidence: 1,
+			}},
+			listRequests: &listRequests,
+		},
+		MemoryEnabled: true,
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "default",
+			ChannelType: domain.ChannelTypeDiscord,
+			ActorID:     "user-1",
+			ActorName:   "luka",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemoryList,
+			Intent:     "list user memory",
+			Input:      []byte(`{"scope":"user","kind":"preference","tags":["communication"],"limit":10}`),
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute memory list: %v", err)
+	}
+	if result.Status != domain.ExecutionStatusSucceeded || !strings.Contains(result.Observation, "Memory list.") || result.Metadata["memory_count"] != "1" {
+		t.Fatalf("unexpected memory list result: %#v", result)
+	}
+	if len(listRequests) != 1 || listRequests[0].UserID != "discord:user-1" || listRequests[0].Scopes[0] != domain.MemoryScopeUser {
+		t.Fatalf("unexpected list request: %#v", listRequests)
+	}
+}
+
 func TestExecuteMemoryToolUpdatesMemory(t *testing.T) {
 	t.Parallel()
 
@@ -684,6 +748,40 @@ func TestExecuteMemoryToolRememberUpsertsEmbedding(t *testing.T) {
 	}
 	if request.ContentHash == "" {
 		t.Fatalf("expected content hash in embedding request")
+	}
+}
+
+func TestExecuteMemoryToolReturnsPolicyRejectionObservation(t *testing.T) {
+	t.Parallel()
+
+	activities := Activities{
+		Store: stubProjectStore{
+			rememberErr: fmt.Errorf("%w: content appears to contain a secret", storage.ErrMemoryPolicyRejected),
+		},
+		MemoryEnabled: true,
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event:      domain.Event{ID: "event-1", ProjectID: "default"},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemoryRemember,
+			Intent:     "remember secret",
+			Input:      []byte(`{"content":"The API key is secret.","scope":"project","kind":"fact","tags":[],"confidence":1,"pinned":false,"reason":"test"}`),
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("policy rejection should not fail the activity: %v", err)
+	}
+	if result.Status != domain.ExecutionStatusFailed || result.ResultCode != "policy_rejected" {
+		t.Fatalf("unexpected policy rejection result: %#v", result)
+	}
+	if !strings.Contains(result.Observation, "Memory rejected by policy: content appears to contain a secret") || result.Metadata["policy_rejected"] != "true" {
+		t.Fatalf("expected policy rejection observation, got %#v", result)
 	}
 }
 
