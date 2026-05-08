@@ -16,6 +16,7 @@ import (
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	memorytool "github.com/opencto/opencto/internal/tools/memory"
+	planningtool "github.com/opencto/opencto/internal/tools/planning"
 	readtool "github.com/opencto/opencto/internal/tools/read"
 	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
 	skilltool "github.com/opencto/opencto/internal/tools/skill"
@@ -399,10 +400,10 @@ func TestBuildNextActionMessagesIncludesMemoryCrudPolicy(t *testing.T) {
 	systemPrompt := messageText(messages[0])
 	for _, expected := range []string{
 		"Search memory before proposing changes",
-		"Use `memory_propose_update` when an existing memory should change",
-		"Use `memory_propose_add` for new durable facts",
-		"Use `memory_propose_forget` only when the user asks to forget/delete memory",
-		"Use `memory_list` for read-only memory inspection",
+		"Use `MemoryProposeUpdate` when an existing memory should change",
+		"Use `MemoryProposeAdd` for new durable facts",
+		"Use `MemoryProposeForget` only when the user asks to forget/delete memory",
+		"Use `MemoryList` for read-only memory inspection",
 		"Store durable preferences even when the user does not literally say \"remember\"",
 		"Prefer project scope for current repo",
 		"Prefer user scope for identity",
@@ -420,6 +421,35 @@ func TestBuildNextActionMessagesIncludesMemoryCrudPolicy(t *testing.T) {
 	}
 	if got := messageText(messages[1]); got != "remember that I prefer SQLite" {
 		t.Fatalf("unexpected user message: %q", got)
+	}
+}
+
+func TestBuildNextActionMessagesIncludesCTOPlanningProtocol(t *testing.T) {
+	t.Parallel()
+
+	messages, err := buildNextActionMessages(agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", Body: "add authentication"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	prompt := messageText(messages[0])
+	for _, expected := range []string{
+		"CTO Planning Protocol",
+		"plans first, then acts",
+		"feature implementation, refactors, architecture decisions",
+		"Ask one high-impact question at a time with `AskUserQuestion`",
+		"When enough context is known, call `ProposePlan`",
+		"Never use mutating tools for non-trivial work until the user explicitly approves",
+		"approve P-xxxxxxxx",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("prompt missing planning protocol text %q:\n%s", expected, prompt)
+		}
 	}
 }
 
@@ -627,6 +657,130 @@ func TestNextActionReturnsSingleToolChoice(t *testing.T) {
 	}
 	if len(model.options.Tools) != len(toolregistry.Definitions()) {
 		t.Fatalf("expected all tool schemas, got %#v", model.options.Tools)
+	}
+}
+
+func TestNextActionAskUserQuestionReturnsWaiting(t *testing.T) {
+	t.Parallel()
+
+	model := &recordingToolModel{
+		response: &llms.ContentResponse{
+			Choices: []*llms.ContentChoice{{
+				ToolCalls: []llms.ToolCall{{
+					ID:   "toolu_question",
+					Type: "function",
+					FunctionCall: &llms.FunctionCall{
+						Name:      planningtool.AskUserQuestionToolName,
+						Arguments: `{"header":"Auth","question":"Which auth model should OpenCTO use?","options":[{"label":"Sessions (Recommended)","description":"Use server-side sessions for simpler self-hosted operation."},{"label":"JWT","description":"Use stateless tokens for API-first integrations."}]}`,
+					},
+				}},
+			}},
+		},
+	}
+	engine := &OpenAIEngine{reasoningModel: model}
+	output, err := engine.NextAction(context.Background(), agent.NextActionInput{
+		ProjectID:      "project-1",
+		ExecutionCycle: 1,
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1"},
+			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", Body: "add auth"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NextAction: %v", err)
+	}
+	if output.Status != "waiting" || output.WaitingKind != "question" || !strings.HasPrefix(output.WaitingToken, "Q-") {
+		t.Fatalf("expected question waiting output, got %#v", output)
+	}
+	if output.ToolChoice != nil || len(output.ToolChoices) != 0 {
+		t.Fatalf("planning question should not produce executable tool choices: %#v", output)
+	}
+	if !strings.Contains(output.NextAction.ResponseMessage, output.WaitingToken) ||
+		!strings.Contains(output.NextAction.ResponseMessage, "Sessions (Recommended)") ||
+		!strings.Contains(output.NextAction.ResponseMessage, "Reply with `"+output.WaitingToken+": <answer>`") {
+		t.Fatalf("unexpected question message:\n%s", output.NextAction.ResponseMessage)
+	}
+}
+
+func TestNextActionProposePlanReturnsWaiting(t *testing.T) {
+	t.Parallel()
+
+	model := &recordingToolModel{
+		response: &llms.ContentResponse{
+			Choices: []*llms.ContentChoice{{
+				ToolCalls: []llms.ToolCall{{
+					ID:   "toolu_plan",
+					Type: "function",
+					FunctionCall: &llms.FunctionCall{
+						Name:      planningtool.ProposePlanToolName,
+						Arguments: `{"title":"Add auth","summary":"Implement session auth with minimal surface area.","build":["Session middleware"],"skip":["OAuth providers"],"risks":["Session invalidation"],"tradeoffs":["Simple self-hosting over third-party identity"],"architecture":["HTTP middleware and SQLite-backed sessions"],"steps":["Add storage model","Wire middleware"],"verification":["Unit tests","Manual login flow"]}`,
+					},
+				}},
+			}},
+		},
+	}
+	engine := &OpenAIEngine{reasoningModel: model}
+	output, err := engine.NextAction(context.Background(), agent.NextActionInput{
+		ProjectID:      "project-1",
+		ExecutionCycle: 1,
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1"},
+			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", Body: "add auth"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NextAction: %v", err)
+	}
+	if output.Status != "waiting" || output.WaitingKind != "plan" || !strings.HasPrefix(output.WaitingToken, "P-") {
+		t.Fatalf("expected plan waiting output, got %#v", output)
+	}
+	if output.ToolChoice != nil || len(output.ToolChoices) != 0 {
+		t.Fatalf("proposed plan should not produce executable tool choices: %#v", output)
+	}
+	if !strings.Contains(output.NextAction.ResponseMessage, "approve "+output.WaitingToken) ||
+		!strings.Contains(output.NextAction.ResponseMessage, "Build:") ||
+		!strings.Contains(output.NextAction.ResponseMessage, "Verification:") {
+		t.Fatalf("unexpected proposed plan message:\n%s", output.NextAction.ResponseMessage)
+	}
+}
+
+func TestNextActionRejectsPlanningToolMixedWithExecution(t *testing.T) {
+	t.Parallel()
+
+	model := &recordingToolModel{
+		response: &llms.ContentResponse{
+			Choices: []*llms.ContentChoice{{
+				ToolCalls: []llms.ToolCall{
+					{
+						ID:   "toolu_question",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      planningtool.AskUserQuestionToolName,
+							Arguments: `{"header":"Auth","question":"Which auth model?","options":[{"label":"Sessions (Recommended)","description":"Use sessions."},{"label":"JWT","description":"Use tokens."}]}`,
+						},
+					},
+					{
+						ID:   "toolu_exec",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      toolregistry.CommandToolName,
+							Arguments: `{"command":"go","args":["test","./..."],"cwd":"","timeout_ms":120000,"run_mode":"wait_for_exit","idempotency":"read_only","process_scope":"stop_on_finish","description":"run tests","destructive":false}`,
+						},
+					},
+				},
+			}},
+		},
+	}
+	engine := &OpenAIEngine{reasoningModel: model}
+	_, err := engine.NextAction(context.Background(), agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1"},
+			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", Body: "add auth"},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "planning pseudo-tools must be called alone") {
+		t.Fatalf("expected mixed planning tool rejection, got %v", err)
 	}
 }
 
@@ -902,7 +1056,7 @@ func TestToolChoiceCapturesMemoryListInput(t *testing.T) {
 	t.Parallel()
 
 	choice, err := toolChoiceFromToolCall(llms.ToolCall{
-		ID:   "toolu_memory_list",
+		ID:   "toolu_MemoryList",
 		Type: "function",
 		FunctionCall: &llms.FunctionCall{
 			Name:      memorytool.ListToolName,

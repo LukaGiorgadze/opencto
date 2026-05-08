@@ -2,6 +2,8 @@ package llm
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -14,6 +16,7 @@ import (
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/skills"
 	toolregistry "github.com/opencto/opencto/internal/tools"
+	planningtool "github.com/opencto/opencto/internal/tools/planning"
 )
 
 type nextActionPromptData struct {
@@ -365,6 +368,9 @@ func nextActionTranscriptMessages(feedbacks ...agent.ExecutionFeedback) ([]llms.
 }
 
 func nextActionToolOutput(choice *llms.ContentChoice, input agent.NextActionInput) (agent.NextActionOutput, error) {
+	if output, handled, err := nextActionWaitingOutput(choice.ToolCalls, input); handled || err != nil {
+		return output, err
+	}
 	selectionInput := agent.ToolSelectionInput{
 		ProjectID:      input.ProjectID,
 		Context:        input.Context,
@@ -401,6 +407,210 @@ func nextActionToolOutput(choice *llms.ContentChoice, input agent.NextActionInpu
 		output.ToolChoices = toolChoices
 	}
 	return output, nil
+}
+
+func nextActionWaitingOutput(calls []llms.ToolCall, input agent.NextActionInput) (agent.NextActionOutput, bool, error) {
+	if len(calls) == 0 {
+		return agent.NextActionOutput{}, false, nil
+	}
+	var planningCalls []llms.ToolCall
+	for _, call := range calls {
+		if call.FunctionCall == nil {
+			continue
+		}
+		if isPlanningToolName(call.FunctionCall.Name) {
+			planningCalls = append(planningCalls, call)
+		}
+	}
+	if len(planningCalls) == 0 {
+		return agent.NextActionOutput{}, false, nil
+	}
+	if len(planningCalls) != len(calls) || len(planningCalls) != 1 {
+		return agent.NextActionOutput{}, true, fmt.Errorf("%w: planning pseudo-tools must be called alone", agent.ErrInvalidToolChoice)
+	}
+
+	call := planningCalls[0]
+	switch call.FunctionCall.Name {
+	case planningtool.AskUserQuestionToolName:
+		return askUserQuestionWaitingOutput(call, input)
+	case planningtool.ProposePlanToolName:
+		return proposePlanWaitingOutput(call, input)
+	default:
+		return agent.NextActionOutput{}, true, fmt.Errorf("%w: unsupported planning pseudo-tool %q", agent.ErrInvalidToolChoice, call.FunctionCall.Name)
+	}
+}
+
+func isPlanningToolName(name string) bool {
+	switch name {
+	case planningtool.AskUserQuestionToolName, planningtool.ProposePlanToolName:
+		return true
+	default:
+		return false
+	}
+}
+
+func askUserQuestionWaitingOutput(call llms.ToolCall, input agent.NextActionInput) (agent.NextActionOutput, bool, error) {
+	definition, ok := toolregistry.DefinitionByName(planningtool.AskUserQuestionToolName)
+	if !ok {
+		return agent.NextActionOutput{}, true, fmt.Errorf("planning question tool is not registered")
+	}
+	var request planningtool.AskUserQuestionRequest
+	raw := json.RawMessage(strings.TrimSpace(call.FunctionCall.Arguments))
+	if err := decodeToolArguments(definition.Name, raw, &request); err != nil {
+		return agent.NextActionOutput{}, true, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
+	}
+	if err := validateAskUserQuestion(request); err != nil {
+		return agent.NextActionOutput{}, true, err
+	}
+	token := waitingToken("Q", input, call.ID)
+	message := formatAskUserQuestion(token, request)
+	nextAction := input.NextAction
+	nextAction.ResponseMessage = message
+	nextAction.WaitingToken = token
+	nextAction.WaitingKind = "question"
+	return agent.NextActionOutput{
+		NextAction:   nextAction,
+		WaitingToken: token,
+		WaitingKind:  "question",
+		Status:       "waiting",
+	}, true, nil
+}
+
+func proposePlanWaitingOutput(call llms.ToolCall, input agent.NextActionInput) (agent.NextActionOutput, bool, error) {
+	definition, ok := toolregistry.DefinitionByName(planningtool.ProposePlanToolName)
+	if !ok {
+		return agent.NextActionOutput{}, true, fmt.Errorf("propose plan tool is not registered")
+	}
+	var request planningtool.ProposePlanRequest
+	raw := json.RawMessage(strings.TrimSpace(call.FunctionCall.Arguments))
+	if err := decodeToolArguments(definition.Name, raw, &request); err != nil {
+		return agent.NextActionOutput{}, true, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
+	}
+	if err := validateProposePlan(request); err != nil {
+		return agent.NextActionOutput{}, true, err
+	}
+	token := waitingToken("P", input, call.ID)
+	message := formatProposedPlan(token, request)
+	nextAction := input.NextAction
+	nextAction.ResponseMessage = message
+	nextAction.WaitingToken = token
+	nextAction.WaitingKind = "plan"
+	return agent.NextActionOutput{
+		NextAction:   nextAction,
+		WaitingToken: token,
+		WaitingKind:  "plan",
+		Status:       "waiting",
+	}, true, nil
+}
+
+func validateAskUserQuestion(request planningtool.AskUserQuestionRequest) error {
+	if strings.TrimSpace(request.Question) == "" {
+		return fmt.Errorf("%w: planning question is required", agent.ErrInvalidNextAction)
+	}
+	if len(request.Options) < 2 || len(request.Options) > 4 {
+		return fmt.Errorf("%w: planning question requires 2-4 options", agent.ErrInvalidNextAction)
+	}
+	for _, option := range request.Options {
+		if strings.TrimSpace(option.Label) == "" || strings.TrimSpace(option.Description) == "" {
+			return fmt.Errorf("%w: planning question options require label and description", agent.ErrInvalidNextAction)
+		}
+	}
+	return nil
+}
+
+func validateProposePlan(request planningtool.ProposePlanRequest) error {
+	if strings.TrimSpace(request.Title) == "" || strings.TrimSpace(request.Summary) == "" {
+		return fmt.Errorf("%w: proposed plan requires title and summary", agent.ErrInvalidNextAction)
+	}
+	if len(nonEmptyList(request.Build)) == 0 || len(nonEmptyList(request.Steps)) == 0 || len(nonEmptyList(request.Verification)) == 0 {
+		return fmt.Errorf("%w: proposed plan requires build, steps, and verification items", agent.ErrInvalidNextAction)
+	}
+	return nil
+}
+
+func waitingToken(prefix string, input agent.NextActionInput, callID string) string {
+	hash := sha1.Sum([]byte(strings.Join([]string{
+		strings.TrimSpace(prefix),
+		strings.TrimSpace(input.ProjectID),
+		strings.TrimSpace(input.Context.Event.ID),
+		strconv.Itoa(input.ExecutionCycle),
+		strings.TrimSpace(callID),
+	}, "\x00")))
+	return strings.ToUpper(strings.TrimSpace(prefix)) + "-" + hex.EncodeToString(hash[:])[:8]
+}
+
+func formatAskUserQuestion(token string, request planningtool.AskUserQuestionRequest) string {
+	var builder strings.Builder
+	builder.WriteString("**Question ")
+	builder.WriteString(token)
+	builder.WriteString("**")
+	if header := strings.TrimSpace(request.Header); header != "" {
+		builder.WriteString("\n")
+		builder.WriteString(header)
+	}
+	builder.WriteString("\n\n")
+	builder.WriteString(strings.TrimSpace(request.Question))
+	builder.WriteString("\n\nOptions:")
+	for index, option := range request.Options {
+		builder.WriteString("\n")
+		builder.WriteString(strconv.Itoa(index + 1))
+		builder.WriteString(". ")
+		builder.WriteString(strings.TrimSpace(option.Label))
+		builder.WriteString(": ")
+		builder.WriteString(strings.TrimSpace(option.Description))
+	}
+	builder.WriteString("\n\nReply with `")
+	builder.WriteString(token)
+	builder.WriteString(": <answer>`.")
+	return strings.TrimSpace(builder.String())
+}
+
+func formatProposedPlan(token string, request planningtool.ProposePlanRequest) string {
+	var builder strings.Builder
+	builder.WriteString("**Plan ")
+	builder.WriteString(token)
+	builder.WriteString(": ")
+	builder.WriteString(strings.TrimSpace(request.Title))
+	builder.WriteString("**\n\n")
+	builder.WriteString(strings.TrimSpace(request.Summary))
+	writePlanSection(&builder, "Build", request.Build)
+	writePlanSection(&builder, "Skip", request.Skip)
+	writePlanSection(&builder, "Risks", request.Risks)
+	writePlanSection(&builder, "Tradeoffs", request.Tradeoffs)
+	writePlanSection(&builder, "Architecture", request.Architecture)
+	writePlanSection(&builder, "Steps", request.Steps)
+	writePlanSection(&builder, "Verification", request.Verification)
+	builder.WriteString("\n\nReply with `approve ")
+	builder.WriteString(token)
+	builder.WriteString("` to let OpenCTO implement this plan, or `")
+	builder.WriteString(token)
+	builder.WriteString(": <changes>` to revise it.")
+	return strings.TrimSpace(builder.String())
+}
+
+func writePlanSection(builder *strings.Builder, title string, items []string) {
+	cleaned := nonEmptyList(items)
+	if len(cleaned) == 0 {
+		return
+	}
+	builder.WriteString("\n\n")
+	builder.WriteString(title)
+	builder.WriteString(":")
+	for _, item := range cleaned {
+		builder.WriteString("\n- ")
+		builder.WriteString(item)
+	}
+}
+
+func nonEmptyList(values []string) []string {
+	cleaned := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			cleaned = append(cleaned, value)
+		}
+	}
+	return cleaned
 }
 
 func nextActionTerminalFromContent(content string, input agent.NextActionInput) (agent.NextActionOutput, error) {

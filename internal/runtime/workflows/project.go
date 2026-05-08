@@ -2,6 +2,8 @@ package workflows
 
 import (
 	"fmt"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -16,7 +18,10 @@ import (
 const (
 	reportResponseActivityTimeout = time.Minute
 	recentProjectEventIDLimit     = 1000
+	maxActiveProjectTasks         = 4
 )
+
+var planningTokenPattern = regexp.MustCompile(`(?i)\b[QP]-[0-9a-f]{8}\b`)
 
 func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: time.Minute})
@@ -30,6 +35,7 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 	}
 
 	eventSignal := workflow.GetSignalChannel(ctx, SignalEnqueueEvent)
+	waitingSignal := workflow.GetSignalChannel(ctx, SignalProjectTaskWaiting)
 	active := map[string]activeTask{}
 	var pendingReports []TaskWorkflowResult
 
@@ -49,7 +55,8 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 			})
 		}
 
-		if len(active) == 0 && len(state.Queue) > 0 {
+		started := false
+		for len(active) < maxActiveProjectTasks && len(state.Queue) > 0 {
 			event := state.Queue[0]
 			state.Queue = state.Queue[1:]
 			workflowID := taskWorkflowID(input.ProjectID, event.ID)
@@ -66,6 +73,9 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 				continue
 			}
 			active[event.ID] = activeTask{Future: future, Event: event, WorkflowID: workflowID}
+			started = true
+		}
+		if started {
 			continue
 		}
 
@@ -74,6 +84,11 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 			var signal EnqueueEventSignal
 			c.Receive(ctx, &signal)
 			handleProjectEventSignal(ctx, &state, active, signal.Event)
+		})
+		selector.AddReceive(waitingSignal, func(c workflow.ReceiveChannel, more bool) {
+			var signal PlanningWaitSignal
+			c.Receive(ctx, &signal)
+			handleTaskWaitingSignal(active, signal)
 		})
 		for eventID, task := range active {
 			selector.AddFuture(task.Future, func(f workflow.Future) {
@@ -93,9 +108,11 @@ func ProjectWorkflow(ctx workflow.Context, input ProjectWorkflowInput) error {
 }
 
 type activeTask struct {
-	Future     workflow.ChildWorkflowFuture
-	Event      domain.Event
-	WorkflowID string
+	Future       workflow.ChildWorkflowFuture
+	Event        domain.Event
+	WorkflowID   string
+	WaitingToken string
+	WaitingKind  string
 }
 
 func reportTaskResult(ctx workflow.Context, result TaskWorkflowResult) {
@@ -180,23 +197,106 @@ func handleProjectEventSignal(ctx workflow.Context, state *ProjectWorkflowState,
 		state.Queue = append(state.Queue, event)
 		return
 	}
-	if len(active) == 0 {
-		state.Queue = append(state.Queue, event)
+
+	if token := planningTokenFromEvent(event); token != "" && routePlanningAnswer(ctx, active, token, event) {
 		return
 	}
 
 	targetWorkflowID := firstActiveTaskWorkflowID(active)
-	if targetWorkflowID == "" {
-		state.Queue = append(state.Queue, event)
-		return
-	}
 	switch projectControlAction(event) {
 	case "cancel":
-		_ = workflow.SignalExternalWorkflow(ctx, targetWorkflowID, "", SignalTaskCancel, TaskControlSignal{Event: event, Reason: "project message requested cancel"}).Get(ctx, nil)
+		if targetWorkflowID != "" {
+			_ = workflow.SignalExternalWorkflow(ctx, targetWorkflowID, "", SignalTaskCancel, TaskControlSignal{Event: event, Reason: "project message requested cancel"}).Get(ctx, nil)
+		}
 	case "interrupt":
-		_ = workflow.SignalExternalWorkflow(ctx, targetWorkflowID, "", SignalTaskInterrupt, TaskControlSignal{Event: event, Reason: "project message requested interrupt"}).Get(ctx, nil)
+		if targetWorkflowID != "" {
+			_ = workflow.SignalExternalWorkflow(ctx, targetWorkflowID, "", SignalTaskInterrupt, TaskControlSignal{Event: event, Reason: "project message requested interrupt"}).Get(ctx, nil)
+		}
 	default:
-		_ = workflow.SignalExternalWorkflow(ctx, targetWorkflowID, "", SignalTaskAdditionalContext, AdditionalContextSignal{Event: event}).Get(ctx, nil)
+		state.Queue = append(state.Queue, event)
+	}
+}
+
+func handleTaskWaitingSignal(active map[string]activeTask, signal PlanningWaitSignal) {
+	token := normalizePlanningToken(signal.Token)
+	if token == "" {
+		return
+	}
+	if strings.TrimSpace(signal.WorkflowID) != "" {
+		for eventID, task := range active {
+			if task.WorkflowID != signal.WorkflowID {
+				continue
+			}
+			task.WaitingToken = token
+			task.WaitingKind = strings.TrimSpace(signal.Kind)
+			active[eventID] = task
+			return
+		}
+	}
+	if strings.TrimSpace(signal.EventID) == "" {
+		return
+	}
+	for eventID, task := range active {
+		if eventID != signal.EventID {
+			continue
+		}
+		task.WaitingToken = token
+		task.WaitingKind = strings.TrimSpace(signal.Kind)
+		active[eventID] = task
+		return
+	}
+}
+
+func routePlanningAnswer(ctx workflow.Context, active map[string]activeTask, token string, event domain.Event) bool {
+	token = normalizePlanningToken(token)
+	if token == "" || len(active) == 0 {
+		return false
+	}
+	targetWorkflowID := activeTaskWorkflowIDByWaitToken(active, token)
+	if targetWorkflowID != "" {
+		signalPlanningAnswer(ctx, targetWorkflowID, token, event)
+		clearActiveWaitingToken(active, token)
+		return true
+	}
+	for _, task := range sortedActiveTasks(active) {
+		signalPlanningAnswer(ctx, task.WorkflowID, token, event)
+	}
+	return true
+}
+
+func activeTaskWorkflowIDByWaitToken(active map[string]activeTask, token string) string {
+	token = normalizePlanningToken(token)
+	for _, task := range active {
+		if normalizePlanningToken(task.WaitingToken) == token {
+			return task.WorkflowID
+		}
+	}
+	return ""
+}
+
+func signalPlanningAnswer(ctx workflow.Context, workflowID string, token string, event domain.Event) {
+	workflowID = strings.TrimSpace(workflowID)
+	if workflowID == "" {
+		return
+	}
+	err := workflow.SignalExternalWorkflow(ctx, workflowID, "", SignalTaskPlanningAnswer, PlanningAnswerSignal{
+		Token: normalizePlanningToken(token),
+		Event: event,
+	}).Get(ctx, nil)
+	if err != nil {
+		workflow.GetLogger(ctx).Warn("signal planning answer failed", "workflow_id", workflowID, "token", token, "error", err.Error())
+	}
+}
+
+func clearActiveWaitingToken(active map[string]activeTask, token string) {
+	token = normalizePlanningToken(token)
+	for eventID, task := range active {
+		if normalizePlanningToken(task.WaitingToken) != token {
+			continue
+		}
+		task.WaitingToken = ""
+		task.WaitingKind = ""
+		active[eventID] = task
 	}
 }
 
@@ -227,10 +327,24 @@ func taskWorkflowID(projectID, eventID string) string {
 }
 
 func firstActiveTaskWorkflowID(active map[string]activeTask) string {
-	for _, task := range active {
-		return task.WorkflowID
+	tasks := sortedActiveTasks(active)
+	if len(tasks) == 0 {
+		return ""
 	}
-	return ""
+	return tasks[0].WorkflowID
+}
+
+func sortedActiveTasks(active map[string]activeTask) []activeTask {
+	eventIDs := make([]string, 0, len(active))
+	for eventID := range active {
+		eventIDs = append(eventIDs, eventID)
+	}
+	sort.Strings(eventIDs)
+	tasks := make([]activeTask, 0, len(eventIDs))
+	for _, eventID := range eventIDs {
+		tasks = append(tasks, active[eventID])
+	}
+	return tasks
 }
 
 func rememberProjectEventID(state *ProjectWorkflowState, eventID string) bool {
@@ -273,4 +387,18 @@ func projectControlAction(event domain.Event) string {
 	default:
 		return ""
 	}
+}
+
+func planningTokenFromEvent(event domain.Event) string {
+	if event.Metadata != nil {
+		if token := normalizePlanningToken(event.Metadata["planning_token"]); token != "" {
+			return token
+		}
+	}
+	return normalizePlanningToken(planningTokenPattern.FindString(event.Body))
+}
+
+func normalizePlanningToken(token string) string {
+	token = strings.Trim(strings.TrimSpace(token), "`.,:;()[]{}")
+	return strings.ToUpper(token)
 }

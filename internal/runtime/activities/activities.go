@@ -103,6 +103,8 @@ type NextActionResult struct {
 	ToolChoice   *agent.ToolChoice         `json:"tool_choice,omitempty"`
 	ToolChoices  []agent.ToolChoice        `json:"tool_choices,omitempty"`
 	WorkItemID   string                    `json:"work_item_id,omitempty"`
+	WaitingToken string                    `json:"waiting_token,omitempty"`
+	WaitingKind  string                    `json:"waiting_kind,omitempty"`
 	Observation  *agent.ExecutionFeedback  `json:"observation,omitempty"`
 	Observations []agent.ExecutionFeedback `json:"observations,omitempty"`
 	Status       string                    `json:"status"`
@@ -181,6 +183,7 @@ type ExecuteToolResult struct {
 
 const (
 	NextActionStatusTool      = "tool"
+	NextActionStatusWaiting   = "waiting"
 	NextActionStatusCompleted = "completed"
 	NextActionStatusBlocked   = "blocked"
 	NextActionStatusFailed    = "failed"
@@ -195,7 +198,7 @@ const (
 )
 
 func (r NextActionResult) IsTerminal() bool {
-	return r.Status != NextActionStatusTool
+	return r.Status != NextActionStatusTool && r.Status != NextActionStatusWaiting
 }
 
 type toolExecutionContext struct {
@@ -1068,6 +1071,11 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		}
 	}
 
+	if engineOutput.Status == NextActionStatusTool && planApprovalRequired(nextAction, loaded.AdditionalEvents) && outputHasMutatingTool(engineOutput) {
+		token := strings.TrimSpace(nextAction.WaitingToken)
+		engineOutput = explicitPlanApprovalWaitingOutput(nextAction, token)
+	}
+
 	a.logActivityStep("NextAction", "dispatch_status",
 		slog.String("project_id", projectID),
 		slog.String("event_id", event.ID),
@@ -1076,11 +1084,85 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 	switch engineOutput.Status {
 	case NextActionStatusTool:
 		return a.prepareToolNextAction(ctx, nextAction, observations, engineOutput, request.ExecutionCycle, now)
+	case NextActionStatusWaiting:
+		return a.prepareWaitingNextAction(nextAction, observations, engineOutput, now)
 	case NextActionStatusCompleted, NextActionStatusBlocked, NextActionStatusFailed, NextActionStatusIgnored:
 		return a.finishNextAction(ctx, event, nextAction, lastObservation(observations), observations, engineOutput, request.Processes, now)
 	default:
 		return NextActionResult{}, fmt.Errorf("unsupported next action status %q", engineOutput.Status)
 	}
+}
+
+func explicitPlanApprovalWaitingOutput(nextAction agent.NextAction, token string) agent.NextActionOutput {
+	message := "I need explicit approval before mutating files or systems for this plan."
+	if strings.TrimSpace(token) != "" {
+		message += " Reply with `approve " + strings.TrimSpace(token) + "` to proceed, or `" + strings.TrimSpace(token) + ": <changes>` to revise it."
+	}
+	nextAction.ResponseMessage = message
+	nextAction.WaitingKind = "plan"
+	nextAction.WaitingToken = token
+	return agent.NextActionOutput{
+		NextAction:   nextAction,
+		WaitingKind:  "plan",
+		WaitingToken: token,
+		Status:       NextActionStatusWaiting,
+	}
+}
+
+func planApprovalRequired(nextAction agent.NextAction, additionalEvents []domain.Event) bool {
+	token := strings.TrimSpace(nextAction.WaitingToken)
+	if strings.TrimSpace(nextAction.WaitingKind) != "plan" || token == "" {
+		return false
+	}
+	return !hasPlanApproval(additionalEvents, token)
+}
+
+func hasPlanApproval(events []domain.Event, token string) bool {
+	token = normalizePlanningToken(token)
+	if token == "" {
+		return false
+	}
+	for _, event := range events {
+		fields := strings.Fields(strings.TrimSpace(event.Body))
+		if len(fields) < 2 {
+			continue
+		}
+		if strings.EqualFold(fields[0], "approve") && normalizePlanningToken(fields[1]) == token {
+			return true
+		}
+	}
+	return false
+}
+
+func outputHasMutatingTool(output agent.NextActionOutput) bool {
+	choices := append([]agent.ToolChoice(nil), output.ToolChoices...)
+	if len(choices) == 0 && output.ToolChoice != nil {
+		choices = []agent.ToolChoice{*output.ToolChoice}
+	}
+	for _, choice := range choices {
+		if mutatingToolChoice(choice) {
+			return true
+		}
+	}
+	return false
+}
+
+func mutatingToolChoice(choice agent.ToolChoice) bool {
+	switch choice.Type {
+	case domain.ToolTypeRead, domain.ToolTypeGlob, domain.ToolTypeGrep, domain.ToolTypeMemorySearch, domain.ToolTypeMemoryList, domain.ToolTypeSkill:
+		return false
+	case domain.ToolTypeExec:
+		return choice.Destructive || choice.Idempotency != domain.ToolIdempotencyReadOnly
+	case domain.ToolTypeSchedule:
+		return choice.Idempotency != domain.ToolIdempotencyReadOnly
+	default:
+		return true
+	}
+}
+
+func normalizePlanningToken(token string) string {
+	token = strings.Trim(strings.TrimSpace(token), "`.,:;()[]{}")
+	return strings.ToUpper(token)
 }
 
 func (a *Activities) prepareToolNextAction(ctx context.Context, nextAction agent.NextAction, observations []agent.ExecutionFeedback, output agent.NextActionOutput, cycle int, now time.Time) (NextActionResult, error) {
@@ -1169,6 +1251,59 @@ func (a *Activities) prepareToolNextAction(ctx context.Context, nextAction agent
 		Observation:  observation,
 		Observations: observations,
 		Status:       NextActionStatusTool,
+	}, nil
+}
+
+func (a *Activities) prepareWaitingNextAction(nextAction agent.NextAction, observations []agent.ExecutionFeedback, output agent.NextActionOutput, now time.Time) (NextActionResult, error) {
+	a.logActivityStep("NextAction", "prepare_waiting_begin",
+		slog.String("waiting_token", strings.TrimSpace(output.WaitingToken)),
+		slog.String("waiting_kind", strings.TrimSpace(output.WaitingKind)),
+	)
+	message := strings.TrimSpace(output.NextAction.ResponseMessage)
+	token := firstNonEmpty(output.WaitingToken, output.NextAction.WaitingToken)
+	kind := firstNonEmpty(output.WaitingKind, output.NextAction.WaitingKind)
+	if message == "" {
+		return NextActionResult{}, fmt.Errorf("%w: waiting next action is missing response message", agent.ErrInvalidNextAction)
+	}
+	if token == "" {
+		return NextActionResult{}, fmt.Errorf("%w: waiting next action is missing reply token", agent.ErrInvalidNextAction)
+	}
+	if kind == "" {
+		kind = "question"
+	}
+
+	nextAction.ToolChoice = agent.ToolChoice{}
+	nextAction.ResponseMessage = message
+	nextAction.WaitingToken = token
+	nextAction.WaitingKind = kind
+	workItemID := currentNextActionWorkItemID(nextAction, lastObservation(observations))
+	if workItemID == "" && len(nextAction.WorkItems) > 0 {
+		workItemID = nextAction.WorkItems[0].ID
+	}
+	index := nextActionWorkItemIndexByID(nextAction.WorkItems, workItemID)
+	if index >= 0 {
+		nextAction.WorkItems[index].Status = domain.WorkItemStatusPending
+		nextAction.WorkItems[index].UpdatedAt = now
+		if nextAction.WorkItems[index].Metadata == nil {
+			nextAction.WorkItems[index].Metadata = map[string]string{}
+		}
+		nextAction.WorkItems[index].Metadata["waiting_token"] = token
+		nextAction.WorkItems[index].Metadata["waiting_kind"] = kind
+	}
+
+	a.logActivityStep("NextAction", "prepare_waiting_done",
+		slog.String("work_item_id", strings.TrimSpace(workItemID)),
+		slog.String("waiting_token", token),
+		slog.String("waiting_kind", kind),
+	)
+	return NextActionResult{
+		NextAction:   nextAction,
+		WorkItemID:   workItemID,
+		WaitingToken: token,
+		WaitingKind:  kind,
+		Observation:  lastObservation(observations),
+		Observations: observations,
+		Status:       NextActionStatusWaiting,
 	}, nil
 }
 
@@ -3493,7 +3628,7 @@ func missingMemoryIDs(requested, deleted []string) []string {
 
 func isTerminalStatus(status string) bool {
 	switch status {
-	case NextActionStatusCompleted, NextActionStatusBlocked, NextActionStatusFailed, NextActionStatusIgnored:
+	case NextActionStatusWaiting, NextActionStatusCompleted, NextActionStatusBlocked, NextActionStatusFailed, NextActionStatusIgnored:
 		return true
 	default:
 		return false

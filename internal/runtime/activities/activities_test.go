@@ -1371,6 +1371,54 @@ func TestNextActionPassesEventChannelToEngine(t *testing.T) {
 	}
 }
 
+func TestNextActionRequiresExplicitPlanApprovalBeforeMutatingTool(t *testing.T) {
+	t.Parallel()
+
+	activities := Activities{
+		Engine: stubEngine{output: agent.NextActionOutput{
+			ToolChoice: &agent.ToolChoice{
+				ToolCallID:  "toolu_edit",
+				Type:        domain.ToolTypeExec,
+				Intent:      "edit files",
+				Command:     "go",
+				Args:        []string{"fmt", "./..."},
+				Idempotency: domain.ToolIdempotencyIdempotent,
+				Metadata: map[string]string{
+					"tool_call_id": "toolu_edit",
+				},
+			},
+			Status: NextActionStatusTool,
+		}},
+	}
+
+	result, err := activities.NextAction(context.Background(), NextActionRequest{
+		ProjectID: "project-1",
+		Event:     domain.Event{ID: "event-1", ProjectID: "project-1", Body: "add auth"},
+		NextAction: agent.NextAction{
+			WaitingKind:  "plan",
+			WaitingToken: "P-12345678",
+		},
+		AdditionalEvents: []domain.Event{{
+			ID:        "event-2",
+			ProjectID: "project-1",
+			Body:      "P-12345678: change the storage approach",
+		}},
+		ExecutionCycle: 2,
+	})
+	if err != nil {
+		t.Fatalf("next action: %v", err)
+	}
+	if result.Status != NextActionStatusWaiting {
+		t.Fatalf("expected waiting status, got %#v", result)
+	}
+	if result.ToolChoice != nil || len(result.ToolChoices) != 0 {
+		t.Fatalf("mutating tool should be blocked until approval: %#v", result)
+	}
+	if result.WaitingToken != "P-12345678" || !strings.Contains(result.NextAction.ResponseMessage, "approve P-12345678") {
+		t.Fatalf("expected explicit approval prompt, got %#v", result)
+	}
+}
+
 func TestExecuteToolReturnsManagedProcessMetadata(t *testing.T) {
 	if goruntime.GOOS == "windows" {
 		t.Skip("uses POSIX exec fixture")

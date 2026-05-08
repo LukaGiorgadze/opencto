@@ -6,11 +6,11 @@ import (
 )
 
 const (
-	ProposeAddToolName    = "memory_propose_add"
-	SearchToolName        = "memory_search"
-	ListToolName          = "memory_list"
-	ProposeUpdateToolName = "memory_propose_update"
-	ProposeForgetToolName = "memory_propose_forget"
+	ProposeAddToolName    = "MemoryProposeAdd"
+	SearchToolName        = "MemorySearch"
+	ListToolName          = "MemoryList"
+	ProposeUpdateToolName = "MemoryProposeUpdate"
+	ProposeForgetToolName = "MemoryProposeForget"
 
 	ProposeAddToolDescription    = "Proposes adding a new durable memory for later OpenCTO tasks. The backend validates, dedupes, saves, and embeds accepted proposals. Use only for durable preferences, project/user/global facts, standing instructions, decisions, constraints, identity context, or reusable workflow context; search/update existing memory first when a related memory may already exist."
 	SearchToolDescription        = "Searches durable OpenCTO memory for project, user, or global context. Use before proposing memory changes when the current task may depend on or change remembered preferences, decisions, project facts, identity context, constraints, or workflows."

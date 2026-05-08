@@ -688,17 +688,85 @@ func TestTaskWorkflowPassesAdditionalContextSignalToNextAction(t *testing.T) {
 	env.AssertExpectations(t)
 }
 
-func TestProjectWorkflowSignalsActiveTaskWithAdditionalContext(t *testing.T) {
+func TestTaskWorkflowReportsAndWaitsForPlanningAnswer(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.TaskWorkflow)
+	registerTaskWorkflowActivities(env)
+
+	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "add auth"}
+	answer := domain.Event{ID: "event-2", ProjectID: "project-1", Body: "Q-12345678: use sessions"}
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalTaskPlanningAnswer, workflows.PlanningAnswerSignal{
+			Token: "Q-12345678",
+			Event: answer,
+		})
+	}, time.Millisecond)
+
+	env.OnActivity("Activities.PersistEvent", mock.Anything, mock.Anything).Return(nil)
+	env.OnActivity("Activities.ExtractMemory", mock.Anything, mock.Anything).Return(nil)
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
+		return request.ExecutionCycle == 1 && len(request.AdditionalEvents) == 0
+	})).Return(activities.NextActionResult{
+		NextAction: agent.NextAction{
+			ResponseMessage: "Question Q-12345678\nReply with `Q-12345678: <answer>`.",
+			WaitingToken:    "Q-12345678",
+			WaitingKind:     "question",
+		},
+		WaitingToken: "Q-12345678",
+		WaitingKind:  "question",
+		Status:       activities.NextActionStatusWaiting,
+	}, nil).Once()
+	env.OnActivity("Activities.PersistNextAction", mock.Anything, mock.MatchedBy(func(request activities.PersistNextActionRequest) bool {
+		return request.Status == activities.NextActionStatusWaiting &&
+			request.NextAction.WaitingToken == "Q-12345678"
+	})).Return(nil).Once()
+	env.OnActivity("Activities.ReportResponse", mock.Anything, mock.MatchedBy(func(request activities.ReportResponseRequest) bool {
+		return request.Message == "Question Q-12345678\nReply with `Q-12345678: <answer>`."
+	})).Return(nil).Once()
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
+		return request.ExecutionCycle == 2 &&
+			len(request.AdditionalEvents) == 1 &&
+			request.AdditionalEvents[0].ID == "event-2"
+	})).Return(activities.NextActionResult{
+		NextAction: agent.NextAction{ResponseMessage: "approved"},
+		Status:     activities.NextActionStatusCompleted,
+	}, nil).Once()
+	env.OnActivity("Activities.PersistNextAction", mock.Anything, mock.MatchedBy(func(request activities.PersistNextActionRequest) bool {
+		return request.Status == activities.NextActionStatusCompleted
+	})).Return(nil).Once()
+
+	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{
+		ProjectID: "project-1",
+		Event:     event,
+	})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("task workflow failed: %v", err)
+	}
+	var result workflows.TaskWorkflowResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatalf("get result: %v", err)
+	}
+	if !result.Completed || result.ResponseMessage != "approved" {
+		t.Fatalf("unexpected task result: %#v", result)
+	}
+	env.AssertExpectations(t)
+}
+
+func TestProjectWorkflowStartsUntokenedMessageAsSeparateTaskWhileActive(t *testing.T) {
 	t.Parallel()
 
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(workflows.ProjectWorkflow)
-	received := false
-	env.RegisterWorkflowWithOptions(func(ctx workflow.Context, _ workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
-		var signal workflows.AdditionalContextSignal
-		workflow.GetSignalChannel(ctx, workflows.SignalTaskAdditionalContext).Receive(ctx, &signal)
-		received = signal.Event.ID == "event-2"
+	var seen []string
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context, input workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		seen = append(seen, input.Event.ID)
+		if input.Event.ID == "event-1" {
+			_ = workflow.Sleep(ctx, 10*365*24*time.Hour)
+		}
 		return workflows.TaskWorkflowResult{Completed: true}, nil
 	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
 
@@ -716,8 +784,52 @@ func TestProjectWorkflowSignalsActiveTaskWithAdditionalContext(t *testing.T) {
 	if err := env.GetWorkflowError(); err == nil {
 		t.Fatalf("expected cancellation error")
 	}
+	if strings.Join(seen, ",") != "event-1,event-2" {
+		t.Fatalf("expected untokened second message to start a separate task, got %#v", seen)
+	}
+}
+
+func TestProjectWorkflowRoutesTokenedAnswerToWaitingTask(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ProjectWorkflow)
+	received := false
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context, input workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		if input.Event.ID != "event-1" {
+			return workflows.TaskWorkflowResult{Completed: true}, nil
+		}
+		var signal workflows.PlanningAnswerSignal
+		workflow.GetSignalChannel(ctx, workflows.SignalTaskPlanningAnswer).Receive(ctx, &signal)
+		received = signal.Token == "Q-12345678" && signal.Event.ID == "event-2"
+		return workflows.TaskWorkflowResult{Completed: true}, nil
+	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{ID: "event-1", ProjectID: "project-1", Body: "do work"}})
+	}, 0)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalProjectTaskWaiting, workflows.PlanningWaitSignal{
+			EventID: "event-1",
+			Token:   "Q-12345678",
+			Kind:    "question",
+			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", Body: "do work"},
+		})
+	}, time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{ID: "event-2", ProjectID: "project-1", Body: "Q-12345678: use sessions"}})
+	}, 2*time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.CancelWorkflow()
+	}, 5*time.Millisecond)
+
+	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
 	if !received {
-		t.Fatalf("expected active child task to receive additional context signal")
+		t.Fatalf("expected tokened answer to route to waiting task")
 	}
 }
 

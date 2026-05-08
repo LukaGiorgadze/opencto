@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "title",
+    "summary",
+    "build",
+    "skip",
+    "risks",
+    "tradeoffs",
+    "architecture",
+    "steps",
+    "verification"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "title": {
+      "type": "string",
+      "description": "Short title for the proposed plan."
+    },
+    "summary": {
+      "type": "string",
+      "description": "Brief summary of the outcome and approach."
+    },
+    "build": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "What OpenCTO should build or change."
+    },
+    "skip": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "What OpenCTO should intentionally not build or change."
+    },
+    "risks": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Important risks or unknowns."
+    },
+    "tradeoffs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Product and technical tradeoffs."
+    },
+    "architecture": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Architecture, tooling, deployment, lifecycle, security, or devops decisions."
+    },
+    "steps": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Concrete implementation steps."
+    },
+    "verification": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Tests and checks that define done."
+    }
+  }
+}

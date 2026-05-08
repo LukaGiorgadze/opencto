@@ -70,7 +70,9 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 	memoryExtractionCtx := workflow.WithActivityOptions(ctx, memoryExtractionAO)
 	sessionCtx := workflow.WithActivityOptions(ctx, sessionAO)
 	session := startResponseSession(ctx, sessionCtx, input.ProjectID, input.Event)
-	defer stopResponseSession(ctx, session)
+	defer func() {
+		stopResponseSession(ctx, session)
+	}()
 
 	var currentAction agent.NextAction
 	if input.NextAction != nil {
@@ -121,6 +123,25 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			Status:     next.Status,
 		}); err != nil {
 			return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)
+		}
+		if next.Status == activities.NextActionStatusWaiting {
+			stopResponseSession(ctx, session)
+			session = nil
+			notifyProjectTaskWaiting(ctx, input.ProjectID, input.Event, next)
+			reportWaitingNextAction(ctx, input.Event, next)
+			signalEvents, canceled := waitForPlanningAnswer(ctx, next.WaitingToken, &additionalEvents)
+			if err := persistTaskSignalEvents(persistenceCtx, signalEvents); err != nil {
+				return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)
+			}
+			if canceled {
+				return TaskWorkflowResult{
+					Completed: false,
+					Status:    activities.NextActionStatusBlocked,
+					Event:     input.Event,
+				}, nil
+			}
+			session = startResponseSession(ctx, sessionCtx, input.ProjectID, input.Event)
+			continue
 		}
 		if next.IsTerminal() {
 			return resultFromNextAction(input.Event, next), nil
@@ -325,6 +346,106 @@ func isMemoryTool(toolType domain.ToolType) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func notifyProjectTaskWaiting(ctx workflow.Context, projectID string, event domain.Event, next activities.NextActionResult) {
+	token := normalizePlanningToken(next.WaitingToken)
+	if token == "" {
+		return
+	}
+	info := workflow.GetInfo(ctx)
+	if info == nil || info.ParentWorkflowExecution == nil {
+		return
+	}
+	signal := PlanningWaitSignal{
+		WorkflowID: info.WorkflowExecution.ID,
+		EventID:    event.ID,
+		Token:      token,
+		Kind:       strings.TrimSpace(next.WaitingKind),
+		Event:      event,
+	}
+	if strings.TrimSpace(signal.Event.ProjectID) == "" {
+		signal.Event.ProjectID = strings.TrimSpace(projectID)
+	}
+	err := workflow.SignalExternalWorkflow(ctx, info.ParentWorkflowExecution.ID, info.ParentWorkflowExecution.RunID, SignalProjectTaskWaiting, signal).Get(ctx, nil)
+	if err != nil {
+		workflow.GetLogger(ctx).Warn("signal project task waiting failed", "token", token, "error", err.Error())
+	}
+}
+
+func reportWaitingNextAction(ctx workflow.Context, event domain.Event, next activities.NextActionResult) {
+	message := strings.TrimSpace(next.NextAction.ResponseMessage)
+	if message == "" {
+		return
+	}
+	reportCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		ScheduleToCloseTimeout: reportResponseActivityTimeout,
+		StartToCloseTimeout:    reportResponseActivityTimeout,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 1,
+		},
+	})
+	err := workflow.ExecuteActivity(reportCtx, "Activities.ReportResponse", activities.ReportResponseRequest{
+		Event:       event,
+		Message:     message,
+		Attachments: append([]domain.ReportAttachment(nil), next.NextAction.ResponseAttachments...),
+	}).Get(reportCtx, nil)
+	if err != nil {
+		workflow.GetLogger(ctx).Error("report waiting response activity failed", "project_id", event.ProjectID, "event_id", event.ID, "error", err.Error())
+	}
+}
+
+func waitForPlanningAnswer(ctx workflow.Context, token string, additionalEvents *[]domain.Event) ([]taskSignalEvent, bool) {
+	token = normalizePlanningToken(token)
+	var signalEvents []taskSignalEvent
+	for {
+		selector := workflow.NewSelector(ctx)
+		selector.AddReceive(workflow.GetSignalChannel(ctx, SignalTaskPlanningAnswer), func(c workflow.ReceiveChannel, more bool) {
+			var signal PlanningAnswerSignal
+			c.Receive(ctx, &signal)
+			if normalizePlanningToken(signal.Token) != token {
+				return
+			}
+			*additionalEvents = append(*additionalEvents, signal.Event)
+			signalEvents = append(signalEvents, taskSignalEvent{Event: signal.Event})
+		})
+		selector.AddReceive(workflow.GetSignalChannel(ctx, SignalTaskAdditionalContext), func(c workflow.ReceiveChannel, more bool) {
+			var signal AdditionalContextSignal
+			c.Receive(ctx, &signal)
+			if planningTokenFromEvent(signal.Event) != token {
+				return
+			}
+			*additionalEvents = append(*additionalEvents, signal.Event)
+			signalEvents = append(signalEvents, taskSignalEvent{Event: signal.Event})
+		})
+		selector.AddReceive(workflow.GetSignalChannel(ctx, SignalTaskCancel), func(c workflow.ReceiveChannel, more bool) {
+			var signal TaskControlSignal
+			c.Receive(ctx, &signal)
+			signalEvents = append(signalEvents, taskSignalEvent{Event: signal.Event, Control: "cancel"})
+		})
+		selector.AddReceive(workflow.GetSignalChannel(ctx, SignalTaskInterrupt), func(c workflow.ReceiveChannel, more bool) {
+			var signal TaskControlSignal
+			c.Receive(ctx, &signal)
+			signalEvents = append(signalEvents, taskSignalEvent{Event: signal.Event, Control: "interrupt"})
+			if strings.TrimSpace(signal.Event.Body) != "" {
+				*additionalEvents = append(*additionalEvents, signal.Event)
+			}
+		})
+		selector.Select(ctx)
+		for _, event := range *additionalEvents {
+			if planningTokenFromEvent(event) == token {
+				return signalEvents, false
+			}
+		}
+		for _, signalEvent := range signalEvents {
+			if signalEvent.Control == "cancel" {
+				return signalEvents, true
+			}
+			if signalEvent.Control == "interrupt" {
+				return signalEvents, false
+			}
+		}
 	}
 }
 
