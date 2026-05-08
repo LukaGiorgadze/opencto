@@ -897,6 +897,47 @@ func TestTaskWorkflowReportsAndWaitsForPlanningAnswer(t *testing.T) {
 	env.AssertExpectations(t)
 }
 
+func TestTaskWorkflowFailsWhenWaitingPromptReportFails(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.TaskWorkflow)
+	registerTaskWorkflowActivities(env)
+
+	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "add auth"}
+	reportErr := errors.New("discord unavailable")
+	env.OnActivity("Activities.PersistEvent", mock.Anything, mock.Anything).Return(nil)
+	env.OnActivity("Activities.ExtractMemory", mock.Anything, mock.Anything).Return(nil)
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
+		return request.ExecutionCycle == 1
+	})).Return(activities.NextActionResult{
+		NextAction: agent.NextAction{
+			ResponseMessage: "Question Q-12345678\nReply with `Q-12345678: <answer>`.",
+			WaitingToken:    "Q-12345678",
+			WaitingKind:     "question",
+		},
+		WaitingToken: "Q-12345678",
+		WaitingKind:  "question",
+		Status:       activities.NextActionStatusWaiting,
+	}, nil).Once()
+	env.OnActivity("Activities.PersistNextAction", mock.Anything, mock.MatchedBy(func(request activities.PersistNextActionRequest) bool {
+		return request.Status == activities.NextActionStatusWaiting
+	})).Return(nil).Once()
+	env.OnActivity("Activities.ReportResponse", mock.Anything, mock.MatchedBy(func(request activities.ReportResponseRequest) bool {
+		return request.Message == "Question Q-12345678\nReply with `Q-12345678: <answer>`."
+	})).Return(activities.ReportResponseResult{}, reportErr).Once()
+
+	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{
+		ProjectID: "project-1",
+		Event:     event,
+	})
+	if err := env.GetWorkflowError(); err == nil || !strings.Contains(err.Error(), reportErr.Error()) {
+		t.Fatalf("expected waiting prompt report error, got %v", err)
+	}
+	env.AssertExpectations(t)
+}
+
 func TestTaskWorkflowTreatsRoutedReplyAsPlanningAnswer(t *testing.T) {
 	t.Parallel()
 
@@ -1485,6 +1526,62 @@ func TestProjectWorkflowRoutesReplyMetadataTokenToWaitingTask(t *testing.T) {
 	}
 	if !received {
 		t.Fatalf("expected reply metadata token to route to waiting task")
+	}
+}
+
+func TestProjectWorkflowRoutesReplyMetadataTokenRevisionToWaitingTask(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ProjectWorkflow)
+	received := false
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context, input workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		if input.Event.ID != "event-1" {
+			return workflows.TaskWorkflowResult{Completed: true}, nil
+		}
+		var signal workflows.PlanningAnswerSignal
+		workflow.GetSignalChannel(ctx, workflows.SignalTaskPlanningAnswer).Receive(ctx, &signal)
+		received = signal.WaitingKind == "plan" &&
+			signal.Decision == domain.MetadataApprovalRevision &&
+			signal.Event.ID == "event-2" &&
+			signal.Event.Body == "P-12345678: use orange colors" &&
+			signal.Event.Metadata[domain.MetadataKeyApprovalDecision] == domain.MetadataApprovalRevision
+		return workflows.TaskWorkflowResult{Completed: true}, nil
+	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{ID: "event-1", ProjectID: "project-1", Body: "new folder"}})
+	}, 0)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalProjectTaskWaiting, workflows.PlanningWaitSignal{
+			EventID: "event-1",
+			Token:   "P-12345678",
+			Kind:    "plan",
+			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", Body: "new folder"},
+		})
+	}, time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:        "event-2",
+			ProjectID: "project-1",
+			Body:      "P-12345678: use orange colors",
+			Metadata: domain.Metadata{
+				domain.MetadataKeyPlanningToken:       "P-12345678",
+				domain.MetadataKeyPlanningTokenSource: "reply",
+			},
+		}})
+	}, 2*time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.CancelWorkflow()
+	}, 5*time.Millisecond)
+
+	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	if !received {
+		t.Fatalf("expected reply metadata token revision to route to waiting task")
 	}
 }
 

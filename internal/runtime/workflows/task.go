@@ -132,7 +132,10 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			}
 			waitingEvent := reportTargetEvent(input.Event, additionalEvents)
 			notifyProjectTaskWaiting(ctx, input.ProjectID, waitingEvent, next)
-			receipts := reportWaitingNextAction(ctx, waitingEvent, next)
+			receipts, err := reportWaitingNextAction(ctx, waitingEvent, next)
+			if err != nil {
+				return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)
+			}
 			notifyProjectTaskOutput(ctx, waitingEvent, strings.TrimSpace(next.WaitingKind), receipts)
 			signalEvents, canceled := waitForPlanningAnswer(ctx, strings.TrimSpace(next.WaitingKind), &additionalEvents)
 			if err := persistTaskSignalEvents(persistenceCtx, signalEvents); err != nil {
@@ -400,10 +403,10 @@ func notifyProjectTaskOutput(ctx workflow.Context, event domain.Event, waitingKi
 	}
 }
 
-func reportWaitingNextAction(ctx workflow.Context, event domain.Event, next activities.NextActionResult) []domain.ReportReceipt {
+func reportWaitingNextAction(ctx workflow.Context, event domain.Event, next activities.NextActionResult) ([]domain.ReportReceipt, error) {
 	message := strings.TrimSpace(next.NextAction.ResponseMessage)
 	if message == "" {
-		return nil
+		return nil, nil
 	}
 	reportCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		ScheduleToCloseTimeout: reportResponseActivityTimeout,
@@ -422,9 +425,9 @@ func reportWaitingNextAction(ctx workflow.Context, event domain.Event, next acti
 	}).Get(reportCtx, &result)
 	if err != nil {
 		workflow.GetLogger(ctx).Error("report waiting response activity failed", "project_id", event.ProjectID, "event_id", event.ID, "error", err.Error())
-		return nil
+		return nil, err
 	}
-	return result.Receipts
+	return result.Receipts, nil
 }
 
 func reportReplyForEvent(event domain.Event) *domain.ReportReply {

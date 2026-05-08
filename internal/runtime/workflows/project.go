@@ -412,15 +412,7 @@ func signalRoutedEvent(ctx workflow.Context, owner routeOwner, event domain.Even
 		return
 	}
 	if owner.waiting() {
-		decision := ""
-		if strings.TrimSpace(owner.WaitingKind) == "plan" {
-			if approval.IsApprovalPhrase(event.Body) {
-				decision = domain.MetadataApprovalApproved
-			} else {
-				decision = domain.MetadataApprovalRevision
-			}
-		}
-		signalPlanningAnswer(ctx, owner.WorkflowID, owner.WaitingKind, decision, event)
+		signalPlanningAnswer(ctx, owner.WorkflowID, owner.WaitingKind, planningAnswerDecision(owner.WaitingKind, event.Body), event)
 		return
 	}
 	signalAdditionalContext(ctx, owner.WorkflowID, eventWithControl(event, domain.MetadataControlTaskReply))
@@ -611,15 +603,21 @@ func routePlanningAnswer(ctx workflow.Context, active map[string]activeTask, tok
 	}
 	task := activeTaskByWaitToken(active, token)
 	if task.WorkflowID != "" {
-		decision := ""
-		if strings.TrimSpace(task.WaitingKind) == "plan" {
-			decision = domain.MetadataApprovalApproved
-		}
-		signalPlanningAnswer(ctx, task.WorkflowID, task.WaitingKind, decision, event)
+		signalPlanningAnswer(ctx, task.WorkflowID, task.WaitingKind, planningAnswerDecision(task.WaitingKind, event.Body), event)
 		clearActiveWaitingToken(active, token)
 		return true
 	}
 	return false
+}
+
+func planningAnswerDecision(waitingKind string, body string) string {
+	if strings.TrimSpace(waitingKind) != "plan" {
+		return ""
+	}
+	if approval.IsApprovalPhrase(body) {
+		return domain.MetadataApprovalApproved
+	}
+	return domain.MetadataApprovalRevision
 }
 
 func reportStalePlanningToken(ctx workflow.Context, event domain.Event, token string) {
