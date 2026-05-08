@@ -226,8 +226,9 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event) (agent
 		var err error
 		memories, err = a.searchMemories(ctx, domain.MemorySearchRequest{
 			ProjectID:      strings.TrimSpace(event.ProjectID),
+			UserID:         eventUserID(event),
 			Query:          strings.TrimSpace(event.Body),
-			Scopes:         []domain.MemoryScope{domain.MemoryScopeProject, domain.MemoryScopeGlobal},
+			Scopes:         []domain.MemoryScope{domain.MemoryScopeProject, domain.MemoryScopeUser, domain.MemoryScopeGlobal},
 			Limit:          storage.DefaultAutoContextLimit(a.MemoryLimit),
 			FallbackRecent: true,
 		})
@@ -346,6 +347,35 @@ func conversationUserMetadata(event domain.Event) domain.Metadata {
 	}
 	if control := strings.TrimSpace(event.Metadata[domain.MetadataKeyControl]); control != "" {
 		metadata[domain.MetadataKeyControl] = control
+	}
+	return metadata
+}
+
+func eventUserID(event domain.Event) string {
+	actorID := strings.TrimSpace(event.ActorID)
+	if actorID != "" {
+		channelType := strings.TrimSpace(string(event.ChannelType))
+		if channelType != "" {
+			return channelType + ":" + actorID
+		}
+		return actorID
+	}
+	return strings.TrimSpace(event.ActorName)
+}
+
+func memoryMetadata(event domain.Event, reason string) domain.Metadata {
+	metadata := domain.Metadata{
+		"event_id":     strings.TrimSpace(event.ID),
+		"reason":       strings.TrimSpace(reason),
+		"channel_type": string(event.ChannelType),
+		"channel_id":   strings.TrimSpace(event.ChannelID),
+		"actor_id":     strings.TrimSpace(event.ActorID),
+		"actor_name":   strings.TrimSpace(event.ActorName),
+	}
+	for key, value := range metadata {
+		if strings.TrimSpace(value) == "" {
+			delete(metadata, key)
+		}
 	}
 	return metadata
 }
@@ -2003,6 +2033,7 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 		memory := domain.Memory{
 			ID:         stableActivityID("memory", execution.ProjectID, execution.ToolCallID, strings.TrimSpace(req.Content)),
 			ProjectID:  execution.ProjectID,
+			UserID:     eventUserID(execution.SourceEvent),
 			Scope:      memoryScope(req.Scope),
 			Kind:       firstNonEmpty(req.Kind, "fact"),
 			Content:    strings.TrimSpace(req.Content),
@@ -2012,16 +2043,16 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 			Actor:      strings.TrimSpace(execution.SourceEvent.ActorName),
 			Confidence: req.Confidence,
 			Pinned:     req.Pinned,
-			Metadata: domain.Metadata{
-				"event_id": strings.TrimSpace(execution.SourceEvent.ID),
-				"reason":   strings.TrimSpace(req.Reason),
-			},
+			Metadata:   memoryMetadata(execution.SourceEvent, req.Reason),
 		}
-		if memory.Scope == domain.MemoryScopeGlobal {
+		if memory.Scope == domain.MemoryScopeGlobal || memory.Scope == domain.MemoryScopeUser {
 			memory.ProjectID = execution.ProjectID
 		}
 		remembered, err := a.Store.RememberMemory(ctx, memory)
 		if err != nil {
+			if errors.Is(err, storage.ErrMemoryPolicyRejected) {
+				return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "MemoryPolicyRejected", err)
+			}
 			return memoryToolRunResult{}, err
 		}
 		a.upsertMemoryEmbedding(ctx, remembered)
@@ -2042,6 +2073,7 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 		tags := cleanMemoryTags(req.Tags)
 		memories, err := a.searchMemories(ctx, domain.MemorySearchRequest{
 			ProjectID: execution.ProjectID,
+			UserID:    eventUserID(execution.SourceEvent),
 			Query:     strings.TrimSpace(req.Query),
 			Scopes:    memorySearchScopes(req.Scope),
 			Tags:      tags,
@@ -2071,6 +2103,7 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 		}
 		update := domain.MemoryUpdateRequest{
 			ProjectID: execution.ProjectID,
+			UserID:    eventUserID(execution.SourceEvent),
 			MemoryID:  memoryID,
 		}
 		hasUpdate := false
@@ -2122,6 +2155,9 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 		}
 		result, err := a.Store.UpdateMemory(ctx, update)
 		if err != nil {
+			if errors.Is(err, storage.ErrMemoryPolicyRejected) {
+				return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "MemoryPolicyRejected", err)
+			}
 			return memoryToolRunResult{}, err
 		}
 		payload := mustJSON(memorytool.UpdateResult{Memory: result.Memory, Updated: result.Updated})
@@ -2161,6 +2197,7 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 		}
 		result, err := a.Store.ForgetMemories(ctx, domain.MemoryForgetRequest{
 			ProjectID: execution.ProjectID,
+			UserID:    eventUserID(execution.SourceEvent),
 			MemoryIDs: memoryIDs,
 			Scopes:    scopes,
 			Tags:      tags,
@@ -2984,6 +3021,8 @@ func memoryScope(value string) domain.MemoryScope {
 	switch domain.MemoryScope(strings.ToLower(strings.TrimSpace(value))) {
 	case domain.MemoryScopeGlobal:
 		return domain.MemoryScopeGlobal
+	case domain.MemoryScopeUser:
+		return domain.MemoryScopeUser
 	default:
 		return domain.MemoryScopeProject
 	}
@@ -2993,19 +3032,23 @@ func memorySearchScopes(value string) []domain.MemoryScope {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case memorytool.ScopeProject:
 		return []domain.MemoryScope{domain.MemoryScopeProject}
+	case memorytool.ScopeUser:
+		return []domain.MemoryScope{domain.MemoryScopeUser}
 	case memorytool.ScopeGlobal:
 		return []domain.MemoryScope{domain.MemoryScopeGlobal}
 	default:
-		return []domain.MemoryScope{domain.MemoryScopeProject, domain.MemoryScopeGlobal}
+		return []domain.MemoryScope{domain.MemoryScopeProject, domain.MemoryScopeUser, domain.MemoryScopeGlobal}
 	}
 }
 
 func memoryForgetScopes(value string) ([]domain.MemoryScope, string, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", memorytool.ScopeAll:
-		return []domain.MemoryScope{domain.MemoryScopeProject, domain.MemoryScopeGlobal}, memorytool.ScopeAll, nil
+		return []domain.MemoryScope{domain.MemoryScopeProject, domain.MemoryScopeUser, domain.MemoryScopeGlobal}, memorytool.ScopeAll, nil
 	case memorytool.ScopeProject:
 		return []domain.MemoryScope{domain.MemoryScopeProject}, memorytool.ScopeProject, nil
+	case memorytool.ScopeUser:
+		return []domain.MemoryScope{domain.MemoryScopeUser}, memorytool.ScopeUser, nil
 	case memorytool.ScopeGlobal:
 		return []domain.MemoryScope{domain.MemoryScopeGlobal}, memorytool.ScopeGlobal, nil
 	default:
@@ -3117,6 +3160,14 @@ func writeMemoryObservationFields(builder *strings.Builder, memory domain.Memory
 	if !memory.UpdatedAt.IsZero() {
 		builder.WriteString("\nupdated_at: ")
 		builder.WriteString(memory.UpdatedAt.UTC().Format(time.RFC3339))
+	}
+	if strings.TrimSpace(memory.UserID) != "" {
+		builder.WriteString("\nuser_id: ")
+		builder.WriteString(strings.TrimSpace(memory.UserID))
+	}
+	if strings.TrimSpace(memory.Actor) != "" {
+		builder.WriteString("\nactor: ")
+		builder.WriteString(strings.TrimSpace(memory.Actor))
 	}
 	if len(memory.Tags) > 0 {
 		builder.WriteString("\ntags: ")

@@ -24,6 +24,8 @@ import (
 type stubProjectStore struct {
 	pending              []domain.WorkItem
 	memories             []domain.Memory
+	remembered           *[]domain.Memory
+	searchRequests       *[]domain.MemorySearchRequest
 	updateResult         domain.MemoryUpdateResult
 	updateRequests       *[]domain.MemoryUpdateRequest
 	embeddingRequests    *[]domain.MemoryEmbedding
@@ -160,10 +162,16 @@ func (s stubProjectStore) ListConversationMessages(_ context.Context, query stor
 }
 
 func (s stubProjectStore) RememberMemory(_ context.Context, memory domain.Memory) (domain.Memory, error) {
+	if s.remembered != nil {
+		*s.remembered = append(*s.remembered, memory)
+	}
 	return memory, nil
 }
 
-func (s stubProjectStore) SearchMemories(context.Context, domain.MemorySearchRequest) ([]domain.Memory, error) {
+func (s stubProjectStore) SearchMemories(_ context.Context, request domain.MemorySearchRequest) ([]domain.Memory, error) {
+	if s.searchRequests != nil {
+		*s.searchRequests = append(*s.searchRequests, request)
+	}
 	return append([]domain.Memory(nil), s.memories...), nil
 }
 
@@ -357,22 +365,31 @@ func TestLoadContextIncludesBoundedMemoryWhenEnabled(t *testing.T) {
 		Kind:      "preference",
 		Content:   "Use SQLite for local storage.",
 	}
+	var searchRequests []domain.MemorySearchRequest
 	activities := Activities{
-		Store:         stubProjectStore{memories: []domain.Memory{memory}},
+		Store:         stubProjectStore{memories: []domain.Memory{memory}, searchRequests: &searchRequests},
 		Project:       domain.Project{ID: "default", Name: "OpenCTO"},
 		MemoryEnabled: true,
 		MemoryLimit:   5,
 	}
 	loaded, err := activities.LoadContext(context.Background(), domain.Event{
-		ID:        "event-1",
-		ProjectID: "default",
-		Body:      "what storage should we use?",
+		ID:          "event-1",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ActorID:     "user-1",
+		Body:        "what storage should we use?",
 	})
 	if err != nil {
 		t.Fatalf("load context: %v", err)
 	}
 	if len(loaded.Memory) != 1 || loaded.Memory[0].ID != "memory-1" {
 		t.Fatalf("expected memory to be loaded, got %#v", loaded.Memory)
+	}
+	if len(searchRequests) != 1 || searchRequests[0].UserID != "discord:user-1" {
+		t.Fatalf("expected memory search to include current user id, got %#v", searchRequests)
+	}
+	if len(searchRequests[0].Scopes) != 3 || searchRequests[0].Scopes[1] != domain.MemoryScopeUser {
+		t.Fatalf("expected memory search to include user scope, got %#v", searchRequests[0].Scopes)
 	}
 }
 
@@ -414,7 +431,7 @@ func TestExecuteMemoryToolForgetsByMemoryIDs(t *testing.T) {
 	if strings.Join(request.MemoryIDs, ",") != "memory-1,memory-2" {
 		t.Fatalf("unexpected forget memory ids: %#v", request.MemoryIDs)
 	}
-	if len(request.Scopes) != 2 || request.Scopes[0] != domain.MemoryScopeProject || request.Scopes[1] != domain.MemoryScopeGlobal {
+	if len(request.Scopes) != 3 || request.Scopes[0] != domain.MemoryScopeProject || request.Scopes[1] != domain.MemoryScopeUser || request.Scopes[2] != domain.MemoryScopeGlobal {
 		t.Fatalf("unexpected forget scopes: %#v", request.Scopes)
 	}
 	if len(request.Tags) != 0 {
@@ -610,10 +627,11 @@ func TestExecuteMemoryToolRememberUpsertsEmbedding(t *testing.T) {
 
 	embeddingRequests := []domain.MemoryEmbedding{}
 	embeddingInputs := []string{}
+	remembered := []domain.Memory{}
 	vector := make([]float32, 1536)
 	vector[0] = 1
 	activities := Activities{
-		Store:          stubProjectStore{embeddingRequests: &embeddingRequests},
+		Store:          stubProjectStore{embeddingRequests: &embeddingRequests, remembered: &remembered},
 		MemoryEnabled:  true,
 		MemoryEmbedder: fakeEmbedder{vector: vector, inputs: &embeddingInputs},
 	}
@@ -621,8 +639,12 @@ func TestExecuteMemoryToolRememberUpsertsEmbedding(t *testing.T) {
 		ProjectID:  "default",
 		WorkItemID: "work-1",
 		Event: domain.Event{
-			ID:        "event-1",
-			ProjectID: "default",
+			ID:          "event-1",
+			ProjectID:   "default",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			ActorID:     "discord-user-1",
+			ActorName:   "luka",
 		},
 		ToolChoice: agent.ToolChoice{
 			ToolCallID: "toolu_memory",
@@ -639,6 +661,16 @@ func TestExecuteMemoryToolRememberUpsertsEmbedding(t *testing.T) {
 	}
 	if result.Status != domain.ExecutionStatusSucceeded {
 		t.Fatalf("unexpected memory remember result: %#v", result)
+	}
+	if len(remembered) != 1 {
+		t.Fatalf("expected one remembered memory, got %#v", remembered)
+	}
+	memory := remembered[0]
+	if memory.UserID != "discord:discord-user-1" || memory.Actor != "luka" || memory.Metadata["actor_name"] != "luka" || memory.Metadata["actor_id"] != "discord-user-1" {
+		t.Fatalf("expected discord actor metadata to be persisted, got %#v", memory)
+	}
+	if _, ok := memory.Metadata["memory_user_id"]; ok {
+		t.Fatalf("memory_user_id should live on the typed user_id field, got metadata %#v", memory.Metadata)
 	}
 	if len(embeddingInputs) != 1 || !strings.Contains(embeddingInputs[0], "kind: preference") || !strings.Contains(embeddingInputs[0], "content: Use SQLite for local state.") {
 		t.Fatalf("unexpected embedding inputs: %#v", embeddingInputs)

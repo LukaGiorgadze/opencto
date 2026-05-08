@@ -234,12 +234,14 @@ type MemoryScope string
 
 const (
 	MemoryScopeProject MemoryScope = "project"
+	MemoryScopeUser    MemoryScope = "user"
 	MemoryScopeGlobal  MemoryScope = "global"
 )
 
 type Memory struct {
 	ID         string      `json:"id"`
 	ProjectID  string      `json:"project_id,omitempty"`
+	UserID     string      `json:"user_id,omitempty"`
 	Scope      MemoryScope `json:"scope"`
 	Kind       string      `json:"kind,omitempty"`
 	Content    string      `json:"content"`
@@ -256,6 +258,7 @@ type Memory struct {
 
 type MemorySearchRequest struct {
 	ProjectID           string        `json:"project_id,omitempty"`
+	UserID              string        `json:"user_id,omitempty"`
 	Query               string        `json:"query,omitempty"`
 	Scopes              []MemoryScope `json:"scopes,omitempty"`
 	Tags                []string      `json:"tags,omitempty"`
@@ -269,6 +272,7 @@ type MemorySearchRequest struct {
 
 type MemoryUpdateRequest struct {
 	ProjectID   string   `json:"project_id,omitempty"`
+	UserID      string   `json:"user_id,omitempty"`
 	MemoryID    string   `json:"memory_id"`
 	Content     string   `json:"content,omitempty"`
 	Kind        string   `json:"kind,omitempty"`
@@ -285,6 +289,7 @@ type MemoryUpdateResult struct {
 
 type MemoryForgetRequest struct {
 	ProjectID string        `json:"project_id,omitempty"`
+	UserID    string        `json:"user_id,omitempty"`
 	MemoryIDs []string      `json:"memory_ids,omitempty"`
 	Scopes    []MemoryScope `json:"scopes,omitempty"`
 	Tags      []string      `json:"tags,omitempty"`

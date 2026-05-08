@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -30,6 +31,100 @@ func TestStoreMigratesAndVerifiesSchema(t *testing.T) {
 	if name != "OpenCTO" {
 		t.Fatalf("unexpected project name: %q", name)
 	}
+}
+
+func TestMigrateAddsUserMemoryScopeToExistingSchema(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "opencto.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+	if _, err := store.db.ExecContext(ctx, `
+CREATE TABLE schema_migrations (
+	version INTEGER PRIMARY KEY,
+	applied_at TEXT NOT NULL
+);
+INSERT INTO schema_migrations(version, applied_at) VALUES (1, '2026-05-01T00:00:00Z'), (2, '2026-05-01T00:00:00Z'), (3, '2026-05-01T00:00:00Z');
+CREATE TABLE memories (
+	id TEXT PRIMARY KEY,
+	project_id TEXT NOT NULL DEFAULT '',
+	scope TEXT NOT NULL CHECK (scope IN ('project', 'global')),
+	kind TEXT NOT NULL DEFAULT 'fact',
+	content TEXT NOT NULL,
+	tags TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(tags)),
+	source TEXT NOT NULL DEFAULT '',
+	source_id TEXT NOT NULL DEFAULT '',
+	actor TEXT NOT NULL DEFAULT '',
+	confidence REAL NOT NULL DEFAULT 1.0,
+	pinned INTEGER NOT NULL DEFAULT 0,
+	metadata TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata)),
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_memories_project_scope_updated ON memories(project_id, scope, updated_at);
+CREATE INDEX idx_memories_scope_updated ON memories(scope, updated_at);
+CREATE VIRTUAL TABLE memory_fts USING fts5(
+	memory_id UNINDEXED,
+	project_id UNINDEXED,
+	scope UNINDEXED,
+	content,
+	tags
+);
+CREATE TABLE memory_embeddings (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	memory_id TEXT NOT NULL UNIQUE,
+	provider TEXT NOT NULL,
+	model TEXT NOT NULL,
+	dimensions INTEGER NOT NULL,
+	content_hash TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	FOREIGN KEY(memory_id) REFERENCES memories(id) ON DELETE CASCADE
+);
+INSERT INTO memories(id, project_id, scope, kind, content, created_at, updated_at)
+VALUES ('existing-memory', 'default', 'project', 'fact', 'Project prefers durable local SQLite storage.', '2026-05-01T00:00:00Z', '2026-05-01T00:00:00Z');
+INSERT INTO memory_embeddings(memory_id, provider, model, dimensions, content_hash, created_at, updated_at)
+VALUES ('existing-memory', 'openai', 'text-embedding-3-small', 1536, 'hash', '2026-05-01T00:00:00Z', '2026-05-01T00:00:00Z');
+`); err != nil {
+		t.Fatalf("seed old schema: %v", err)
+	}
+
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatalf("migrate old schema: %v", err)
+	}
+	if ok, err := tableHasColumn(ctx, store.db, "memories", "user_id"); err != nil {
+		t.Fatalf("check user_id column: %v", err)
+	} else if !ok {
+		t.Fatalf("expected user_id column after migration")
+	}
+	if _, err := store.RememberMemory(ctx, domain.Memory{
+		ID:        "user-memory",
+		UserID:    "discord:user-1",
+		Scope:     domain.MemoryScopeUser,
+		Kind:      "preference",
+		Content:   "User prefers concise technical explanations.",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("remember user memory after migration: %v", err)
+	}
+	found, err := store.SearchMemories(ctx, domain.MemorySearchRequest{
+		ProjectID:      "default",
+		UserID:         "discord:user-1",
+		FallbackRecent: true,
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatalf("search memories after migration: %v", err)
+	}
+	requireMemoryIDs(t, memoryIDs(found), "existing-memory", "user-memory")
 }
 
 func TestAppendEventIsIdempotentAndUpdatesChangedDuplicate(t *testing.T) {
@@ -770,6 +865,155 @@ func TestForgetMemoriesRejectsMissingSelector(t *testing.T) {
 		ProjectID: "default",
 	}); err == nil {
 		t.Fatalf("expected forget without selector to fail")
+	}
+}
+
+func TestMemoryUserScopeIsVisibleOnlyToUser(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := time.Now().UTC()
+	memories := []domain.Memory{
+		{
+			ID:        "project-memory",
+			ProjectID: "default",
+			Scope:     domain.MemoryScopeProject,
+			Kind:      "fact",
+			Content:   "Project prefers SQLite for local durable storage.",
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			ID:        "user-one-memory",
+			ProjectID: "default",
+			UserID:    "discord:user-1",
+			Scope:     domain.MemoryScopeUser,
+			Kind:      "preference",
+			Content:   "User prefers concise technical updates.",
+			CreatedAt: now,
+			UpdatedAt: now.Add(time.Second),
+		},
+		{
+			ID:        "user-two-memory",
+			ProjectID: "default",
+			UserID:    "discord:user-2",
+			Scope:     domain.MemoryScopeUser,
+			Kind:      "preference",
+			Content:   "User prefers detailed technical updates.",
+			CreatedAt: now,
+			UpdatedAt: now.Add(2 * time.Second),
+		},
+		{
+			ID:        "global-memory",
+			ProjectID: "default",
+			Scope:     domain.MemoryScopeGlobal,
+			Kind:      "constraint",
+			Content:   "Deployments require explicit approval.",
+			CreatedAt: now,
+			UpdatedAt: now.Add(3 * time.Second),
+		},
+	}
+	for _, memory := range memories {
+		if _, err := store.RememberMemory(ctx, memory); err != nil {
+			t.Fatalf("remember %s: %v", memory.ID, err)
+		}
+	}
+
+	found, err := store.SearchMemories(ctx, domain.MemorySearchRequest{
+		ProjectID:      "default",
+		UserID:         "discord:user-1",
+		FallbackRecent: true,
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatalf("search visible memories: %v", err)
+	}
+	requireMemoryIDs(t, memoryIDs(found), "global-memory", "project-memory", "user-one-memory")
+
+	found, err = store.SearchMemories(ctx, domain.MemorySearchRequest{
+		ProjectID:      "default",
+		UserID:         "discord:user-2",
+		Scopes:         []domain.MemoryScope{domain.MemoryScopeUser},
+		FallbackRecent: true,
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatalf("search user memories: %v", err)
+	}
+	requireMemoryIDs(t, memoryIDs(found), "user-two-memory")
+}
+
+func TestRememberMemoryAppliesPolicyGate(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	cases := []struct {
+		name    string
+		kind    string
+		content string
+	}{
+		{name: "low-signal", kind: "fact", content: "ok"},
+		{name: "secret", kind: "fact", content: "The api_key is sk-123456789012345678901234."},
+		{name: "diff", kind: "fact", content: "diff --git a/app.go b/app.go\n@@ -1 +1 @@\n-old\n+new"},
+		{name: "stack-trace", kind: "fact", content: "panic: nil pointer dereference\ngoroutine 12 [running]\nmain.main()"},
+		{name: "command-output", kind: "fact", content: "command: go test ./...\nstdout:\nok package\nstderr:\n"},
+		{name: "temporary", kind: "preference", content: "User prefers raw SQL for this migration."},
+		{name: "unsupported-kind", kind: "debugging-note", content: "User prefers concise technical explanations."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := store.RememberMemory(ctx, domain.Memory{
+				ID:        "memory-" + tc.name,
+				ProjectID: "default",
+				Scope:     domain.MemoryScopeProject,
+				Kind:      tc.kind,
+				Content:   tc.content,
+			})
+			if !errors.Is(err, storage.ErrMemoryPolicyRejected) {
+				t.Fatalf("expected policy rejection, got %v", err)
+			}
+		})
+	}
+}
+
+func TestRememberMemoryRejectsExactDuplicate(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	if _, err := store.RememberMemory(ctx, domain.Memory{
+		ID:        "memory-1",
+		ProjectID: "default",
+		Scope:     domain.MemoryScopeProject,
+		Kind:      "pref",
+		Content:   "User prefers concise technical explanations.",
+	}); err != nil {
+		t.Fatalf("remember first memory: %v", err)
+	}
+	remembered, err := store.RememberMemory(ctx, domain.Memory{
+		ID:        "memory-1",
+		ProjectID: "default",
+		Scope:     domain.MemoryScopeProject,
+		Kind:      "pref",
+		Content:   "User prefers concise technical explanations.",
+	})
+	if err != nil {
+		t.Fatalf("upsert same memory id should be allowed: %v", err)
+	}
+	if remembered.Kind != "preference" {
+		t.Fatalf("expected kind normalization, got %q", remembered.Kind)
+	}
+	_, err = store.RememberMemory(ctx, domain.Memory{
+		ID:        "memory-2",
+		ProjectID: "default",
+		Scope:     domain.MemoryScopeProject,
+		Kind:      "preference",
+		Content:   " user   prefers concise technical explanations. ",
+	})
+	if !errors.Is(err, storage.ErrMemoryPolicyRejected) {
+		t.Fatalf("expected duplicate policy rejection, got %v", err)
 	}
 }
 

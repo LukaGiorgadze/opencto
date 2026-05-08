@@ -400,10 +400,18 @@ func TestBuildNextActionMessagesIncludesMemoryCrudPolicy(t *testing.T) {
 	for _, expected := range []string{
 		"Search memory before writing",
 		"Use `MemoryUpdate` when an existing memory should change",
-		"Use `MemoryRemember` only for new durable facts",
+		"Use `MemoryRemember` for new durable facts",
 		"Use `MemoryForget` only when the user asks to forget/delete memory",
+		"Store durable preferences even when the user does not literally say \"remember\"",
+		"Prefer project scope for current repo",
+		"Prefer user scope for identity",
+		"Prefer global scope only for shared rules",
 		"Do not save temporary task details",
+		"Do not save task-scoped choices",
 		"Pin only high-value long-term memory",
+		"User: \"use pnpm\"",
+		"User: \"use raw SQL for this migration\"",
+		"User: \"never deploy without asking me first\"",
 	} {
 		if !strings.Contains(systemPrompt, expected) {
 			t.Fatalf("system prompt should include memory CRUD policy %q:\n%s", expected, systemPrompt)

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 
@@ -15,6 +16,8 @@ const (
 	defaultConversationHistoryLimit    = 10
 	defaultConversationMaxContextChars = 8000
 )
+
+var ErrMemoryPolicyRejected = errors.New("memory rejected by policy")
 
 type EventAppendResult struct {
 	Inserted bool
