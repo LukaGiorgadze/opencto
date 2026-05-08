@@ -108,10 +108,6 @@ func memoryExtractionUserPrompt(input agent.MemoryExtractionInput) string {
 	builder.WriteString(strings.TrimSpace(input.ProjectID))
 	builder.WriteString("\nChannel: ")
 	builder.WriteString(string(input.Event.ChannelType))
-	builder.WriteString("\nActor ID: ")
-	builder.WriteString(strings.TrimSpace(input.Event.ActorID))
-	builder.WriteString("\nActor name: ")
-	builder.WriteString(strings.TrimSpace(input.Event.ActorName))
 	builder.WriteString("\n\nUser message:\n")
 	builder.WriteString(strings.TrimSpace(input.Event.Body))
 	if len(input.ExistingMemories) > 0 {

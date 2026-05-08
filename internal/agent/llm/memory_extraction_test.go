@@ -52,6 +52,10 @@ func TestOpenAIMemoryExtractorParsesCandidate(t *testing.T) {
 	if len(model.messages) != 2 || !strings.Contains(messageText(model.messages[0]), "casual personal facts unrelated to OpenCTO technical work") {
 		t.Fatalf("expected memory policy prompt, got %#v", model.messages)
 	}
+	userPrompt := messageText(model.messages[1])
+	if strings.Contains(userPrompt, "Luka") {
+		t.Fatalf("extractor prompt should not include actor identity metadata: %q", userPrompt)
+	}
 }
 
 func TestParseMemoryExtractionOutputFiltersInvalidCandidates(t *testing.T) {
