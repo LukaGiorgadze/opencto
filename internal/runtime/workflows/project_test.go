@@ -833,6 +833,58 @@ func TestProjectWorkflowRoutesTokenedAnswerToWaitingTask(t *testing.T) {
 	}
 }
 
+func TestProjectWorkflowRoutesReplyMetadataTokenToWaitingTask(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ProjectWorkflow)
+	received := false
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context, input workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		if input.Event.ID != "event-1" {
+			return workflows.TaskWorkflowResult{Completed: true}, nil
+		}
+		var signal workflows.PlanningAnswerSignal
+		workflow.GetSignalChannel(ctx, workflows.SignalTaskPlanningAnswer).Receive(ctx, &signal)
+		received = signal.Token == "P-12345678" && signal.Event.ID == "event-2" && signal.Event.Body == "Do it!"
+		return workflows.TaskWorkflowResult{Completed: true}, nil
+	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{ID: "event-1", ProjectID: "project-1", Body: "new folder"}})
+	}, 0)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalProjectTaskWaiting, workflows.PlanningWaitSignal{
+			EventID: "event-1",
+			Token:   "P-12345678",
+			Kind:    "plan",
+			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", Body: "new folder"},
+		})
+	}, time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:        "event-2",
+			ProjectID: "project-1",
+			Body:      "Do it!",
+			Metadata: domain.Metadata{
+				domain.MetadataKeyPlanningToken:       "P-12345678",
+				domain.MetadataKeyPlanningTokenSource: "reply",
+			},
+		}})
+	}, 2*time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.CancelWorkflow()
+	}, 5*time.Millisecond)
+
+	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	if !received {
+		t.Fatalf("expected reply metadata token to route to waiting task")
+	}
+}
+
 func TestProjectWorkflowReportsAfterTaskWorkflowCompletes(t *testing.T) {
 	t.Parallel()
 

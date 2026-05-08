@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -26,6 +27,9 @@ const discordDefaultOutboundMaxTotalBytes int64 = 25 << 20
 
 const discordAttachmentPayloadKey = "attachments"
 const discordTypingTimeout = 3 * time.Second
+const discordReferencedContentMaxChars = 2000
+
+var discordPlanningTokenPattern = regexp.MustCompile(`(?i)\b[QP]-[0-9a-f]{8}\b`)
 
 type AttachmentLimits = channels.AttachmentLimits
 type MessageLimits = channels.MessageLimits
@@ -162,10 +166,12 @@ func (a *Adapter) NormalizeMessage(ctx context.Context, message *discordgo.Messa
 		"message_id": message.ID,
 		"guild_id":   message.GuildID,
 	}
+	metadata := domain.Metadata{}
+	addDiscordReplyMetadata(message, payload, metadata)
 	if len(attachments) > 0 {
 		payload[discordAttachmentPayloadKey] = attachments
 	}
-	return domain.Event{
+	event := domain.Event{
 		ID:          id,
 		ProjectID:   a.projectID,
 		Kind:        domain.EventKindMessage,
@@ -182,7 +188,97 @@ func (a *Adapter) NormalizeMessage(ctx context.Context, message *discordgo.Messa
 			ObservedAt: now,
 		},
 		CreatedAt: now,
-	}, nil
+	}
+	if len(metadata) > 0 {
+		event.Metadata = metadata
+		event.Provenance.Metadata = copyDiscordMetadata(metadata)
+	}
+	return event, nil
+}
+
+func addDiscordReplyMetadata(message *discordgo.MessageCreate, payload map[string]any, metadata domain.Metadata) {
+	if message == nil || message.Message == nil {
+		return
+	}
+	if ref := message.MessageReference; ref != nil {
+		setDiscordPayloadString(payload, domain.MetadataKeyReplyToMessageID, ref.MessageID)
+		setDiscordPayloadString(payload, domain.MetadataKeyReplyToChannelID, ref.ChannelID)
+		setDiscordPayloadString(payload, domain.MetadataKeyReplyToContextID, ref.GuildID)
+		setDiscordMetadataString(metadata, domain.MetadataKeyReplyToMessageID, ref.MessageID)
+		setDiscordMetadataString(metadata, domain.MetadataKeyReplyToChannelID, ref.ChannelID)
+		setDiscordMetadataString(metadata, domain.MetadataKeyReplyToContextID, ref.GuildID)
+	}
+	referenced := message.ReferencedMessage
+	if referenced == nil {
+		return
+	}
+	setDiscordPayloadString(payload, domain.MetadataKeyReplyToMessageID, referenced.ID)
+	setDiscordPayloadString(payload, domain.MetadataKeyReplyToChannelID, referenced.ChannelID)
+	setDiscordPayloadString(payload, domain.MetadataKeyReplyToContextID, referenced.GuildID)
+	setDiscordMetadataString(metadata, domain.MetadataKeyReplyToMessageID, referenced.ID)
+	setDiscordMetadataString(metadata, domain.MetadataKeyReplyToChannelID, referenced.ChannelID)
+	setDiscordMetadataString(metadata, domain.MetadataKeyReplyToContextID, referenced.GuildID)
+	if referenced.Author != nil {
+		setDiscordPayloadString(payload, domain.MetadataKeyReplyToActorID, referenced.Author.ID)
+		setDiscordPayloadString(payload, "reply_to_author_name", referenced.Author.Username)
+		setDiscordMetadataString(metadata, domain.MetadataKeyReplyToActorID, referenced.Author.ID)
+	}
+	if content := truncateDiscordMetadataText(normalizeDiscordBody(referenced.Content), discordReferencedContentMaxChars); content != "" {
+		payload["reply_to_content"] = content
+	}
+	if token := discordPlanningTokenFromText(referenced.Content); token != "" {
+		payload[domain.MetadataKeyPlanningToken] = token
+		metadata[domain.MetadataKeyPlanningToken] = token
+		metadata[domain.MetadataKeyPlanningTokenSource] = "reply"
+	}
+}
+
+func setDiscordPayloadString(payload map[string]any, key, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	payload[key] = value
+}
+
+func setDiscordMetadataString(metadata domain.Metadata, key, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	metadata[key] = value
+}
+
+func discordPlanningTokenFromText(text string) string {
+	return normalizeDiscordPlanningToken(discordPlanningTokenPattern.FindString(text))
+}
+
+func normalizeDiscordPlanningToken(token string) string {
+	token = strings.Trim(strings.TrimSpace(token), "`.,:;()[]{}")
+	return strings.ToUpper(token)
+}
+
+func truncateDiscordMetadataText(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if text == "" || limit <= 0 || len(text) <= limit {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	return strings.TrimSpace(string(runes[:limit]))
+}
+
+func copyDiscordMetadata(metadata domain.Metadata) domain.Metadata {
+	if len(metadata) == 0 {
+		return nil
+	}
+	out := make(domain.Metadata, len(metadata))
+	for key, value := range metadata {
+		out[key] = value
+	}
+	return out
 }
 
 func (a *Adapter) normalizeAttachments(ctx context.Context, eventID string, attachments []*discordgo.MessageAttachment, observedAt time.Time) ([]domain.EventAttachment, error) {

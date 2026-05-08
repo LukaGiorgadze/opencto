@@ -445,11 +445,148 @@ func TestBuildNextActionMessagesIncludesCTOPlanningProtocol(t *testing.T) {
 		"Ask one high-impact question at a time with `AskUserQuestion`",
 		"When enough context is known, call `ProposePlan`",
 		"Never use mutating tools for non-trivial work until the user explicitly approves",
+		"Bare confirmations such as \"yes\", \"do it\", or \"go ahead\" are not plan approval",
 		"approve P-xxxxxxxx",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("prompt missing planning protocol text %q:\n%s", expected, prompt)
 		}
+	}
+}
+
+func TestBuildNextActionMessagesIncludesPendingPlanningContext(t *testing.T) {
+	t.Parallel()
+
+	messages, err := buildNextActionMessages(agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", Body: "new folder"},
+			AdditionalEvents: []domain.Event{{
+				ID:        "event-2",
+				ProjectID: "project-1",
+				Body:      "Do it!",
+				Metadata: domain.Metadata{
+					domain.MetadataKeyPlanningToken:       "P-12345678",
+					domain.MetadataKeyPlanningTokenSource: "reply",
+				},
+			}},
+		},
+		NextAction: agent.NextAction{
+			WaitingKind:     "plan",
+			WaitingToken:    "P-12345678",
+			ResponseMessage: "Plan P-12345678: Create app\nReply with `approve P-12345678`.",
+		},
+	})
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	if len(messages) != 4 {
+		t.Fatalf("expected system, user, pending context, and additional user messages, got %d", len(messages))
+	}
+	pending := messageText(messages[2])
+	for _, expected := range []string{
+		"Current pending planning state",
+		"kind: plan",
+		"token: P-12345678",
+		"bare approval phrase only counts",
+		"current answer: approved via matching planning token/reply metadata",
+		"Do not call ProposePlan again",
+		"Plan P-12345678: Create app",
+	} {
+		if !strings.Contains(pending, expected) {
+			t.Fatalf("pending context missing %q:\n%s", expected, pending)
+		}
+	}
+	additional := messageText(messages[3])
+	for _, expected := range []string{
+		"Runtime message metadata",
+		"planning_token: P-12345678",
+		"planning_token_source: reply",
+		"User message:\nDo it!",
+	} {
+		if !strings.Contains(additional, expected) {
+			t.Fatalf("additional message missing %q:\n%s", expected, additional)
+		}
+	}
+}
+
+func TestBuildNextActionMessagesShowsReplyMetadata(t *testing.T) {
+	t.Parallel()
+
+	messages, err := buildNextActionMessages(agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event: domain.Event{
+				ID:        "event-1",
+				ProjectID: "project-1",
+				Body:      "Do it now!",
+				Metadata: domain.Metadata{
+					domain.MetadataKeyPlanningToken:       "P-12345678",
+					domain.MetadataKeyPlanningTokenSource: "reply",
+					domain.MetadataKeyReplyToMessageID:    "message-1",
+					domain.MetadataKeyReplyToChannelID:    "channel-1",
+					domain.MetadataKeyReplyToContextID:    "context-1",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected system and user messages, got %d", len(messages))
+	}
+	got := messageText(messages[1])
+	for _, expected := range []string{
+		"Runtime message metadata",
+		"planning_token: P-12345678",
+		"planning_token_source: reply",
+		"reply_to_message_id: message-1",
+		"reply_to_channel_id: channel-1",
+		"reply_to_context_id: context-1",
+		"User message:\nDo it now!",
+	} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("user message missing %q:\n%s", expected, got)
+		}
+	}
+}
+
+func TestBuildNextActionMessagesTreatsTokenedNonApprovalAsRevisionContext(t *testing.T) {
+	t.Parallel()
+
+	messages, err := buildNextActionMessages(agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", Body: "new folder"},
+			AdditionalEvents: []domain.Event{{
+				ID:        "event-2",
+				ProjectID: "project-1",
+				Body:      "Use pnpm instead",
+				Metadata: domain.Metadata{
+					domain.MetadataKeyPlanningToken:       "P-12345678",
+					domain.MetadataKeyPlanningTokenSource: "reply",
+				},
+			}},
+		},
+		NextAction: agent.NextAction{
+			WaitingKind:     "plan",
+			WaitingToken:    "P-12345678",
+			ResponseMessage: "Plan P-12345678: Create app\nReply with `approve P-12345678`.",
+		},
+	})
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	pending := messageText(messages[2])
+	if !strings.Contains(pending, "replied to this plan token but did not clearly approve it") {
+		t.Fatalf("expected revision context, got:\n%s", pending)
+	}
+	if got := messageText(messages[3]); !strings.Contains(got, "User message:\nUse pnpm instead") {
+		t.Fatalf("unexpected additional user message: %q", got)
 	}
 }
 

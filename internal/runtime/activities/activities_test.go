@@ -1419,6 +1419,110 @@ func TestNextActionRequiresExplicitPlanApprovalBeforeMutatingTool(t *testing.T) 
 	}
 }
 
+func TestNextActionAllowsPlanApprovalFromReplyMetadata(t *testing.T) {
+	t.Parallel()
+
+	activities := Activities{
+		Engine: stubEngine{output: agent.NextActionOutput{
+			ToolChoice: &agent.ToolChoice{
+				ToolCallID:  "toolu_edit",
+				Type:        domain.ToolTypeExec,
+				Intent:      "edit files",
+				Command:     "go",
+				Args:        []string{"fmt", "./..."},
+				Idempotency: domain.ToolIdempotencyIdempotent,
+				Metadata: map[string]string{
+					"tool_call_id": "toolu_edit",
+				},
+			},
+			Status: NextActionStatusTool,
+		}},
+	}
+
+	result, err := activities.NextAction(context.Background(), NextActionRequest{
+		ProjectID: "project-1",
+		Event:     domain.Event{ID: "event-1", ProjectID: "project-1", Body: "add auth"},
+		NextAction: agent.NextAction{
+			WaitingKind:  "plan",
+			WaitingToken: "P-12345678",
+		},
+		AdditionalEvents: []domain.Event{{
+			ID:        "event-2",
+			ProjectID: "project-1",
+			Body:      "Do it now!",
+			Metadata: domain.Metadata{
+				domain.MetadataKeyPlanningToken:       "P-12345678",
+				domain.MetadataKeyPlanningTokenSource: "reply",
+			},
+		}},
+		ExecutionCycle: 2,
+	})
+	if err != nil {
+		t.Fatalf("next action: %v", err)
+	}
+	if result.Status != NextActionStatusTool {
+		t.Fatalf("expected mutating tool after reply approval metadata, got %#v", result)
+	}
+	if result.ToolChoice == nil || result.ToolChoice.Command != "go" {
+		t.Fatalf("expected tool choice to pass through: %#v", result.ToolChoice)
+	}
+}
+
+func TestNextActionBlocksUntokenedPlanApprovalPhraseFromMutating(t *testing.T) {
+	t.Parallel()
+
+	base := time.Now()
+	activities := Activities{
+		Store: stubProjectStore{
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeProject: {
+					{
+						ID:        "conversation-1",
+						ProjectID: "project-1",
+						Role:      domain.ConversationRoleAssistant,
+						Body:      "Plan P-19ec437d: Create React+Vite example app\nReply with `approve P-19ec437d`.",
+						CreatedAt: base,
+					},
+				},
+			},
+		},
+		ConversationEnabled: true,
+		ConversationLimit:   10,
+		Engine: stubEngine{output: agent.NextActionOutput{
+			ToolChoice: &agent.ToolChoice{
+				ToolCallID:  "toolu_edit",
+				Type:        domain.ToolTypeExec,
+				Intent:      "edit files",
+				Command:     "go",
+				Args:        []string{"fmt", "./..."},
+				Idempotency: domain.ToolIdempotencyIdempotent,
+				Metadata: map[string]string{
+					"tool_call_id": "toolu_edit",
+				},
+			},
+			Status: NextActionStatusTool,
+		}},
+	}
+
+	result, err := activities.NextAction(context.Background(), NextActionRequest{
+		ProjectID:      "project-1",
+		Event:          domain.Event{ID: "event-2", ProjectID: "project-1", Body: "Do it!"},
+		ExecutionCycle: 1,
+	})
+	if err != nil {
+		t.Fatalf("next action: %v", err)
+	}
+	if result.Status != NextActionStatusCompleted {
+		t.Fatalf("expected completed clarification instead of mutation, got %#v", result)
+	}
+	if result.ToolChoice != nil || len(result.ToolChoices) != 0 {
+		t.Fatalf("untokened approval phrase should not run a mutating tool: %#v", result)
+	}
+	if !strings.Contains(result.NextAction.ResponseMessage, "approve P-19EC437D") {
+		t.Fatalf("expected explicit token guidance, got %#v", result.NextAction.ResponseMessage)
+	}
+}
+
 func TestExecuteToolReturnsManagedProcessMetadata(t *testing.T) {
 	if goruntime.GOOS == "windows" {
 		t.Skip("uses POSIX exec fixture")

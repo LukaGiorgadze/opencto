@@ -99,6 +99,9 @@ func buildNextActionMessages(input agent.NextActionInput) ([]llms.MessageContent
 		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, history))
 	}
 	messages = append(messages, userMessage)
+	if pending := pendingPlanningContextMessage(input.NextAction, input.Context.AdditionalEvents); pending != "" {
+		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, pending))
+	}
 	for index := 0; index < len(input.ObservationHistory); {
 		toolCallIDs := strings.TrimSpace(input.ObservationHistory[index].Metadata["tool_call_ids"])
 		if strings.Contains(toolCallIDs, ",") {
@@ -235,6 +238,75 @@ func conversationContextMessage(messages []domain.ConversationMessage, maxChars 
 		builder.WriteString(selected[i])
 	}
 	return strings.TrimSpace(builder.String())
+}
+
+func pendingPlanningContextMessage(nextAction agent.NextAction, additionalEvents []domain.Event) string {
+	token := strings.TrimSpace(nextAction.WaitingToken)
+	kind := strings.TrimSpace(nextAction.WaitingKind)
+	if token == "" || kind == "" {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString("Current pending planning state. This is runtime context for the active task, not a new user request.")
+	builder.WriteString("\n- kind: ")
+	builder.WriteString(kind)
+	builder.WriteString("\n- token: ")
+	builder.WriteString(token)
+	if kind == "plan" {
+		builder.WriteString("\n- approval rule: mutate only after an answer explicitly approves this token. A bare approval phrase only counts when this task was resumed by matching token or reply metadata.")
+		switch planningApprovalContext(additionalEvents, token) {
+		case "approved":
+			builder.WriteString("\n- current answer: approved via matching planning token/reply metadata. Do not call ProposePlan again; continue with execution tools according to the approved plan.")
+		case "tokened":
+			builder.WriteString("\n- current answer: replied to this plan token but did not clearly approve it. Treat it as requested changes or clarification, not approval.")
+		}
+	}
+	if response := truncateText(nextAction.ResponseMessage, 6000); response != "" {
+		builder.WriteString("\n\nPrompt previously shown to the user:\n")
+		builder.WriteString(response)
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func planningApprovalContext(events []domain.Event, token string) string {
+	token = normalizeLLMPlanningToken(token)
+	if token == "" {
+		return ""
+	}
+	for _, event := range events {
+		if explicitLLMPlanApprovalBody(event.Body, token) {
+			return "approved"
+		}
+		if normalizeLLMPlanningToken(event.Metadata[domain.MetadataKeyPlanningToken]) != token {
+			continue
+		}
+		if llmPlanApprovalPhrase(event.Body) {
+			return "approved"
+		}
+		return "tokened"
+	}
+	return ""
+}
+
+func explicitLLMPlanApprovalBody(body string, token string) bool {
+	fields := strings.Fields(strings.TrimSpace(body))
+	return len(fields) >= 2 && strings.EqualFold(fields[0], "approve") && normalizeLLMPlanningToken(fields[1]) == token
+}
+
+func llmPlanApprovalPhrase(body string) bool {
+	normalized := strings.ToLower(strings.Trim(strings.TrimSpace(body), "`.,!?:; "))
+	normalized = strings.Join(strings.Fields(normalized), " ")
+	switch normalized {
+	case "approve", "approved", "yes", "y", "ok", "okay", "do it", "do it now", "do it please", "please do it", "please do it now", "go ahead", "proceed", "run it", "run it now", "ship it", "looks good", "lgtm", "yes please", "please proceed", "please do":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeLLMPlanningToken(token string) string {
+	token = strings.Trim(strings.TrimSpace(token), "`.,:;()[]{}")
+	return strings.ToUpper(token)
 }
 
 func conversationHistoryEntry(message domain.ConversationMessage, budget int) string {

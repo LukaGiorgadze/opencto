@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	goruntime "runtime"
 	"sort"
 	"strconv"
@@ -196,6 +197,8 @@ const (
 	defaultExecGrace              = 2 * time.Minute
 	defaultExecTailBytes          = 16 << 10
 )
+
+var planningTokenPattern = regexp.MustCompile(`(?i)\b[QP]-[0-9a-f]{8}\b`)
 
 func (r NextActionResult) IsTerminal() bool {
 	return r.Status != NextActionStatusTool && r.Status != NextActionStatusWaiting
@@ -1075,6 +1078,11 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		token := strings.TrimSpace(nextAction.WaitingToken)
 		engineOutput = explicitPlanApprovalWaitingOutput(nextAction, token)
 	}
+	if engineOutput.Status == NextActionStatusTool && outputHasMutatingTool(engineOutput) {
+		if token := unscopedPlanApprovalToken(event, loaded.Conversation); token != "" {
+			engineOutput = unscopedPlanApprovalOutput(nextAction, token)
+		}
+	}
 
 	a.logActivityStep("NextAction", "dispatch_status",
 		slog.String("project_id", projectID),
@@ -1123,15 +1131,74 @@ func hasPlanApproval(events []domain.Event, token string) bool {
 		return false
 	}
 	for _, event := range events {
-		fields := strings.Fields(strings.TrimSpace(event.Body))
-		if len(fields) < 2 {
-			continue
+		if explicitPlanApprovalBody(event.Body, token) {
+			return true
 		}
-		if strings.EqualFold(fields[0], "approve") && normalizePlanningToken(fields[1]) == token {
+		if normalizePlanningToken(event.Metadata[domain.MetadataKeyPlanningToken]) == token && planApprovalPhrase(event.Body) {
 			return true
 		}
 	}
 	return false
+}
+
+func explicitPlanApprovalBody(body string, token string) bool {
+	fields := strings.Fields(strings.TrimSpace(body))
+	return len(fields) >= 2 && strings.EqualFold(fields[0], "approve") && normalizePlanningToken(fields[1]) == token
+}
+
+func planApprovalPhrase(body string) bool {
+	normalized := strings.ToLower(strings.Trim(strings.TrimSpace(body), "`.,!?:; "))
+	normalized = strings.Join(strings.Fields(normalized), " ")
+	switch normalized {
+	case "approve", "approved", "yes", "y", "ok", "okay", "do it", "do it now", "do it please", "please do it", "please do it now", "go ahead", "proceed", "run it", "run it now", "ship it", "looks good", "lgtm", "yes please", "please proceed", "please do":
+		return true
+	default:
+		return false
+	}
+}
+
+func unscopedPlanApprovalToken(event domain.Event, conversation []domain.ConversationMessage) string {
+	if normalizePlanningToken(event.Metadata[domain.MetadataKeyPlanningToken]) != "" {
+		return ""
+	}
+	if normalizePlanningToken(planningTokenPattern.FindString(event.Body)) != "" {
+		return ""
+	}
+	if !planApprovalPhrase(event.Body) {
+		return ""
+	}
+	return latestPlanTokenFromConversation(conversation)
+}
+
+func latestPlanTokenFromConversation(conversation []domain.ConversationMessage) string {
+	for index := len(conversation) - 1; index >= 0; index-- {
+		message := conversation[index]
+		if message.Role != domain.ConversationRoleAssistant {
+			continue
+		}
+		matches := planningTokenPattern.FindAllString(message.Body, -1)
+		for matchIndex := len(matches) - 1; matchIndex >= 0; matchIndex-- {
+			token := normalizePlanningToken(matches[matchIndex])
+			if strings.HasPrefix(token, "P-") {
+				return token
+			}
+		}
+	}
+	return ""
+}
+
+func unscopedPlanApprovalOutput(nextAction agent.NextAction, token string) agent.NextActionOutput {
+	message := "I can't treat a bare confirmation as plan approval because it was not tied to the plan."
+	if strings.TrimSpace(token) != "" {
+		message += " Reply with `approve " + strings.TrimSpace(token) + "` or reply directly to the plan message."
+	}
+	nextAction.ResponseMessage = message
+	nextAction.WaitingKind = ""
+	nextAction.WaitingToken = ""
+	return agent.NextActionOutput{
+		NextAction: nextAction,
+		Status:     NextActionStatusCompleted,
+	}
 }
 
 func outputHasMutatingTool(output agent.NextActionOutput) bool {

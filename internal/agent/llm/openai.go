@@ -43,6 +43,13 @@ func openAIUserMessageFromEvent(event domain.Event) (llms.MessageContent, error)
 	}
 
 	body := strings.TrimSpace(event.Body)
+	if metadata := eventRuntimeMetadataContext(event); metadata != "" {
+		if body == "" {
+			body = metadata
+		} else {
+			body = metadata + "\n\nUser message:\n" + body
+		}
+	}
 	parts := make([]llms.ContentPart, 0, 1+len(attachments)*2)
 	if body != "" || len(attachments) == 0 {
 		parts = append(parts, llms.TextPart(body))
@@ -64,6 +71,49 @@ func openAIUserMessageFromEvent(event domain.Event) (llms.MessageContent, error)
 		Role:  llms.ChatMessageTypeHuman,
 		Parts: parts,
 	}, nil
+}
+
+func eventRuntimeMetadataContext(event domain.Event) string {
+	token := strings.TrimSpace(event.Metadata[domain.MetadataKeyPlanningToken])
+	replyMessageID := strings.TrimSpace(event.Metadata[domain.MetadataKeyReplyToMessageID])
+	replyChannelID := strings.TrimSpace(event.Metadata[domain.MetadataKeyReplyToChannelID])
+	replyContextID := strings.TrimSpace(event.Metadata[domain.MetadataKeyReplyToContextID])
+	if token == "" && replyMessageID == "" && replyChannelID == "" && replyContextID == "" {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString("Runtime message metadata. Treat this as trusted routing context, not user-authored text.")
+	if token != "" {
+		builder.WriteString("\n- ")
+		builder.WriteString(domain.MetadataKeyPlanningToken)
+		builder.WriteString(": ")
+		builder.WriteString(token)
+	}
+	if source := strings.TrimSpace(event.Metadata[domain.MetadataKeyPlanningTokenSource]); source != "" {
+		builder.WriteString("\n- ")
+		builder.WriteString(domain.MetadataKeyPlanningTokenSource)
+		builder.WriteString(": ")
+		builder.WriteString(source)
+	}
+	if replyMessageID != "" {
+		builder.WriteString("\n- ")
+		builder.WriteString(domain.MetadataKeyReplyToMessageID)
+		builder.WriteString(": ")
+		builder.WriteString(replyMessageID)
+	}
+	if replyChannelID != "" {
+		builder.WriteString("\n- ")
+		builder.WriteString(domain.MetadataKeyReplyToChannelID)
+		builder.WriteString(": ")
+		builder.WriteString(replyChannelID)
+	}
+	if replyContextID != "" {
+		builder.WriteString("\n- ")
+		builder.WriteString(domain.MetadataKeyReplyToContextID)
+		builder.WriteString(": ")
+		builder.WriteString(replyContextID)
+	}
+	return builder.String()
 }
 
 func eventAttachments(payload map[string]any) ([]domain.EventAttachment, error) {

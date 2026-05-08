@@ -8,7 +8,15 @@ import (
 
 type Metadata map[string]string
 
-const MetadataKeyControl = "control"
+const (
+	MetadataKeyControl             = "control"
+	MetadataKeyPlanningToken       = "planning_token"
+	MetadataKeyPlanningTokenSource = "planning_token_source"
+	MetadataKeyReplyToMessageID    = "reply_to_message_id"
+	MetadataKeyReplyToChannelID    = "reply_to_channel_id"
+	MetadataKeyReplyToContextID    = "reply_to_context_id"
+	MetadataKeyReplyToActorID      = "reply_to_actor_id"
+)
 
 type Provenance struct {
 	Source     string    `json:"source"`

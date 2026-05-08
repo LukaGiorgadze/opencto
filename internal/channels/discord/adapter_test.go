@@ -197,6 +197,66 @@ func TestNormalizeMessageDownloadsAttachments(t *testing.T) {
 	}
 }
 
+func TestNormalizeMessageCapturesReplyMetadataAndPlanningToken(t *testing.T) {
+	t.Parallel()
+
+	adapter := &Adapter{
+		projectID: "project-1",
+	}
+	event, err := adapter.NormalizeMessage(context.Background(), &discordgo.MessageCreate{
+		Message: &discordgo.Message{
+			ID:        "message-2",
+			ChannelID: "channel-1",
+			GuildID:   "guild-1",
+			Content:   "Do it!",
+			Author: &discordgo.User{
+				ID:       "user-1",
+				Username: "luka",
+			},
+			MessageReference: &discordgo.MessageReference{
+				MessageID: "bot-message-1",
+				ChannelID: "channel-1",
+				GuildID:   "guild-1",
+			},
+			ReferencedMessage: &discordgo.Message{
+				ID:        "bot-message-1",
+				ChannelID: "channel-1",
+				GuildID:   "guild-1",
+				Content:   "**Plan P-19ec437d: Create React+Vite example app**\n\nReply with `approve P-19ec437d`.",
+				Author: &discordgo.User{
+					ID:       "bot-1",
+					Username: "opencto",
+					Bot:      true,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("normalize message: %v", err)
+	}
+	if event.Metadata[domain.MetadataKeyReplyToMessageID] != "bot-message-1" ||
+		event.Metadata[domain.MetadataKeyReplyToChannelID] != "channel-1" ||
+		event.Metadata[domain.MetadataKeyReplyToContextID] != "guild-1" ||
+		event.Metadata[domain.MetadataKeyPlanningToken] != "P-19EC437D" ||
+		event.Metadata[domain.MetadataKeyPlanningTokenSource] != "reply" {
+		t.Fatalf("unexpected reply metadata: %#v", event.Metadata)
+	}
+	if event.Payload[domain.MetadataKeyReplyToMessageID] != "bot-message-1" ||
+		event.Payload[domain.MetadataKeyReplyToChannelID] != "channel-1" ||
+		event.Payload[domain.MetadataKeyReplyToContextID] != "guild-1" ||
+		event.Payload[domain.MetadataKeyReplyToActorID] != "bot-1" ||
+		event.Payload[domain.MetadataKeyPlanningToken] != "P-19EC437D" {
+		t.Fatalf("unexpected reply payload: %#v", event.Payload)
+	}
+	content, ok := event.Payload["reply_to_content"].(string)
+	if !ok || !strings.Contains(content, "approve P-19ec437d") {
+		t.Fatalf("expected referenced content in payload, got %#v", event.Payload["reply_to_content"])
+	}
+	if event.Provenance.Metadata[domain.MetadataKeyPlanningToken] != "P-19EC437D" {
+		t.Fatalf("expected planning token in provenance metadata: %#v", event.Provenance.Metadata)
+	}
+}
+
 func TestDiscordFilesOpenResolvedAttachments(t *testing.T) {
 	t.Parallel()
 

@@ -391,7 +391,7 @@ func projectControlAction(event domain.Event) string {
 
 func planningTokenFromEvent(event domain.Event) string {
 	if event.Metadata != nil {
-		if token := normalizePlanningToken(event.Metadata["planning_token"]); token != "" {
+		if token := normalizePlanningToken(event.Metadata[domain.MetadataKeyPlanningToken]); token != "" {
 			return token
 		}
 	}
