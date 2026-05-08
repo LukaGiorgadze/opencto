@@ -19,7 +19,7 @@
         },
         "scope": {
             "type": "string",
-            "enum": ["project", "global", "all"],
+            "enum": ["project", "user", "global", "all"],
             "description": "Scope filter for deletion. Use all to include all visible memory."
         }
     },

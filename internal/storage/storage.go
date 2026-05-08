@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 
@@ -15,6 +16,8 @@ const (
 	defaultConversationHistoryLimit    = 10
 	defaultConversationMaxContextChars = 8000
 )
+
+var ErrMemoryPolicyRejected = errors.New("memory rejected by policy")
 
 type EventAppendResult struct {
 	Inserted bool
@@ -36,7 +39,10 @@ type RuntimeStore interface {
 	ListConversationMessages(context.Context, ConversationQuery) ([]domain.ConversationMessage, error)
 	RememberMemory(context.Context, domain.Memory) (domain.Memory, error)
 	SearchMemories(context.Context, domain.MemorySearchRequest) ([]domain.Memory, error)
+	ListMemories(context.Context, domain.MemoryListRequest) ([]domain.Memory, error)
 	UpdateMemory(context.Context, domain.MemoryUpdateRequest) (domain.MemoryUpdateResult, error)
+	UpsertMemoryEmbedding(context.Context, domain.MemoryEmbedding) error
+	DeleteMemoryEmbeddings(context.Context, []string) error
 	ForgetMemory(context.Context, string, string) (bool, error)
 	ForgetMemories(context.Context, domain.MemoryForgetRequest) (domain.MemoryForgetResult, error)
 }

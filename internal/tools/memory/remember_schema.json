@@ -9,12 +9,12 @@
         },
         "scope": {
             "type": "string",
-            "enum": ["project", "global"],
-            "description": "Use project for this project only. Use global for cross-project user preferences or standing instructions."
+            "enum": ["project", "user", "global"],
+            "description": "Use project for project-shared facts. Use user for preferences or facts about the current user. Use global only for shared rules or facts that should apply across users."
         },
         "kind": {
             "type": "string",
-            "description": "Short category such as preference, decision, fact, instruction, identity, constraint, or workflow."
+            "description": "Short category such as fact, preference, instruction, decision, constraint, identity, workflow, reference, or feedback."
         },
         "tags": {
             "type": "array",

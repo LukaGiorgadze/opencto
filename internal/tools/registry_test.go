@@ -14,8 +14,8 @@ func TestDefinitionsIncludeDedicatedTools(t *testing.T) {
 	t.Parallel()
 
 	definitions := Definitions()
-	if len(definitions) != 12 {
-		t.Fatalf("expected twelve tool definitions, got %d", len(definitions))
+	if len(definitions) != 13 {
+		t.Fatalf("expected thirteen tool definitions, got %d", len(definitions))
 	}
 
 	definition := definitions[0]
@@ -48,6 +48,7 @@ func TestDefinitionsIncludeDedicatedTools(t *testing.T) {
 		domain.ToolTypeGrep,
 		domain.ToolTypeMemoryRemember,
 		domain.ToolTypeMemorySearch,
+		domain.ToolTypeMemoryList,
 		domain.ToolTypeMemoryUpdate,
 		domain.ToolTypeMemoryForget,
 		domain.ToolTypeSchedule,
@@ -63,8 +64,8 @@ func TestLLMDefinitionsUseCommandNameAndDescription(t *testing.T) {
 	t.Parallel()
 
 	definitions := LLMDefinitions()
-	if len(definitions) != 12 || definitions[0].Function == nil {
-		t.Fatalf("expected twelve function definitions, got %#v", definitions)
+	if len(definitions) != 13 || definitions[0].Function == nil {
+		t.Fatalf("expected thirteen function definitions, got %#v", definitions)
 	}
 
 	function := definitions[0].Function

@@ -5,11 +5,11 @@
     "properties": {
         "query": {
             "type": "string",
-            "description": "Search query for remembered project or global context. Search before writing memory when a related memory may already exist."
+            "description": "Search query for remembered project, user, or global context. Search before writing memory when a related memory may already exist."
         },
         "scope": {
             "type": "string",
-            "enum": ["project", "global", "all"],
+            "enum": ["project", "user", "global", "all"],
             "description": "Memory scope to search. Defaults to all visible memory."
         },
         "limit": {

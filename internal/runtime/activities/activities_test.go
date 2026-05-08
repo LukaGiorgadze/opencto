@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	goruntime "runtime"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
+	"github.com/opencto/opencto/internal/embedding"
 	skillcatalog "github.com/opencto/opencto/internal/skills"
 	"github.com/opencto/opencto/internal/storage"
 	exectool "github.com/opencto/opencto/internal/tools/exec"
@@ -23,8 +25,13 @@ import (
 type stubProjectStore struct {
 	pending              []domain.WorkItem
 	memories             []domain.Memory
+	remembered           *[]domain.Memory
+	rememberErr          error
+	searchRequests       *[]domain.MemorySearchRequest
+	listRequests         *[]domain.MemoryListRequest
 	updateResult         domain.MemoryUpdateResult
 	updateRequests       *[]domain.MemoryUpdateRequest
+	embeddingRequests    *[]domain.MemoryEmbedding
 	forgetResult         domain.MemoryForgetResult
 	forgetRequests       *[]domain.MemoryForgetRequest
 	conversationsByScope map[storage.ConversationScope][]domain.ConversationMessage
@@ -43,6 +50,38 @@ func (e stubEngine) NextAction(_ context.Context, input agent.NextActionInput) (
 		*e.input = input
 	}
 	return e.output, e.err
+}
+
+type fakeEmbedder struct {
+	vector []float32
+	inputs *[]string
+}
+
+func (e fakeEmbedder) Embed(_ context.Context, inputs []string) (embedding.Result, error) {
+	if e.inputs != nil {
+		*e.inputs = append(*e.inputs, inputs...)
+	}
+	vectors := make([][]float32, len(inputs))
+	for i := range inputs {
+		vectors[i] = append([]float32(nil), e.vector...)
+	}
+	return embedding.Result{
+		Embeddings: vectors,
+		Model:      e.Model(),
+		Dimensions: e.Dimensions(),
+	}, nil
+}
+
+func (e fakeEmbedder) Provider() string {
+	return embedding.ProviderOpenAI
+}
+
+func (e fakeEmbedder) Model() string {
+	return embedding.DefaultOpenAIModel
+}
+
+func (e fakeEmbedder) Dimensions() int {
+	return len(e.vector)
 }
 
 type captureReporter struct {
@@ -125,11 +164,27 @@ func (s stubProjectStore) ListConversationMessages(_ context.Context, query stor
 	return append([]domain.ConversationMessage(nil), source[:limit]...), nil
 }
 
-func (s stubProjectStore) RememberMemory(context.Context, domain.Memory) (domain.Memory, error) {
-	return domain.Memory{}, nil
+func (s stubProjectStore) RememberMemory(_ context.Context, memory domain.Memory) (domain.Memory, error) {
+	if s.remembered != nil {
+		*s.remembered = append(*s.remembered, memory)
+	}
+	if s.rememberErr != nil {
+		return domain.Memory{}, s.rememberErr
+	}
+	return memory, nil
 }
 
-func (s stubProjectStore) SearchMemories(context.Context, domain.MemorySearchRequest) ([]domain.Memory, error) {
+func (s stubProjectStore) SearchMemories(_ context.Context, request domain.MemorySearchRequest) ([]domain.Memory, error) {
+	if s.searchRequests != nil {
+		*s.searchRequests = append(*s.searchRequests, request)
+	}
+	return append([]domain.Memory(nil), s.memories...), nil
+}
+
+func (s stubProjectStore) ListMemories(_ context.Context, request domain.MemoryListRequest) ([]domain.Memory, error) {
+	if s.listRequests != nil {
+		*s.listRequests = append(*s.listRequests, request)
+	}
 	return append([]domain.Memory(nil), s.memories...), nil
 }
 
@@ -138,6 +193,17 @@ func (s stubProjectStore) UpdateMemory(_ context.Context, request domain.MemoryU
 		*s.updateRequests = append(*s.updateRequests, request)
 	}
 	return s.updateResult, nil
+}
+
+func (s stubProjectStore) UpsertMemoryEmbedding(_ context.Context, embedding domain.MemoryEmbedding) error {
+	if s.embeddingRequests != nil {
+		*s.embeddingRequests = append(*s.embeddingRequests, embedding)
+	}
+	return nil
+}
+
+func (s stubProjectStore) DeleteMemoryEmbeddings(context.Context, []string) error {
+	return nil
 }
 
 func (s stubProjectStore) ForgetMemory(context.Context, string, string) (bool, error) {
@@ -312,22 +378,31 @@ func TestLoadContextIncludesBoundedMemoryWhenEnabled(t *testing.T) {
 		Kind:      "preference",
 		Content:   "Use SQLite for local storage.",
 	}
+	var searchRequests []domain.MemorySearchRequest
 	activities := Activities{
-		Store:         stubProjectStore{memories: []domain.Memory{memory}},
+		Store:         stubProjectStore{memories: []domain.Memory{memory}, searchRequests: &searchRequests},
 		Project:       domain.Project{ID: "default", Name: "OpenCTO"},
 		MemoryEnabled: true,
 		MemoryLimit:   5,
 	}
 	loaded, err := activities.LoadContext(context.Background(), domain.Event{
-		ID:        "event-1",
-		ProjectID: "default",
-		Body:      "what storage should we use?",
+		ID:          "event-1",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ActorID:     "user-1",
+		Body:        "what storage should we use?",
 	})
 	if err != nil {
 		t.Fatalf("load context: %v", err)
 	}
 	if len(loaded.Memory) != 1 || loaded.Memory[0].ID != "memory-1" {
 		t.Fatalf("expected memory to be loaded, got %#v", loaded.Memory)
+	}
+	if len(searchRequests) != 1 || searchRequests[0].UserID != "discord:user-1" {
+		t.Fatalf("expected memory search to include current user id, got %#v", searchRequests)
+	}
+	if len(searchRequests[0].Scopes) != 3 || searchRequests[0].Scopes[1] != domain.MemoryScopeUser {
+		t.Fatalf("expected memory search to include user scope, got %#v", searchRequests[0].Scopes)
 	}
 }
 
@@ -369,7 +444,7 @@ func TestExecuteMemoryToolForgetsByMemoryIDs(t *testing.T) {
 	if strings.Join(request.MemoryIDs, ",") != "memory-1,memory-2" {
 		t.Fatalf("unexpected forget memory ids: %#v", request.MemoryIDs)
 	}
-	if len(request.Scopes) != 2 || request.Scopes[0] != domain.MemoryScopeProject || request.Scopes[1] != domain.MemoryScopeGlobal {
+	if len(request.Scopes) != 3 || request.Scopes[0] != domain.MemoryScopeProject || request.Scopes[1] != domain.MemoryScopeUser || request.Scopes[2] != domain.MemoryScopeGlobal {
 		t.Fatalf("unexpected forget scopes: %#v", request.Scopes)
 	}
 	if len(request.Tags) != 0 {
@@ -426,6 +501,57 @@ func TestExecuteMemoryToolForgetsByCombinedFilters(t *testing.T) {
 	}
 	if result.Metadata["deleted_count"] != "1" {
 		t.Fatalf("unexpected forget result: %#v", result)
+	}
+}
+
+func TestExecuteMemoryToolListsCurrentUserMemories(t *testing.T) {
+	t.Parallel()
+
+	var listRequests []domain.MemoryListRequest
+	activities := Activities{
+		Store: stubProjectStore{
+			memories: []domain.Memory{{
+				ID:         "memory-1",
+				ProjectID:  "default",
+				UserID:     "discord:user-1",
+				Scope:      domain.MemoryScopeUser,
+				Kind:       "preference",
+				Content:    "User prefers concise technical explanations.",
+				Tags:       []string{"communication"},
+				Confidence: 1,
+			}},
+			listRequests: &listRequests,
+		},
+		MemoryEnabled: true,
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "default",
+			ChannelType: domain.ChannelTypeDiscord,
+			ActorID:     "user-1",
+			ActorName:   "luka",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemoryList,
+			Intent:     "list user memory",
+			Input:      []byte(`{"scope":"user","kind":"preference","tags":["communication"],"limit":10}`),
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute memory list: %v", err)
+	}
+	if result.Status != domain.ExecutionStatusSucceeded || !strings.Contains(result.Observation, "Memory list.") || result.Metadata["memory_count"] != "1" {
+		t.Fatalf("unexpected memory list result: %#v", result)
+	}
+	if len(listRequests) != 1 || listRequests[0].UserID != "discord:user-1" || listRequests[0].Scopes[0] != domain.MemoryScopeUser {
+		t.Fatalf("unexpected list request: %#v", listRequests)
 	}
 }
 
@@ -557,6 +683,105 @@ func TestExecuteMemoryToolUpdatesZeroConfidenceAndUnpins(t *testing.T) {
 	}
 	if result.Metadata["updated"] != "true" || !strings.Contains(result.Observation, "confidence: 0.00") || !strings.Contains(result.Observation, "pinned: false") {
 		t.Fatalf("unexpected update result: %#v", result)
+	}
+}
+
+func TestExecuteMemoryToolRememberUpsertsEmbedding(t *testing.T) {
+	t.Parallel()
+
+	embeddingRequests := []domain.MemoryEmbedding{}
+	embeddingInputs := []string{}
+	remembered := []domain.Memory{}
+	vector := make([]float32, 1536)
+	vector[0] = 1
+	activities := Activities{
+		Store:          stubProjectStore{embeddingRequests: &embeddingRequests, remembered: &remembered},
+		MemoryEnabled:  true,
+		MemoryEmbedder: fakeEmbedder{vector: vector, inputs: &embeddingInputs},
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "default",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			ActorID:     "discord-user-1",
+			ActorName:   "luka",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemoryRemember,
+			Intent:     "remember storage preference",
+			Input:      []byte(`{"content":"Use SQLite for local state.","scope":"project","kind":"preference","tags":["storage","sqlite"],"confidence":1,"pinned":true,"reason":"user preference"}`),
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute memory remember: %v", err)
+	}
+	if result.Status != domain.ExecutionStatusSucceeded {
+		t.Fatalf("unexpected memory remember result: %#v", result)
+	}
+	if len(remembered) != 1 {
+		t.Fatalf("expected one remembered memory, got %#v", remembered)
+	}
+	memory := remembered[0]
+	if memory.UserID != "discord:discord-user-1" || memory.Actor != "luka" || memory.Metadata["actor_name"] != "luka" || memory.Metadata["actor_id"] != "discord-user-1" {
+		t.Fatalf("expected discord actor metadata to be persisted, got %#v", memory)
+	}
+	if _, ok := memory.Metadata["memory_user_id"]; ok {
+		t.Fatalf("memory_user_id should live on the typed user_id field, got metadata %#v", memory.Metadata)
+	}
+	if len(embeddingInputs) != 1 || !strings.Contains(embeddingInputs[0], "kind: preference") || !strings.Contains(embeddingInputs[0], "content: Use SQLite for local state.") {
+		t.Fatalf("unexpected embedding inputs: %#v", embeddingInputs)
+	}
+	if len(embeddingRequests) != 1 {
+		t.Fatalf("expected one embedding upsert, got %#v", embeddingRequests)
+	}
+	request := embeddingRequests[0]
+	if request.MemoryID == "" || request.Provider != embedding.ProviderOpenAI || request.Model != embedding.DefaultOpenAIModel || request.Dimensions != 1536 || len(request.Vector) != 1536 {
+		t.Fatalf("unexpected embedding request: %#v", request)
+	}
+	if request.ContentHash == "" {
+		t.Fatalf("expected content hash in embedding request")
+	}
+}
+
+func TestExecuteMemoryToolReturnsPolicyRejectionObservation(t *testing.T) {
+	t.Parallel()
+
+	activities := Activities{
+		Store: stubProjectStore{
+			rememberErr: fmt.Errorf("%w: content appears to contain a secret", storage.ErrMemoryPolicyRejected),
+		},
+		MemoryEnabled: true,
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event:      domain.Event{ID: "event-1", ProjectID: "default"},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemoryRemember,
+			Intent:     "remember secret",
+			Input:      []byte(`{"content":"The API key is secret.","scope":"project","kind":"fact","tags":[],"confidence":1,"pinned":false,"reason":"test"}`),
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("policy rejection should not fail the activity: %v", err)
+	}
+	if result.Status != domain.ExecutionStatusFailed || result.ResultCode != "policy_rejected" {
+		t.Fatalf("unexpected policy rejection result: %#v", result)
+	}
+	if !strings.Contains(result.Observation, "Memory rejected by policy: content appears to contain a secret") || result.Metadata["policy_rejected"] != "true" {
+		t.Fatalf("expected policy rejection observation, got %#v", result)
 	}
 }
 

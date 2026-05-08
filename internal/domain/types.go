@@ -84,6 +84,7 @@ const (
 	ToolTypeGlob           ToolType = "glob"
 	ToolTypeGrep           ToolType = "grep"
 	ToolTypeMemoryForget   ToolType = "memory_forget"
+	ToolTypeMemoryList     ToolType = "memory_list"
 	ToolTypeMemoryRemember ToolType = "memory_remember"
 	ToolTypeMemorySearch   ToolType = "memory_search"
 	ToolTypeMemoryUpdate   ToolType = "memory_update"
@@ -234,12 +235,14 @@ type MemoryScope string
 
 const (
 	MemoryScopeProject MemoryScope = "project"
+	MemoryScopeUser    MemoryScope = "user"
 	MemoryScopeGlobal  MemoryScope = "global"
 )
 
 type Memory struct {
 	ID         string      `json:"id"`
 	ProjectID  string      `json:"project_id,omitempty"`
+	UserID     string      `json:"user_id,omitempty"`
 	Scope      MemoryScope `json:"scope"`
 	Kind       string      `json:"kind,omitempty"`
 	Content    string      `json:"content"`
@@ -255,16 +258,31 @@ type Memory struct {
 }
 
 type MemorySearchRequest struct {
-	ProjectID      string        `json:"project_id,omitempty"`
-	Query          string        `json:"query,omitempty"`
-	Scopes         []MemoryScope `json:"scopes,omitempty"`
-	Tags           []string      `json:"tags,omitempty"`
-	Limit          int           `json:"limit,omitempty"`
-	FallbackRecent bool          `json:"fallback_recent,omitempty"`
+	ProjectID           string        `json:"project_id,omitempty"`
+	UserID              string        `json:"user_id,omitempty"`
+	Query               string        `json:"query,omitempty"`
+	Scopes              []MemoryScope `json:"scopes,omitempty"`
+	Tags                []string      `json:"tags,omitempty"`
+	QueryEmbedding      []float32     `json:"query_embedding,omitempty"`
+	EmbeddingProvider   string        `json:"embedding_provider,omitempty"`
+	EmbeddingModel      string        `json:"embedding_model,omitempty"`
+	EmbeddingDimensions int           `json:"embedding_dimensions,omitempty"`
+	Limit               int           `json:"limit,omitempty"`
+	FallbackRecent      bool          `json:"fallback_recent,omitempty"`
+}
+
+type MemoryListRequest struct {
+	ProjectID string        `json:"project_id,omitempty"`
+	UserID    string        `json:"user_id,omitempty"`
+	Scopes    []MemoryScope `json:"scopes,omitempty"`
+	Kind      string        `json:"kind,omitempty"`
+	Tags      []string      `json:"tags,omitempty"`
+	Limit     int           `json:"limit,omitempty"`
 }
 
 type MemoryUpdateRequest struct {
 	ProjectID   string   `json:"project_id,omitempty"`
+	UserID      string   `json:"user_id,omitempty"`
 	MemoryID    string   `json:"memory_id"`
 	Content     string   `json:"content,omitempty"`
 	Kind        string   `json:"kind,omitempty"`
@@ -281,6 +299,7 @@ type MemoryUpdateResult struct {
 
 type MemoryForgetRequest struct {
 	ProjectID string        `json:"project_id,omitempty"`
+	UserID    string        `json:"user_id,omitempty"`
 	MemoryIDs []string      `json:"memory_ids,omitempty"`
 	Scopes    []MemoryScope `json:"scopes,omitempty"`
 	Tags      []string      `json:"tags,omitempty"`
@@ -288,6 +307,15 @@ type MemoryForgetRequest struct {
 
 type MemoryForgetResult struct {
 	DeletedMemoryIDs []string `json:"deleted_memory_ids,omitempty"`
+}
+
+type MemoryEmbedding struct {
+	MemoryID    string    `json:"memory_id"`
+	Provider    string    `json:"provider"`
+	Model       string    `json:"model"`
+	Dimensions  int       `json:"dimensions"`
+	ContentHash string    `json:"content_hash"`
+	Vector      []float32 `json:"vector"`
 }
 
 type ProcessStatus string

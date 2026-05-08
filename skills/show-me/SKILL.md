@@ -49,10 +49,8 @@ Prefer the most domain-native strategy. **Before executing, read the correspondi
 | Strategy    | When to use                                                             | Reference               |
 | ----------- | ----------------------------------------------------------------------- | ----------------------- |
 | `web`       | Browser-based app — React, Next.js, Vite, Remix, static site, dashboard | `references/web.md`       |
-| `simulator` | iOS Simulator, Android emulator, Expo, React Native, native mobile app  | `references/simulator.md` |
 | `desktop`   | macOS app, Electron app, native desktop UI, visible application window  | `references/desktop.md`   |
 | `terminal`  | CLI app, script output, server logs, tests, build result                | `references/terminal.md`  |
-| `fallback`  | No visual runtime detected or required tools are missing                | `references/fallback.md`  |
 
 Do not use a full-desktop screenshot when a more focused capture method exists.
 Do not proceed with a strategy if its reference file does not exist — notify the user and fall back to the next viable strategy.

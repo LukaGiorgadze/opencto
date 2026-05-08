@@ -117,6 +117,12 @@ func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) 
 			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
 		}
 		return memoryToolChoiceFromInput(definition, call, raw, input, "search memory "+strings.TrimSpace(args.Query), domain.ToolIdempotencyReadOnly), nil
+	case domain.ToolTypeMemoryList:
+		var args memorytool.ListRequest
+		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
+			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
+		}
+		return memoryToolChoiceFromInput(definition, call, raw, input, listMemorySummary(args), domain.ToolIdempotencyReadOnly), nil
 	case domain.ToolTypeMemoryUpdate:
 		var args memorytool.UpdateRequest
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
@@ -167,6 +173,18 @@ func forgetMemorySummary(args memorytool.ForgetRequest) string {
 		return "forget memory scope " + scope
 	}
 	return "forget memory"
+}
+
+func listMemorySummary(args memorytool.ListRequest) string {
+	scope := strings.TrimSpace(args.Scope)
+	if scope == "" {
+		scope = memorytool.ScopeAll
+	}
+	kind := strings.TrimSpace(args.Kind)
+	if kind != "" {
+		return "list " + scope + " memory kind " + kind
+	}
+	return "list " + scope + " memory"
 }
 
 func decodeToolArguments(toolName string, raw json.RawMessage, target any) error {

@@ -18,6 +18,7 @@ import (
 	"github.com/opencto/opencto/internal/channels/local"
 	"github.com/opencto/opencto/internal/config"
 	"github.com/opencto/opencto/internal/domain"
+	"github.com/opencto/opencto/internal/embedding"
 	"github.com/opencto/opencto/internal/observability"
 	"github.com/opencto/opencto/internal/runtime"
 	"github.com/opencto/opencto/internal/runtime/activities"
@@ -73,6 +74,7 @@ func main() {
 	dispatcher := runtime.NewDispatcher(temporalClient, cfg.Temporal.TaskQueue, cfg.Temporal.ContinueAsNewAfterEvents)
 	var reporter activities.Reporter = local.NewReporter(logger)
 	engine := buildNextActionEngine(cfg, logger)
+	memoryEmbedder := buildMemoryEmbedder(cfg, logger)
 
 	if *mode == "worker" || *mode == "serve" {
 		dbPath := storage.DefaultDBPath(cfg.General.WorkspaceRoot)
@@ -137,6 +139,7 @@ func main() {
 			Schedule:                    scheduletool.NewTemporalExecutor(temporalClient.ScheduleClient(), cfg.Temporal.TaskQueue, logger),
 			Reporter:                    reporter,
 			EventEnqueuer:               dispatcher,
+			MemoryEmbedder:              memoryEmbedder,
 			Project:                     defaultProject,
 			WorkspaceRoot:               cfg.General.WorkspaceRoot,
 			OpenCTORoot:                 openCTORoot,
@@ -221,4 +224,36 @@ func buildNextActionEngine(cfg config.Config, logger *slog.Logger) agent.Engine 
 		slog.String("api_key_source", string(source)),
 	)
 	return engine
+}
+
+func buildMemoryEmbedder(cfg config.Config, logger *slog.Logger) embedding.Embedder {
+	if !cfg.Memory.Enabled || !cfg.Memory.Embedding.Enabled {
+		return nil
+	}
+	if cfg.Memory.Embedding.Provider != embedding.ProviderOpenAI {
+		logger.Warn("unsupported memory embedding provider configured", slog.String("provider", cfg.Memory.Embedding.Provider))
+		return nil
+	}
+	apiKey, source, err := agentllm.ResolveOpenAIAPIKey(cfg.LLM)
+	if err != nil {
+		logger.Warn("openai embedding api key is not configured", slog.String("error", err.Error()))
+		return nil
+	}
+	embedder, err := embedding.NewOpenAIEmbedder(embedding.OpenAIConfig{
+		APIKey:     apiKey,
+		BaseURL:    cfg.LLM.BaseURL,
+		Model:      cfg.Memory.Embedding.Model,
+		Dimensions: cfg.Memory.Embedding.Dimensions,
+	})
+	if err != nil {
+		logger.Warn("failed to initialize memory embedder", slog.String("error", err.Error()))
+		return nil
+	}
+	logger.Info("memory embedder configured",
+		slog.String("provider", cfg.Memory.Embedding.Provider),
+		slog.String("model", cfg.Memory.Embedding.Model),
+		slog.Int("dimensions", cfg.Memory.Embedding.Dimensions),
+		slog.String("api_key_source", string(source)),
+	)
+	return embedder
 }
