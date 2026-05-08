@@ -104,6 +104,16 @@ VALUES ('existing-memory', 'openai', 'text-embedding-3-small', 1536, 'hash', '20
 	} else if !ok {
 		t.Fatalf("expected user_id column after migration")
 	}
+	if ok, err := tableHasColumn(ctx, store.db, "memories", "thread_id"); err != nil {
+		t.Fatalf("check thread_id column: %v", err)
+	} else if !ok {
+		t.Fatalf("expected thread_id column after migration")
+	}
+	rows, err := store.db.QueryContext(ctx, `SELECT id FROM conversation_threads LIMIT 1`)
+	if err != nil {
+		t.Fatalf("expected conversation_threads table after migration: %v", err)
+	}
+	_ = rows.Close()
 	if _, err := store.RememberMemory(ctx, domain.Memory{
 		ID:        "user-memory",
 		UserID:    "discord:user-1",
@@ -125,6 +135,30 @@ VALUES ('existing-memory', 'openai', 'text-embedding-3-small', 1536, 'hash', '20
 		t.Fatalf("search memories after migration: %v", err)
 	}
 	requireMemoryIDs(t, memoryIDs(found), "existing-memory", "user-memory")
+
+	if _, err := store.RememberMemory(ctx, domain.Memory{
+		ID:        "thread-memory",
+		ProjectID: "default",
+		ThreadID:  "thread-1",
+		Scope:     domain.MemoryScopeThread,
+		Kind:      "decision",
+		Content:   "Use compact replies in this thread.",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("remember thread memory after migration: %v", err)
+	}
+	found, err = store.SearchMemories(ctx, domain.MemorySearchRequest{
+		ProjectID:      "default",
+		ThreadID:       "thread-1",
+		Scopes:         []domain.MemoryScope{domain.MemoryScopeThread},
+		FallbackRecent: true,
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatalf("search thread memories after migration: %v", err)
+	}
+	requireMemoryIDs(t, memoryIDs(found), "thread-memory")
 }
 
 func TestAppendEventIsIdempotentAndUpdatesChangedDuplicate(t *testing.T) {
@@ -349,6 +383,48 @@ func TestConversationMessagesUseScopedHistory(t *testing.T) {
 	}
 	if len(project) != 1 || project[0].ID != "project-1" {
 		t.Fatalf("unexpected project history: %#v", project)
+	}
+}
+
+func TestUpsertConversationThread(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	thread := domain.ConversationThread{
+		ID:            "thread-row-1",
+		ProjectID:     "default",
+		ChannelType:   domain.ChannelTypeDiscord,
+		ChannelID:     "channel-a",
+		ThreadID:      "thread-a",
+		RootMessageID: "root-message-1",
+		EventID:       "event-1",
+		Title:         "Initial thread prompt",
+		Metadata:      domain.Metadata{"source": "test"},
+		CreatedAt:     base,
+		UpdatedAt:     base,
+		LastMessageAt: base,
+	}
+	if err := store.UpsertConversationThread(ctx, thread); err != nil {
+		t.Fatalf("upsert thread: %v", err)
+	}
+	thread.EventID = "event-2"
+	thread.Title = ""
+	thread.LastMessageAt = base.Add(time.Hour)
+	if err := store.UpsertConversationThread(ctx, thread); err != nil {
+		t.Fatalf("upsert thread update: %v", err)
+	}
+	var eventID, title, lastMessageAt string
+	if err := store.db.QueryRowContext(ctx, `
+SELECT event_id, title, last_message_at
+FROM conversation_threads
+WHERE project_id = ? AND channel_type = ? AND thread_id = ?
+`, "default", string(domain.ChannelTypeDiscord), "thread-a").Scan(&eventID, &title, &lastMessageAt); err != nil {
+		t.Fatalf("query thread: %v", err)
+	}
+	if eventID != "event-2" || title != "Initial thread prompt" || parseTime(lastMessageAt) != base.Add(time.Hour) {
+		t.Fatalf("unexpected stored thread event=%q title=%q last=%q", eventID, title, lastMessageAt)
 	}
 }
 
@@ -942,6 +1018,73 @@ func TestMemoryUserScopeIsVisibleOnlyToUser(t *testing.T) {
 		t.Fatalf("search user memories: %v", err)
 	}
 	requireMemoryIDs(t, memoryIDs(found), "user-two-memory")
+}
+
+func TestMemoryThreadScopeIsVisibleOnlyToThread(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := time.Now().UTC()
+	memories := []domain.Memory{
+		{
+			ID:        "thread-one-memory",
+			ProjectID: "default",
+			ThreadID:  "thread-1",
+			Scope:     domain.MemoryScopeThread,
+			Kind:      "decision",
+			Content:   "Use orange accents in this thread.",
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			ID:        "thread-two-memory",
+			ProjectID: "default",
+			ThreadID:  "thread-2",
+			Scope:     domain.MemoryScopeThread,
+			Kind:      "decision",
+			Content:   "Use blue accents in this thread.",
+			CreatedAt: now,
+			UpdatedAt: now.Add(time.Second),
+		},
+		{
+			ID:        "project-memory",
+			ProjectID: "default",
+			Scope:     domain.MemoryScopeProject,
+			Kind:      "fact",
+			Content:   "Project uses Discord.",
+			CreatedAt: now,
+			UpdatedAt: now.Add(2 * time.Second),
+		},
+	}
+	for _, memory := range memories {
+		if _, err := store.RememberMemory(ctx, memory); err != nil {
+			t.Fatalf("remember %s: %v", memory.ID, err)
+		}
+	}
+
+	found, err := store.SearchMemories(ctx, domain.MemorySearchRequest{
+		ProjectID:      "default",
+		ThreadID:       "thread-1",
+		Scopes:         []domain.MemoryScope{domain.MemoryScopeThread},
+		FallbackRecent: true,
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatalf("search thread memories: %v", err)
+	}
+	requireMemoryIDs(t, memoryIDs(found), "thread-one-memory")
+
+	found, err = store.SearchMemories(ctx, domain.MemorySearchRequest{
+		ProjectID:      "default",
+		Scopes:         []domain.MemoryScope{domain.MemoryScopeThread},
+		FallbackRecent: true,
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatalf("search unscoped thread memories: %v", err)
+	}
+	requireMemoryIDs(t, memoryIDs(found))
 }
 
 func TestListMemoriesFiltersVisibleRecentMemory(t *testing.T) {

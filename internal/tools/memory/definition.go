@@ -12,9 +12,9 @@ const (
 	ProposeUpdateToolName = "MemoryProposeUpdate"
 	ProposeForgetToolName = "MemoryProposeForget"
 
-	ProposeAddToolDescription    = "Proposes adding a new durable memory for later OpenCTO tasks. The backend validates, dedupes, saves, and embeds accepted proposals. Use only for durable preferences, project/user/global facts, standing instructions, decisions, constraints, identity context, or reusable workflow context; search/update existing memory first when a related memory may already exist."
-	SearchToolDescription        = "Searches durable OpenCTO memory for project, user, or global context. Use before proposing memory changes when the current task may depend on or change remembered preferences, decisions, project facts, identity context, constraints, or workflows."
-	ListToolDescription          = "Lists recent durable memories for inspection and cleanup. Use for memory admin/debug requests such as showing project, current-user, or global memories; this is read-only."
+	ProposeAddToolDescription    = "Proposes adding a new durable memory for later OpenCTO tasks. The backend validates, dedupes, saves, and embeds accepted proposals. Use only for durable thread/project/user/global facts, preferences, standing instructions, decisions, constraints, identity context, or reusable workflow context; search/update existing memory first when a related memory may already exist."
+	SearchToolDescription        = "Searches durable OpenCTO memory for thread, project, user, or global context. Use before proposing memory changes when the current task may depend on or change remembered preferences, decisions, project facts, identity context, constraints, or workflows."
+	ListToolDescription          = "Lists recent durable memories for inspection and cleanup. Use for memory admin/debug requests such as showing thread, project, current-user, or global memories; this is read-only."
 	ProposeUpdateToolDescription = "Proposes updating an existing durable OpenCTO memory by memory_id. Use after searching when a remembered fact, preference, tags, pinning, or confidence should change without deleting and recreating it. The backend validates, saves, and re-embeds accepted proposals."
 	ProposeForgetToolDescription = "Proposes deleting durable OpenCTO memories by exact memory_ids, or by tag and scope filters. Use when the user asks to forget/delete memory, or when a memory is clearly obsolete; search first if exact ids are not already known. The backend validates and performs accepted deletes."
 )

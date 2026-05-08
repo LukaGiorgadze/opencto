@@ -3,6 +3,7 @@ package memory
 import "github.com/opencto/opencto/internal/domain"
 
 const (
+	ScopeThread  = "thread"
 	ScopeProject = "project"
 	ScopeUser    = "user"
 	ScopeGlobal  = "global"

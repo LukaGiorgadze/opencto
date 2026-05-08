@@ -35,6 +35,7 @@ type RuntimeStore interface {
 	UpsertWorkItems(context.Context, []domain.WorkItem) error
 	UpsertExecutionAttempt(context.Context, domain.ExecutionAttempt) error
 	UpsertToolInvocation(context.Context, domain.ToolInvocation) error
+	UpsertConversationThread(context.Context, domain.ConversationThread) error
 	UpsertConversationMessage(context.Context, domain.ConversationMessage) error
 	ListConversationMessages(context.Context, ConversationQuery) ([]domain.ConversationMessage, error)
 	RememberMemory(context.Context, domain.Memory) (domain.Memory, error)

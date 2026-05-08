@@ -127,9 +127,14 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 		if next.Status == activities.NextActionStatusWaiting {
 			stopResponseSession(ctx, session)
 			session = nil
-			notifyProjectTaskWaiting(ctx, input.ProjectID, input.Event, next)
-			reportWaitingNextAction(ctx, input.Event, next)
-			signalEvents, canceled := waitForPlanningAnswer(ctx, next.WaitingToken, &additionalEvents)
+			if err := persistTaskSignalEvents(persistenceCtx, drainTaskSignals(ctx, &additionalEvents)); err != nil {
+				return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)
+			}
+			waitingEvent := reportTargetEvent(input.Event, additionalEvents)
+			notifyProjectTaskWaiting(ctx, input.ProjectID, waitingEvent, next)
+			receipts := reportWaitingNextAction(ctx, waitingEvent, next)
+			notifyProjectTaskOutput(ctx, waitingEvent, strings.TrimSpace(next.WaitingKind), receipts)
+			signalEvents, canceled := waitForPlanningAnswer(ctx, strings.TrimSpace(next.WaitingKind), &additionalEvents)
 			if err := persistTaskSignalEvents(persistenceCtx, signalEvents); err != nil {
 				return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)
 			}
@@ -140,11 +145,11 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 					Event:     input.Event,
 				}, nil
 			}
-			session = startResponseSession(ctx, sessionCtx, input.ProjectID, input.Event)
+			session = startResponseSession(ctx, sessionCtx, input.ProjectID, reportTargetEvent(input.Event, additionalEvents))
 			continue
 		}
 		if next.IsTerminal() {
-			return resultFromNextAction(input.Event, next), nil
+			return resultFromNextAction(reportTargetEvent(input.Event, additionalEvents), next), nil
 		}
 		toolChoices := append([]agent.ToolChoice(nil), next.ToolChoices...)
 		if len(toolChoices) == 0 && next.ToolChoice != nil {
@@ -213,7 +218,7 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 	if !final.IsTerminal() {
 		return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, fmt.Errorf("Activities.NextAction returned non-terminal status %q for force-final request", final.Status))
 	}
-	return resultFromNextAction(input.Event, final), nil
+	return resultFromNextAction(reportTargetEvent(input.Event, additionalEvents), final), nil
 }
 
 func nextAction(ctx workflow.Context, request activities.NextActionRequest) (activities.NextActionResult, error) {
@@ -351,7 +356,8 @@ func isMemoryTool(toolType domain.ToolType) bool {
 
 func notifyProjectTaskWaiting(ctx workflow.Context, projectID string, event domain.Event, next activities.NextActionResult) {
 	token := normalizePlanningToken(next.WaitingToken)
-	if token == "" {
+	kind := strings.TrimSpace(next.WaitingKind)
+	if kind == "" {
 		return
 	}
 	info := workflow.GetInfo(ctx)
@@ -362,7 +368,7 @@ func notifyProjectTaskWaiting(ctx workflow.Context, projectID string, event doma
 		WorkflowID: info.WorkflowExecution.ID,
 		EventID:    event.ID,
 		Token:      token,
-		Kind:       strings.TrimSpace(next.WaitingKind),
+		Kind:       kind,
 		Event:      event,
 	}
 	if strings.TrimSpace(signal.Event.ProjectID) == "" {
@@ -370,14 +376,34 @@ func notifyProjectTaskWaiting(ctx workflow.Context, projectID string, event doma
 	}
 	err := workflow.SignalExternalWorkflow(ctx, info.ParentWorkflowExecution.ID, info.ParentWorkflowExecution.RunID, SignalProjectTaskWaiting, signal).Get(ctx, nil)
 	if err != nil {
-		workflow.GetLogger(ctx).Warn("signal project task waiting failed", "token", token, "error", err.Error())
+		workflow.GetLogger(ctx).Warn("signal project task waiting failed", "waiting_kind", kind, "error", err.Error())
 	}
 }
 
-func reportWaitingNextAction(ctx workflow.Context, event domain.Event, next activities.NextActionResult) {
+func notifyProjectTaskOutput(ctx workflow.Context, event domain.Event, waitingKind string, receipts []domain.ReportReceipt) {
+	if len(receipts) == 0 {
+		return
+	}
+	info := workflow.GetInfo(ctx)
+	if info == nil || info.ParentWorkflowExecution == nil {
+		return
+	}
+	signal := TaskOutputSignal{
+		WorkflowID:  info.WorkflowExecution.ID,
+		EventID:     event.ID,
+		WaitingKind: strings.TrimSpace(waitingKind),
+		Receipts:    append([]domain.ReportReceipt(nil), receipts...),
+	}
+	err := workflow.SignalExternalWorkflow(ctx, info.ParentWorkflowExecution.ID, info.ParentWorkflowExecution.RunID, SignalProjectTaskOutput, signal).Get(ctx, nil)
+	if err != nil {
+		workflow.GetLogger(ctx).Warn("signal project task output failed", "event_id", event.ID, "error", err.Error())
+	}
+}
+
+func reportWaitingNextAction(ctx workflow.Context, event domain.Event, next activities.NextActionResult) []domain.ReportReceipt {
 	message := strings.TrimSpace(next.NextAction.ResponseMessage)
 	if message == "" {
-		return
+		return nil
 	}
 	reportCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		ScheduleToCloseTimeout: reportResponseActivityTimeout,
@@ -386,38 +412,98 @@ func reportWaitingNextAction(ctx workflow.Context, event domain.Event, next acti
 			MaximumAttempts: 1,
 		},
 	})
+	var result activities.ReportResponseResult
 	err := workflow.ExecuteActivity(reportCtx, "Activities.ReportResponse", activities.ReportResponseRequest{
 		Event:       event,
 		Message:     message,
 		Attachments: append([]domain.ReportAttachment(nil), next.NextAction.ResponseAttachments...),
-	}).Get(reportCtx, nil)
+		ReplyTo:     reportReplyForEvent(event),
+		WaitingKind: strings.TrimSpace(next.WaitingKind),
+	}).Get(reportCtx, &result)
 	if err != nil {
 		workflow.GetLogger(ctx).Error("report waiting response activity failed", "project_id", event.ProjectID, "event_id", event.ID, "error", err.Error())
+		return nil
 	}
+	return result.Receipts
 }
 
-func waitForPlanningAnswer(ctx workflow.Context, token string, additionalEvents *[]domain.Event) ([]taskSignalEvent, bool) {
-	token = normalizePlanningToken(token)
+func reportReplyForEvent(event domain.Event) *domain.ReportReply {
+	reply := domain.ReportReply{
+		MessageID: firstNonEmptyWorkflowString(
+			event.Metadata[domain.MetadataKeyReplyToMessageID],
+			event.Provenance.SourceID,
+			eventPayloadString(event, "message_id"),
+		),
+		ChannelID: firstNonEmptyWorkflowString(
+			event.Metadata[domain.MetadataKeyReplyToChannelID],
+			event.ChannelID,
+		),
+		ContextID: firstNonEmptyWorkflowString(
+			event.Metadata[domain.MetadataKeyReplyToContextID],
+			eventPayloadString(event, "guild_id"),
+		),
+	}
+	if reply.Empty() {
+		return nil
+	}
+	return &reply
+}
+
+func firstNonEmptyWorkflowString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func eventPayloadString(event domain.Event, key string) string {
+	if event.Payload == nil {
+		return ""
+	}
+	value, ok := event.Payload[key]
+	if !ok {
+		return ""
+	}
+	text, _ := value.(string)
+	return strings.TrimSpace(text)
+}
+
+func eventWithPlanningSignalMetadata(event domain.Event, waitingKind string, decision string) domain.Event {
+	metadata := domain.Metadata{}
+	for key, value := range event.Metadata {
+		metadata[key] = value
+	}
+	metadata[domain.MetadataKeyControl] = domain.MetadataControlPlanningAnswer
+	if value := strings.TrimSpace(waitingKind); value != "" {
+		metadata[domain.MetadataKeyWaitingKind] = value
+	}
+	if value := strings.TrimSpace(decision); value != "" {
+		metadata[domain.MetadataKeyApprovalDecision] = value
+	}
+	event.Metadata = metadata
+	return event
+}
+
+func waitForPlanningAnswer(ctx workflow.Context, waitingKind string, additionalEvents *[]domain.Event) ([]taskSignalEvent, bool) {
+	waitingKind = strings.TrimSpace(waitingKind)
 	var signalEvents []taskSignalEvent
 	for {
 		selector := workflow.NewSelector(ctx)
 		selector.AddReceive(workflow.GetSignalChannel(ctx, SignalTaskPlanningAnswer), func(c workflow.ReceiveChannel, more bool) {
 			var signal PlanningAnswerSignal
 			c.Receive(ctx, &signal)
-			if normalizePlanningToken(signal.Token) != token {
-				return
-			}
-			*additionalEvents = append(*additionalEvents, signal.Event)
-			signalEvents = append(signalEvents, taskSignalEvent{Event: signal.Event, Control: domain.MetadataControlPlanningAnswer})
+			event := eventWithPlanningSignalMetadata(signal.Event, firstNonEmptyWorkflowString(signal.WaitingKind, waitingKind), signal.Decision)
+			*additionalEvents = append(*additionalEvents, event)
+			signalEvents = append(signalEvents, taskSignalEvent{Event: event, Control: domain.MetadataControlPlanningAnswer})
 		})
 		selector.AddReceive(workflow.GetSignalChannel(ctx, SignalTaskAdditionalContext), func(c workflow.ReceiveChannel, more bool) {
 			var signal AdditionalContextSignal
 			c.Receive(ctx, &signal)
-			if planningTokenFromEvent(signal.Event) != token {
-				return
-			}
-			*additionalEvents = append(*additionalEvents, signal.Event)
-			signalEvents = append(signalEvents, taskSignalEvent{Event: signal.Event, Control: domain.MetadataControlPlanningAnswer})
+			event := eventWithPlanningSignalMetadata(signal.Event, waitingKind, "")
+			*additionalEvents = append(*additionalEvents, event)
+			signalEvents = append(signalEvents, taskSignalEvent{Event: event, Control: domain.MetadataControlPlanningAnswer})
 		})
 		selector.AddReceive(workflow.GetSignalChannel(ctx, SignalTaskCancel), func(c workflow.ReceiveChannel, more bool) {
 			var signal TaskControlSignal
@@ -433,12 +519,10 @@ func waitForPlanningAnswer(ctx workflow.Context, token string, additionalEvents 
 			}
 		})
 		selector.Select(ctx)
-		for _, event := range *additionalEvents {
-			if planningTokenFromEvent(event) == token {
+		for _, signalEvent := range signalEvents {
+			if signalEvent.Control == domain.MetadataControlPlanningAnswer {
 				return signalEvents, false
 			}
-		}
-		for _, signalEvent := range signalEvents {
 			if signalEvent.Control == "cancel" {
 				return signalEvents, true
 			}
@@ -503,6 +587,43 @@ func resultFromNextAction(event domain.Event, next activities.NextActionResult) 
 		ResponseAttachments: attachments,
 		Report:              next.Status != activities.NextActionStatusIgnored && (message != "" || len(attachments) > 0),
 	}
+}
+
+func reportTargetEvent(base domain.Event, additionalEvents []domain.Event) domain.Event {
+	target := base
+	for _, event := range additionalEvents {
+		channelID := strings.TrimSpace(event.ChannelID)
+		if channelID == "" {
+			continue
+		}
+		target.ChannelID = channelID
+		target.ThreadID = strings.TrimSpace(event.ThreadID)
+		if strings.TrimSpace(string(event.ChannelType)) != "" {
+			target.ChannelType = event.ChannelType
+		}
+		target.Metadata = reportTargetMetadata(target.Metadata, event.Metadata)
+	}
+	return target
+}
+
+func reportTargetMetadata(base domain.Metadata, update domain.Metadata) domain.Metadata {
+	if len(base) == 0 && len(update) == 0 {
+		return nil
+	}
+	metadata := domain.Metadata{}
+	for key, value := range base {
+		metadata[key] = value
+	}
+	for _, key := range []string{
+		domain.MetadataKeyReplyToMessageID,
+		domain.MetadataKeyReplyToChannelID,
+		domain.MetadataKeyReplyToContextID,
+	} {
+		if value := strings.TrimSpace(update[key]); value != "" {
+			metadata[key] = value
+		}
+	}
+	return metadata
 }
 
 func completeTaskAfterProcessStart(ctx workflow.Context, projectID string, event domain.Event, processes []domain.ProcessReference, err error) (TaskWorkflowResult, error) {

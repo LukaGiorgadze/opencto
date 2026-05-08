@@ -688,6 +688,139 @@ func TestTaskWorkflowPassesAdditionalContextSignalToNextAction(t *testing.T) {
 	env.AssertExpectations(t)
 }
 
+func TestTaskWorkflowUsesLatestAdditionalContextAsReportTarget(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.TaskWorkflow)
+	registerTaskWorkflowActivities(env)
+
+	event := domain.Event{
+		ID:          "event-1",
+		ProjectID:   "project-1",
+		ChannelID:   "channel-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		Body:        "create app",
+	}
+	additional := domain.Event{
+		ID:          "event-2",
+		ProjectID:   "project-1",
+		ChannelID:   "thread-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		ThreadID:    "thread-1",
+		Body:        "add orange colors",
+	}
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalTaskAdditionalContext, workflows.AdditionalContextSignal{Event: additional})
+	}, 0)
+	env.OnActivity("Activities.PersistEvent", mock.Anything, mock.Anything).Return(nil)
+	env.OnActivity("Activities.ExtractMemory", mock.Anything, mock.Anything).Return(nil)
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
+		return len(request.AdditionalEvents) == 1 && request.AdditionalEvents[0].ID == "event-2"
+	})).Return(activities.NextActionResult{
+		NextAction: agent.NextAction{ResponseMessage: "done"},
+		Status:     activities.NextActionStatusCompleted,
+	}, nil).Once()
+	env.OnActivity("Activities.PersistNextAction", mock.Anything, mock.MatchedBy(func(request activities.PersistNextActionRequest) bool {
+		return request.Status == activities.NextActionStatusCompleted
+	})).Return(nil).Once()
+
+	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{
+		ProjectID: "project-1",
+		Event:     event,
+	})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("task workflow failed: %v", err)
+	}
+	var result workflows.TaskWorkflowResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatalf("get result: %v", err)
+	}
+	if result.Event.ChannelID != "thread-1" || result.Event.ThreadID != "thread-1" {
+		t.Fatalf("expected final report target to use thread, got %#v", result.Event)
+	}
+	env.AssertExpectations(t)
+}
+
+func TestTaskWorkflowUsesQueuedAdditionalContextForWaitingReportTarget(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.TaskWorkflow)
+	registerTaskWorkflowActivities(env)
+
+	event := domain.Event{
+		ID:          "event-1",
+		ProjectID:   "project-1",
+		ChannelID:   "channel-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		Body:        "create app",
+	}
+	threadReply := domain.Event{
+		ID:          "event-2",
+		ProjectID:   "project-1",
+		ChannelID:   "thread-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		ThreadID:    "thread-1",
+		Body:        "use pnpm please",
+		Metadata:    domain.Metadata{domain.MetadataKeyControl: domain.MetadataControlTaskReply},
+	}
+	answer := domain.Event{ID: "event-3", ProjectID: "project-1", Body: "Q-12345678: workspace"}
+
+	env.OnActivity("Activities.PersistEvent", mock.Anything, mock.Anything).Return(nil)
+	env.OnActivity("Activities.ExtractMemory", mock.Anything, mock.Anything).Return(nil)
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
+		return request.ExecutionCycle == 1
+	})).Return(activities.NextActionResult{
+		NextAction: agent.NextAction{
+			ResponseMessage: "Question Q-12345678",
+			WaitingToken:    "Q-12345678",
+			WaitingKind:     "question",
+		},
+		WaitingToken: "Q-12345678",
+		WaitingKind:  "question",
+		Status:       activities.NextActionStatusWaiting,
+	}, nil).Once()
+	env.OnActivity("Activities.PersistNextAction", mock.Anything, mock.MatchedBy(func(request activities.PersistNextActionRequest) bool {
+		return request.Status == activities.NextActionStatusWaiting
+	})).Run(func(mock.Arguments) {
+		env.SignalWorkflow(workflows.SignalTaskAdditionalContext, workflows.AdditionalContextSignal{Event: threadReply})
+	}).Return(nil).Once()
+	env.OnActivity("Activities.ReportResponse", mock.Anything, mock.MatchedBy(func(request activities.ReportResponseRequest) bool {
+		return request.Message == "Question Q-12345678" &&
+			request.Event.ChannelID == "thread-1" &&
+			request.Event.ThreadID == "thread-1"
+	})).Run(func(mock.Arguments) {
+		env.SignalWorkflow(workflows.SignalTaskPlanningAnswer, workflows.PlanningAnswerSignal{
+			Event:       answer,
+			WaitingKind: "question",
+		})
+	}).Return(activities.ReportResponseResult{}, nil).Once()
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
+		return request.ExecutionCycle == 2 &&
+			len(request.AdditionalEvents) == 2 &&
+			request.AdditionalEvents[0].ID == "event-2" &&
+			request.AdditionalEvents[1].ID == "event-3"
+	})).Return(activities.NextActionResult{
+		NextAction: agent.NextAction{ResponseMessage: "done"},
+		Status:     activities.NextActionStatusCompleted,
+	}, nil).Once()
+	env.OnActivity("Activities.PersistNextAction", mock.Anything, mock.MatchedBy(func(request activities.PersistNextActionRequest) bool {
+		return request.Status == activities.NextActionStatusCompleted
+	})).Return(nil).Once()
+
+	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{
+		ProjectID: "project-1",
+		Event:     event,
+	})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("task workflow failed: %v", err)
+	}
+	env.AssertExpectations(t)
+}
+
 func TestTaskWorkflowReportsAndWaitsForPlanningAnswer(t *testing.T) {
 	t.Parallel()
 
@@ -701,8 +834,8 @@ func TestTaskWorkflowReportsAndWaitsForPlanningAnswer(t *testing.T) {
 	persistedPlanningAnswer := false
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(workflows.SignalTaskPlanningAnswer, workflows.PlanningAnswerSignal{
-			Token: "Q-12345678",
-			Event: answer,
+			Event:       answer,
+			WaitingKind: "question",
 		})
 	}, time.Millisecond)
 
@@ -731,7 +864,7 @@ func TestTaskWorkflowReportsAndWaitsForPlanningAnswer(t *testing.T) {
 	})).Return(nil).Once()
 	env.OnActivity("Activities.ReportResponse", mock.Anything, mock.MatchedBy(func(request activities.ReportResponseRequest) bool {
 		return request.Message == "Question Q-12345678\nReply with `Q-12345678: <answer>`."
-	})).Return(nil).Once()
+	})).Return(activities.ReportResponseResult{}, nil).Once()
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
 		return request.ExecutionCycle == 2 &&
 			len(request.AdditionalEvents) == 1 &&
@@ -760,6 +893,72 @@ func TestTaskWorkflowReportsAndWaitsForPlanningAnswer(t *testing.T) {
 	}
 	if !persistedPlanningAnswer {
 		t.Fatalf("expected planning answer to be persisted as consumed control metadata")
+	}
+	env.AssertExpectations(t)
+}
+
+func TestTaskWorkflowTreatsRoutedReplyAsPlanningAnswer(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.TaskWorkflow)
+	registerTaskWorkflowActivities(env)
+
+	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "add auth"}
+	answer := domain.Event{
+		ID:        "event-2",
+		ProjectID: "project-1",
+		Body:      "Approved!",
+		Metadata:  domain.Metadata{domain.MetadataKeyControl: domain.MetadataControlTaskReply},
+	}
+	persistedPlanningAnswer := false
+	env.OnActivity("Activities.PersistEvent", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		request := args.Get(1).(activities.PersistEventRequest)
+		if request.Event.ID == "event-2" && request.Event.Metadata[domain.MetadataKeyControl] == domain.MetadataControlPlanningAnswer {
+			persistedPlanningAnswer = true
+		}
+	}).Return(nil)
+	env.OnActivity("Activities.ExtractMemory", mock.Anything, mock.Anything).Return(nil)
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
+		return request.ExecutionCycle == 1
+	})).Return(activities.NextActionResult{
+		NextAction: agent.NextAction{
+			ResponseMessage: "Plan P-12345678\nReply with `approve P-12345678`.",
+			WaitingToken:    "P-12345678",
+			WaitingKind:     "plan",
+		},
+		WaitingToken: "P-12345678",
+		WaitingKind:  "plan",
+		Status:       activities.NextActionStatusWaiting,
+	}, nil).Once()
+	env.OnActivity("Activities.PersistNextAction", mock.Anything, mock.MatchedBy(func(request activities.PersistNextActionRequest) bool {
+		return request.Status == activities.NextActionStatusWaiting
+	})).Return(nil).Once()
+	env.OnActivity("Activities.ReportResponse", mock.Anything, mock.Anything).Run(func(mock.Arguments) {
+		env.SignalWorkflow(workflows.SignalTaskAdditionalContext, workflows.AdditionalContextSignal{Event: answer})
+	}).Return(activities.ReportResponseResult{}, nil).Once()
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
+		return request.ExecutionCycle == 2 &&
+			len(request.AdditionalEvents) == 1 &&
+			request.AdditionalEvents[0].ID == "event-2"
+	})).Return(activities.NextActionResult{
+		NextAction: agent.NextAction{ResponseMessage: "approved"},
+		Status:     activities.NextActionStatusCompleted,
+	}, nil).Once()
+	env.OnActivity("Activities.PersistNextAction", mock.Anything, mock.MatchedBy(func(request activities.PersistNextActionRequest) bool {
+		return request.Status == activities.NextActionStatusCompleted
+	})).Return(nil).Once()
+
+	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{
+		ProjectID: "project-1",
+		Event:     event,
+	})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("task workflow failed: %v", err)
+	}
+	if !persistedPlanningAnswer {
+		t.Fatalf("expected routed reply to be persisted as consumed planning answer")
 	}
 	env.AssertExpectations(t)
 }
@@ -798,6 +997,338 @@ func TestProjectWorkflowStartsUntokenedMessageAsSeparateTaskWhileActive(t *testi
 	}
 }
 
+func TestProjectWorkflowStartsStandaloneDiscordControlMessagesAsNewTasks(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ProjectWorkflow)
+	var seen []string
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context, input workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		seen = append(seen, input.Event.ID)
+		if input.Event.ID == "event-1" {
+			_ = workflow.Sleep(ctx, 10*365*24*time.Hour)
+		}
+		return workflows.TaskWorkflowResult{Completed: true}, nil
+	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+
+	events := []domain.Event{
+		{ID: "event-1", ProjectID: "project-1", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-1", Body: "do work"},
+		{ID: "event-ok", ProjectID: "project-1", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-1", Body: "ok"},
+		{ID: "event-approve", ProjectID: "project-1", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-1", Body: "approve"},
+		{ID: "event-go", ProjectID: "project-1", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-1", Body: "go for it"},
+		{ID: "event-cancel", ProjectID: "project-1", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-1", Body: "cancel"},
+		{ID: "event-interrupt", ProjectID: "project-1", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-1", Body: "interrupt"},
+		{ID: "event-token", ProjectID: "project-1", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-1", Body: "P-12345678: yes"},
+	}
+	for index, event := range events {
+		event := event
+		env.RegisterDelayedCallback(func() {
+			env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: event})
+		}, time.Duration(index)*time.Millisecond)
+	}
+	env.RegisterDelayedCallback(func() {
+		env.CancelWorkflow()
+	}, 20*time.Millisecond)
+
+	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	want := "event-1,event-ok,event-approve,event-go,event-cancel,event-interrupt,event-token"
+	if strings.Join(seen, ",") != want {
+		t.Fatalf("expected standalone Discord messages to start workflows, got %#v", seen)
+	}
+}
+
+func TestProjectWorkflowRoutesReplyToOwnedMessageAsAdditionalContext(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ProjectWorkflow)
+	var seen []string
+	received := false
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context, input workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		seen = append(seen, input.Event.ID)
+		if input.Event.ID != "event-1" {
+			return workflows.TaskWorkflowResult{Completed: true}, nil
+		}
+		var signal workflows.AdditionalContextSignal
+		workflow.GetSignalChannel(ctx, workflows.SignalTaskAdditionalContext).Receive(ctx, &signal)
+		received = signal.Event.ID == "event-2" &&
+			signal.Event.Body == "Approved!" &&
+			signal.Event.Metadata[domain.MetadataKeyControl] == domain.MetadataControlTaskReply
+		return workflows.TaskWorkflowResult{Completed: true}, nil
+	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{ID: "event-1", ProjectID: "project-1", Body: "do work"}})
+	}, 0)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalProjectTaskOutput, workflows.TaskOutputSignal{
+			EventID:  "event-1",
+			Receipts: []domain.ReportReceipt{{MessageID: "bot-message-1"}},
+		})
+	}, time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:        "event-2",
+			ProjectID: "project-1",
+			Body:      "Approved!",
+			Metadata:  domain.Metadata{domain.MetadataKeyReplyToMessageID: "bot-message-1"},
+		}})
+	}, 2*time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.CancelWorkflow()
+	}, 5*time.Millisecond)
+
+	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	if !received {
+		t.Fatalf("expected reply to owned message to route as additional context")
+	}
+	if strings.Join(seen, ",") != "event-1" {
+		t.Fatalf("reply should not start a separate task, got %#v", seen)
+	}
+}
+
+func TestProjectWorkflowRoutesReplyToOriginalMessageAsAdditionalContext(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ProjectWorkflow)
+	var seen []string
+	received := false
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context, input workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		seen = append(seen, input.Event.ID)
+		if input.Event.ID != "event-1" {
+			return workflows.TaskWorkflowResult{Completed: true}, nil
+		}
+		var signal workflows.AdditionalContextSignal
+		workflow.GetSignalChannel(ctx, workflows.SignalTaskAdditionalContext).Receive(ctx, &signal)
+		received = signal.Event.ID == "event-2" &&
+			signal.Event.Body == "now" &&
+			signal.Event.Metadata[domain.MetadataKeyControl] == domain.MetadataControlTaskReply
+		return workflows.TaskWorkflowResult{Completed: true}, nil
+	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "project-1",
+			Body:      "delete react example app",
+			Provenance: domain.Provenance{
+				SourceID: "user-message-1",
+			},
+		}})
+	}, 0)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:        "event-2",
+			ProjectID: "project-1",
+			Body:      "now",
+			Metadata:  domain.Metadata{domain.MetadataKeyReplyToMessageID: "user-message-1"},
+		}})
+	}, time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.CancelWorkflow()
+	}, 5*time.Millisecond)
+
+	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	if !received {
+		t.Fatalf("expected reply to original user message to route as additional context")
+	}
+	if strings.Join(seen, ",") != "event-1" {
+		t.Fatalf("reply to original message should not start a separate task, got %#v", seen)
+	}
+}
+
+func TestProjectWorkflowLearnsThreadFromReplyToOriginalMessage(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ProjectWorkflow)
+	var seen []string
+	var received []string
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context, input workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		seen = append(seen, input.Event.ID)
+		if input.Event.ID != "event-1" {
+			return workflows.TaskWorkflowResult{Completed: true}, nil
+		}
+		for len(received) < 1 {
+			var signal workflows.AdditionalContextSignal
+			workflow.GetSignalChannel(ctx, workflows.SignalTaskAdditionalContext).Receive(ctx, &signal)
+			received = append(received, signal.Event.ID)
+		}
+		return workflows.TaskWorkflowResult{Completed: true}, nil
+	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "project-1",
+			Body:      "create app",
+			Provenance: domain.Provenance{
+				SourceID: "user-message-1",
+			},
+		}})
+	}, 0)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:        "event-2",
+			ProjectID: "project-1",
+			ChannelID: "thread-1",
+			ThreadID:  "thread-1",
+			Body:      "",
+			Metadata:  domain.Metadata{domain.MetadataKeyReplyToMessageID: "user-message-1"},
+			Provenance: domain.Provenance{
+				SourceID: "thread-starter-message",
+			},
+		}})
+	}, time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:        "event-3",
+			ProjectID: "project-1",
+			ChannelID: "thread-1",
+			ThreadID:  "thread-1",
+			Body:      "add orange colors",
+			Provenance: domain.Provenance{
+				SourceID: "thread-message-2",
+			},
+		}})
+	}, 2*time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.CancelWorkflow()
+	}, 5*time.Millisecond)
+
+	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	if strings.Join(received, ",") != "event-3" {
+		t.Fatalf("expected empty thread bootstrap to register ownership without context signal, got %#v", received)
+	}
+	if strings.Join(seen, ",") != "event-1" {
+		t.Fatalf("thread follow-up should not start a separate task, got %#v", seen)
+	}
+}
+
+func TestProjectWorkflowRoutesThreadMessageToOwnedTask(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ProjectWorkflow)
+	var seen []string
+	received := false
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context, input workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		seen = append(seen, input.Event.ID)
+		if input.Event.ID != "event-1" {
+			return workflows.TaskWorkflowResult{Completed: true}, nil
+		}
+		var signal workflows.AdditionalContextSignal
+		workflow.GetSignalChannel(ctx, workflows.SignalTaskAdditionalContext).Receive(ctx, &signal)
+		received = signal.Event.ID == "event-2" &&
+			signal.Event.ThreadID == "thread-1" &&
+			signal.Event.Metadata[domain.MetadataKeyControl] == domain.MetadataControlTaskReply
+		return workflows.TaskWorkflowResult{Completed: true}, nil
+	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "project-1",
+			ThreadID:  "thread-1",
+			Body:      "do work",
+		}})
+	}, 0)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:        "event-2",
+			ProjectID: "project-1",
+			ThreadID:  "thread-1",
+			Body:      "extra context",
+		}})
+	}, time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.CancelWorkflow()
+	}, 5*time.Millisecond)
+
+	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	if !received {
+		t.Fatalf("expected thread message to route as additional context")
+	}
+	if strings.Join(seen, ",") != "event-1" {
+		t.Fatalf("thread message should not start a separate task, got %#v", seen)
+	}
+}
+
+func TestProjectWorkflowRoutesThreadChannelMessageToOwnedTask(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ProjectWorkflow)
+	var seen []string
+	received := false
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context, input workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		seen = append(seen, input.Event.ID)
+		if input.Event.ID != "event-1" {
+			return workflows.TaskWorkflowResult{Completed: true}, nil
+		}
+		var signal workflows.AdditionalContextSignal
+		workflow.GetSignalChannel(ctx, workflows.SignalTaskAdditionalContext).Receive(ctx, &signal)
+		received = signal.Event.ID == "event-2" &&
+			signal.Event.ChannelID == "thread-channel-1" &&
+			signal.Event.Metadata[domain.MetadataKeyControl] == domain.MetadataControlTaskReply
+		return workflows.TaskWorkflowResult{Completed: true}, nil
+	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "project-1",
+			ChannelID: "thread-channel-1",
+			ThreadID:  "thread-channel-1",
+			Body:      "create app",
+		}})
+	}, 0)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:        "event-2",
+			ProjectID: "project-1",
+			ChannelID: "thread-channel-1",
+			Body:      "orange colors",
+		}})
+	}, time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.CancelWorkflow()
+	}, 5*time.Millisecond)
+
+	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	if !received {
+		t.Fatalf("expected thread channel message to route as additional context")
+	}
+	if strings.Join(seen, ",") != "event-1" {
+		t.Fatalf("thread channel message should not start a separate task, got %#v", seen)
+	}
+}
+
 func TestProjectWorkflowRoutesTokenedAnswerToWaitingTask(t *testing.T) {
 	t.Parallel()
 
@@ -811,7 +1342,7 @@ func TestProjectWorkflowRoutesTokenedAnswerToWaitingTask(t *testing.T) {
 		}
 		var signal workflows.PlanningAnswerSignal
 		workflow.GetSignalChannel(ctx, workflows.SignalTaskPlanningAnswer).Receive(ctx, &signal)
-		received = signal.Token == "Q-12345678" && signal.Event.ID == "event-2"
+		received = signal.WaitingKind == "question" && signal.Event.ID == "event-2"
 		return workflows.TaskWorkflowResult{Completed: true}, nil
 	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
 
@@ -884,7 +1415,7 @@ func TestProjectWorkflowRejectsStalePlanningToken(t *testing.T) {
 	}, 2*time.Millisecond)
 	env.OnActivity("Activities.ReportResponse", mock.Anything, mock.MatchedBy(func(request activities.ReportResponseRequest) bool {
 		return request.Event.ID == "event-2" && strings.Contains(request.Message, "Q-99999999")
-	})).Return(nil).Once()
+	})).Return(activities.ReportResponseResult{}, nil).Once()
 	env.RegisterDelayedCallback(func() {
 		env.CancelWorkflow()
 	}, 5*time.Millisecond)
@@ -915,7 +1446,10 @@ func TestProjectWorkflowRoutesReplyMetadataTokenToWaitingTask(t *testing.T) {
 		}
 		var signal workflows.PlanningAnswerSignal
 		workflow.GetSignalChannel(ctx, workflows.SignalTaskPlanningAnswer).Receive(ctx, &signal)
-		received = signal.Token == "P-12345678" && signal.Event.ID == "event-2" && signal.Event.Body == "Do it!"
+		received = signal.WaitingKind == "plan" &&
+			signal.Decision == domain.MetadataApprovalApproved &&
+			signal.Event.ID == "event-2" &&
+			signal.Event.Body == "Do it!"
 		return workflows.TaskWorkflowResult{Completed: true}, nil
 	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
 
@@ -954,6 +1488,274 @@ func TestProjectWorkflowRoutesReplyMetadataTokenToWaitingTask(t *testing.T) {
 	}
 }
 
+func TestProjectWorkflowRoutesReplyToCurrentPlanPromptAsApproval(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ProjectWorkflow)
+	received := false
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context, input workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		if input.Event.ID != "event-1" {
+			return workflows.TaskWorkflowResult{Completed: true}, nil
+		}
+		var signal workflows.PlanningAnswerSignal
+		workflow.GetSignalChannel(ctx, workflows.SignalTaskPlanningAnswer).Receive(ctx, &signal)
+		received = signal.WaitingKind == "plan" &&
+			signal.Decision == domain.MetadataApprovalApproved &&
+			signal.Event.ID == "event-2" &&
+			signal.Event.Metadata[domain.MetadataKeyApprovalDecision] == domain.MetadataApprovalApproved
+		return workflows.TaskWorkflowResult{Completed: true}, nil
+	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "project-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			Body:        "create app",
+		}})
+	}, 0)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalProjectTaskWaiting, workflows.PlanningWaitSignal{
+			EventID: "event-1",
+			Kind:    "plan",
+			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-1", Body: "create app"},
+		})
+		env.SignalWorkflow(workflows.SignalProjectTaskOutput, workflows.TaskOutputSignal{
+			EventID:     "event-1",
+			WaitingKind: "plan",
+			Receipts:    []domain.ReportReceipt{{MessageID: "bot-plan-1", ChannelID: "channel-1"}},
+		})
+	}, time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:          "event-2",
+			ProjectID:   "project-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			Body:        "go for it",
+			Metadata:    domain.Metadata{domain.MetadataKeyReplyToMessageID: "bot-plan-1"},
+		}})
+	}, 2*time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.CancelWorkflow()
+	}, 5*time.Millisecond)
+
+	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	if !received {
+		t.Fatalf("expected reply to current plan prompt to approve waiting task")
+	}
+}
+
+func TestProjectWorkflowRoutesThreadMessageUnderPlanPromptAsApproval(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ProjectWorkflow)
+	received := false
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context, input workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		if input.Event.ID != "event-1" {
+			return workflows.TaskWorkflowResult{Completed: true}, nil
+		}
+		var signal workflows.PlanningAnswerSignal
+		workflow.GetSignalChannel(ctx, workflows.SignalTaskPlanningAnswer).Receive(ctx, &signal)
+		received = signal.WaitingKind == "plan" &&
+			signal.Decision == domain.MetadataApprovalApproved &&
+			signal.Event.ID == "event-2"
+		return workflows.TaskWorkflowResult{Completed: true}, nil
+	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "project-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			Body:        "create app",
+		}})
+	}, 0)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalProjectTaskWaiting, workflows.PlanningWaitSignal{
+			EventID: "event-1",
+			Kind:    "plan",
+			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-1", Body: "create app"},
+		})
+		env.SignalWorkflow(workflows.SignalProjectTaskOutput, workflows.TaskOutputSignal{
+			EventID:     "event-1",
+			WaitingKind: "plan",
+			Receipts:    []domain.ReportReceipt{{MessageID: "bot-plan-1", ChannelID: "channel-1", ThreadID: "thread-1"}},
+		})
+	}, time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:          "event-2",
+			ProjectID:   "project-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "thread-1",
+			ThreadID:    "thread-1",
+			Body:        "ok",
+		}})
+	}, 2*time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.CancelWorkflow()
+	}, 5*time.Millisecond)
+
+	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	if !received {
+		t.Fatalf("expected thread message under current plan prompt to approve waiting task")
+	}
+}
+
+func TestProjectWorkflowRoutesPlanPromptReplyAsRevisionWhenNotApproval(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ProjectWorkflow)
+	received := false
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context, input workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		if input.Event.ID != "event-1" {
+			return workflows.TaskWorkflowResult{Completed: true}, nil
+		}
+		var signal workflows.PlanningAnswerSignal
+		workflow.GetSignalChannel(ctx, workflows.SignalTaskPlanningAnswer).Receive(ctx, &signal)
+		received = signal.WaitingKind == "plan" &&
+			signal.Decision == domain.MetadataApprovalRevision &&
+			signal.Event.ID == "event-2" &&
+			signal.Event.Body == "use orange colors"
+		return workflows.TaskWorkflowResult{Completed: true}, nil
+	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "project-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			Body:        "create app",
+		}})
+	}, 0)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalProjectTaskWaiting, workflows.PlanningWaitSignal{
+			EventID: "event-1",
+			Kind:    "plan",
+			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-1", Body: "create app"},
+		})
+		env.SignalWorkflow(workflows.SignalProjectTaskOutput, workflows.TaskOutputSignal{
+			EventID:     "event-1",
+			WaitingKind: "plan",
+			Receipts:    []domain.ReportReceipt{{MessageID: "bot-plan-1", ChannelID: "channel-1"}},
+		})
+	}, time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:          "event-2",
+			ProjectID:   "project-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			Body:        "use orange colors",
+			Metadata:    domain.Metadata{domain.MetadataKeyReplyToMessageID: "bot-plan-1"},
+		}})
+	}, 2*time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.CancelWorkflow()
+	}, 5*time.Millisecond)
+
+	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	if !received {
+		t.Fatalf("expected non-approval plan reply to route as revision")
+	}
+}
+
+func TestProjectWorkflowDowngradesOldPlanPromptOwnership(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ProjectWorkflow)
+	receivedContext := false
+	receivedApproval := false
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context, input workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		if input.Event.ID != "event-1" {
+			return workflows.TaskWorkflowResult{Completed: true}, nil
+		}
+		selector := workflow.NewSelector(ctx)
+		selector.AddReceive(workflow.GetSignalChannel(ctx, workflows.SignalTaskPlanningAnswer), func(c workflow.ReceiveChannel, more bool) {
+			var signal workflows.PlanningAnswerSignal
+			c.Receive(ctx, &signal)
+			receivedApproval = true
+		})
+		selector.AddReceive(workflow.GetSignalChannel(ctx, workflows.SignalTaskAdditionalContext), func(c workflow.ReceiveChannel, more bool) {
+			var signal workflows.AdditionalContextSignal
+			c.Receive(ctx, &signal)
+			receivedContext = signal.Event.ID == "event-2" &&
+				signal.Event.Metadata[domain.MetadataKeyControl] == domain.MetadataControlTaskReply
+		})
+		selector.Select(ctx)
+		return workflows.TaskWorkflowResult{Completed: true}, nil
+	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "project-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			Body:        "create app",
+		}})
+	}, 0)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalProjectTaskWaiting, workflows.PlanningWaitSignal{
+			EventID: "event-1",
+			Kind:    "plan",
+			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-1", Body: "create app"},
+		})
+		env.SignalWorkflow(workflows.SignalProjectTaskOutput, workflows.TaskOutputSignal{
+			EventID:     "event-1",
+			WaitingKind: "plan",
+			Receipts:    []domain.ReportReceipt{{MessageID: "bot-plan-old", ChannelID: "channel-1"}},
+		})
+		env.SignalWorkflow(workflows.SignalProjectTaskOutput, workflows.TaskOutputSignal{
+			EventID:     "event-1",
+			WaitingKind: "plan",
+			Receipts:    []domain.ReportReceipt{{MessageID: "bot-plan-new", ChannelID: "channel-1"}},
+		})
+	}, time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:          "event-2",
+			ProjectID:   "project-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			Body:        "ok",
+			Metadata:    domain.Metadata{domain.MetadataKeyReplyToMessageID: "bot-plan-old"},
+		}})
+	}, 2*time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.CancelWorkflow()
+	}, 5*time.Millisecond)
+
+	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	if !receivedContext || receivedApproval {
+		t.Fatalf("expected stale prompt reply to downgrade to context, context=%v approval=%v", receivedContext, receivedApproval)
+	}
+}
+
 func TestProjectWorkflowReportsAfterTaskWorkflowCompletes(t *testing.T) {
 	t.Parallel()
 
@@ -977,7 +1779,7 @@ func TestProjectWorkflowReportsAfterTaskWorkflowCompletes(t *testing.T) {
 		return reported
 	})).Run(func(mock.Arguments) {
 		env.CancelWorkflow()
-	}).Return(nil).Once()
+	}).Return(activities.ReportResponseResult{}, nil).Once()
 
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
@@ -1019,14 +1821,14 @@ func TestProjectWorkflowContinuesAfterReportResponseFails(t *testing.T) {
 
 	env.OnActivity("Activities.ReportResponse", mock.Anything, mock.MatchedBy(func(request activities.ReportResponseRequest) bool {
 		return request.Event.ID == "event-1"
-	})).Return(errors.New("discord upload failed")).Once()
+	})).Return(activities.ReportResponseResult{}, errors.New("discord upload failed")).Once()
 	reportedSecond := false
 	env.OnActivity("Activities.ReportResponse", mock.Anything, mock.MatchedBy(func(request activities.ReportResponseRequest) bool {
 		reportedSecond = request.Event.ID == "event-2"
 		return reportedSecond
 	})).Run(func(mock.Arguments) {
 		env.CancelWorkflow()
-	}).Return(nil).Once()
+	}).Return(activities.ReportResponseResult{}, nil).Once()
 
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
@@ -1079,7 +1881,7 @@ func TestProjectWorkflowReportsAfterTaskWorkflowFails(t *testing.T) {
 		return reported
 	})).Run(func(mock.Arguments) {
 		env.CancelWorkflow()
-	}).Return(nil).Once()
+	}).Return(activities.ReportResponseResult{}, nil).Once()
 
 	event := domain.Event{
 		ID:          "event-1",

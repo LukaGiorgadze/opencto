@@ -24,9 +24,11 @@ import (
 	"github.com/opencto/opencto/internal/config"
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/embedding"
+	"github.com/opencto/opencto/internal/runtime/approval"
 	"github.com/opencto/opencto/internal/runtime/scheduled"
 	skillcatalog "github.com/opencto/opencto/internal/skills"
 	"github.com/opencto/opencto/internal/storage"
+	"github.com/opencto/opencto/internal/textclean"
 	toolregistry "github.com/opencto/opencto/internal/tools"
 	edittool "github.com/opencto/opencto/internal/tools/edit"
 	exectool "github.com/opencto/opencto/internal/tools/exec"
@@ -41,7 +43,7 @@ import (
 )
 
 type Reporter interface {
-	Report(context.Context, domain.Event, domain.ReportMessage) error
+	Report(context.Context, domain.Event, domain.ReportMessage) ([]domain.ReportReceipt, error)
 }
 
 type EventEnqueuer interface {
@@ -128,6 +130,12 @@ type ReportResponseRequest struct {
 	Event       domain.Event              `json:"event"`
 	Message     string                    `json:"message"`
 	Attachments []domain.ReportAttachment `json:"attachments,omitempty"`
+	ReplyTo     *domain.ReportReply       `json:"reply_to,omitempty"`
+	WaitingKind string                    `json:"waiting_kind,omitempty"`
+}
+
+type ReportResponseResult struct {
+	Receipts []domain.ReportReceipt `json:"receipts,omitempty"`
 }
 
 type ResponseSessionRequest struct {
@@ -227,10 +235,10 @@ type toolRunResult struct {
 }
 
 func (a *Activities) LoadContext(ctx context.Context, event domain.Event) (agent.Context, error) {
-	return a.loadContext(ctx, event)
+	return a.loadContext(ctx, event, event)
 }
 
-func (a *Activities) loadContext(ctx context.Context, event domain.Event) (agent.Context, error) {
+func (a *Activities) loadContext(ctx context.Context, event domain.Event, conversationEvent domain.Event) (agent.Context, error) {
 	var activeWorkItems []domain.WorkItem
 	if a.Store != nil {
 		var err error
@@ -239,25 +247,28 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event) (agent
 			return agent.Context{}, err
 		}
 	}
+	memoryEvent := inferDiscordThreadContext(conversationEvent)
 	var memories []domain.Memory
 	if a.Store != nil && a.MemoryEnabled {
 		var err error
 		memories, err = a.searchMemories(ctx, domain.MemorySearchRequest{
-			ProjectID:      strings.TrimSpace(event.ProjectID),
-			UserID:         eventUserID(event),
-			Query:          strings.TrimSpace(event.Body),
-			Scopes:         []domain.MemoryScope{domain.MemoryScopeProject, domain.MemoryScopeUser, domain.MemoryScopeGlobal},
+			ProjectID:      strings.TrimSpace(memoryEvent.ProjectID),
+			UserID:         eventUserID(memoryEvent),
+			ThreadID:       strings.TrimSpace(memoryEvent.ThreadID),
+			Query:          strings.TrimSpace(firstNonEmpty(memoryEvent.Body, event.Body)),
+			Scopes:         autoContextMemoryScopes(memoryEvent),
 			Limit:          storage.DefaultAutoContextLimit(a.MemoryLimit),
 			FallbackRecent: true,
 		})
 		if err != nil {
 			return agent.Context{}, err
 		}
+		memories = excludeMemoriesFromSource(memories, event.ID)
 	}
 	var conversation []domain.ConversationMessage
 	if a.Store != nil && a.ConversationEnabled {
 		var err error
-		conversation, err = a.loadConversationHistory(ctx, event)
+		conversation, err = a.loadConversationHistory(ctx, conversationEvent)
 		if err != nil {
 			return agent.Context{}, err
 		}
@@ -280,6 +291,13 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event) (agent
 		ConversationMaxContextChars: storage.DefaultConversationMaxContextChars(a.ConversationMaxContextChars),
 		Skills:                      availableSkills,
 	}, nil
+}
+
+func autoContextMemoryScopes(event domain.Event) []domain.MemoryScope {
+	if strings.TrimSpace(event.ThreadID) != "" {
+		return []domain.MemoryScope{domain.MemoryScopeThread}
+	}
+	return []domain.MemoryScope{domain.MemoryScopeProject, domain.MemoryScopeUser, domain.MemoryScopeGlobal}
 }
 
 func (a *Activities) loadConversationHistory(ctx context.Context, event domain.Event) ([]domain.ConversationMessage, error) {
@@ -329,8 +347,7 @@ func (a *Activities) loadConversationHistory(ctx context.Context, event domain.E
 			if err := appendMessages(storage.ConversationScopeThread, limit-len(messages)); err != nil {
 				return nil, err
 			}
-		}
-		if err := appendMessages(storage.ConversationScopeChannel, limit-len(messages)); err != nil {
+		} else if err := appendMessages(storage.ConversationScopeChannel, limit-len(messages)); err != nil {
 			return nil, err
 		}
 	} else {
@@ -360,6 +377,7 @@ func conversationUserMetadata(event domain.Event) domain.Metadata {
 	metadata := domain.Metadata{
 		"channel_type": string(event.ChannelType),
 		"channel_id":   strings.TrimSpace(event.ChannelID),
+		"thread_id":    strings.TrimSpace(event.ThreadID),
 		"actor_id":     strings.TrimSpace(event.ActorID),
 		"actor_name":   strings.TrimSpace(event.ActorName),
 	}
@@ -387,6 +405,7 @@ func memoryMetadata(event domain.Event, reason string) domain.Metadata {
 		"reason":       strings.TrimSpace(reason),
 		"channel_type": string(event.ChannelType),
 		"channel_id":   strings.TrimSpace(event.ChannelID),
+		"thread_id":    strings.TrimSpace(event.ThreadID),
 		"actor_id":     strings.TrimSpace(event.ActorID),
 		"actor_name":   strings.TrimSpace(event.ActorName),
 	}
@@ -415,14 +434,15 @@ func autoExtractedMemory(event domain.Event, userID string, candidate agent.Memo
 	}
 	scope := candidate.Scope
 	switch scope {
-	case domain.MemoryScopeGlobal, domain.MemoryScopeProject, domain.MemoryScopeUser:
+	case domain.MemoryScopeThread, domain.MemoryScopeGlobal, domain.MemoryScopeProject, domain.MemoryScopeUser:
 	default:
 		return domain.Memory{}, false
 	}
 	return domain.Memory{
-		ID:         stableActivityID("auto-memory", event.ProjectID, userID, string(scope), content),
+		ID:         stableActivityID("auto-memory", event.ProjectID, userID, string(scope), strings.TrimSpace(event.ThreadID), content),
 		ProjectID:  strings.TrimSpace(event.ProjectID),
 		UserID:     strings.TrimSpace(userID),
+		ThreadID:   strings.TrimSpace(event.ThreadID),
 		Scope:      scope,
 		Kind:       strings.TrimSpace(candidate.Kind),
 		Content:    content,
@@ -434,6 +454,21 @@ func autoExtractedMemory(event domain.Event, userID string, candidate agent.Memo
 		Pinned:     candidate.Pinned,
 		Metadata:   memoryMetadata(event, candidate.Reason),
 	}, true
+}
+
+func excludeMemoriesFromSource(memories []domain.Memory, sourceID string) []domain.Memory {
+	sourceID = strings.TrimSpace(sourceID)
+	if sourceID == "" || len(memories) == 0 {
+		return memories
+	}
+	filtered := memories[:0]
+	for _, memory := range memories {
+		if strings.TrimSpace(memory.SourceID) == sourceID {
+			continue
+		}
+		filtered = append(filtered, memory)
+	}
+	return filtered
 }
 
 func (a *Activities) activityLogger() *slog.Logger {
@@ -528,13 +563,14 @@ func (a *Activities) ResponseSession(ctx context.Context, request ResponseSessio
 	}
 }
 
-func (a *Activities) ReportResponse(ctx context.Context, request ReportResponseRequest) error {
+func (a *Activities) ReportResponse(ctx context.Context, request ReportResponseRequest) (ReportResponseResult, error) {
 	report := domain.ReportMessage{
 		Text:        strings.TrimSpace(request.Message),
 		Attachments: append([]domain.ReportAttachment(nil), request.Attachments...),
+		ReplyTo:     cleanReportReply(request.ReplyTo),
 	}
 	if report.Empty() || a.Reporter == nil {
-		return nil
+		return ReportResponseResult{}, nil
 	}
 	a.logActivityStep("ReportResponse", "start",
 		slog.String("project_id", request.Event.ProjectID),
@@ -542,19 +578,244 @@ func (a *Activities) ReportResponse(ctx context.Context, request ReportResponseR
 		slog.String("channel_type", string(request.Event.ChannelType)),
 		slog.String("channel_id", strings.TrimSpace(request.Event.ChannelID)),
 	)
-	if err := a.Reporter.Report(ctx, request.Event, report); err != nil {
+	receipts, err := a.Reporter.Report(ctx, request.Event, report)
+	if err != nil {
 		a.logActivityStep("ReportResponse", "error",
 			slog.String("project_id", request.Event.ProjectID),
 			slog.String("event_id", request.Event.ID),
 			slog.String("error", err.Error()),
 		)
-		return err
+		return ReportResponseResult{}, err
+	}
+	if err := a.persistReportedConversationMessages(ctx, request.Event, report, strings.TrimSpace(request.WaitingKind), receipts); err != nil {
+		a.logActivityStep("ReportResponse", "conversation_error",
+			slog.String("project_id", request.Event.ProjectID),
+			slog.String("event_id", request.Event.ID),
+			slog.String("error", err.Error()),
+		)
+		return ReportResponseResult{}, err
+	}
+	if err := a.persistReportedConversationThreads(ctx, request.Event, receipts); err != nil {
+		a.logActivityStep("ReportResponse", "thread_error",
+			slog.String("project_id", request.Event.ProjectID),
+			slog.String("event_id", request.Event.ID),
+			slog.String("error", err.Error()),
+		)
+		return ReportResponseResult{}, err
 	}
 	a.logActivityStep("ReportResponse", "done",
 		slog.String("project_id", request.Event.ProjectID),
 		slog.String("event_id", request.Event.ID),
 	)
+	return ReportResponseResult{Receipts: receipts}, nil
+}
+
+func (a *Activities) persistReportedConversationMessages(ctx context.Context, event domain.Event, report domain.ReportMessage, waitingKind string, receipts []domain.ReportReceipt) error {
+	if a.Store == nil || strings.TrimSpace(report.Text) == "" {
+		return nil
+	}
+	projectID := strings.TrimSpace(event.ProjectID)
+	if projectID == "" {
+		projectID = strings.TrimSpace(a.Project.ID)
+	}
+	if projectID == "" {
+		return nil
+	}
+	waitingKind = strings.TrimSpace(waitingKind)
+	targets := reportedConversationTargets(event, receipts)
+	for index, target := range targets {
+		if !shouldPersistReportedConversationTarget(event, waitingKind, target) {
+			continue
+		}
+		metadata := domain.Metadata{
+			"source": "report_response",
+		}
+		if target.MessageID != "" {
+			metadata["message_id"] = target.MessageID
+		}
+		if waitingKind != "" {
+			metadata["status"] = NextActionStatusWaiting
+			metadata[domain.MetadataKeyWaitingKind] = waitingKind
+		}
+		message := domain.ConversationMessage{
+			ID:          stableActivityID("conversation-assistant-report", projectID, event.ID, waitingKind, strconv.Itoa(index), target.MessageID, target.ChannelID, target.ThreadID, report.Text),
+			ProjectID:   projectID,
+			EventID:     event.ID,
+			Role:        domain.ConversationRoleAssistant,
+			ChannelType: event.ChannelType,
+			ChannelID:   target.ChannelID,
+			ThreadID:    target.ThreadID,
+			Body:        strings.TrimSpace(report.Text),
+			Metadata:    metadata,
+			CreatedAt:   time.Now().UTC(),
+		}
+		if strings.TrimSpace(message.ChannelID) == "" {
+			continue
+		}
+		if err := a.Store.UpsertConversationMessage(ctx, message); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func shouldPersistReportedConversationTarget(event domain.Event, waitingKind string, target reportedConversationTarget) bool {
+	if strings.TrimSpace(waitingKind) != "" {
+		return true
+	}
+	return strings.TrimSpace(target.ChannelID) != strings.TrimSpace(event.ChannelID) ||
+		strings.TrimSpace(target.ThreadID) != strings.TrimSpace(event.ThreadID)
+}
+
+type reportedConversationTarget struct {
+	MessageID string
+	ChannelID string
+	ThreadID  string
+}
+
+func reportedConversationTargets(event domain.Event, receipts []domain.ReportReceipt) []reportedConversationTarget {
+	seen := map[string]bool{}
+	var targets []reportedConversationTarget
+	add := func(target reportedConversationTarget) {
+		target.MessageID = strings.TrimSpace(target.MessageID)
+		target.ChannelID = strings.TrimSpace(target.ChannelID)
+		target.ThreadID = strings.TrimSpace(target.ThreadID)
+		if target.ChannelID == "" {
+			return
+		}
+		key := target.MessageID + "\x00" + target.ChannelID + "\x00" + target.ThreadID
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		targets = append(targets, target)
+	}
+	for _, receipt := range receipts {
+		channelID := strings.TrimSpace(firstNonEmpty(receipt.ChannelID, event.ChannelID))
+		threadID := strings.TrimSpace(receipt.ThreadID)
+		messageID := strings.TrimSpace(receipt.MessageID)
+		add(reportedConversationTarget{
+			MessageID: messageID,
+			ChannelID: channelID,
+			ThreadID:  threadID,
+		})
+		if event.ChannelType == domain.ChannelTypeDiscord && threadID == "" && messageID != "" {
+			add(reportedConversationTarget{
+				MessageID: messageID,
+				ChannelID: messageID,
+				ThreadID:  messageID,
+			})
+		}
+	}
+	if len(receipts) == 0 {
+		add(reportedConversationTarget{
+			ChannelID: strings.TrimSpace(event.ChannelID),
+			ThreadID:  strings.TrimSpace(event.ThreadID),
+		})
+	}
+	return targets
+}
+
+func (a *Activities) persistReportedConversationThreads(ctx context.Context, event domain.Event, receipts []domain.ReportReceipt) error {
+	if a.Store == nil {
+		return nil
+	}
+	event = inferDiscordThreadContext(event)
+	if strings.TrimSpace(event.ProjectID) == "" {
+		event.ProjectID = strings.TrimSpace(a.Project.ID)
+	}
+	for _, target := range reportedConversationTargets(event, receipts) {
+		if strings.TrimSpace(target.ThreadID) == "" {
+			continue
+		}
+		thread := domain.ConversationThread{
+			ID:            stableActivityID("conversation-thread", event.ProjectID, string(event.ChannelType), target.ThreadID),
+			ProjectID:     strings.TrimSpace(event.ProjectID),
+			ChannelType:   event.ChannelType,
+			ChannelID:     strings.TrimSpace(target.ChannelID),
+			ThreadID:      strings.TrimSpace(target.ThreadID),
+			RootMessageID: strings.TrimSpace(target.MessageID),
+			EventID:       strings.TrimSpace(event.ID),
+			Metadata: domain.Metadata{
+				"source": "report_response",
+			},
+			CreatedAt:     time.Now().UTC(),
+			UpdatedAt:     time.Now().UTC(),
+			LastMessageAt: time.Now().UTC(),
+		}
+		if thread.RootMessageID == "" && event.ChannelType == domain.ChannelTypeDiscord && thread.ChannelID == thread.ThreadID {
+			thread.RootMessageID = thread.ThreadID
+		}
+		if err := a.persistConversationThread(ctx, thread); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *Activities) persistConversationThread(ctx context.Context, thread domain.ConversationThread) error {
+	if a.Store == nil {
+		return nil
+	}
+	thread.ProjectID = strings.TrimSpace(thread.ProjectID)
+	if thread.ProjectID == "" {
+		thread.ProjectID = strings.TrimSpace(a.Project.ID)
+	}
+	thread.ChannelID = strings.TrimSpace(thread.ChannelID)
+	thread.ThreadID = strings.TrimSpace(thread.ThreadID)
+	if thread.ProjectID == "" || thread.ChannelID == "" || thread.ThreadID == "" {
+		return nil
+	}
+	if thread.ID == "" {
+		thread.ID = stableActivityID("conversation-thread", thread.ProjectID, string(thread.ChannelType), thread.ThreadID)
+	}
+	return a.Store.UpsertConversationThread(ctx, thread)
+}
+
+func conversationThreadFromEvent(event domain.Event) domain.ConversationThread {
+	event = inferDiscordThreadContext(event)
+	projectID := strings.TrimSpace(event.ProjectID)
+	channelID := strings.TrimSpace(event.ChannelID)
+	threadID := strings.TrimSpace(event.ThreadID)
+	if projectID == "" || channelID == "" || threadID == "" {
+		return domain.ConversationThread{}
+	}
+	createdAt := firstNonZeroTime(event.CreatedAt, time.Now().UTC())
+	thread := domain.ConversationThread{
+		ID:            stableActivityID("conversation-thread", projectID, string(event.ChannelType), threadID),
+		ProjectID:     projectID,
+		ChannelType:   event.ChannelType,
+		ChannelID:     channelID,
+		ThreadID:      threadID,
+		RootMessageID: strings.TrimSpace(event.Metadata[domain.MetadataKeyReplyToMessageID]),
+		EventID:       strings.TrimSpace(event.ID),
+		Title:         strings.TrimSpace(event.Body),
+		Metadata: domain.Metadata{
+			"source": "event",
+		},
+		CreatedAt:     createdAt,
+		UpdatedAt:     createdAt,
+		LastMessageAt: createdAt,
+	}
+	if thread.RootMessageID == "" && event.ChannelType == domain.ChannelTypeDiscord && channelID == threadID {
+		thread.RootMessageID = threadID
+	}
+	return thread
+}
+
+func cleanReportReply(reply *domain.ReportReply) *domain.ReportReply {
+	if reply == nil {
+		return nil
+	}
+	cleaned := domain.ReportReply{
+		MessageID: strings.TrimSpace(reply.MessageID),
+		ChannelID: strings.TrimSpace(reply.ChannelID),
+		ContextID: strings.TrimSpace(reply.ContextID),
+	}
+	if cleaned.Empty() {
+		return nil
+	}
+	return &cleaned
 }
 
 func (a *Activities) EnqueueScheduledEvent(ctx context.Context, request scheduled.EnqueueScheduledEventRequest) error {
@@ -599,6 +860,7 @@ func (a *Activities) PersistEvent(ctx context.Context, request PersistEventReque
 	if strings.TrimSpace(event.ProjectID) == "" {
 		event.ProjectID = strings.TrimSpace(a.Project.ID)
 	}
+	event = inferDiscordThreadContext(event)
 	a.logActivityStep("PersistEvent", "begin",
 		slog.String("project_id", event.ProjectID),
 		slog.String("event_id", event.ID),
@@ -640,6 +902,14 @@ func (a *Activities) PersistEvent(ctx context.Context, request PersistEventReque
 			return err
 		}
 	}
+	if err := a.persistConversationThread(ctx, conversationThreadFromEvent(event)); err != nil {
+		a.logActivityStep("PersistEvent", "thread_error",
+			slog.String("project_id", event.ProjectID),
+			slog.String("event_id", event.ID),
+			slog.String("error", err.Error()),
+		)
+		return err
+	}
 	a.logActivityStep("PersistEvent", "done",
 		slog.String("project_id", event.ProjectID),
 		slog.String("event_id", event.ID),
@@ -665,12 +935,14 @@ func (a *Activities) ExtractMemory(ctx context.Context, request ExtractMemoryReq
 		return ExtractMemoryResult{}, nil
 	}
 
-	userID := eventUserID(event)
+	memoryEvent := inferDiscordThreadContext(event)
+	userID := eventUserID(memoryEvent)
 	existing, err := a.searchMemories(ctx, domain.MemorySearchRequest{
-		ProjectID:      event.ProjectID,
+		ProjectID:      strings.TrimSpace(memoryEvent.ProjectID),
 		UserID:         userID,
-		Query:          strings.TrimSpace(event.Body),
-		Scopes:         []domain.MemoryScope{domain.MemoryScopeGlobal, domain.MemoryScopeProject, domain.MemoryScopeUser},
+		ThreadID:       strings.TrimSpace(memoryEvent.ThreadID),
+		Query:          strings.TrimSpace(memoryEvent.Body),
+		Scopes:         autoContextMemoryScopes(memoryEvent),
 		Limit:          5,
 		FallbackRecent: true,
 	})
@@ -684,8 +956,8 @@ func (a *Activities) ExtractMemory(ctx context.Context, request ExtractMemoryReq
 	}
 
 	output, err := a.MemoryExtractor.ExtractMemories(ctx, agent.MemoryExtractionInput{
-		ProjectID:        event.ProjectID,
-		Event:            event,
+		ProjectID:        strings.TrimSpace(memoryEvent.ProjectID),
+		Event:            memoryEvent,
 		ExistingMemories: existing,
 	})
 	if err != nil {
@@ -699,7 +971,7 @@ func (a *Activities) ExtractMemory(ctx context.Context, request ExtractMemoryReq
 
 	result := ExtractMemoryResult{Candidates: len(output.Candidates)}
 	for _, candidate := range output.Candidates {
-		memory, ok := autoExtractedMemory(event, userID, candidate)
+		memory, ok := autoExtractedMemory(memoryEvent, userID, candidate)
 		if !ok {
 			result.Rejected++
 			continue
@@ -944,7 +1216,8 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		slog.String("project_id", projectID),
 		slog.String("event_id", event.ID),
 	)
-	loaded, err := a.loadContext(ctx, event)
+	conversationEvent := latestConversationContextEvent(event, request.AdditionalEvents)
+	loaded, err := a.loadContext(ctx, event, conversationEvent)
 	if err != nil {
 		a.logActivityStep("NextAction", "load_context_error",
 			slog.String("project_id", projectID),
@@ -1076,9 +1349,9 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 
 	if engineOutput.Status == NextActionStatusTool && planApprovalRequired(nextAction, loaded.AdditionalEvents) && outputHasMutatingTool(engineOutput) {
 		token := strings.TrimSpace(nextAction.WaitingToken)
-		engineOutput = explicitPlanApprovalWaitingOutput(nextAction, token)
+		engineOutput = explicitPlanApprovalWaitingOutput(event.ChannelType, nextAction, token)
 	}
-	if engineOutput.Status == NextActionStatusTool && outputHasMutatingTool(engineOutput) {
+	if event.ChannelType != domain.ChannelTypeDiscord && engineOutput.Status == NextActionStatusTool && outputHasMutatingTool(engineOutput) {
 		if token := unscopedPlanApprovalToken(event, loaded.Conversation); token != "" {
 			engineOutput = unscopedPlanApprovalOutput(nextAction, token)
 		}
@@ -1101,9 +1374,46 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 	}
 }
 
-func explicitPlanApprovalWaitingOutput(nextAction agent.NextAction, token string) agent.NextActionOutput {
+func latestConversationContextEvent(base domain.Event, additional []domain.Event) domain.Event {
+	target := base
+	for _, event := range additional {
+		if strings.TrimSpace(event.ChannelID) == "" && strings.TrimSpace(event.ThreadID) == "" {
+			continue
+		}
+		target = event
+		if strings.TrimSpace(target.ProjectID) == "" {
+			target.ProjectID = strings.TrimSpace(base.ProjectID)
+		}
+		if strings.TrimSpace(string(target.ChannelType)) == "" {
+			target.ChannelType = base.ChannelType
+		}
+		target = inferDiscordThreadContext(target)
+	}
+	return target
+}
+
+func inferDiscordThreadContext(event domain.Event) domain.Event {
+	if event.ChannelType != domain.ChannelTypeDiscord {
+		return event
+	}
+	if strings.TrimSpace(event.ThreadID) != "" || strings.TrimSpace(event.ChannelID) == "" {
+		return event
+	}
+	if strings.TrimSpace(event.Metadata[domain.MetadataKeyReplyToMessageID]) != "" {
+		return event
+	}
+	switch strings.TrimSpace(event.Metadata[domain.MetadataKeyControl]) {
+	case domain.MetadataControlPlanningAnswer, domain.MetadataControlTaskReply:
+		event.ThreadID = strings.TrimSpace(event.ChannelID)
+	}
+	return event
+}
+
+func explicitPlanApprovalWaitingOutput(channelType domain.ChannelType, nextAction agent.NextAction, token string) agent.NextActionOutput {
 	message := "I need explicit approval before mutating files or systems for this plan."
-	if strings.TrimSpace(token) != "" {
+	if channelType == domain.ChannelTypeDiscord {
+		message += " Reply to this message, or write in its thread, to approve or revise."
+	} else if strings.TrimSpace(token) != "" {
 		message += " Reply with `approve " + strings.TrimSpace(token) + "` to proceed, or `" + strings.TrimSpace(token) + ": <changes>` to revise it."
 	}
 	nextAction.ResponseMessage = message
@@ -1119,7 +1429,7 @@ func explicitPlanApprovalWaitingOutput(nextAction agent.NextAction, token string
 
 func planApprovalRequired(nextAction agent.NextAction, additionalEvents []domain.Event) bool {
 	token := strings.TrimSpace(nextAction.WaitingToken)
-	if strings.TrimSpace(nextAction.WaitingKind) != "plan" || token == "" {
+	if strings.TrimSpace(nextAction.WaitingKind) != "plan" {
 		return false
 	}
 	return !hasPlanApproval(additionalEvents, token)
@@ -1127,10 +1437,17 @@ func planApprovalRequired(nextAction agent.NextAction, additionalEvents []domain
 
 func hasPlanApproval(events []domain.Event, token string) bool {
 	token = normalizePlanningToken(token)
-	if token == "" {
-		return false
-	}
 	for _, event := range events {
+		if event.Metadata[domain.MetadataKeyApprovalDecision] == domain.MetadataApprovalApproved &&
+			event.Metadata[domain.MetadataKeyWaitingKind] == "plan" {
+			return true
+		}
+		if event.ChannelType == domain.ChannelTypeDiscord {
+			continue
+		}
+		if token == "" {
+			continue
+		}
 		if explicitPlanApprovalBody(event.Body, token) {
 			return true
 		}
@@ -1147,14 +1464,7 @@ func explicitPlanApprovalBody(body string, token string) bool {
 }
 
 func planApprovalPhrase(body string) bool {
-	normalized := strings.ToLower(strings.Trim(strings.TrimSpace(body), "`.,!?:; "))
-	normalized = strings.Join(strings.Fields(normalized), " ")
-	switch normalized {
-	case "approve", "approved", "yes", "y", "ok", "okay", "do it", "do it now", "do it please", "please do it", "please do it now", "go ahead", "proceed", "run it", "run it now", "ship it", "looks good", "lgtm", "yes please", "please proceed", "please do":
-		return true
-	default:
-		return false
-	}
+	return approval.IsApprovalPhrase(body)
 }
 
 func unscopedPlanApprovalToken(event domain.Event, conversation []domain.ConversationMessage) string {
@@ -1332,9 +1642,6 @@ func (a *Activities) prepareWaitingNextAction(nextAction agent.NextAction, obser
 	if message == "" {
 		return NextActionResult{}, fmt.Errorf("%w: waiting next action is missing response message", agent.ErrInvalidNextAction)
 	}
-	if token == "" {
-		return NextActionResult{}, fmt.Errorf("%w: waiting next action is missing reply token", agent.ErrInvalidNextAction)
-	}
 	if kind == "" {
 		kind = "question"
 	}
@@ -1354,7 +1661,9 @@ func (a *Activities) prepareWaitingNextAction(nextAction agent.NextAction, obser
 		if nextAction.WorkItems[index].Metadata == nil {
 			nextAction.WorkItems[index].Metadata = map[string]string{}
 		}
-		nextAction.WorkItems[index].Metadata["waiting_token"] = token
+		if token != "" {
+			nextAction.WorkItems[index].Metadata["waiting_token"] = token
+		}
 		nextAction.WorkItems[index].Metadata["waiting_kind"] = kind
 	}
 
@@ -1458,7 +1767,7 @@ func (a *Activities) completeTask(ctx context.Context, projectID string, event d
 			slog.String("event_id", event.ID),
 			slog.String("status", status),
 		)
-		if err := a.Reporter.Report(ctx, event, reportMessage); err != nil {
+		if _, err := a.Reporter.Report(ctx, event, reportMessage); err != nil {
 			a.logActivityStep("NextAction", "complete_task_report_error",
 				slog.String("project_id", event.ProjectID),
 				slog.String("event_id", event.ID),
@@ -2381,20 +2690,22 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 			err := fmt.Errorf("memory content is required")
 			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
 		}
+		sourceEvent := inferDiscordThreadContext(execution.SourceEvent)
 		memory := domain.Memory{
 			ID:         stableActivityID("memory", execution.ProjectID, execution.ToolCallID, strings.TrimSpace(req.Content)),
 			ProjectID:  execution.ProjectID,
-			UserID:     eventUserID(execution.SourceEvent),
-			Scope:      memoryScope(req.Scope),
+			UserID:     eventUserID(sourceEvent),
+			ThreadID:   strings.TrimSpace(sourceEvent.ThreadID),
+			Scope:      memoryScopeForEvent(req.Scope, sourceEvent),
 			Kind:       firstNonEmpty(req.Kind, "fact"),
 			Content:    strings.TrimSpace(req.Content),
 			Tags:       req.Tags,
 			Source:     "tool",
 			SourceID:   execution.ToolCallID,
-			Actor:      strings.TrimSpace(execution.SourceEvent.ActorName),
+			Actor:      strings.TrimSpace(sourceEvent.ActorName),
 			Confidence: req.Confidence,
 			Pinned:     req.Pinned,
-			Metadata:   memoryMetadata(execution.SourceEvent, req.Reason),
+			Metadata:   memoryMetadata(sourceEvent, req.Reason),
 		}
 		if memory.Scope == domain.MemoryScopeGlobal || memory.Scope == domain.MemoryScopeUser {
 			memory.ProjectID = execution.ProjectID
@@ -2421,12 +2732,14 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 		if err := decodeChoiceInput(choice, &req); err != nil {
 			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
 		}
+		sourceEvent := inferDiscordThreadContext(execution.SourceEvent)
 		tags := cleanMemoryTags(req.Tags)
 		memories, err := a.searchMemories(ctx, domain.MemorySearchRequest{
 			ProjectID: execution.ProjectID,
-			UserID:    eventUserID(execution.SourceEvent),
+			UserID:    eventUserID(sourceEvent),
+			ThreadID:  strings.TrimSpace(sourceEvent.ThreadID),
 			Query:     strings.TrimSpace(req.Query),
-			Scopes:    memorySearchScopes(req.Scope),
+			Scopes:    memorySearchScopesForEvent(req.Scope, sourceEvent),
 			Tags:      tags,
 			Limit:     req.Limit,
 		})
@@ -2447,11 +2760,13 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 		if err := decodeChoiceInput(choice, &req); err != nil {
 			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
 		}
+		sourceEvent := inferDiscordThreadContext(execution.SourceEvent)
 		tags := cleanMemoryTags(req.Tags)
-		scopes := memorySearchScopes(req.Scope)
+		scopes := memorySearchScopesForEvent(req.Scope, sourceEvent)
 		memories, err := a.Store.ListMemories(ctx, domain.MemoryListRequest{
 			ProjectID: execution.ProjectID,
-			UserID:    eventUserID(execution.SourceEvent),
+			UserID:    eventUserID(sourceEvent),
+			ThreadID:  strings.TrimSpace(sourceEvent.ThreadID),
 			Scopes:    scopes,
 			Kind:      strings.TrimSpace(req.Kind),
 			Tags:      tags,
@@ -2485,9 +2800,11 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 			err := fmt.Errorf("memory_id is required")
 			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
 		}
+		sourceEvent := inferDiscordThreadContext(execution.SourceEvent)
 		update := domain.MemoryUpdateRequest{
 			ProjectID: execution.ProjectID,
-			UserID:    eventUserID(execution.SourceEvent),
+			UserID:    eventUserID(sourceEvent),
+			ThreadID:  strings.TrimSpace(sourceEvent.ThreadID),
 			MemoryID:  memoryID,
 		}
 		hasUpdate := false
@@ -2575,13 +2892,15 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 			err := fmt.Errorf("memory_ids, tags, or scope is required")
 			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
 		}
-		scopes, scope, err := memoryForgetScopes(req.Scope)
+		sourceEvent := inferDiscordThreadContext(execution.SourceEvent)
+		scopes, scope, err := memoryForgetScopesForEvent(req.Scope, sourceEvent)
 		if err != nil {
 			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
 		}
 		result, err := a.Store.ForgetMemories(ctx, domain.MemoryForgetRequest{
 			ProjectID: execution.ProjectID,
-			UserID:    eventUserID(execution.SourceEvent),
+			UserID:    eventUserID(sourceEvent),
+			ThreadID:  strings.TrimSpace(sourceEvent.ThreadID),
 			MemoryIDs: memoryIDs,
 			Scopes:    scopes,
 			Tags:      tags,
@@ -3117,8 +3436,8 @@ func executionCycle(metadata map[string]string) int {
 }
 
 func fullObservation(stdout, stderr string, err error) string {
-	stdout = strings.TrimSpace(stdout)
-	stderr = strings.TrimSpace(stderr)
+	stdout = strings.TrimSpace(textclean.TerminalOutput(stdout))
+	stderr = strings.TrimSpace(textclean.TerminalOutput(stderr))
 	var parts []string
 	if stdout != "" {
 		parts = append(parts, "stdout:\n"+stdout)
@@ -3127,7 +3446,7 @@ func fullObservation(stdout, stderr string, err error) string {
 		parts = append(parts, "stderr:\n"+stderr)
 	}
 	if err != nil {
-		parts = append(parts, "error:\n"+err.Error())
+		parts = append(parts, "error:\n"+strings.TrimSpace(textclean.TerminalOutput(err.Error())))
 	}
 	if len(parts) > 0 {
 		return strings.Join(parts, "\n\n")
@@ -3403,6 +3722,8 @@ func executeToolResultPayload(result ExecuteToolResult) json.RawMessage {
 
 func memoryScope(value string) domain.MemoryScope {
 	switch domain.MemoryScope(strings.ToLower(strings.TrimSpace(value))) {
+	case domain.MemoryScopeThread:
+		return domain.MemoryScopeThread
 	case domain.MemoryScopeGlobal:
 		return domain.MemoryScopeGlobal
 	case domain.MemoryScopeUser:
@@ -3412,8 +3733,17 @@ func memoryScope(value string) domain.MemoryScope {
 	}
 }
 
+func memoryScopeForEvent(value string, event domain.Event) domain.MemoryScope {
+	if strings.TrimSpace(value) == "" && strings.TrimSpace(inferDiscordThreadContext(event).ThreadID) != "" {
+		return domain.MemoryScopeThread
+	}
+	return memoryScope(value)
+}
+
 func memorySearchScopes(value string) []domain.MemoryScope {
 	switch strings.ToLower(strings.TrimSpace(value)) {
+	case memorytool.ScopeThread:
+		return []domain.MemoryScope{domain.MemoryScopeThread}
 	case memorytool.ScopeProject:
 		return []domain.MemoryScope{domain.MemoryScopeProject}
 	case memorytool.ScopeUser:
@@ -3425,10 +3755,22 @@ func memorySearchScopes(value string) []domain.MemoryScope {
 	}
 }
 
+func memorySearchScopesForEvent(value string, event domain.Event) []domain.MemoryScope {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", memorytool.ScopeAll:
+		if strings.TrimSpace(inferDiscordThreadContext(event).ThreadID) != "" {
+			return []domain.MemoryScope{domain.MemoryScopeThread}
+		}
+	}
+	return memorySearchScopes(value)
+}
+
 func memoryForgetScopes(value string) ([]domain.MemoryScope, string, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", memorytool.ScopeAll:
 		return []domain.MemoryScope{domain.MemoryScopeProject, domain.MemoryScopeUser, domain.MemoryScopeGlobal}, memorytool.ScopeAll, nil
+	case memorytool.ScopeThread:
+		return []domain.MemoryScope{domain.MemoryScopeThread}, memorytool.ScopeThread, nil
 	case memorytool.ScopeProject:
 		return []domain.MemoryScope{domain.MemoryScopeProject}, memorytool.ScopeProject, nil
 	case memorytool.ScopeUser:
@@ -3438,6 +3780,16 @@ func memoryForgetScopes(value string) ([]domain.MemoryScope, string, error) {
 	default:
 		return nil, "", fmt.Errorf("unsupported memory scope %q", value)
 	}
+}
+
+func memoryForgetScopesForEvent(value string, event domain.Event) ([]domain.MemoryScope, string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", memorytool.ScopeAll:
+		if strings.TrimSpace(inferDiscordThreadContext(event).ThreadID) != "" {
+			return []domain.MemoryScope{domain.MemoryScopeThread}, memorytool.ScopeThread, nil
+		}
+	}
+	return memoryForgetScopes(value)
 }
 
 func (a *Activities) searchMemories(ctx context.Context, request domain.MemorySearchRequest) ([]domain.Memory, error) {
@@ -3599,6 +3951,10 @@ func writeMemoryObservationFields(builder *strings.Builder, memory domain.Memory
 	if strings.TrimSpace(memory.UserID) != "" {
 		builder.WriteString("\nuser_id: ")
 		builder.WriteString(strings.TrimSpace(memory.UserID))
+	}
+	if strings.TrimSpace(memory.ThreadID) != "" {
+		builder.WriteString("\nthread_id: ")
+		builder.WriteString(strings.TrimSpace(memory.ThreadID))
 	}
 	if strings.TrimSpace(memory.Actor) != "" {
 		builder.WriteString("\nactor: ")

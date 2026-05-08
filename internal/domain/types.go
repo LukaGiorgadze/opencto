@@ -10,16 +10,24 @@ type Metadata map[string]string
 
 const (
 	MetadataKeyControl             = "control"
+	MetadataKeyApprovalDecision    = "approval_decision"
 	MetadataKeyPlanningToken       = "planning_token"
 	MetadataKeyPlanningTokenSource = "planning_token_source"
 	MetadataKeyReplyToMessageID    = "reply_to_message_id"
 	MetadataKeyReplyToChannelID    = "reply_to_channel_id"
 	MetadataKeyReplyToContextID    = "reply_to_context_id"
 	MetadataKeyReplyToActorID      = "reply_to_actor_id"
+	MetadataKeyWaitingKind         = "waiting_kind"
 )
 
 const (
 	MetadataControlPlanningAnswer = "planning_answer"
+	MetadataControlTaskReply      = "task_reply"
+)
+
+const (
+	MetadataApprovalApproved = "approved"
+	MetadataApprovalRevision = "revision"
 )
 
 type Provenance struct {
@@ -162,6 +170,7 @@ type EventAttachment struct {
 type ReportMessage struct {
 	Text        string             `json:"text,omitempty"`
 	Attachments []ReportAttachment `json:"attachments,omitempty"`
+	ReplyTo     *ReportReply       `json:"reply_to,omitempty"`
 }
 
 func (m ReportMessage) Empty() bool {
@@ -175,6 +184,23 @@ type ReportAttachment struct {
 	Description string   `json:"description,omitempty"`
 	SizeBytes   int64    `json:"size_bytes,omitempty"`
 	Metadata    Metadata `json:"metadata,omitempty"`
+}
+
+type ReportReply struct {
+	MessageID string `json:"message_id,omitempty"`
+	ChannelID string `json:"channel_id,omitempty"`
+	ContextID string `json:"context_id,omitempty"`
+}
+
+func (r ReportReply) Empty() bool {
+	return strings.TrimSpace(r.MessageID) == "" && strings.TrimSpace(r.ChannelID) == "" && strings.TrimSpace(r.ContextID) == ""
+}
+
+type ReportReceipt struct {
+	MessageID string `json:"message_id,omitempty"`
+	ChannelID string `json:"channel_id,omitempty"`
+	ContextID string `json:"context_id,omitempty"`
+	ThreadID  string `json:"thread_id,omitempty"`
 }
 
 type WorkItem struct {
@@ -245,9 +271,27 @@ type ConversationMessage struct {
 	CreatedAt   time.Time        `json:"created_at"`
 }
 
+type ConversationThread struct {
+	ID            string      `json:"id"`
+	ProjectID     string      `json:"project_id"`
+	ChannelType   ChannelType `json:"channel_type"`
+	ChannelID     string      `json:"channel_id"`
+	ThreadID      string      `json:"thread_id"`
+	RootMessageID string      `json:"root_message_id,omitempty"`
+	WorkflowID    string      `json:"workflow_id,omitempty"`
+	EventID       string      `json:"event_id,omitempty"`
+	Title         string      `json:"title,omitempty"`
+	Status        string      `json:"status,omitempty"`
+	Metadata      Metadata    `json:"metadata,omitempty"`
+	CreatedAt     time.Time   `json:"created_at"`
+	UpdatedAt     time.Time   `json:"updated_at"`
+	LastMessageAt time.Time   `json:"last_message_at"`
+}
+
 type MemoryScope string
 
 const (
+	MemoryScopeThread  MemoryScope = "thread"
 	MemoryScopeProject MemoryScope = "project"
 	MemoryScopeUser    MemoryScope = "user"
 	MemoryScopeGlobal  MemoryScope = "global"
@@ -257,6 +301,7 @@ type Memory struct {
 	ID         string      `json:"id"`
 	ProjectID  string      `json:"project_id,omitempty"`
 	UserID     string      `json:"user_id,omitempty"`
+	ThreadID   string      `json:"thread_id,omitempty"`
 	Scope      MemoryScope `json:"scope"`
 	Kind       string      `json:"kind,omitempty"`
 	Content    string      `json:"content"`
@@ -274,6 +319,7 @@ type Memory struct {
 type MemorySearchRequest struct {
 	ProjectID           string        `json:"project_id,omitempty"`
 	UserID              string        `json:"user_id,omitempty"`
+	ThreadID            string        `json:"thread_id,omitempty"`
 	Query               string        `json:"query,omitempty"`
 	Scopes              []MemoryScope `json:"scopes,omitempty"`
 	Tags                []string      `json:"tags,omitempty"`
@@ -288,6 +334,7 @@ type MemorySearchRequest struct {
 type MemoryListRequest struct {
 	ProjectID string        `json:"project_id,omitempty"`
 	UserID    string        `json:"user_id,omitempty"`
+	ThreadID  string        `json:"thread_id,omitempty"`
 	Scopes    []MemoryScope `json:"scopes,omitempty"`
 	Kind      string        `json:"kind,omitempty"`
 	Tags      []string      `json:"tags,omitempty"`
@@ -297,6 +344,7 @@ type MemoryListRequest struct {
 type MemoryUpdateRequest struct {
 	ProjectID   string   `json:"project_id,omitempty"`
 	UserID      string   `json:"user_id,omitempty"`
+	ThreadID    string   `json:"thread_id,omitempty"`
 	MemoryID    string   `json:"memory_id"`
 	Content     string   `json:"content,omitempty"`
 	Kind        string   `json:"kind,omitempty"`
@@ -314,6 +362,7 @@ type MemoryUpdateResult struct {
 type MemoryForgetRequest struct {
 	ProjectID string        `json:"project_id,omitempty"`
 	UserID    string        `json:"user_id,omitempty"`
+	ThreadID  string        `json:"thread_id,omitempty"`
 	MemoryIDs []string      `json:"memory_ids,omitempty"`
 	Scopes    []MemoryScope `json:"scopes,omitempty"`
 	Tags      []string      `json:"tags,omitempty"`

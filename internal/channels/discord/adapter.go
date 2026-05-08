@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -28,8 +28,6 @@ const discordDefaultOutboundMaxTotalBytes int64 = 25 << 20
 const discordAttachmentPayloadKey = "attachments"
 const discordTypingTimeout = 3 * time.Second
 const discordReferencedContentMaxChars = 2000
-
-var discordPlanningTokenPattern = regexp.MustCompile(`(?i)\b[QP]-[0-9a-f]{8}\b`)
 
 type AttachmentLimits = channels.AttachmentLimits
 type MessageLimits = channels.MessageLimits
@@ -50,6 +48,8 @@ type Adapter struct {
 	workspaceRoot    string
 	messageLimits    MessageLimits
 	attachmentLimits AttachmentLimits
+	channelMu        sync.Mutex
+	threadChannels   map[string]string
 }
 
 func New(projectID, token, _ string, dispatcher *runtime.Dispatcher, logger *slog.Logger, opts ...Options) (*Adapter, error) {
@@ -86,6 +86,7 @@ func New(projectID, token, _ string, dispatcher *runtime.Dispatcher, logger *slo
 		workspaceRoot:    options.WorkspaceRoot,
 		messageLimits:    options.MessageLimits,
 		attachmentLimits: options.AttachmentLimits,
+		threadChannels:   map[string]string{},
 	}, nil
 }
 
@@ -132,6 +133,15 @@ func (a *Adapter) Start(ctx context.Context) error {
 			a.logger.Error("normalize discord message", slog.String("error", err.Error()))
 			return
 		}
+		if discordEventEmptyUserMessage(event) {
+			a.logger.Warn("ignore empty discord message",
+				slog.String("event_id", event.ID),
+				slog.String("source_message_id", event.Provenance.SourceID),
+				slog.String("channel_id", event.ChannelID),
+				slog.String("thread_id", event.ThreadID),
+			)
+			return
+		}
 		if err := a.NotifyTyping(ctx, event); err != nil {
 			a.logger.Warn("notify discord typing", slog.String("error", err.Error()), slog.String("event_id", event.ID))
 		}
@@ -156,7 +166,9 @@ func (a *Adapter) NormalizeMessage(ctx context.Context, message *discordgo.Messa
 	}
 
 	now := time.Now().UTC()
+	a.hydrateEmptyDiscordMessage(ctx, message)
 	body := normalizeDiscordBody(message.Content)
+	threadID := a.discordThreadID(message)
 	attachments, err := a.normalizeAttachments(ctx, id, message.Attachments, now)
 	if err != nil {
 		return domain.Event{}, err
@@ -177,6 +189,7 @@ func (a *Adapter) NormalizeMessage(ctx context.Context, message *discordgo.Messa
 		Kind:        domain.EventKindMessage,
 		ChannelID:   message.ChannelID,
 		ChannelType: domain.ChannelTypeDiscord,
+		ThreadID:    threadID,
 		ActorID:     message.Author.ID,
 		ActorName:   message.Author.Username,
 		Body:        body,
@@ -193,7 +206,76 @@ func (a *Adapter) NormalizeMessage(ctx context.Context, message *discordgo.Messa
 		event.Metadata = metadata
 		event.Provenance.Metadata = copyDiscordMetadata(metadata)
 	}
+	a.log().Info("discord message normalized",
+		slog.String("event_id", event.ID),
+		slog.String("source_message_id", message.ID),
+		slog.String("channel_id", message.ChannelID),
+		slog.String("guild_id", message.GuildID),
+		slog.String("thread_id", threadID),
+		slog.String("reply_to_message_id", metadata[domain.MetadataKeyReplyToMessageID]),
+		slog.String("body", truncateDiscordLogText(body, 180)),
+	)
 	return event, nil
+}
+
+func discordEventEmptyUserMessage(event domain.Event) bool {
+	if strings.TrimSpace(event.Body) != "" {
+		return false
+	}
+	attachments, ok := event.Payload[discordAttachmentPayloadKey]
+	if !ok || attachments == nil {
+		return true
+	}
+	switch value := attachments.(type) {
+	case []domain.EventAttachment:
+		return len(value) == 0
+	default:
+		return false
+	}
+}
+
+func (a *Adapter) hydrateEmptyDiscordMessage(ctx context.Context, message *discordgo.MessageCreate) {
+	if a == nil || a.session == nil || message == nil || message.Message == nil {
+		return
+	}
+	if strings.TrimSpace(message.Content) != "" || len(message.Attachments) > 0 {
+		return
+	}
+	channelID := strings.TrimSpace(message.ChannelID)
+	messageID := strings.TrimSpace(message.ID)
+	if channelID == "" || messageID == "" {
+		return
+	}
+	fetched, err := a.session.ChannelMessage(channelID, messageID, discordgo.WithContext(ctx))
+	if err != nil {
+		a.log().Warn("hydrate empty discord message failed",
+			slog.String("channel_id", channelID),
+			slog.String("message_id", messageID),
+			slog.String("error", err.Error()),
+		)
+		return
+	}
+	if fetched == nil {
+		return
+	}
+	if strings.TrimSpace(message.Content) == "" && strings.TrimSpace(fetched.Content) != "" {
+		message.Content = fetched.Content
+	}
+	if len(message.Attachments) == 0 && len(fetched.Attachments) > 0 {
+		message.Attachments = fetched.Attachments
+	}
+	if message.MessageReference == nil && fetched.MessageReference != nil {
+		message.MessageReference = fetched.MessageReference
+	}
+	if message.ReferencedMessage == nil && fetched.ReferencedMessage != nil {
+		message.ReferencedMessage = fetched.ReferencedMessage
+	}
+	if message.GuildID == "" && fetched.GuildID != "" {
+		message.GuildID = fetched.GuildID
+	}
+	if message.Author == nil && fetched.Author != nil {
+		message.Author = fetched.Author
+	}
 }
 
 func addDiscordReplyMetadata(message *discordgo.MessageCreate, payload map[string]any, metadata domain.Metadata) {
@@ -226,11 +308,99 @@ func addDiscordReplyMetadata(message *discordgo.MessageCreate, payload map[strin
 	if content := truncateDiscordMetadataText(normalizeDiscordBody(referenced.Content), discordReferencedContentMaxChars); content != "" {
 		payload["reply_to_content"] = content
 	}
-	if token := discordPlanningTokenFromText(referenced.Content); token != "" {
-		payload[domain.MetadataKeyPlanningToken] = token
-		metadata[domain.MetadataKeyPlanningToken] = token
-		metadata[domain.MetadataKeyPlanningTokenSource] = "reply"
+}
+
+func (a *Adapter) discordThreadID(message *discordgo.MessageCreate) string {
+	if message == nil || message.Message == nil {
+		return ""
 	}
+	if message.Thread != nil && message.Thread.IsThread() {
+		a.log().Info("discord thread detected from message thread",
+			slog.String("channel_id", message.ChannelID),
+			slog.String("thread_id", strings.TrimSpace(message.Thread.ID)),
+		)
+		return strings.TrimSpace(message.Thread.ID)
+	}
+	channelID := strings.TrimSpace(message.ChannelID)
+	if channelID == "" || a == nil || a.session == nil {
+		return ""
+	}
+	a.channelMu.Lock()
+	if a.threadChannels != nil {
+		if threadID, ok := a.threadChannels[channelID]; ok {
+			a.channelMu.Unlock()
+			a.log().Info("discord thread cache hit",
+				slog.String("channel_id", channelID),
+				slog.String("thread_id", threadID),
+			)
+			return threadID
+		}
+	}
+	a.channelMu.Unlock()
+
+	if a.session.State != nil {
+		if channel, err := a.session.State.Channel(channelID); err == nil && channel != nil {
+			threadID := ""
+			if channel.IsThread() {
+				threadID = strings.TrimSpace(channel.ID)
+			}
+			a.channelMu.Lock()
+			if a.threadChannels == nil {
+				a.threadChannels = map[string]string{}
+			}
+			a.threadChannels[channelID] = threadID
+			a.channelMu.Unlock()
+			a.log().Info("discord thread detected from state",
+				slog.String("channel_id", channelID),
+				slog.String("thread_id", threadID),
+			)
+			return threadID
+		}
+	}
+
+	channel, err := a.session.Channel(channelID)
+	threadID := ""
+	if err == nil && channel != nil && channel.IsThread() {
+		threadID = strings.TrimSpace(channel.ID)
+	}
+	if err != nil {
+		a.log().Warn("discord thread lookup failed",
+			slog.String("channel_id", channelID),
+			slog.String("error", err.Error()),
+		)
+		return ""
+	}
+
+	a.channelMu.Lock()
+	if a.threadChannels == nil {
+		a.threadChannels = map[string]string{}
+	}
+	a.threadChannels[channelID] = threadID
+	a.channelMu.Unlock()
+	a.log().Info("discord thread detected from rest",
+		slog.String("channel_id", channelID),
+		slog.String("thread_id", threadID),
+	)
+	return threadID
+}
+
+func (a *Adapter) log() *slog.Logger {
+	if a != nil && a.logger != nil {
+		return a.logger
+	}
+	return slog.Default()
+}
+
+func truncateDiscordLogText(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	return strings.TrimSpace(string(runes[:limit])) + "..."
 }
 
 func setDiscordPayloadString(payload map[string]any, key, value string) {
@@ -247,15 +417,6 @@ func setDiscordMetadataString(metadata domain.Metadata, key, value string) {
 		return
 	}
 	metadata[key] = value
-}
-
-func discordPlanningTokenFromText(text string) string {
-	return normalizeDiscordPlanningToken(discordPlanningTokenPattern.FindString(text))
-}
-
-func normalizeDiscordPlanningToken(token string) string {
-	token = strings.Trim(strings.TrimSpace(token), "`.,:;()[]{}")
-	return strings.ToUpper(token)
 }
 
 func truncateDiscordMetadataText(text string, limit int) string {
@@ -462,39 +623,88 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func (a *Adapter) Report(ctx context.Context, event domain.Event, report domain.ReportMessage) error {
-	if a.session == nil || event.ChannelID == "" {
-		return nil
+func (a *Adapter) Report(ctx context.Context, event domain.Event, report domain.ReportMessage) ([]domain.ReportReceipt, error) {
+	targetChannelID := discordReportChannelID(event)
+	if a.session == nil || targetChannelID == "" {
+		return nil, nil
 	}
 	report, err := channels.ResolveReport(report, channels.ResolveOptions{
 		WorkspaceRoot: a.workspaceRoot,
 		Limits:        a.attachmentLimits,
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if report.Empty() {
-		return nil
+		return nil, nil
 	}
 
 	attachments := report.Attachments
 	chunks := channels.SplitText(report.Text, a.messageLimits.MaxChars)
+	reference := discordReportReference(event, report)
+	receipts := make([]domain.ReportReceipt, 0, len(chunks))
 	for i, chunk := range chunks {
 		var files []*discordgo.File
 		var closers []io.Closer
 		if i == 0 && len(attachments) > 0 {
 			files, closers, err = discordFiles(attachments)
 			if err != nil {
-				return err
+				return nil, err
 			}
 		}
-		if err := sendDiscordMessage(ctx, a.session, event.ChannelID, chunk, files); err != nil {
+		sent, err := sendDiscordMessage(ctx, a.session, targetChannelID, chunk, files, reference)
+		if err != nil {
 			closeDiscordFiles(closers)
-			return err
+			return nil, err
+		}
+		if receipt := discordReportReceipt(event, sent); receipt.MessageID != "" || receipt.ThreadID != "" {
+			receipts = append(receipts, receipt)
 		}
 		closeDiscordFiles(closers)
 	}
-	return nil
+	return receipts, nil
+}
+
+func discordReportChannelID(event domain.Event) string {
+	if threadID := strings.TrimSpace(event.ThreadID); threadID != "" {
+		return threadID
+	}
+	return strings.TrimSpace(event.ChannelID)
+}
+
+func discordReportReceipt(event domain.Event, sent *discordgo.Message) domain.ReportReceipt {
+	receipt := domain.ReportReceipt{
+		ChannelID: strings.TrimSpace(event.ChannelID),
+		ContextID: strings.TrimSpace(event.Metadata[domain.MetadataKeyReplyToContextID]),
+		ThreadID:  strings.TrimSpace(event.ThreadID),
+	}
+	if sent != nil {
+		receipt.MessageID = strings.TrimSpace(sent.ID)
+		if strings.TrimSpace(sent.ChannelID) != "" {
+			receipt.ChannelID = strings.TrimSpace(sent.ChannelID)
+		}
+		if strings.TrimSpace(sent.GuildID) != "" {
+			receipt.ContextID = strings.TrimSpace(sent.GuildID)
+		}
+	}
+	return receipt
+}
+
+func discordReportReference(event domain.Event, report domain.ReportMessage) *discordgo.MessageReference {
+	if report.ReplyTo == nil || report.ReplyTo.Empty() {
+		return nil
+	}
+	messageID := strings.TrimSpace(report.ReplyTo.MessageID)
+	if messageID == "" {
+		return nil
+	}
+	failIfNotExists := false
+	return &discordgo.MessageReference{
+		MessageID:       messageID,
+		ChannelID:       firstNonEmpty(report.ReplyTo.ChannelID, event.ChannelID),
+		GuildID:         firstNonEmpty(report.ReplyTo.ContextID, event.Metadata[domain.MetadataKeyReplyToContextID]),
+		FailIfNotExists: &failIfNotExists,
+	}
 }
 
 func discordFiles(attachments []domain.ReportAttachment) ([]*discordgo.File, []io.Closer, error) {
@@ -519,21 +729,22 @@ func discordFiles(attachments []domain.ReportAttachment) ([]*discordgo.File, []i
 	return files, closers, nil
 }
 
-func sendDiscordMessage(ctx context.Context, session *discordgo.Session, channelID, content string, files []*discordgo.File) error {
+func sendDiscordMessage(ctx context.Context, session *discordgo.Session, channelID, content string, files []*discordgo.File, reference *discordgo.MessageReference) (*discordgo.Message, error) {
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return nil, ctx.Err()
 	default:
 	}
 	if strings.TrimSpace(content) == "" && len(files) == 0 {
-		return nil
+		return nil, nil
 	}
-	_, err := session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+	message, err := session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
 		Content:         content,
 		Files:           files,
+		Reference:       reference,
 		AllowedMentions: &discordgo.MessageAllowedMentions{},
 	})
-	return err
+	return message, err
 }
 
 func closeDiscordFiles(closers []io.Closer) {

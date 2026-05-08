@@ -27,7 +27,7 @@ func TestReportSplitsMessagesByConfiguredLimit(t *testing.T) {
 		if r.Method != http.MethodPost {
 			t.Errorf("unexpected method: %s", r.Method)
 		}
-		if r.URL.Path != "/channels/channel-1/messages" {
+		if r.URL.Path != "/channels/thread-1/messages" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 
@@ -46,7 +46,7 @@ func TestReportSplitsMessagesByConfiguredLimit(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"id":         strconv.Itoa(id),
-			"channel_id": "channel-1",
+			"channel_id": "thread-1",
 			"content":    payload.Content,
 		})
 	}))
@@ -68,7 +68,11 @@ func TestReportSplitsMessagesByConfiguredLimit(t *testing.T) {
 		session:       session,
 		messageLimits: MessageLimits{MaxChars: 10},
 	}
-	err = adapter.Report(context.Background(), domain.Event{ChannelID: "channel-1"}, domain.ReportMessage{
+	receipts, err := adapter.Report(context.Background(), domain.Event{
+		ChannelID:   "channel-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		ThreadID:    "thread-1",
+	}, domain.ReportMessage{
 		Text: "hello world. done",
 	})
 	if err != nil {
@@ -85,6 +89,80 @@ func TestReportSplitsMessagesByConfiguredLimit(t *testing.T) {
 		if contents[i] != want[i] {
 			t.Fatalf("message %d: expected %q, got %q", i, want[i], contents[i])
 		}
+	}
+	if len(receipts) != len(want) {
+		t.Fatalf("expected %d receipts, got %#v", len(want), receipts)
+	}
+	for i, receipt := range receipts {
+		if receipt.MessageID != strconv.Itoa(i+1) || receipt.ChannelID != "thread-1" || receipt.ThreadID != "thread-1" {
+			t.Fatalf("unexpected receipt %d: %#v", i, receipt)
+		}
+	}
+}
+
+func TestReportCanReplyToDiscordMessage(t *testing.T) {
+	var payload struct {
+		Content          string `json:"content"`
+		MessageReference struct {
+			MessageID       string `json:"message_id"`
+			ChannelID       string `json:"channel_id"`
+			GuildID         string `json:"guild_id"`
+			FailIfNotExists *bool  `json:"fail_if_not_exists"`
+		} `json:"message_reference"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/channels/channel-1/messages" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"id":         "bot-message-1",
+			"channel_id": "channel-1",
+			"guild_id":   "guild-1",
+			"content":    payload.Content,
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointChannels := discordgo.EndpointChannels
+	discordgo.EndpointChannels = server.URL + "/channels/"
+	t.Cleanup(func() {
+		discordgo.EndpointChannels = oldEndpointChannels
+	})
+
+	session, err := discordgo.New("Bot test-token")
+	if err != nil {
+		t.Fatalf("new discord session: %v", err)
+	}
+	session.Client = server.Client()
+
+	adapter := &Adapter{
+		session:       session,
+		messageLimits: MessageLimits{MaxChars: 2000},
+	}
+	_, err = adapter.Report(context.Background(), domain.Event{
+		ChannelID:   "channel-1",
+		ChannelType: domain.ChannelTypeDiscord,
+	}, domain.ReportMessage{
+		Text: "approve?",
+		ReplyTo: &domain.ReportReply{
+			MessageID: "user-message-1",
+			ChannelID: "channel-1",
+			ContextID: "guild-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	if payload.MessageReference.MessageID != "user-message-1" ||
+		payload.MessageReference.ChannelID != "channel-1" ||
+		payload.MessageReference.GuildID != "guild-1" ||
+		payload.MessageReference.FailIfNotExists == nil ||
+		*payload.MessageReference.FailIfNotExists {
+		t.Fatalf("unexpected message reference: %#v", payload.MessageReference)
 	}
 }
 
@@ -138,6 +216,145 @@ func TestNotifyTypingUsesContext(t *testing.T) {
 	case <-started:
 	default:
 		t.Fatalf("expected typing request to reach server")
+	}
+}
+
+func TestNormalizeMessageUsesStateThreadChannel(t *testing.T) {
+	t.Parallel()
+
+	session, err := discordgo.New("Bot test-token")
+	if err != nil {
+		t.Fatalf("new discord session: %v", err)
+	}
+	if err := session.State.GuildAdd(&discordgo.Guild{ID: "guild-1"}); err != nil {
+		t.Fatalf("add guild: %v", err)
+	}
+	if err := session.State.ChannelAdd(&discordgo.Channel{
+		ID:      "thread-1",
+		GuildID: "guild-1",
+		Type:    discordgo.ChannelTypeGuildPublicThread,
+	}); err != nil {
+		t.Fatalf("add thread channel: %v", err)
+	}
+
+	adapter := &Adapter{
+		projectID:      "project-1",
+		session:        session,
+		threadChannels: map[string]string{},
+	}
+	event, err := adapter.NormalizeMessage(context.Background(), &discordgo.MessageCreate{
+		Message: &discordgo.Message{
+			ID:        "message-1",
+			ChannelID: "thread-1",
+			GuildID:   "guild-1",
+			Content:   "in orange colors",
+			Author:    &discordgo.User{ID: "user-1", Username: "luka"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("normalize message: %v", err)
+	}
+	if event.ThreadID != "thread-1" {
+		t.Fatalf("expected thread id from state channel, got %q", event.ThreadID)
+	}
+}
+
+func TestNormalizeMessageHydratesEmptyGatewayContent(t *testing.T) {
+	var requestedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPath = r.URL.Path
+		if r.Method != http.MethodGet {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+		if r.URL.Path != "/channels/thread-1/messages/message-1" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":         "message-1",
+			"channel_id": "thread-1",
+			"guild_id":   "guild-1",
+			"content":    "1",
+			"author": map[string]any{
+				"id":       "user-1",
+				"username": "luka",
+			},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointChannels := discordgo.EndpointChannels
+	discordgo.EndpointChannels = server.URL + "/channels/"
+	t.Cleanup(func() {
+		discordgo.EndpointChannels = oldEndpointChannels
+	})
+
+	session, err := discordgo.New("Bot test-token")
+	if err != nil {
+		t.Fatalf("new discord session: %v", err)
+	}
+	session.Client = server.Client()
+	adapter := &Adapter{
+		projectID:      "project-1",
+		session:        session,
+		threadChannels: map[string]string{"thread-1": "thread-1"},
+	}
+
+	event, err := adapter.NormalizeMessage(context.Background(), &discordgo.MessageCreate{
+		Message: &discordgo.Message{
+			ID:        "message-1",
+			ChannelID: "thread-1",
+			GuildID:   "guild-1",
+			Content:   "",
+			Author: &discordgo.User{
+				ID:       "user-1",
+				Username: "luka",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("normalize message: %v", err)
+	}
+	if requestedPath == "" {
+		t.Fatalf("expected adapter to fetch the empty message")
+	}
+	if event.Body != "1" {
+		t.Fatalf("expected hydrated message body, got %q", event.Body)
+	}
+	if event.ThreadID != "thread-1" {
+		t.Fatalf("expected thread id to be preserved, got %q", event.ThreadID)
+	}
+}
+
+func TestDiscordThreadIDDoesNotCacheFailedLookup(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "missing", http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointChannels := discordgo.EndpointChannels
+	discordgo.EndpointChannels = server.URL + "/channels/"
+	t.Cleanup(func() {
+		discordgo.EndpointChannels = oldEndpointChannels
+	})
+
+	session, err := discordgo.New("Bot test-token")
+	if err != nil {
+		t.Fatalf("new discord session: %v", err)
+	}
+	session.Client = server.Client()
+	adapter := &Adapter{
+		session:        session,
+		threadChannels: map[string]string{},
+	}
+	message := &discordgo.MessageCreate{Message: &discordgo.Message{ChannelID: "thread-1"}}
+	if got := adapter.discordThreadID(message); got != "" {
+		t.Fatalf("expected no thread id while lookup fails, got %q", got)
+	}
+	if _, ok := adapter.threadChannels["thread-1"]; ok {
+		t.Fatalf("failed lookup should not cache thread miss")
 	}
 }
 
@@ -197,7 +414,7 @@ func TestNormalizeMessageDownloadsAttachments(t *testing.T) {
 	}
 }
 
-func TestNormalizeMessageCapturesReplyMetadataAndPlanningToken(t *testing.T) {
+func TestNormalizeMessageCapturesReplyMetadataWithoutPlanningToken(t *testing.T) {
 	t.Parallel()
 
 	adapter := &Adapter{
@@ -237,23 +454,21 @@ func TestNormalizeMessageCapturesReplyMetadataAndPlanningToken(t *testing.T) {
 	if event.Metadata[domain.MetadataKeyReplyToMessageID] != "bot-message-1" ||
 		event.Metadata[domain.MetadataKeyReplyToChannelID] != "channel-1" ||
 		event.Metadata[domain.MetadataKeyReplyToContextID] != "guild-1" ||
-		event.Metadata[domain.MetadataKeyPlanningToken] != "P-19EC437D" ||
-		event.Metadata[domain.MetadataKeyPlanningTokenSource] != "reply" {
+		event.Metadata[domain.MetadataKeyReplyToActorID] != "bot-1" {
 		t.Fatalf("unexpected reply metadata: %#v", event.Metadata)
 	}
 	if event.Payload[domain.MetadataKeyReplyToMessageID] != "bot-message-1" ||
 		event.Payload[domain.MetadataKeyReplyToChannelID] != "channel-1" ||
 		event.Payload[domain.MetadataKeyReplyToContextID] != "guild-1" ||
-		event.Payload[domain.MetadataKeyReplyToActorID] != "bot-1" ||
-		event.Payload[domain.MetadataKeyPlanningToken] != "P-19EC437D" {
+		event.Payload[domain.MetadataKeyReplyToActorID] != "bot-1" {
 		t.Fatalf("unexpected reply payload: %#v", event.Payload)
 	}
 	content, ok := event.Payload["reply_to_content"].(string)
 	if !ok || !strings.Contains(content, "approve P-19ec437d") {
 		t.Fatalf("expected referenced content in payload, got %#v", event.Payload["reply_to_content"])
 	}
-	if event.Provenance.Metadata[domain.MetadataKeyPlanningToken] != "P-19EC437D" {
-		t.Fatalf("expected planning token in provenance metadata: %#v", event.Provenance.Metadata)
+	if event.Metadata[domain.MetadataKeyPlanningToken] != "" || event.Provenance.Metadata[domain.MetadataKeyPlanningToken] != "" {
+		t.Fatalf("planning token should not be extracted from reply content: metadata=%#v provenance=%#v", event.Metadata, event.Provenance.Metadata)
 	}
 }
 
