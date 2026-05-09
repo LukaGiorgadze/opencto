@@ -49,7 +49,22 @@ func TestMemoryExtractionResponseFormatIsStrictJSONSchema(t *testing.T) {
 	if item.Properties["scope"].Type != "string" || len(item.Properties["scope"].Enum) != 4 {
 		t.Fatalf("expected scoped enum, got %#v", item.Properties["scope"])
 	}
+	if enumContains(item.Properties["scope"].Enum, "channel") {
+		t.Fatalf("memory extraction schema should not include unsupported channel scope")
+	}
+	if enumContains(item.Properties["kind"].Enum, "project") || enumContains(item.Properties["kind"].Enum, "user") {
+		t.Fatalf("memory kind enum should not duplicate scope values, got %#v", item.Properties["kind"].Enum)
+	}
 	if item.Properties["confidence"].Type != "number" {
 		t.Fatalf("expected numeric confidence, got %#v", item.Properties["confidence"])
 	}
+}
+
+func enumContains(values []any, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
