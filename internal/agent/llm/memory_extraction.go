@@ -129,7 +129,7 @@ func parseMemoryExtractionOutput(content string) (agent.MemoryExtractionOutput, 
 			candidate.Confidence = 1
 		}
 		switch candidate.Scope {
-		case domain.MemoryScopeThread, domain.MemoryScopeProject, domain.MemoryScopeUser, domain.MemoryScopeGlobal:
+		case domain.MemoryScopeThread, domain.MemoryScopeChannel, domain.MemoryScopeProject, domain.MemoryScopeUser, domain.MemoryScopeGlobal:
 		default:
 			continue
 		}

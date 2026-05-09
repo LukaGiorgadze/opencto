@@ -40,8 +40,25 @@ Return only JSON:
 {"candidates":[{"scope":"user|global|project|channel|thread","kind":"fact|preference|instruction|decision|constraint|identity|workflow|reference|feedback","content":"...","tags":["..."],"confidence":0.8,"pinned":false,"reason":"..."}]}
 
 Examples:
-- "Remember my name is Luka." -> user identity memory.
-- "Always ask before broad refactors." -> user preference memory.
-- "Production incidents live in Linear project INFRA." -> project reference memory.
-- "I live in Georgia." -> no memory unless it affects scheduling, operations, compliance, or technical workflow.
-- Casual comparative statements without durable intent -> no memory.
+- "Remember my name is Luka." → user identity memory.
+- "Always ask before broad refactors." → user instruction memory.
+- "Production incidents live in Linear project INFRA." → project reference memory.
+- "I live in Georgia." → no memory unless it affects scheduling, operations, compliance, or technical workflow.
+- "My GitHub handle is luka-dev." → user identity memory.
+- "Never push directly to main." → user constraint memory, pinned.
+- "We use Vercel for all deployments." → project fact memory.
+- "Our staging URL is staging.myapp.io." → project reference memory.
+- "Always run tests before committing." → user instruction memory.
+- "We use conventional commits in this repo." → project preference memory.
+- "Our Sentry project slug is myapp-prod." → project reference memory.
+- "Deploy only after 3pm on weekdays." → project constraint memory.
+- "I'm GMT+4, keep that in mind for scheduling." → user identity memory (affects scheduling).
+- "Use TypeScript for this file." → no memory, task-scoped.
+- "Skip tests just this once, I'm in a hurry." → no memory, explicit temporary exception.
+- "This migration is safe to run without a backup." → no memory, one-off risk acceptance.
+- "I think Bun is faster than Node." → no memory, casual opinion without durable intent.
+- "We might move to Kubernetes eventually." → no memory, exploratory future thought, not a decision.
+- "The build failed with exit code 1." → no memory, transient error log.
+- "Use tabs for this project, I guess." → no memory, hedged non-instruction.
+- "I usually just do a quick pnpm install and see what breaks." → inferred user preference for pnpm, confidence 0.7.
+- Casual comparative statements without durable intent → no memory.

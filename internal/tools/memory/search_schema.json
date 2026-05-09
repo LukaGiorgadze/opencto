@@ -5,12 +5,12 @@
     "properties": {
         "query": {
             "type": "string",
-            "description": "Search query for remembered thread, project, user, or global context. Search before proposing memory changes when a related memory may already exist."
+            "description": "Search query for remembered thread, channel, project, user, or global context. Search before proposing memory changes when a related memory may already exist."
         },
         "scope": {
             "type": "string",
-            "enum": ["thread", "project", "user", "global", "all"],
-            "description": "Memory scope to search. In a Discord thread, all defaults to thread-only memory."
+            "enum": ["thread", "channel", "project", "user", "global", "all"],
+            "description": "Memory scope to search. All searches visible memory in the current thread/channel/project/user/global context."
         },
         "limit": {
             "type": "integer",

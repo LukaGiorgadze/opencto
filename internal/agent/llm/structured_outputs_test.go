@@ -46,11 +46,11 @@ func TestMemoryExtractionResponseFormatIsStrictJSONSchema(t *testing.T) {
 	if len(item.Required) != 7 {
 		t.Fatalf("expected all candidate properties to be required, got %#v", item.Required)
 	}
-	if item.Properties["scope"].Type != "string" || len(item.Properties["scope"].Enum) != 4 {
+	if item.Properties["scope"].Type != "string" || len(item.Properties["scope"].Enum) != 5 {
 		t.Fatalf("expected scoped enum, got %#v", item.Properties["scope"])
 	}
-	if enumContains(item.Properties["scope"].Enum, "channel") {
-		t.Fatalf("memory extraction schema should not include unsupported channel scope")
+	if !enumContains(item.Properties["scope"].Enum, "channel") {
+		t.Fatalf("memory extraction schema should include channel scope")
 	}
 	if enumContains(item.Properties["kind"].Enum, "project") || enumContains(item.Properties["kind"].Enum, "user") {
 		t.Fatalf("memory kind enum should not duplicate scope values, got %#v", item.Properties["kind"].Enum)

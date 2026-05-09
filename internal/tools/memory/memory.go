@@ -4,6 +4,7 @@ import "github.com/opencto/opencto/internal/domain"
 
 const (
 	ScopeThread  = "thread"
+	ScopeChannel = "channel"
 	ScopeProject = "project"
 	ScopeUser    = "user"
 	ScopeGlobal  = "global"

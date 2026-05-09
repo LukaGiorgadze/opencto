@@ -843,10 +843,10 @@ func TestConversationHistoryCompactsRepeatedEditToolResults(t *testing.T) {
 	}
 
 	history := conversationContextMessage(conversation, 8000)
-	if strings.Count(history, "tool[edit succeeded]") != 1 {
+	if strings.Count(history, "tool[Edit succeeded]") != 1 {
 		t.Fatalf("expected one compacted edit entry, got:\n%s", history)
 	}
-	if !strings.Contains(history, "tool[edit succeeded] x6") ||
+	if !strings.Contains(history, "tool[Edit succeeded] x6") ||
 		!strings.Contains(history, "edited: "+filePath) ||
 		!strings.Contains(history, "replacements: 1") ||
 		!strings.Contains(history, "bytes_written: 2167-2170") {

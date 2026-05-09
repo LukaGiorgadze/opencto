@@ -319,33 +319,38 @@ type MemoryScope string
 
 const (
 	MemoryScopeThread  MemoryScope = "thread"
+	MemoryScopeChannel MemoryScope = "channel"
 	MemoryScopeProject MemoryScope = "project"
 	MemoryScopeUser    MemoryScope = "user"
 	MemoryScopeGlobal  MemoryScope = "global"
 )
 
 type Memory struct {
-	ID         string      `json:"id"`
-	ProjectID  string      `json:"project_id,omitempty"`
-	UserID     string      `json:"user_id,omitempty"`
-	ThreadID   string      `json:"thread_id,omitempty"`
-	Scope      MemoryScope `json:"scope"`
-	Kind       string      `json:"kind,omitempty"`
-	Content    string      `json:"content"`
-	Tags       []string    `json:"tags,omitempty"`
-	Source     string      `json:"source,omitempty"`
-	SourceID   string      `json:"source_id,omitempty"`
-	Actor      string      `json:"actor,omitempty"`
-	Confidence float64     `json:"confidence,omitempty"`
-	Pinned     bool        `json:"pinned,omitempty"`
-	Metadata   Metadata    `json:"metadata,omitempty"`
-	CreatedAt  time.Time   `json:"created_at"`
-	UpdatedAt  time.Time   `json:"updated_at"`
+	ID          string      `json:"id"`
+	ProjectID   string      `json:"project_id,omitempty"`
+	UserID      string      `json:"user_id,omitempty"`
+	ChannelType ChannelType `json:"channel_type,omitempty"`
+	ChannelID   string      `json:"channel_id,omitempty"`
+	ThreadID    string      `json:"thread_id,omitempty"`
+	Scope       MemoryScope `json:"scope"`
+	Kind        string      `json:"kind,omitempty"`
+	Content     string      `json:"content"`
+	Tags        []string    `json:"tags,omitempty"`
+	Source      string      `json:"source,omitempty"`
+	SourceID    string      `json:"source_id,omitempty"`
+	Actor       string      `json:"actor,omitempty"`
+	Confidence  float64     `json:"confidence,omitempty"`
+	Pinned      bool        `json:"pinned,omitempty"`
+	Metadata    Metadata    `json:"metadata,omitempty"`
+	CreatedAt   time.Time   `json:"created_at"`
+	UpdatedAt   time.Time   `json:"updated_at"`
 }
 
 type MemorySearchRequest struct {
 	ProjectID           string        `json:"project_id,omitempty"`
 	UserID              string        `json:"user_id,omitempty"`
+	ChannelType         ChannelType   `json:"channel_type,omitempty"`
+	ChannelID           string        `json:"channel_id,omitempty"`
 	ThreadID            string        `json:"thread_id,omitempty"`
 	Query               string        `json:"query,omitempty"`
 	Scopes              []MemoryScope `json:"scopes,omitempty"`
@@ -359,26 +364,30 @@ type MemorySearchRequest struct {
 }
 
 type MemoryListRequest struct {
-	ProjectID string        `json:"project_id,omitempty"`
-	UserID    string        `json:"user_id,omitempty"`
-	ThreadID  string        `json:"thread_id,omitempty"`
-	Scopes    []MemoryScope `json:"scopes,omitempty"`
-	Kind      string        `json:"kind,omitempty"`
-	Tags      []string      `json:"tags,omitempty"`
-	Limit     int           `json:"limit,omitempty"`
+	ProjectID   string        `json:"project_id,omitempty"`
+	UserID      string        `json:"user_id,omitempty"`
+	ChannelType ChannelType   `json:"channel_type,omitempty"`
+	ChannelID   string        `json:"channel_id,omitempty"`
+	ThreadID    string        `json:"thread_id,omitempty"`
+	Scopes      []MemoryScope `json:"scopes,omitempty"`
+	Kind        string        `json:"kind,omitempty"`
+	Tags        []string      `json:"tags,omitempty"`
+	Limit       int           `json:"limit,omitempty"`
 }
 
 type MemoryUpdateRequest struct {
-	ProjectID   string   `json:"project_id,omitempty"`
-	UserID      string   `json:"user_id,omitempty"`
-	ThreadID    string   `json:"thread_id,omitempty"`
-	MemoryID    string   `json:"memory_id"`
-	Content     string   `json:"content,omitempty"`
-	Kind        string   `json:"kind,omitempty"`
-	Tags        []string `json:"tags,omitempty"`
-	ReplaceTags bool     `json:"replace_tags,omitempty"`
-	Confidence  *float64 `json:"confidence,omitempty"`
-	Pinned      *bool    `json:"pinned,omitempty"`
+	ProjectID   string      `json:"project_id,omitempty"`
+	UserID      string      `json:"user_id,omitempty"`
+	ChannelType ChannelType `json:"channel_type,omitempty"`
+	ChannelID   string      `json:"channel_id,omitempty"`
+	ThreadID    string      `json:"thread_id,omitempty"`
+	MemoryID    string      `json:"memory_id"`
+	Content     string      `json:"content,omitempty"`
+	Kind        string      `json:"kind,omitempty"`
+	Tags        []string    `json:"tags,omitempty"`
+	ReplaceTags bool        `json:"replace_tags,omitempty"`
+	Confidence  *float64    `json:"confidence,omitempty"`
+	Pinned      *bool       `json:"pinned,omitempty"`
 }
 
 type MemoryUpdateResult struct {
@@ -387,12 +396,14 @@ type MemoryUpdateResult struct {
 }
 
 type MemoryForgetRequest struct {
-	ProjectID string        `json:"project_id,omitempty"`
-	UserID    string        `json:"user_id,omitempty"`
-	ThreadID  string        `json:"thread_id,omitempty"`
-	MemoryIDs []string      `json:"memory_ids,omitempty"`
-	Scopes    []MemoryScope `json:"scopes,omitempty"`
-	Tags      []string      `json:"tags,omitempty"`
+	ProjectID   string        `json:"project_id,omitempty"`
+	UserID      string        `json:"user_id,omitempty"`
+	ChannelType ChannelType   `json:"channel_type,omitempty"`
+	ChannelID   string        `json:"channel_id,omitempty"`
+	ThreadID    string        `json:"thread_id,omitempty"`
+	MemoryIDs   []string      `json:"memory_ids,omitempty"`
+	Scopes      []MemoryScope `json:"scopes,omitempty"`
+	Tags        []string      `json:"tags,omitempty"`
 }
 
 type MemoryForgetResult struct {

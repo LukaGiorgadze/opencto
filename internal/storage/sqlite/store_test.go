@@ -137,19 +137,23 @@ VALUES ('existing-memory', 'openai', 'text-embedding-3-small', 1536, 'hash', '20
 	requireMemoryIDs(t, memoryIDs(found), "existing-memory", "user-memory")
 
 	if _, err := store.RememberMemory(ctx, domain.Memory{
-		ID:        "thread-memory",
-		ProjectID: "default",
-		ThreadID:  "thread-1",
-		Scope:     domain.MemoryScopeThread,
-		Kind:      "decision",
-		Content:   "Use compact replies in this thread.",
-		CreatedAt: time.Now().UTC(),
-		UpdatedAt: time.Now().UTC(),
+		ID:          "thread-memory",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		ThreadID:    "thread-1",
+		Scope:       domain.MemoryScopeThread,
+		Kind:        "decision",
+		Content:     "Use compact replies in this thread.",
+		CreatedAt:   time.Now().UTC(),
+		UpdatedAt:   time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("remember thread memory after migration: %v", err)
 	}
 	found, err = store.SearchMemories(ctx, domain.MemorySearchRequest{
 		ProjectID:      "default",
+		ChannelType:    domain.ChannelTypeDiscord,
+		ChannelID:      "channel-1",
 		ThreadID:       "thread-1",
 		Scopes:         []domain.MemoryScope{domain.MemoryScopeThread},
 		FallbackRecent: true,
@@ -1119,24 +1123,28 @@ func TestMemoryThreadScopeIsVisibleOnlyToThread(t *testing.T) {
 	now := time.Now().UTC()
 	memories := []domain.Memory{
 		{
-			ID:        "thread-one-memory",
-			ProjectID: "default",
-			ThreadID:  "thread-1",
-			Scope:     domain.MemoryScopeThread,
-			Kind:      "decision",
-			Content:   "Use orange accents in this thread.",
-			CreatedAt: now,
-			UpdatedAt: now,
+			ID:          "thread-one-memory",
+			ProjectID:   "default",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			ThreadID:    "thread-1",
+			Scope:       domain.MemoryScopeThread,
+			Kind:        "decision",
+			Content:     "Use orange accents in this thread.",
+			CreatedAt:   now,
+			UpdatedAt:   now,
 		},
 		{
-			ID:        "thread-two-memory",
-			ProjectID: "default",
-			ThreadID:  "thread-2",
-			Scope:     domain.MemoryScopeThread,
-			Kind:      "decision",
-			Content:   "Use blue accents in this thread.",
-			CreatedAt: now,
-			UpdatedAt: now.Add(time.Second),
+			ID:          "thread-two-memory",
+			ProjectID:   "default",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			ThreadID:    "thread-2",
+			Scope:       domain.MemoryScopeThread,
+			Kind:        "decision",
+			Content:     "Use blue accents in this thread.",
+			CreatedAt:   now,
+			UpdatedAt:   now.Add(time.Second),
 		},
 		{
 			ID:        "project-memory",
@@ -1156,6 +1164,8 @@ func TestMemoryThreadScopeIsVisibleOnlyToThread(t *testing.T) {
 
 	found, err := store.SearchMemories(ctx, domain.MemorySearchRequest{
 		ProjectID:      "default",
+		ChannelType:    domain.ChannelTypeDiscord,
+		ChannelID:      "channel-1",
 		ThreadID:       "thread-1",
 		Scopes:         []domain.MemoryScope{domain.MemoryScopeThread},
 		FallbackRecent: true,
@@ -1174,6 +1184,69 @@ func TestMemoryThreadScopeIsVisibleOnlyToThread(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("search unscoped thread memories: %v", err)
+	}
+	requireMemoryIDs(t, memoryIDs(found))
+}
+
+func TestMemoryChannelScopeIsVisibleOnlyToChannel(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := time.Now().UTC()
+	memories := []domain.Memory{
+		{
+			ID:          "channel-one-memory",
+			ProjectID:   "default",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			Scope:       domain.MemoryScopeChannel,
+			Kind:        "decision",
+			Content:     "Use concise deployment updates in this channel.",
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		},
+		{
+			ID:          "channel-two-memory",
+			ProjectID:   "default",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-2",
+			Scope:       domain.MemoryScopeChannel,
+			Kind:        "decision",
+			Content:     "Use detailed deployment updates in this channel.",
+			CreatedAt:   now,
+			UpdatedAt:   now.Add(time.Second),
+		},
+	}
+	for _, memory := range memories {
+		if _, err := store.RememberMemory(ctx, memory); err != nil {
+			t.Fatalf("remember %s: %v", memory.ID, err)
+		}
+	}
+
+	found, err := store.SearchMemories(ctx, domain.MemorySearchRequest{
+		ProjectID:      "default",
+		ChannelType:    domain.ChannelTypeDiscord,
+		ChannelID:      "channel-1",
+		Scopes:         []domain.MemoryScope{domain.MemoryScopeChannel},
+		FallbackRecent: true,
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatalf("search channel memories: %v", err)
+	}
+	requireMemoryIDs(t, memoryIDs(found), "channel-one-memory")
+
+	found, err = store.SearchMemories(ctx, domain.MemorySearchRequest{
+		ProjectID:      "default",
+		ChannelType:    domain.ChannelTypeLocal,
+		ChannelID:      "channel-1",
+		Scopes:         []domain.MemoryScope{domain.MemoryScopeChannel},
+		FallbackRecent: true,
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatalf("search other platform channel memories: %v", err)
 	}
 	requireMemoryIDs(t, memoryIDs(found))
 }
