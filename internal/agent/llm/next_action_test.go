@@ -1,9 +1,16 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -11,6 +18,7 @@ import (
 
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
+	"github.com/opencto/opencto/internal/media"
 	"github.com/opencto/opencto/internal/skills"
 	toolregistry "github.com/opencto/opencto/internal/tools"
 	globtool "github.com/opencto/opencto/internal/tools/glob"
@@ -56,6 +64,27 @@ func messageText(message llms.MessageContent) string {
 		}
 	}
 	return strings.Join(parts, "")
+}
+
+func countImageParts(message llms.MessageContent) int {
+	count := 0
+	for _, part := range message.Parts {
+		if _, ok := part.(llms.ImageURLContent); ok {
+			count++
+		}
+	}
+	return count
+}
+
+func validTestPNG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, color.RGBA{G: 255, A: 255})
+	var buffer bytes.Buffer
+	if err := png.Encode(&buffer, img); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+	return buffer.Bytes()
 }
 
 func TestBuildNextActionMessagesUsesOpenAIToolTranscript(t *testing.T) {
@@ -843,10 +872,10 @@ func TestConversationHistoryCompactsRepeatedEditToolResults(t *testing.T) {
 	}
 
 	history := conversationContextMessage(conversation, 8000)
-	if strings.Count(history, "tool[edit succeeded]") != 1 {
+	if strings.Count(history, "tool[Edit succeeded]") != 1 {
 		t.Fatalf("expected one compacted edit entry, got:\n%s", history)
 	}
-	if !strings.Contains(history, "tool[edit succeeded] x6") ||
+	if !strings.Contains(history, "tool[Edit succeeded] x6") ||
 		!strings.Contains(history, "edited: "+filePath) ||
 		!strings.Contains(history, "replacements: 1") ||
 		!strings.Contains(history, "bytes_written: 2167-2170") {
@@ -854,6 +883,24 @@ func TestConversationHistoryCompactsRepeatedEditToolResults(t *testing.T) {
 	}
 	if strings.Contains(history, "requested_action:") || strings.Contains(history, "observation:") {
 		t.Fatalf("compacted edit history should omit repeated raw sections:\n%s", history)
+	}
+}
+
+func TestConversationHistoryDedupeAdjacentAssistantDuplicates(t *testing.T) {
+	t.Parallel()
+
+	history := conversationContextMessage([]domain.ConversationMessage{
+		{ID: "assistant-1", Role: domain.ConversationRoleAssistant, Body: "Plan:\n- create app\n- run build"},
+		{ID: "assistant-2", Role: domain.ConversationRoleAssistant, Body: "Plan:\n- create app\n- run build"},
+		{ID: "assistant-3", Role: domain.ConversationRoleAssistant, Body: "Plan:\n- create app\n- run build"},
+		{ID: "user-1", Role: domain.ConversationRoleUser, Body: "approved"},
+	}, 8000)
+
+	if got := strings.Count(history, "Plan:"); got != 1 {
+		t.Fatalf("expected adjacent duplicate assistant history to collapse, got %d in:\n%s", got, history)
+	}
+	if !strings.Contains(history, "user: approved") {
+		t.Fatalf("expected user message to remain, got:\n%s", history)
 	}
 }
 
@@ -890,7 +937,7 @@ func TestBuildNextActionMessagesIncludesEventAttachments(t *testing.T) {
 	dir := t.TempDir()
 	imagePath := dir + "/photo.png"
 	audioPath := dir + "/voice.wav"
-	if err := os.WriteFile(imagePath, []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}, 0o600); err != nil {
+	if err := os.WriteFile(imagePath, validTestPNG(t), 0o600); err != nil {
 		t.Fatalf("write image attachment: %v", err)
 	}
 	if err := os.WriteFile(audioPath, []byte{0, 1, 2, 3}, 0o600); err != nil {
@@ -959,6 +1006,327 @@ func TestBuildNextActionMessagesIncludesEventAttachments(t *testing.T) {
 	}
 	if !hasAudioReference {
 		t.Fatalf("expected audio attachment to be included as a local file reference: %#v", user.Parts)
+	}
+}
+
+func TestBuildNextActionMessagesReportsImageContentTypeMismatch(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	imagePath := dir + "/photo.bin"
+	if err := os.WriteFile(imagePath, validTestPNG(t), 0o600); err != nil {
+		t.Fatalf("write image attachment: %v", err)
+	}
+
+	messages, err := buildNextActionMessages(agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event: domain.Event{
+				ID:        "event-1",
+				ProjectID: "project-1",
+				Body:      "what is in this image?",
+				Payload: map[string]any{
+					eventPayloadAttachmentsKey: []domain.EventAttachment{{
+						ID:          "attachment-1",
+						Filename:    "photo.bin",
+						ContentType: "image/jpeg",
+						LocalPath:   imagePath,
+					}},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	text := messageText(messages[1])
+	if !strings.Contains(text, "Attachment content type corrected for photo.bin: declared image/jpeg, detected image/png") {
+		t.Fatalf("expected content type correction note, got:\n%s", text)
+	}
+	if countImageParts(messages[1]) != 1 {
+		t.Fatalf("expected image part, got %#v", messages[1].Parts)
+	}
+}
+
+func TestBuildNextActionMessagesSkipsUnsupportedImageAttachment(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	imagePath := dir + "/diagram.svg"
+	if err := os.WriteFile(imagePath, []byte(`<svg xmlns="http://www.w3.org/2000/svg"></svg>`), 0o600); err != nil {
+		t.Fatalf("write image attachment: %v", err)
+	}
+
+	messages, err := buildNextActionMessages(agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event: domain.Event{
+				ID:        "event-1",
+				ProjectID: "project-1",
+				Body:      "review this diagram",
+				Payload: map[string]any{
+					eventPayloadAttachmentsKey: []domain.EventAttachment{{
+						ID:          "attachment-1",
+						Filename:    "diagram.svg",
+						ContentType: "image/svg+xml",
+						LocalPath:   imagePath,
+					}},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	text := messageText(messages[1])
+	if !strings.Contains(text, "Image attachment skipped: diagram.svg: unsupported or invalid image content") {
+		t.Fatalf("expected unsupported image skip note, got:\n%s", text)
+	}
+	if countImageParts(messages[1]) != 0 {
+		t.Fatalf("unsupported image should not be sent: %#v", messages[1].Parts)
+	}
+}
+
+func TestBuildNextActionMessagesLimitsImageAttachments(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	attachments := make([]domain.EventAttachment, 0, media.DefaultMaxImagesPerEvent+1)
+	for index := 0; index < media.DefaultMaxImagesPerEvent+1; index++ {
+		path := dir + "/photo-" + strconv.Itoa(index) + ".png"
+		if err := os.WriteFile(path, validTestPNG(t), 0o600); err != nil {
+			t.Fatalf("write image attachment: %v", err)
+		}
+		attachments = append(attachments, domain.EventAttachment{
+			ID:          "attachment-" + strconv.Itoa(index),
+			Filename:    "photo-" + strconv.Itoa(index) + ".png",
+			ContentType: "image/png",
+			LocalPath:   path,
+		})
+	}
+
+	messages, err := buildNextActionMessages(agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event: domain.Event{
+				ID:        "event-1",
+				ProjectID: "project-1",
+				Body:      "compare these screenshots",
+				Payload:   map[string]any{eventPayloadAttachmentsKey: attachments},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	if got := countImageParts(messages[1]); got != media.DefaultMaxImagesPerEvent {
+		t.Fatalf("expected %d image parts, got %d", media.DefaultMaxImagesPerEvent, got)
+	}
+	if !strings.Contains(messageText(messages[1]), "image limit reached") {
+		t.Fatalf("expected image limit note, got:\n%s", messageText(messages[1]))
+	}
+}
+
+func TestConversationHistoryDoesNotReplayImageAttachments(t *testing.T) {
+	t.Parallel()
+
+	messages, err := buildNextActionMessages(agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event: domain.Event{
+				ID:        "event-2",
+				ProjectID: "project-1",
+				Body:      "what about the previous image?",
+			},
+			Conversation: []domain.ConversationMessage{{
+				ID:      "message-1",
+				EventID: "event-1",
+				Role:    domain.ConversationRoleUser,
+				Body:    "Uploaded attachment(s): photo.png (image/png)",
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	for _, message := range messages {
+		if countImageParts(message) != 0 {
+			t.Fatalf("conversation history should not replay image parts: %#v", message.Parts)
+		}
+	}
+}
+
+func TestBuildNextActionMessagesFetchesInlineImageURL(t *testing.T) {
+	imageData := validTestPNG(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(imageData)
+	}))
+	t.Cleanup(server.Close)
+	resolver := media.NewImageResolver(media.ImageResolverConfig{
+		MaxBytes:            1024,
+		HTTPClient:          server.Client(),
+		AllowPrivateNetwork: true,
+	})
+
+	messages, err := buildNextActionMessagesWithContext(context.Background(), agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event: domain.Event{
+				ID:        "event-1",
+				ProjectID: "project-1",
+				Body:      server.URL + "/avatar.png what's this?",
+			},
+		},
+	}, resolver)
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	if countImageParts(messages[1]) != 1 {
+		t.Fatalf("expected inline URL image part, got %#v", messages[1].Parts)
+	}
+	if !strings.Contains(messageText(messages[1]), "Inline image URL candidate: "+server.URL+"/avatar.png") {
+		t.Fatalf("expected inline URL note, got:\n%s", messageText(messages[1]))
+	}
+}
+
+func TestBuildNextActionMessagesLimitsInlineURLFetchAttempts(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'})
+	}))
+	t.Cleanup(server.Close)
+	resolver := media.NewImageResolver(media.ImageResolverConfig{
+		MaxBytes:            1024,
+		HTTPClient:          server.Client(),
+		AllowPrivateNetwork: true,
+	})
+
+	var body strings.Builder
+	for index := 0; index < media.DefaultMaxImageURLFetchesPerEvent+1; index++ {
+		if index > 0 {
+			body.WriteByte(' ')
+		}
+		body.WriteString(server.URL)
+		body.WriteString("/bad-")
+		body.WriteString(strconv.Itoa(index))
+		body.WriteString(".png")
+	}
+
+	messages, err := buildNextActionMessagesWithContext(context.Background(), agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event: domain.Event{
+				ID:        "event-1",
+				ProjectID: "project-1",
+				Body:      body.String(),
+			},
+		},
+	}, resolver)
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	if requests != media.DefaultMaxImageURLFetchesPerEvent {
+		t.Fatalf("expected %d fetches, got %d", media.DefaultMaxImageURLFetchesPerEvent, requests)
+	}
+	if !strings.Contains(messageText(messages[1]), "image URL fetch limit reached") {
+		t.Fatalf("expected fetch limit note, got:\n%s", messageText(messages[1]))
+	}
+}
+
+func TestBuildNextActionMessagesLimitsTotalImageBytes(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	imageData := append(validTestPNG(t), bytes.Repeat([]byte{0}, int(media.DefaultMaxTotalImageBytes/2)+1)...)
+	var attachments []domain.EventAttachment
+	for index := 0; index < 2; index++ {
+		path := dir + "/large-" + strconv.Itoa(index) + ".png"
+		if err := os.WriteFile(path, imageData, 0o600); err != nil {
+			t.Fatalf("write image attachment: %v", err)
+		}
+		attachments = append(attachments, domain.EventAttachment{
+			ID:          "attachment-" + strconv.Itoa(index),
+			Filename:    "large-" + strconv.Itoa(index) + ".png",
+			ContentType: "image/png",
+			LocalPath:   path,
+		})
+	}
+
+	messages, err := buildNextActionMessages(agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event: domain.Event{
+				ID:        "event-1",
+				ProjectID: "project-1",
+				Body:      "compare these large images",
+				Payload:   map[string]any{eventPayloadAttachmentsKey: attachments},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	if got := countImageParts(messages[1]); got != 1 {
+		t.Fatalf("expected one image part due to total byte limit, got %d", got)
+	}
+	if !strings.Contains(messageText(messages[1]), "total image byte limit reached") {
+		t.Fatalf("expected total byte limit note, got:\n%s", messageText(messages[1]))
+	}
+}
+
+func TestBuildNextActionMessagesDoesNotRefetchFailedAttachmentDownload(t *testing.T) {
+	var requests int
+	imageData := validTestPNG(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(imageData)
+	}))
+	t.Cleanup(server.Close)
+	resolver := media.NewImageResolver(media.ImageResolverConfig{
+		MaxBytes:            1024,
+		HTTPClient:          server.Client(),
+		AllowPrivateNetwork: true,
+	})
+
+	messages, err := buildNextActionMessagesWithContext(context.Background(), agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event: domain.Event{
+				ID:        "event-1",
+				ProjectID: "project-1",
+				Body:      "Uploaded attachment(s): avatar.png (image/png)",
+				Payload: map[string]any{
+					eventPayloadAttachmentsKey: []domain.EventAttachment{{
+						ID:          "attachment-1",
+						Filename:    "avatar.png",
+						ContentType: "image/png",
+						URL:         server.URL + "/avatar.png",
+						Metadata:    domain.Metadata{"download_error": "network failed"},
+					}},
+				},
+			},
+		},
+	}, resolver)
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	if requests != 0 {
+		t.Fatalf("failed attachment download should not be refetched, got %d request(s)", requests)
+	}
+	if countImageParts(messages[1]) != 0 {
+		t.Fatalf("failed attachment download should not produce image parts: %#v", messages[1].Parts)
 	}
 }
 
@@ -1783,6 +2151,81 @@ func TestNextActionTranscribesAudioAttachmentsBeforePlanning(t *testing.T) {
 	userText := messageText(model.messages[1])
 	if !strings.Contains(userText, "Voice message transcript (voice-message.ogg): run tests") {
 		t.Fatalf("user message missing transcript: %s", userText)
+	}
+}
+
+func TestNextActionIncludesImageAndAudioTranscript(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	imagePath := dir + "/screenshot.png"
+	audioPath := dir + "/voice-message.ogg"
+	if err := os.WriteFile(imagePath, validTestPNG(t), 0o600); err != nil {
+		t.Fatalf("write image attachment: %v", err)
+	}
+	if err := os.WriteFile(audioPath, []byte("ogg data"), 0o600); err != nil {
+		t.Fatalf("write audio attachment: %v", err)
+	}
+	model := &recordingToolModel{
+		response: &llms.ContentResponse{
+			Choices: []*llms.ContentChoice{{
+				Content: "I can see the screenshot and heard the audio.",
+			}},
+		},
+	}
+	engine := &OpenAIEngine{
+		reasoningModel: model,
+		audioTranscriber: fakeAudioTranscriber{transcripts: map[string]string{
+			audioPath: "run tests",
+		}},
+	}
+
+	_, err := engine.NextAction(context.Background(), agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event: domain.Event{
+				ID:        "event-1",
+				ProjectID: "project-1",
+				Body:      "Uploaded attachment(s): screenshot.png (image/png), voice-message.ogg (audio/ogg)",
+				Payload: map[string]any{
+					eventPayloadAttachmentsKey: []domain.EventAttachment{
+						{
+							ID:          "attachment-1",
+							ProjectID:   "project-1",
+							EventID:     "event-1",
+							Filename:    "screenshot.png",
+							ContentType: "image/png",
+							SizeBytes:   8,
+							LocalPath:   imagePath,
+						},
+						{
+							ID:          "attachment-2",
+							ProjectID:   "project-1",
+							EventID:     "event-1",
+							Filename:    "voice-message.ogg",
+							ContentType: "audio/ogg",
+							SizeBytes:   8,
+							LocalPath:   audioPath,
+						},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NextAction: %v", err)
+	}
+	if len(model.messages) != 2 {
+		t.Fatalf("expected system and user messages, got %d", len(model.messages))
+	}
+	if countImageParts(model.messages[1]) != 1 {
+		t.Fatalf("expected image part, got %#v", model.messages[1].Parts)
+	}
+	userText := messageText(model.messages[1])
+	if !strings.Contains(userText, "Voice message transcript (voice-message.ogg): run tests") ||
+		!strings.Contains(userText, "Attachment available locally: screenshot.png (image/png") {
+		t.Fatalf("user message missing image/audio context:\n%s", userText)
 	}
 }
 

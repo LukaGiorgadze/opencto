@@ -77,10 +77,6 @@ func normalizeMemoryKind(kind string) (string, error) {
 		return "reference", nil
 	case "feedback", "communication", "style":
 		return "feedback", nil
-	case "project":
-		return "project", nil
-	case "user":
-		return "user", nil
 	default:
 		return "", memoryPolicyError("unsupported memory kind %q", kind)
 	}

@@ -414,6 +414,60 @@ func TestNormalizeMessageDownloadsAttachments(t *testing.T) {
 	}
 }
 
+func TestNormalizeMessageKeepsImageOnlyMessage(t *testing.T) {
+	t.Parallel()
+
+	data := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(data)
+	}))
+	t.Cleanup(server.Close)
+
+	adapter := &Adapter{
+		projectID:     "project-1",
+		attachmentDir: t.TempDir(),
+		httpClient:    server.Client(),
+	}
+	event, err := adapter.NormalizeMessage(context.Background(), &discordgo.MessageCreate{
+		Message: &discordgo.Message{
+			ID:        "message-1",
+			ChannelID: "channel-1",
+			Author: &discordgo.User{
+				ID:       "user-1",
+				Username: "luka",
+			},
+			Attachments: []*discordgo.MessageAttachment{{
+				ID:          "attachment-1",
+				URL:         server.URL + "/screenshot.png",
+				Filename:    "screenshot.png",
+				ContentType: "image/png",
+				Size:        len(data),
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("normalize message: %v", err)
+	}
+	if discordEventEmptyUserMessage(event) {
+		t.Fatalf("image-only message should not be considered empty")
+	}
+	if !strings.Contains(event.Body, "screenshot.png") || !strings.Contains(event.Body, "image/png") {
+		t.Fatalf("expected attachment fallback body, got %q", event.Body)
+	}
+	attachments, ok := event.Payload[discordAttachmentPayloadKey].([]domain.EventAttachment)
+	if !ok || len(attachments) != 1 {
+		t.Fatalf("expected one typed attachment, got %#v", event.Payload[discordAttachmentPayloadKey])
+	}
+	got, err := os.ReadFile(attachments[0].LocalPath)
+	if err != nil {
+		t.Fatalf("read downloaded attachment: %v", err)
+	}
+	if string(got) != string(data) {
+		t.Fatalf("downloaded attachment data mismatch: %v", got)
+	}
+}
+
 func TestNormalizeMessageCapturesReplyMetadataWithoutPlanningToken(t *testing.T) {
 	t.Parallel()
 

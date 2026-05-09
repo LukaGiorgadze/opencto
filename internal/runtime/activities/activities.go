@@ -271,6 +271,8 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event, conver
 		memories, err = a.searchMemories(ctx, domain.MemorySearchRequest{
 			ProjectID:      strings.TrimSpace(memoryEvent.ProjectID),
 			UserID:         eventUserID(memoryEvent),
+			ChannelType:    memoryEvent.ChannelType,
+			ChannelID:      strings.TrimSpace(memoryEvent.ChannelID),
 			ThreadID:       strings.TrimSpace(memoryEvent.ThreadID),
 			Query:          strings.TrimSpace(firstNonEmpty(memoryEvent.Body, event.Body)),
 			Scopes:         autoContextMemoryScopes(memoryEvent),
@@ -320,7 +322,10 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event, conver
 
 func autoContextMemoryScopes(event domain.Event) []domain.MemoryScope {
 	if strings.TrimSpace(event.ThreadID) != "" {
-		return []domain.MemoryScope{domain.MemoryScopeThread}
+		return []domain.MemoryScope{domain.MemoryScopeThread, domain.MemoryScopeChannel, domain.MemoryScopeProject, domain.MemoryScopeUser, domain.MemoryScopeGlobal}
+	}
+	if strings.TrimSpace(event.ChannelID) != "" {
+		return []domain.MemoryScope{domain.MemoryScopeChannel, domain.MemoryScopeProject, domain.MemoryScopeUser, domain.MemoryScopeGlobal}
 	}
 	return []domain.MemoryScope{domain.MemoryScopeProject, domain.MemoryScopeUser, domain.MemoryScopeGlobal}
 }
@@ -493,7 +498,8 @@ func shouldSkipMemoryExtraction(event domain.Event) bool {
 	if strings.TrimSpace(event.Metadata[domain.MetadataKeyControl]) != "" {
 		return true
 	}
-	return strings.TrimSpace(event.Body) == ""
+	body := strings.TrimSpace(event.Body)
+	return body == "" || strings.HasPrefix(body, "Uploaded attachment(s):")
 }
 
 func autoExtractedMemory(event domain.Event, userID string, candidate agent.MemoryCandidate) (domain.Memory, bool) {
@@ -503,25 +509,27 @@ func autoExtractedMemory(event domain.Event, userID string, candidate agent.Memo
 	}
 	scope := candidate.Scope
 	switch scope {
-	case domain.MemoryScopeThread, domain.MemoryScopeGlobal, domain.MemoryScopeProject, domain.MemoryScopeUser:
+	case domain.MemoryScopeThread, domain.MemoryScopeChannel, domain.MemoryScopeGlobal, domain.MemoryScopeProject, domain.MemoryScopeUser:
 	default:
 		return domain.Memory{}, false
 	}
 	return domain.Memory{
-		ID:         stableActivityID("auto-memory", event.ProjectID, userID, string(scope), strings.TrimSpace(event.ThreadID), content),
-		ProjectID:  strings.TrimSpace(event.ProjectID),
-		UserID:     strings.TrimSpace(userID),
-		ThreadID:   strings.TrimSpace(event.ThreadID),
-		Scope:      scope,
-		Kind:       strings.TrimSpace(candidate.Kind),
-		Content:    content,
-		Tags:       cleanMemoryTags(candidate.Tags),
-		Source:     "auto_memory",
-		SourceID:   strings.TrimSpace(event.ID),
-		Actor:      strings.TrimSpace(event.ActorName),
-		Confidence: candidate.Confidence,
-		Pinned:     candidate.Pinned,
-		Metadata:   memoryMetadata(event, candidate.Reason),
+		ID:          stableActivityID("auto-memory", event.ProjectID, userID, string(scope), string(event.ChannelType), strings.TrimSpace(event.ChannelID), strings.TrimSpace(event.ThreadID), content),
+		ProjectID:   strings.TrimSpace(event.ProjectID),
+		UserID:      strings.TrimSpace(userID),
+		ChannelType: event.ChannelType,
+		ChannelID:   strings.TrimSpace(event.ChannelID),
+		ThreadID:    strings.TrimSpace(event.ThreadID),
+		Scope:       scope,
+		Kind:        strings.TrimSpace(candidate.Kind),
+		Content:     content,
+		Tags:        cleanMemoryTags(candidate.Tags),
+		Source:      "auto_memory",
+		SourceID:    strings.TrimSpace(event.ID),
+		Actor:       strings.TrimSpace(event.ActorName),
+		Confidence:  candidate.Confidence,
+		Pinned:      candidate.Pinned,
+		Metadata:    memoryMetadata(event, candidate.Reason),
 	}, true
 }
 
@@ -1009,6 +1017,8 @@ func (a *Activities) ExtractMemory(ctx context.Context, request ExtractMemoryReq
 	existing, err := a.searchMemories(ctx, domain.MemorySearchRequest{
 		ProjectID:      strings.TrimSpace(memoryEvent.ProjectID),
 		UserID:         userID,
+		ChannelType:    memoryEvent.ChannelType,
+		ChannelID:      strings.TrimSpace(memoryEvent.ChannelID),
 		ThreadID:       strings.TrimSpace(memoryEvent.ThreadID),
 		Query:          strings.TrimSpace(memoryEvent.Body),
 		Scopes:         autoContextMemoryScopes(memoryEvent),
@@ -1242,7 +1252,7 @@ func (a *Activities) PersistNextAction(ctx context.Context, request PersistNextA
 		)
 		return err
 	}
-	if isTerminalStatus(request.Status) {
+	if shouldPersistNextActionConversation(request.Status) {
 		message := strings.TrimSpace(request.NextAction.ResponseMessage)
 		if message != "" || len(request.NextAction.ResponseAttachments) > 0 {
 			metadata := domain.Metadata{"status": strings.TrimSpace(request.Status)}
@@ -2905,23 +2915,22 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 		}
 		sourceEvent := inferDiscordThreadContext(execution.SourceEvent)
 		memory := domain.Memory{
-			ID:         stableActivityID("memory", execution.ProjectID, execution.ToolCallID, strings.TrimSpace(req.Content)),
-			ProjectID:  execution.ProjectID,
-			UserID:     eventUserID(sourceEvent),
-			ThreadID:   strings.TrimSpace(sourceEvent.ThreadID),
-			Scope:      memoryScopeForEvent(req.Scope, sourceEvent),
-			Kind:       firstNonEmpty(req.Kind, "fact"),
-			Content:    strings.TrimSpace(req.Content),
-			Tags:       req.Tags,
-			Source:     "tool",
-			SourceID:   execution.ToolCallID,
-			Actor:      strings.TrimSpace(sourceEvent.ActorName),
-			Confidence: req.Confidence,
-			Pinned:     req.Pinned,
-			Metadata:   memoryMetadata(sourceEvent, req.Reason),
-		}
-		if memory.Scope == domain.MemoryScopeGlobal || memory.Scope == domain.MemoryScopeUser {
-			memory.ProjectID = execution.ProjectID
+			ID:          stableActivityID("memory", execution.ProjectID, execution.ToolCallID, strings.TrimSpace(req.Content)),
+			ProjectID:   execution.ProjectID,
+			UserID:      eventUserID(sourceEvent),
+			ChannelType: sourceEvent.ChannelType,
+			ChannelID:   strings.TrimSpace(sourceEvent.ChannelID),
+			ThreadID:    strings.TrimSpace(sourceEvent.ThreadID),
+			Scope:       memoryScopeForEvent(req.Scope, sourceEvent),
+			Kind:        firstNonEmpty(req.Kind, "fact"),
+			Content:     strings.TrimSpace(req.Content),
+			Tags:        req.Tags,
+			Source:      "tool",
+			SourceID:    execution.ToolCallID,
+			Actor:       strings.TrimSpace(sourceEvent.ActorName),
+			Confidence:  req.Confidence,
+			Pinned:      req.Pinned,
+			Metadata:    memoryMetadata(sourceEvent, req.Reason),
 		}
 		remembered, err := a.Store.RememberMemory(ctx, memory)
 		if err != nil {
@@ -2948,13 +2957,15 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 		sourceEvent := inferDiscordThreadContext(execution.SourceEvent)
 		tags := cleanMemoryTags(req.Tags)
 		memories, err := a.searchMemories(ctx, domain.MemorySearchRequest{
-			ProjectID: execution.ProjectID,
-			UserID:    eventUserID(sourceEvent),
-			ThreadID:  strings.TrimSpace(sourceEvent.ThreadID),
-			Query:     strings.TrimSpace(req.Query),
-			Scopes:    memorySearchScopesForEvent(req.Scope, sourceEvent),
-			Tags:      tags,
-			Limit:     req.Limit,
+			ProjectID:   execution.ProjectID,
+			UserID:      eventUserID(sourceEvent),
+			ChannelType: sourceEvent.ChannelType,
+			ChannelID:   strings.TrimSpace(sourceEvent.ChannelID),
+			ThreadID:    strings.TrimSpace(sourceEvent.ThreadID),
+			Query:       strings.TrimSpace(req.Query),
+			Scopes:      memorySearchScopesForEvent(req.Scope, sourceEvent),
+			Tags:        tags,
+			Limit:       req.Limit,
 		})
 		if err != nil {
 			return memoryToolRunResult{}, err
@@ -2977,13 +2988,15 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 		tags := cleanMemoryTags(req.Tags)
 		scopes := memorySearchScopesForEvent(req.Scope, sourceEvent)
 		memories, err := a.Store.ListMemories(ctx, domain.MemoryListRequest{
-			ProjectID: execution.ProjectID,
-			UserID:    eventUserID(sourceEvent),
-			ThreadID:  strings.TrimSpace(sourceEvent.ThreadID),
-			Scopes:    scopes,
-			Kind:      strings.TrimSpace(req.Kind),
-			Tags:      tags,
-			Limit:     req.Limit,
+			ProjectID:   execution.ProjectID,
+			UserID:      eventUserID(sourceEvent),
+			ChannelType: sourceEvent.ChannelType,
+			ChannelID:   strings.TrimSpace(sourceEvent.ChannelID),
+			ThreadID:    strings.TrimSpace(sourceEvent.ThreadID),
+			Scopes:      scopes,
+			Kind:        strings.TrimSpace(req.Kind),
+			Tags:        tags,
+			Limit:       req.Limit,
 		})
 		if err != nil {
 			return memoryToolRunResult{}, err
@@ -3015,10 +3028,12 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 		}
 		sourceEvent := inferDiscordThreadContext(execution.SourceEvent)
 		update := domain.MemoryUpdateRequest{
-			ProjectID: execution.ProjectID,
-			UserID:    eventUserID(sourceEvent),
-			ThreadID:  strings.TrimSpace(sourceEvent.ThreadID),
-			MemoryID:  memoryID,
+			ProjectID:   execution.ProjectID,
+			UserID:      eventUserID(sourceEvent),
+			ChannelType: sourceEvent.ChannelType,
+			ChannelID:   strings.TrimSpace(sourceEvent.ChannelID),
+			ThreadID:    strings.TrimSpace(sourceEvent.ThreadID),
+			MemoryID:    memoryID,
 		}
 		hasUpdate := false
 		if content := strings.TrimSpace(req.Content); content != "" {
@@ -3111,12 +3126,14 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
 		}
 		result, err := a.Store.ForgetMemories(ctx, domain.MemoryForgetRequest{
-			ProjectID: execution.ProjectID,
-			UserID:    eventUserID(sourceEvent),
-			ThreadID:  strings.TrimSpace(sourceEvent.ThreadID),
-			MemoryIDs: memoryIDs,
-			Scopes:    scopes,
-			Tags:      tags,
+			ProjectID:   execution.ProjectID,
+			UserID:      eventUserID(sourceEvent),
+			ChannelType: sourceEvent.ChannelType,
+			ChannelID:   strings.TrimSpace(sourceEvent.ChannelID),
+			ThreadID:    strings.TrimSpace(sourceEvent.ThreadID),
+			MemoryIDs:   memoryIDs,
+			Scopes:      scopes,
+			Tags:        tags,
 		})
 		if err != nil {
 			return memoryToolRunResult{}, err
@@ -3951,6 +3968,8 @@ func memoryScope(value string) domain.MemoryScope {
 	switch domain.MemoryScope(strings.ToLower(strings.TrimSpace(value))) {
 	case domain.MemoryScopeThread:
 		return domain.MemoryScopeThread
+	case domain.MemoryScopeChannel:
+		return domain.MemoryScopeChannel
 	case domain.MemoryScopeGlobal:
 		return domain.MemoryScopeGlobal
 	case domain.MemoryScopeUser:
@@ -3961,8 +3980,14 @@ func memoryScope(value string) domain.MemoryScope {
 }
 
 func memoryScopeForEvent(value string, event domain.Event) domain.MemoryScope {
-	if strings.TrimSpace(value) == "" && strings.TrimSpace(inferDiscordThreadContext(event).ThreadID) != "" {
-		return domain.MemoryScopeThread
+	if strings.TrimSpace(value) == "" {
+		event = inferDiscordThreadContext(event)
+		if strings.TrimSpace(event.ThreadID) != "" {
+			return domain.MemoryScopeThread
+		}
+		if strings.TrimSpace(event.ChannelID) != "" {
+			return domain.MemoryScopeChannel
+		}
 	}
 	return memoryScope(value)
 }
@@ -3971,6 +3996,8 @@ func memorySearchScopes(value string) []domain.MemoryScope {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case memorytool.ScopeThread:
 		return []domain.MemoryScope{domain.MemoryScopeThread}
+	case memorytool.ScopeChannel:
+		return []domain.MemoryScope{domain.MemoryScopeChannel}
 	case memorytool.ScopeProject:
 		return []domain.MemoryScope{domain.MemoryScopeProject}
 	case memorytool.ScopeUser:
@@ -3985,9 +4012,7 @@ func memorySearchScopes(value string) []domain.MemoryScope {
 func memorySearchScopesForEvent(value string, event domain.Event) []domain.MemoryScope {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", memorytool.ScopeAll:
-		if strings.TrimSpace(inferDiscordThreadContext(event).ThreadID) != "" {
-			return []domain.MemoryScope{domain.MemoryScopeThread}
-		}
+		return autoContextMemoryScopes(inferDiscordThreadContext(event))
 	}
 	return memorySearchScopes(value)
 }
@@ -3995,9 +4020,11 @@ func memorySearchScopesForEvent(value string, event domain.Event) []domain.Memor
 func memoryForgetScopes(value string) ([]domain.MemoryScope, string, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", memorytool.ScopeAll:
-		return []domain.MemoryScope{domain.MemoryScopeProject, domain.MemoryScopeUser, domain.MemoryScopeGlobal}, memorytool.ScopeAll, nil
+		return []domain.MemoryScope{domain.MemoryScopeThread, domain.MemoryScopeChannel, domain.MemoryScopeProject, domain.MemoryScopeUser, domain.MemoryScopeGlobal}, memorytool.ScopeAll, nil
 	case memorytool.ScopeThread:
 		return []domain.MemoryScope{domain.MemoryScopeThread}, memorytool.ScopeThread, nil
+	case memorytool.ScopeChannel:
+		return []domain.MemoryScope{domain.MemoryScopeChannel}, memorytool.ScopeChannel, nil
 	case memorytool.ScopeProject:
 		return []domain.MemoryScope{domain.MemoryScopeProject}, memorytool.ScopeProject, nil
 	case memorytool.ScopeUser:
@@ -4012,9 +4039,7 @@ func memoryForgetScopes(value string) ([]domain.MemoryScope, string, error) {
 func memoryForgetScopesForEvent(value string, event domain.Event) ([]domain.MemoryScope, string, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", memorytool.ScopeAll:
-		if strings.TrimSpace(inferDiscordThreadContext(event).ThreadID) != "" {
-			return []domain.MemoryScope{domain.MemoryScopeThread}, memorytool.ScopeThread, nil
-		}
+		return autoContextMemoryScopes(inferDiscordThreadContext(event)), memorytool.ScopeAll, nil
 	}
 	return memoryForgetScopes(value)
 }
@@ -4179,6 +4204,12 @@ func writeMemoryObservationFields(builder *strings.Builder, memory domain.Memory
 		builder.WriteString("\nuser_id: ")
 		builder.WriteString(strings.TrimSpace(memory.UserID))
 	}
+	if strings.TrimSpace(memory.ChannelID) != "" {
+		builder.WriteString("\nchannel_type: ")
+		builder.WriteString(string(memory.ChannelType))
+		builder.WriteString("\nchannel_id: ")
+		builder.WriteString(strings.TrimSpace(memory.ChannelID))
+	}
 	if strings.TrimSpace(memory.ThreadID) != "" {
 		builder.WriteString("\nthread_id: ")
 		builder.WriteString(strings.TrimSpace(memory.ThreadID))
@@ -4276,9 +4307,9 @@ func missingMemoryIDs(requested, deleted []string) []string {
 	return missing
 }
 
-func isTerminalStatus(status string) bool {
+func shouldPersistNextActionConversation(status string) bool {
 	switch status {
-	case NextActionStatusWaiting, NextActionStatusCompleted, NextActionStatusBlocked, NextActionStatusFailed, NextActionStatusIgnored:
+	case NextActionStatusCompleted, NextActionStatusBlocked, NextActionStatusFailed, NextActionStatusIgnored:
 		return true
 	default:
 		return false

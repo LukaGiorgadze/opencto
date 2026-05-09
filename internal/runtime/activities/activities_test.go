@@ -470,7 +470,7 @@ func TestExtractMemoryStoresThreadScopedCandidate(t *testing.T) {
 	if result.Remembered != 1 || len(remembered) != 1 {
 		t.Fatalf("expected remembered thread memory, got result=%#v memories=%#v", result, remembered)
 	}
-	if remembered[0].Scope != domain.MemoryScopeThread || remembered[0].ThreadID != "thread-1" {
+	if remembered[0].Scope != domain.MemoryScopeThread || remembered[0].ChannelID != "thread-1" || remembered[0].ThreadID != "thread-1" {
 		t.Fatalf("unexpected remembered thread memory: %#v", remembered[0])
 	}
 	firstMemoryID := remembered[0].ID
@@ -493,11 +493,14 @@ func TestExtractMemoryStoresThreadScopedCandidate(t *testing.T) {
 		t.Fatalf("thread-scoped memories should include thread id in stable identity: %#v", remembered)
 	}
 	if len(searchRequests) != 2 ||
+		searchRequests[0].ChannelID != "thread-1" ||
 		searchRequests[0].ThreadID != "thread-1" ||
+		searchRequests[1].ChannelID != "thread-2" ||
 		searchRequests[1].ThreadID != "thread-2" ||
-		len(searchRequests[0].Scopes) != 1 ||
-		searchRequests[0].Scopes[0] != domain.MemoryScopeThread {
-		t.Fatalf("expected thread-only existing memory search, got %#v", searchRequests)
+		len(searchRequests[0].Scopes) != 5 ||
+		searchRequests[0].Scopes[0] != domain.MemoryScopeThread ||
+		searchRequests[0].Scopes[1] != domain.MemoryScopeChannel {
+		t.Fatalf("expected visible thread context memory search, got %#v", searchRequests)
 	}
 }
 
@@ -518,6 +521,35 @@ func TestExtractMemorySkipsControlMessages(t *testing.T) {
 			Kind:      domain.EventKindMessage,
 			Body:      "cancel",
 			Metadata:  domain.Metadata{domain.MetadataKeyControl: "cancel"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("extract memory: %v", err)
+	}
+	if result != (ExtractMemoryResult{}) {
+		t.Fatalf("expected empty result, got %#v", result)
+	}
+	if extractorInput.Event.ID != "" {
+		t.Fatalf("expected extractor to be skipped, got %#v", extractorInput)
+	}
+}
+
+func TestExtractMemorySkipsAttachmentOnlyFallback(t *testing.T) {
+	t.Parallel()
+
+	var extractorInput agent.MemoryExtractionInput
+	activities := Activities{
+		Store:                    stubProjectStore{},
+		MemoryEnabled:            true,
+		MemoryAutoExtractEnabled: true,
+		MemoryExtractor:          stubMemoryExtractor{input: &extractorInput},
+	}
+	result, err := activities.ExtractMemory(context.Background(), ExtractMemoryRequest{
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "project-1",
+			Kind:      domain.EventKindMessage,
+			Body:      "Uploaded attachment(s): screenshot.png (image/png)",
 		},
 	})
 	if err != nil {
@@ -701,6 +733,33 @@ func TestReportResponsePersistsNormalDiscordReportForFutureThread(t *testing.T) 
 	}
 	if len(upsertedThreads) != 1 || upsertedThreads[0].ThreadID != "bot-message-1" || upsertedThreads[0].RootMessageID != "bot-message-1" {
 		t.Fatalf("expected future Discord thread ownership, got %#v", upsertedThreads)
+	}
+}
+
+func TestPersistNextActionSkipsWaitingConversationMessage(t *testing.T) {
+	t.Parallel()
+
+	upserted := []domain.ConversationMessage{}
+	activities := Activities{
+		Store: stubProjectStore{upsertedConversation: &upserted},
+	}
+	err := activities.PersistNextAction(context.Background(), PersistNextActionRequest{
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "project-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+		},
+		NextAction: agent.NextAction{
+			ResponseMessage: "Plan:\n- create app\n- run build",
+		},
+		Status: NextActionStatusWaiting,
+	})
+	if err != nil {
+		t.Fatalf("persist next action: %v", err)
+	}
+	if len(upserted) != 0 {
+		t.Fatalf("waiting prompts should be persisted after report delivery only, got %#v", upserted)
 	}
 }
 
@@ -910,8 +969,12 @@ func TestLoadContextUsesOnlyThreadMemoryInThread(t *testing.T) {
 		t.Fatalf("expected one memory search, got %#v", searchRequests)
 	}
 	request := searchRequests[0]
-	if request.ThreadID != "thread-1" || len(request.Scopes) != 1 || request.Scopes[0] != domain.MemoryScopeThread {
-		t.Fatalf("expected thread-only memory search, got %#v", request)
+	if request.ChannelID != "thread-1" ||
+		request.ThreadID != "thread-1" ||
+		len(request.Scopes) != 5 ||
+		request.Scopes[0] != domain.MemoryScopeThread ||
+		request.Scopes[1] != domain.MemoryScopeChannel {
+		t.Fatalf("expected visible thread memory search, got %#v", request)
 	}
 }
 
@@ -1142,8 +1205,12 @@ func TestExecuteMemoryToolDefaultsToThreadScopeInThread(t *testing.T) {
 		t.Fatalf("expected one list request, got %#v", listRequests)
 	}
 	request := listRequests[0]
-	if request.ThreadID != "thread-1" || len(request.Scopes) != 1 || request.Scopes[0] != domain.MemoryScopeThread {
-		t.Fatalf("expected thread-scoped list request, got %#v", request)
+	if request.ChannelID != "thread-1" ||
+		request.ThreadID != "thread-1" ||
+		len(request.Scopes) != 5 ||
+		request.Scopes[0] != domain.MemoryScopeThread ||
+		request.Scopes[1] != domain.MemoryScopeChannel {
+		t.Fatalf("expected visible thread list request, got %#v", request)
 	}
 }
 

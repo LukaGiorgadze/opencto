@@ -2,14 +2,21 @@ package prompts
 
 import "testing"
 
-func TestLoadNextActionPrompt(t *testing.T) {
+func TestLoadPrompt(t *testing.T) {
 	t.Parallel()
 
-	value, err := Load("next_action.tmpl")
-	if err != nil {
-		t.Fatalf("load prompt: %v", err)
-	}
-	if value == "" {
-		t.Fatalf("expected prompt content")
+	for _, name := range []string{"next_action.tmpl", "conversation_compression.tmpl", "memory_extraction.tmpl"} {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			value, err := Load(name)
+			if err != nil {
+				t.Fatalf("load prompt %q: %v", name, err)
+			}
+			if value == "" {
+				t.Fatalf("expected prompt content for %q", name)
+			}
+		})
 	}
 }

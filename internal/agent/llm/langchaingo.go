@@ -7,6 +7,8 @@ import (
 
 	"github.com/tmc/langchaingo/llms"
 	openai "github.com/tmc/langchaingo/llms/openai"
+
+	"github.com/opencto/opencto/internal/media"
 )
 
 type OpenAIEngine struct {
@@ -15,6 +17,7 @@ type OpenAIEngine struct {
 	fastModel        llms.Model
 	fastModelID      string
 	audioTranscriber audioTranscriber
+	imageResolver    *media.ImageResolver
 }
 
 func NewOpenAIEngine(apiKey, baseURL, reasoningModelID, fastModelID, transcriptionModel string) (*OpenAIEngine, error) {
@@ -42,6 +45,7 @@ func NewOpenAIEngine(apiKey, baseURL, reasoningModelID, fastModelID, transcripti
 		fastModel:        fastModel,
 		fastModelID:      fastModelID,
 		audioTranscriber: newOpenAICompatibleAudioTranscriber(apiKey, baseURL, transcriptionModel, &http.Client{Timeout: 2 * time.Minute}),
+		imageResolver:    media.NewImageResolver(media.DefaultImageResolverConfig()),
 	}, nil
 }
 

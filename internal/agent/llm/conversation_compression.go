@@ -10,6 +10,7 @@ import (
 	openai "github.com/tmc/langchaingo/llms/openai"
 
 	"github.com/opencto/opencto/internal/agent"
+	"github.com/opencto/opencto/internal/agent/prompts"
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/textclean"
 )
@@ -23,6 +24,7 @@ func NewOpenAIConversationCompressor(apiKey, baseURL, modelID string) (*OpenAICo
 		openai.WithToken(apiKey),
 		openai.WithBaseURL(baseURL),
 		openai.WithModel(modelID),
+		openai.WithResponseFormat(conversationCompressionResponseFormat()),
 	)
 	if err != nil {
 		return nil, err
@@ -45,7 +47,11 @@ func (c *OpenAIConversationCompressor) CompressConversation(ctx context.Context,
 	if maxTokens < 400 {
 		maxTokens = 400
 	}
-	response, err := c.model.GenerateContent(ctx, conversationCompressionMessages(input), llms.WithOptions(llms.CallOptions{
+	messages, err := conversationCompressionMessages(input)
+	if err != nil {
+		return agent.ConversationCompressionOutput{}, err
+	}
+	response, err := c.model.GenerateContent(ctx, messages, llms.WithOptions(llms.CallOptions{
 		JSONMode:         true,
 		ResponseMIMEType: "application/json",
 		Temperature:      0,
@@ -60,30 +66,15 @@ func (c *OpenAIConversationCompressor) CompressConversation(ctx context.Context,
 	return parseConversationCompressionOutput(response.Choices[0].Content, maxSummaryChars)
 }
 
-func conversationCompressionMessages(input agent.ConversationCompressionInput) []llms.MessageContent {
-	return []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, conversationCompressionSystemPrompt()),
-		llms.TextParts(llms.ChatMessageTypeHuman, conversationCompressionUserPrompt(input)),
+func conversationCompressionMessages(input agent.ConversationCompressionInput) ([]llms.MessageContent, error) {
+	systemPrompt, err := prompts.Load("conversation_compression.tmpl")
+	if err != nil {
+		return nil, err
 	}
-}
-
-func conversationCompressionSystemPrompt() string {
-	return strings.TrimSpace(`
-You compress older OpenCTO conversation history into bounded context for a future agent turn.
-
-Return only JSON:
-{"summary":"..."}
-
-Write a concise chronological summary with durable conversation context:
-- user goals, decisions, constraints, preferences, approvals, and corrections
-- unresolved questions or pending work
-- important tool outcomes, file names, commands, errors, and verification results
-- facts needed to understand later messages in this scope
-
-Do not include raw logs, full command output, long diffs, stack traces, or every turn.
-Do not invent facts. If the source is ambiguous, phrase it as such.
-Keep wording compact and neutral.
-`)
+	return []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
+		llms.TextParts(llms.ChatMessageTypeHuman, conversationCompressionUserPrompt(input)),
+	}, nil
 }
 
 func conversationCompressionUserPrompt(input agent.ConversationCompressionInput) string {
@@ -111,6 +102,7 @@ func conversationCompressionUserPrompt(input agent.ConversationCompressionInput)
 }
 
 func conversationSummarySource(messages []domain.ConversationMessage, maxChars int) string {
+	messages = dedupeAdjacentAssistantConversationMessages(messages)
 	if maxChars <= 0 {
 		maxChars = 12000
 	}

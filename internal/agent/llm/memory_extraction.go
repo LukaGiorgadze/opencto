@@ -10,6 +10,7 @@ import (
 	openai "github.com/tmc/langchaingo/llms/openai"
 
 	"github.com/opencto/opencto/internal/agent"
+	"github.com/opencto/opencto/internal/agent/prompts"
 	"github.com/opencto/opencto/internal/domain"
 )
 
@@ -22,6 +23,7 @@ func NewOpenAIMemoryExtractor(apiKey, baseURL, modelID string) (*OpenAIMemoryExt
 		openai.WithToken(apiKey),
 		openai.WithBaseURL(baseURL),
 		openai.WithModel(modelID),
+		openai.WithResponseFormat(memoryExtractionResponseFormat()),
 	)
 	if err != nil {
 		return nil, err
@@ -37,7 +39,11 @@ func (e *OpenAIMemoryExtractor) ExtractMemories(ctx context.Context, input agent
 	if body == "" {
 		return agent.MemoryExtractionOutput{}, nil
 	}
-	response, err := e.model.GenerateContent(ctx, memoryExtractionMessages(input), llms.WithOptions(llms.CallOptions{
+	messages, err := memoryExtractionMessages(input)
+	if err != nil {
+		return agent.MemoryExtractionOutput{}, err
+	}
+	response, err := e.model.GenerateContent(ctx, messages, llms.WithOptions(llms.CallOptions{
 		JSONMode:         true,
 		ResponseMIMEType: "application/json",
 		Temperature:      0,
@@ -52,57 +58,15 @@ func (e *OpenAIMemoryExtractor) ExtractMemories(ctx context.Context, input agent
 	return parseMemoryExtractionOutput(response.Choices[0].Content)
 }
 
-func memoryExtractionMessages(input agent.MemoryExtractionInput) []llms.MessageContent {
-	return []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, memoryExtractionSystemPrompt()),
-		llms.TextParts(llms.ChatMessageTypeHuman, memoryExtractionUserPrompt(input)),
+func memoryExtractionMessages(input agent.MemoryExtractionInput) ([]llms.MessageContent, error) {
+	systemPrompt, err := prompts.Load("memory_extraction.tmpl")
+	if err != nil {
+		return nil, err
 	}
-}
-
-func memoryExtractionSystemPrompt() string {
-	return strings.TrimSpace(`
-You extract durable OpenCTO memory candidates from a single user message.
-
-Return only JSON:
-{"candidates":[{"scope":"thread|project|user|global","kind":"fact|preference|instruction|decision|constraint|identity|workflow|reference|feedback|project|user","content":"...","tags":["..."],"confidence":0.8,"pinned":false,"reason":"..."}]}
-
-Use an empty candidates array when nothing should be saved.
-
-Save only durable information that is likely useful for future OpenCTO technical work:
-- explicit requests to remember durable information that affects future OpenCTO collaboration
-- stable identity or communication facts that affect collaboration, such as preferred name, role, or communication style
-- stable project decisions, constraints, product goals, external references, deployment/process details
-- explicit or clearly operational user working preferences that affect future technical collaboration
-- standing instructions such as always/never/by default/from now on
-
-Do not save:
-- casual opinions, comparisons, reactions, preferences, or beliefs unless the user frames them as a durable instruction, default, project decision, or future collaboration preference
-- casual personal facts unrelated to OpenCTO technical work, such as where someone lives, unless it directly affects scheduling, operations, compliance, or technical workflow
-- temporary choices: for now, today, this task, this migration, just this once
-- logs, diffs, command output, stack traces, secrets, tokens, passwords, API keys
-- repo facts that should be discovered from files
-- one-off conversation details or random trivia
-
-Scopes:
-- thread: facts/preferences/decisions useful only inside the current Discord thread
-- project: facts/preferences/decisions shared by the current project
-- user: preferences/facts belonging only to the current user
-- global: rare shared rules or facts that should apply across users
-
-Confidence:
-- 1.0 for explicit remember/always/never/by default/from now on
-- 0.8 for clear inferred durable technical preferences/facts
-- 0.6 for useful but less explicit durable technical context
-
-Examples:
-- "Remember my name is Luka." -> user identity memory.
-- "Always ask before broad refactors." -> user preference memory.
-- "Production incidents live in Linear project INFRA." -> project reference memory.
-- "I live in Tbilisi." -> no memory unless it affects scheduling, operations, compliance, or technical workflow.
-- Casual comparative statements without durable intent -> no memory.
-
-Keep content concise. Do not duplicate existing memories.
-`)
+	return []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
+		llms.TextParts(llms.ChatMessageTypeHuman, memoryExtractionUserPrompt(input)),
+	}, nil
 }
 
 func memoryExtractionUserPrompt(input agent.MemoryExtractionInput) string {
@@ -165,7 +129,7 @@ func parseMemoryExtractionOutput(content string) (agent.MemoryExtractionOutput, 
 			candidate.Confidence = 1
 		}
 		switch candidate.Scope {
-		case domain.MemoryScopeThread, domain.MemoryScopeProject, domain.MemoryScopeUser, domain.MemoryScopeGlobal:
+		case domain.MemoryScopeThread, domain.MemoryScopeChannel, domain.MemoryScopeProject, domain.MemoryScopeUser, domain.MemoryScopeGlobal:
 		default:
 			continue
 		}
