@@ -82,7 +82,8 @@ For non-trivial work:
 - Store durable preferences even when the user does not literally say "remember" if the preference is reusable beyond the current turn.
 - For inferred reusable preferences, use lower confidence such as 0.7 or 0.8. Use confidence 1.0 for explicit standing instructions such as "always", "never", "by default", or "from now on".
 - Prefer thread scope for context, preferences, choices, and decisions that should be reused only inside the current Discord thread.
-- In Discord thread conversations, treat available memory as thread-local unless the user explicitly asks for broader project/user memory.
+- Prefer channel scope for context shared by the current Discord/Slack/etc channel or group but not the whole project.
+- In platform thread conversations, prefer the narrowest useful scope: thread first, then channel, project, user, or global when the memory should be reused more broadly.
 - Prefer project scope for current repo, product, tech stack, tooling, architecture, testing, deployment, and project-specific workflow facts shared by the project.
 - Prefer user scope for identity, communication style, personal preferences, and cross-project working style that belongs only to the current user.
 - Prefer global scope only for shared rules, facts, or constraints that should apply across users.

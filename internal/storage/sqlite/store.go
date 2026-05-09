@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	currentSchemaVersion = 7
+	currentSchemaVersion = 8
 	memoryVectorDims     = 1536
 )
 
@@ -166,6 +166,7 @@ var migrations = []migration{
 	{version: 5, sql: migrationV5, apply: applyThreadScopeMigration},
 	{version: 6, sql: migrationV6},
 	{version: 7, sql: migrationV7, apply: applyMemoryChannelScopeMigration},
+	{version: 8, sql: migrationV8},
 }
 
 func applyMigration(ctx context.Context, db *sql.DB, migration migration) error {
@@ -687,6 +688,12 @@ CREATE INDEX IF NOT EXISTS idx_memories_user_scope_updated ON memories(user_id, 
 CREATE INDEX IF NOT EXISTS idx_memories_channel_scope_updated ON memories(project_id, channel_type, channel_id, scope, updated_at);
 CREATE INDEX IF NOT EXISTS idx_memories_thread_scope_updated ON memories(project_id, thread_id, scope, updated_at);
 CREATE INDEX IF NOT EXISTS idx_memories_scope_updated ON memories(scope, updated_at);
+`
+
+const migrationV8 = `
+UPDATE memories
+SET kind = 'fact'
+WHERE lower(trim(kind)) IN ('project', 'user');
 `
 
 func (s *Store) EnsureProject(ctx context.Context, project domain.Project) error {

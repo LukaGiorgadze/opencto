@@ -1311,6 +1311,8 @@ func TestRememberMemoryAppliesPolicyGate(t *testing.T) {
 		{name: "command-output", kind: "fact", content: "command: go test ./...\nstdout:\nok package\nstderr:\n"},
 		{name: "temporary", kind: "preference", content: "User prefers raw SQL for this migration."},
 		{name: "unsupported-kind", kind: "debugging-note", content: "User prefers concise technical explanations."},
+		{name: "scope-like-project-kind", kind: "project", content: "Project prefers concise technical explanations."},
+		{name: "scope-like-user-kind", kind: "user", content: "User prefers concise technical explanations."},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1325,6 +1327,46 @@ func TestRememberMemoryAppliesPolicyGate(t *testing.T) {
 				t.Fatalf("expected policy rejection, got %v", err)
 			}
 		})
+	}
+}
+
+func TestMigrateNormalizesScopeLikeMemoryKinds(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := formatTime(time.Now().UTC())
+	if _, err := store.db.ExecContext(ctx, `
+INSERT INTO memories(id, project_id, scope, kind, content, tags, metadata, created_at, updated_at)
+VALUES
+	('project-kind-memory', 'default', 'project', 'project', 'Project prefers concise explanations.', '[]', '{}', ?, ?),
+	('user-kind-memory', '', 'user', 'user', 'User prefers concise explanations.', '[]', '{}', ?, ?)
+`, now, now, now, now); err != nil {
+		t.Fatalf("insert scope-like memory kinds: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version = 8`); err != nil {
+		t.Fatalf("remove migration marker: %v", err)
+	}
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatalf("rerun migration: %v", err)
+	}
+
+	rows, err := store.db.QueryContext(ctx, `SELECT kind FROM memories WHERE id IN ('project-kind-memory', 'user-kind-memory')`)
+	if err != nil {
+		t.Fatalf("query migrated memory kinds: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var kind string
+		if err := rows.Scan(&kind); err != nil {
+			t.Fatalf("scan migrated memory kind: %v", err)
+		}
+		if kind != "fact" {
+			t.Fatalf("expected scope-like kind to migrate to fact, got %q", kind)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate migrated memory kinds: %v", err)
 	}
 }
 

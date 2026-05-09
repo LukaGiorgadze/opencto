@@ -10,6 +10,7 @@
         },
         "kind": {
             "type": "string",
+            "enum": ["", "fact", "preference", "instruction", "decision", "constraint", "identity", "workflow", "reference", "feedback"],
             "description": "Optional exact memory kind filter. Use an empty string for all kinds."
         },
         "tags": {

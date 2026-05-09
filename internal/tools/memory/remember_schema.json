@@ -14,6 +14,7 @@
         },
         "kind": {
             "type": "string",
+            "enum": ["fact", "preference", "instruction", "decision", "constraint", "identity", "workflow", "reference", "feedback"],
             "description": "Short category such as fact, preference, instruction, decision, constraint, identity, workflow, reference, or feedback."
         },
         "tags": {

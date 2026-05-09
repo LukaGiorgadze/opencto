@@ -13,6 +13,7 @@
         },
         "kind": {
             "type": "string",
+            "enum": ["", "fact", "preference", "instruction", "decision", "constraint", "identity", "workflow", "reference", "feedback"],
             "description": "Replacement short category. Use an empty string to keep existing kind."
         },
         "tags_mode": {
