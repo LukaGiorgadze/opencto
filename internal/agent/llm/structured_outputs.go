@@ -25,7 +25,7 @@ func memoryExtractionResponseFormat() *openai.ResponseFormat {
 						map[string]*openai.ResponseFormatJSONSchemaProperty{
 							"scope": {
 								Type: "string",
-								Enum: []any{"user", "global", "project", "thread"},
+								Enum: []any{"user", "global", "project", "channel", "thread"},
 							},
 							"kind": {
 								Type: "string",
