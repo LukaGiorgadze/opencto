@@ -14,6 +14,7 @@ import (
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/agent/prompts"
 	"github.com/opencto/opencto/internal/domain"
+	"github.com/opencto/opencto/internal/media"
 	"github.com/opencto/opencto/internal/skills"
 	"github.com/opencto/opencto/internal/textclean"
 	toolregistry "github.com/opencto/opencto/internal/tools"
@@ -52,7 +53,7 @@ func (e *OpenAIEngine) NextAction(ctx context.Context, input agent.NextActionInp
 		return agent.NextActionOutput{}, err
 	}
 
-	messages, err := buildNextActionMessages(input)
+	messages, err := buildNextActionMessagesWithContext(ctx, input, e.imageResolver)
 	if err != nil {
 		return agent.NextActionOutput{}, err
 	}
@@ -77,12 +78,16 @@ func (e *OpenAIEngine) NextAction(ctx context.Context, input agent.NextActionInp
 }
 
 func buildNextActionMessages(input agent.NextActionInput) ([]llms.MessageContent, error) {
+	return buildNextActionMessagesWithContext(context.Background(), input, nil)
+}
+
+func buildNextActionMessagesWithContext(ctx context.Context, input agent.NextActionInput, imageResolver *media.ImageResolver) ([]llms.MessageContent, error) {
 	prompt, err := renderNextActionPrompt(input)
 	if err != nil {
 		return nil, err
 	}
 
-	userMessage, err := openAIUserMessageFromEvent(input.Context.Event)
+	userMessage, err := openAIUserMessageFromEvent(ctx, input.Context.Event, imageResolver)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +139,7 @@ func buildNextActionMessages(input agent.NextActionInput) ([]llms.MessageContent
 		messages = append(messages, transcript...)
 		index++
 	}
-	additionalMessages, err := additionalUserMessages(input.Context.AdditionalEvents)
+	additionalMessages, err := additionalUserMessages(ctx, input.Context.AdditionalEvents, imageResolver)
 	if err != nil {
 		return nil, err
 	}
@@ -174,10 +179,10 @@ func renderNextActionPrompt(input agent.NextActionInput) (string, error) {
 	return prompts.Render("next_action.tmpl", data)
 }
 
-func additionalUserMessages(events []domain.Event) ([]llms.MessageContent, error) {
+func additionalUserMessages(ctx context.Context, events []domain.Event, imageResolver *media.ImageResolver) ([]llms.MessageContent, error) {
 	messages := make([]llms.MessageContent, 0, len(events))
 	for _, event := range events {
-		message, err := openAIUserMessageFromEvent(event)
+		message, err := openAIUserMessageFromEvent(ctx, event, imageResolver)
 		if err != nil {
 			return nil, err
 		}

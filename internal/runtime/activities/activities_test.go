@@ -534,6 +534,35 @@ func TestExtractMemorySkipsControlMessages(t *testing.T) {
 	}
 }
 
+func TestExtractMemorySkipsAttachmentOnlyFallback(t *testing.T) {
+	t.Parallel()
+
+	var extractorInput agent.MemoryExtractionInput
+	activities := Activities{
+		Store:                    stubProjectStore{},
+		MemoryEnabled:            true,
+		MemoryAutoExtractEnabled: true,
+		MemoryExtractor:          stubMemoryExtractor{input: &extractorInput},
+	}
+	result, err := activities.ExtractMemory(context.Background(), ExtractMemoryRequest{
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "project-1",
+			Kind:      domain.EventKindMessage,
+			Body:      "Uploaded attachment(s): screenshot.png (image/png)",
+		},
+	})
+	if err != nil {
+		t.Fatalf("extract memory: %v", err)
+	}
+	if result != (ExtractMemoryResult{}) {
+		t.Fatalf("expected empty result, got %#v", result)
+	}
+	if extractorInput.Event.ID != "" {
+		t.Fatalf("expected extractor to be skipped, got %#v", extractorInput)
+	}
+}
+
 func TestExtractMemoryTreatsPolicyRejectionAsNonFatal(t *testing.T) {
 	t.Parallel()
 

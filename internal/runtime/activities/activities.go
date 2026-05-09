@@ -498,7 +498,8 @@ func shouldSkipMemoryExtraction(event domain.Event) bool {
 	if strings.TrimSpace(event.Metadata[domain.MetadataKeyControl]) != "" {
 		return true
 	}
-	return strings.TrimSpace(event.Body) == ""
+	body := strings.TrimSpace(event.Body)
+	return body == "" || strings.HasPrefix(body, "Uploaded attachment(s):")
 }
 
 func autoExtractedMemory(event domain.Event, userID string, candidate agent.MemoryCandidate) (domain.Memory, bool) {
