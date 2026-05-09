@@ -252,6 +252,7 @@ func conversationMessageDuplicatesCurrentEvent(message domain.ConversationMessag
 }
 
 func conversationContextMessage(messages []domain.ConversationMessage, maxChars int) string {
+	messages = dedupeAdjacentAssistantConversationMessages(messages)
 	if len(messages) == 0 {
 		return ""
 	}
@@ -286,6 +287,35 @@ func conversationContextMessage(messages []domain.ConversationMessage, maxChars 
 		builder.WriteString(selected[i])
 	}
 	return strings.TrimSpace(builder.String())
+}
+
+func dedupeAdjacentAssistantConversationMessages(messages []domain.ConversationMessage) []domain.ConversationMessage {
+	if len(messages) < 2 {
+		return messages
+	}
+	deduped := make([]domain.ConversationMessage, 0, len(messages))
+	for _, message := range messages {
+		if isDuplicateAdjacentAssistantMessage(deduped, message) {
+			continue
+		}
+		deduped = append(deduped, message)
+	}
+	return deduped
+}
+
+func isDuplicateAdjacentAssistantMessage(messages []domain.ConversationMessage, message domain.ConversationMessage) bool {
+	if len(messages) == 0 || message.Role != domain.ConversationRoleAssistant {
+		return false
+	}
+	previous := messages[len(messages)-1]
+	if previous.Role != domain.ConversationRoleAssistant {
+		return false
+	}
+	return normalizedConversationBody(previous.Body) == normalizedConversationBody(message.Body)
+}
+
+func normalizedConversationBody(body string) string {
+	return strings.Join(strings.Fields(textclean.TerminalOutput(body)), " ")
 }
 
 func conversationContextBudgets(maxChars int, hasSummaries bool) (int, int) {

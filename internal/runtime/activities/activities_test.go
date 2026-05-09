@@ -704,6 +704,33 @@ func TestReportResponsePersistsNormalDiscordReportForFutureThread(t *testing.T) 
 	}
 }
 
+func TestPersistNextActionSkipsWaitingConversationMessage(t *testing.T) {
+	t.Parallel()
+
+	upserted := []domain.ConversationMessage{}
+	activities := Activities{
+		Store: stubProjectStore{upsertedConversation: &upserted},
+	}
+	err := activities.PersistNextAction(context.Background(), PersistNextActionRequest{
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "project-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+		},
+		NextAction: agent.NextAction{
+			ResponseMessage: "Plan:\n- create app\n- run build",
+		},
+		Status: NextActionStatusWaiting,
+	})
+	if err != nil {
+		t.Fatalf("persist next action: %v", err)
+	}
+	if len(upserted) != 0 {
+		t.Fatalf("waiting prompts should be persisted after report delivery only, got %#v", upserted)
+	}
+}
+
 func TestFullObservationKeepsLongStdout(t *testing.T) {
 	stdout := strings.Repeat("file.go\n", 900)
 

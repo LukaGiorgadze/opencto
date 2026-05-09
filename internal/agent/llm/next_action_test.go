@@ -857,6 +857,24 @@ func TestConversationHistoryCompactsRepeatedEditToolResults(t *testing.T) {
 	}
 }
 
+func TestConversationHistoryDedupeAdjacentAssistantDuplicates(t *testing.T) {
+	t.Parallel()
+
+	history := conversationContextMessage([]domain.ConversationMessage{
+		{ID: "assistant-1", Role: domain.ConversationRoleAssistant, Body: "Plan:\n- create app\n- run build"},
+		{ID: "assistant-2", Role: domain.ConversationRoleAssistant, Body: "Plan:\n- create app\n- run build"},
+		{ID: "assistant-3", Role: domain.ConversationRoleAssistant, Body: "Plan:\n- create app\n- run build"},
+		{ID: "user-1", Role: domain.ConversationRoleUser, Body: "approved"},
+	}, 8000)
+
+	if got := strings.Count(history, "Plan:"); got != 1 {
+		t.Fatalf("expected adjacent duplicate assistant history to collapse, got %d in:\n%s", got, history)
+	}
+	if !strings.Contains(history, "user: approved") {
+		t.Fatalf("expected user message to remain, got:\n%s", history)
+	}
+}
+
 func TestConversationHistoryCleansTerminalControls(t *testing.T) {
 	t.Parallel()
 

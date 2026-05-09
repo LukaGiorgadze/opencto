@@ -1242,7 +1242,7 @@ func (a *Activities) PersistNextAction(ctx context.Context, request PersistNextA
 		)
 		return err
 	}
-	if isTerminalStatus(request.Status) {
+	if shouldPersistNextActionConversation(request.Status) {
 		message := strings.TrimSpace(request.NextAction.ResponseMessage)
 		if message != "" || len(request.NextAction.ResponseAttachments) > 0 {
 			metadata := domain.Metadata{"status": strings.TrimSpace(request.Status)}
@@ -4276,9 +4276,9 @@ func missingMemoryIDs(requested, deleted []string) []string {
 	return missing
 }
 
-func isTerminalStatus(status string) bool {
+func shouldPersistNextActionConversation(status string) bool {
 	switch status {
-	case NextActionStatusWaiting, NextActionStatusCompleted, NextActionStatusBlocked, NextActionStatusFailed, NextActionStatusIgnored:
+	case NextActionStatusCompleted, NextActionStatusBlocked, NextActionStatusFailed, NextActionStatusIgnored:
 		return true
 	default:
 		return false

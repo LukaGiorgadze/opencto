@@ -111,6 +111,7 @@ func conversationCompressionUserPrompt(input agent.ConversationCompressionInput)
 }
 
 func conversationSummarySource(messages []domain.ConversationMessage, maxChars int) string {
+	messages = dedupeAdjacentAssistantConversationMessages(messages)
 	if maxChars <= 0 {
 		maxChars = 12000
 	}

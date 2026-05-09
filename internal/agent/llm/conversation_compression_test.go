@@ -90,3 +90,22 @@ func TestConversationCompressionOmitsRawReadContent(t *testing.T) {
 		t.Fatalf("expected raw read content to be omitted, got:\n%s", source)
 	}
 }
+
+func TestConversationSummarySourceDedupeAdjacentAssistantDuplicates(t *testing.T) {
+	t.Parallel()
+
+	source := conversationSummarySource([]domain.ConversationMessage{
+		{ID: "user-1", Role: domain.ConversationRoleUser, Body: "create a React app"},
+		{ID: "assistant-1", Role: domain.ConversationRoleAssistant, Body: "Plan:\n- create app\n- run build"},
+		{ID: "assistant-2", Role: domain.ConversationRoleAssistant, Body: "Plan:\n- create app\n- run build"},
+		{ID: "assistant-3", Role: domain.ConversationRoleAssistant, Body: "Plan:\n- create app\n- run build"},
+		{ID: "tool-1", Role: domain.ConversationRoleTool, Body: "ok", Metadata: domain.Metadata{"tool": "exec", "status": "succeeded"}},
+	}, 12000)
+
+	if got := strings.Count(source, "Plan:"); got != 1 {
+		t.Fatalf("expected adjacent duplicate assistant messages to be collapsed, got %d in:\n%s", got, source)
+	}
+	if !strings.Contains(source, "user: create a React app") || !strings.Contains(source, "tool[exec succeeded]") {
+		t.Fatalf("expected non-duplicate context to remain, got:\n%s", source)
+	}
+}
