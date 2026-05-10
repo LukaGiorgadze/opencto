@@ -468,7 +468,7 @@ func TestNormalizeMessageKeepsImageOnlyMessage(t *testing.T) {
 	}
 }
 
-func TestNormalizeMessageCapturesReplyMetadataWithoutPlanningToken(t *testing.T) {
+func TestNormalizeMessageCapturesReplyMetadataWithReferencedContent(t *testing.T) {
 	t.Parallel()
 
 	adapter := &Adapter{
@@ -493,7 +493,7 @@ func TestNormalizeMessageCapturesReplyMetadataWithoutPlanningToken(t *testing.T)
 				ID:        "bot-message-1",
 				ChannelID: "channel-1",
 				GuildID:   "guild-1",
-				Content:   "**Plan P-19ec437d: Create React+Vite example app**\n\nReply with `approve P-19ec437d`.",
+				Content:   "I can do that. Which workspace should I use?",
 				Author: &discordgo.User{
 					ID:       "bot-1",
 					Username: "opencto",
@@ -518,11 +518,8 @@ func TestNormalizeMessageCapturesReplyMetadataWithoutPlanningToken(t *testing.T)
 		t.Fatalf("unexpected reply payload: %#v", event.Payload)
 	}
 	content, ok := event.Payload["reply_to_content"].(string)
-	if !ok || !strings.Contains(content, "approve P-19ec437d") {
+	if !ok || !strings.Contains(content, "Which workspace should I use?") {
 		t.Fatalf("expected referenced content in payload, got %#v", event.Payload["reply_to_content"])
-	}
-	if event.Metadata[domain.MetadataKeyPlanningToken] != "" || event.Provenance.Metadata[domain.MetadataKeyPlanningToken] != "" {
-		t.Fatalf("planning token should not be extracted from reply content: metadata=%#v provenance=%#v", event.Metadata, event.Provenance.Metadata)
 	}
 }
 

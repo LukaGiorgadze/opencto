@@ -74,8 +74,6 @@ type NextActionOutput struct {
 	ToolChoice    *ToolChoice        `json:"tool_choice,omitempty"`
 	ToolChoices   []ToolChoice       `json:"tool_choices,omitempty"`
 	WorkItemID    string             `json:"work_item_id,omitempty"`
-	WaitingToken  string             `json:"waiting_token,omitempty"`
-	WaitingKind   string             `json:"waiting_kind,omitempty"`
 	Observation   *ExecutionFeedback `json:"observation,omitempty"`
 	Status        string             `json:"status"`
 	AssistantText string             `json:"assistant_text,omitempty"`
@@ -86,8 +84,6 @@ type NextAction struct {
 	ToolChoice          ToolChoice                `json:"tool_choice,omitempty,omitzero"`
 	ResponseMessage     string                    `json:"response_message,omitempty"`
 	ResponseAttachments []domain.ReportAttachment `json:"response_attachments,omitempty"`
-	WaitingToken        string                    `json:"waiting_token,omitempty"`
-	WaitingKind         string                    `json:"waiting_kind,omitempty"`
 }
 
 type RuntimeContext struct {

@@ -16,9 +16,6 @@ const (
 	SignalTaskCancel            = "task-cancel"
 	SignalTaskInterrupt         = "task-interrupt"
 	SignalTaskAdditionalContext = "task-additional-context"
-	SignalTaskPlanningAnswer    = "task-planning-answer"
-	SignalProjectTaskWaiting    = "project-task-waiting"
-	SignalProjectTaskOutput     = "project-task-output"
 )
 
 type ProjectWorkflowInput struct {
@@ -31,9 +28,6 @@ type (
 	EnqueueEventSignal      = signals.EnqueueEventSignal
 	TaskControlSignal       = signals.TaskControlSignal
 	AdditionalContextSignal = signals.AdditionalContextSignal
-	PlanningWaitSignal      = signals.PlanningWaitSignal
-	TaskOutputSignal        = signals.TaskOutputSignal
-	PlanningAnswerSignal    = signals.PlanningAnswerSignal
 )
 
 type ProjectWorkflowState struct {

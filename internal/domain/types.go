@@ -9,25 +9,15 @@ import (
 type Metadata map[string]string
 
 const (
-	MetadataKeyControl             = "control"
-	MetadataKeyApprovalDecision    = "approval_decision"
-	MetadataKeyPlanningToken       = "planning_token"
-	MetadataKeyPlanningTokenSource = "planning_token_source"
-	MetadataKeyReplyToMessageID    = "reply_to_message_id"
-	MetadataKeyReplyToChannelID    = "reply_to_channel_id"
-	MetadataKeyReplyToContextID    = "reply_to_context_id"
-	MetadataKeyReplyToActorID      = "reply_to_actor_id"
-	MetadataKeyWaitingKind         = "waiting_kind"
+	MetadataKeyControl          = "control"
+	MetadataKeyReplyToMessageID = "reply_to_message_id"
+	MetadataKeyReplyToChannelID = "reply_to_channel_id"
+	MetadataKeyReplyToContextID = "reply_to_context_id"
+	MetadataKeyReplyToActorID   = "reply_to_actor_id"
 )
 
 const (
-	MetadataControlPlanningAnswer = "planning_answer"
-	MetadataControlTaskReply      = "task_reply"
-)
-
-const (
-	MetadataApprovalApproved = "approved"
-	MetadataApprovalRevision = "revision"
+	MetadataControlTaskReply = "task_reply"
 )
 
 type Provenance struct {
@@ -108,8 +98,6 @@ const (
 	ToolTypeMemoryProposeForget ToolType = "MemoryProposeForget"
 	ToolTypeMemoryProposeUpdate ToolType = "MemoryProposeUpdate"
 	ToolTypeMemorySearch        ToolType = "MemorySearch"
-	ToolTypeAskUserQuestion     ToolType = "AskUserQuestion"
-	ToolTypeProposePlan         ToolType = "ProposePlan"
 	ToolTypeRead                ToolType = "Read"
 	ToolTypeSchedule            ToolType = "Schedule"
 	ToolTypeSkill               ToolType = "Skill"
