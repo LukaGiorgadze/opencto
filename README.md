@@ -49,7 +49,7 @@ Good changes are simple, explicit, tested where behavior matters, and easy for f
 
 ## OpenAI
 
-OpenCTO uses OpenAI for next-action planning and semantic memory when `[llm].provider = "openai"`.
+OpenCTO uses OpenAI for next-action decisions and semantic memory when `[llm].provider = "openai"`.
 
 Recommended local setup:
 
@@ -100,13 +100,6 @@ Outbound Discord attachment limits are configured under the Discord channel conf
     }
   }
 }
-```
-
-Approval commands in Discord are plain messages:
-
-```text
-approve <approval-id>
-reject <approval-id> optional comment
 ```
 
 ## Skills

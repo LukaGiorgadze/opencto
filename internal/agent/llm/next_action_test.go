@@ -24,7 +24,6 @@ import (
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	memorytool "github.com/opencto/opencto/internal/tools/memory"
-	planningtool "github.com/opencto/opencto/internal/tools/planning"
 	readtool "github.com/opencto/opencto/internal/tools/read"
 	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
 	skilltool "github.com/opencto/opencto/internal/tools/skill"
@@ -513,7 +512,7 @@ func TestBuildNextActionMessagesIncludesMemoryCrudPolicy(t *testing.T) {
 	}
 }
 
-func TestBuildNextActionMessagesIncludesCTOPlanningProtocol(t *testing.T) {
+func TestBuildNextActionMessagesIncludesCollaborationGuidance(t *testing.T) {
 	t.Parallel()
 
 	messages, err := buildNextActionMessages(agent.NextActionInput{
@@ -528,67 +527,14 @@ func TestBuildNextActionMessagesIncludesCTOPlanningProtocol(t *testing.T) {
 	}
 	prompt := messageText(messages[0])
 	for _, expected := range []string{
-		"CTO Planning Protocol",
-		"plans first, then acts",
-		"feature implementation, refactors, architecture decisions",
-		"Ask one high-impact question at a time with `AskUserQuestion`",
-		"When enough context is known, call `ProposePlan`",
-		"Never use mutating tools for non-trivial work until runtime context says",
-		"runtime owns approval classification",
-		"scoped plan reply contains requested changes",
+		"Collaboration",
+		"inspect with read-only tools first",
+		"ask one concise question in your response",
+		"continue with the necessary work and verify it",
 	} {
 		if !strings.Contains(prompt, expected) {
-			t.Fatalf("prompt missing planning protocol text %q:\n%s", expected, prompt)
+			t.Fatalf("prompt missing collaboration text %q:\n%s", expected, prompt)
 		}
-	}
-}
-
-func TestBuildNextActionMessagesIncludesPendingPlanningContext(t *testing.T) {
-	t.Parallel()
-
-	messages, err := buildNextActionMessages(agent.NextActionInput{
-		ProjectID: "project-1",
-		Context: agent.Context{
-			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
-			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", Body: "new folder"},
-			AdditionalEvents: []domain.Event{{
-				ID:        "event-2",
-				ProjectID: "project-1",
-				Body:      "Do it!",
-				Metadata: domain.Metadata{
-					domain.MetadataKeyPlanningToken:       "P-12345678",
-					domain.MetadataKeyPlanningTokenSource: "reply",
-				},
-			}},
-		},
-		NextAction: agent.NextAction{
-			WaitingKind:     "plan",
-			WaitingToken:    "P-12345678",
-			ResponseMessage: "Plan P-12345678: Create app\nReply with `approve P-12345678`.",
-		},
-	})
-	if err != nil {
-		t.Fatalf("build next action messages: %v", err)
-	}
-	if len(messages) != 4 {
-		t.Fatalf("expected system, user, pending context, and additional user messages, got %d", len(messages))
-	}
-	pending := messageText(messages[2])
-	for _, expected := range []string{
-		"Current pending planning state",
-		"kind: plan",
-		"token: P-12345678",
-		"runtime marks the current scoped reply/thread answer as approved",
-		"this task was resumed from a scoped reply/thread or matching token",
-		"Do not implement unless runtime approval metadata is present",
-		"Plan P-12345678: Create app",
-	} {
-		if !strings.Contains(pending, expected) {
-			t.Fatalf("pending context missing %q:\n%s", expected, pending)
-		}
-	}
-	if got := messageText(messages[3]); got != "Do it!" {
-		t.Fatalf("unexpected additional user message: %q", got)
 	}
 }
 
@@ -604,11 +550,9 @@ func TestBuildNextActionMessagesDoesNotExposeRoutingMetadata(t *testing.T) {
 				ProjectID: "project-1",
 				Body:      "Do it now!",
 				Metadata: domain.Metadata{
-					domain.MetadataKeyPlanningToken:       "P-12345678",
-					domain.MetadataKeyPlanningTokenSource: "reply",
-					domain.MetadataKeyReplyToMessageID:    "message-1",
-					domain.MetadataKeyReplyToChannelID:    "channel-1",
-					domain.MetadataKeyReplyToContextID:    "context-1",
+					domain.MetadataKeyReplyToMessageID: "message-1",
+					domain.MetadataKeyReplyToChannelID: "channel-1",
+					domain.MetadataKeyReplyToContextID: "context-1",
 				},
 			},
 		},
@@ -625,7 +569,6 @@ func TestBuildNextActionMessagesDoesNotExposeRoutingMetadata(t *testing.T) {
 	}
 	for _, garbage := range []string{
 		"Runtime message metadata",
-		"planning_token",
 		"reply_to_message_id",
 		"reply_to_channel_id",
 		"reply_to_context_id",
@@ -633,45 +576,6 @@ func TestBuildNextActionMessagesDoesNotExposeRoutingMetadata(t *testing.T) {
 		if strings.Contains(got, garbage) {
 			t.Fatalf("user message leaked routing metadata %q:\n%s", garbage, got)
 		}
-	}
-}
-
-func TestBuildNextActionMessagesLeavesTokenedNonApprovalForModelDecision(t *testing.T) {
-	t.Parallel()
-
-	messages, err := buildNextActionMessages(agent.NextActionInput{
-		ProjectID: "project-1",
-		Context: agent.Context{
-			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
-			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", Body: "new folder"},
-			AdditionalEvents: []domain.Event{{
-				ID:        "event-2",
-				ProjectID: "project-1",
-				Body:      "Use pnpm instead",
-				Metadata: domain.Metadata{
-					domain.MetadataKeyPlanningToken:       "P-12345678",
-					domain.MetadataKeyPlanningTokenSource: "reply",
-				},
-			}},
-		},
-		NextAction: agent.NextAction{
-			WaitingKind:     "plan",
-			WaitingToken:    "P-12345678",
-			ResponseMessage: "Plan P-12345678: Create app\nReply with `approve P-12345678`.",
-		},
-	})
-	if err != nil {
-		t.Fatalf("build next action messages: %v", err)
-	}
-	pending := messageText(messages[2])
-	if !strings.Contains(pending, "this task was resumed from a scoped reply/thread or matching token") {
-		t.Fatalf("expected routed planning context, got:\n%s", pending)
-	}
-	if strings.Contains(pending, "did not clearly approve") || strings.Contains(pending, "approved via") {
-		t.Fatalf("pending context should not decide approval:\n%s", pending)
-	}
-	if got := messageText(messages[3]); got != "Use pnpm instead" {
-		t.Fatalf("unexpected additional user message: %q", got)
 	}
 }
 
@@ -1374,211 +1278,6 @@ func TestNextActionReturnsSingleToolChoice(t *testing.T) {
 	}
 	if len(model.options.Tools) != len(toolregistry.Definitions()) {
 		t.Fatalf("expected all tool schemas, got %#v", model.options.Tools)
-	}
-}
-
-func TestNextActionAskUserQuestionReturnsWaiting(t *testing.T) {
-	t.Parallel()
-
-	model := &recordingToolModel{
-		response: &llms.ContentResponse{
-			Choices: []*llms.ContentChoice{{
-				ToolCalls: []llms.ToolCall{{
-					ID:   "toolu_question",
-					Type: "function",
-					FunctionCall: &llms.FunctionCall{
-						Name:      planningtool.AskUserQuestionToolName,
-						Arguments: `{"header":"Auth","question":"Which auth model should OpenCTO use?","options":[{"label":"Sessions (Recommended)","description":"Use server-side sessions for simpler self-hosted operation."},{"label":"JWT","description":"Use stateless tokens for API-first integrations."}]}`,
-					},
-				}},
-			}},
-		},
-	}
-	engine := &OpenAIEngine{reasoningModel: model}
-	output, err := engine.NextAction(context.Background(), agent.NextActionInput{
-		ProjectID:      "project-1",
-		ExecutionCycle: 1,
-		Context: agent.Context{
-			Project: domain.Project{ID: "project-1"},
-			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", Body: "add auth"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("NextAction: %v", err)
-	}
-	if output.Status != "waiting" || output.WaitingKind != "question" || !strings.HasPrefix(output.WaitingToken, "Q-") {
-		t.Fatalf("expected question waiting output, got %#v", output)
-	}
-	if output.ToolChoice != nil || len(output.ToolChoices) != 0 {
-		t.Fatalf("planning question should not produce executable tool choices: %#v", output)
-	}
-	if !strings.Contains(output.NextAction.ResponseMessage, output.WaitingToken) ||
-		!strings.Contains(output.NextAction.ResponseMessage, "Sessions (Recommended)") ||
-		!strings.Contains(output.NextAction.ResponseMessage, "Reply with `"+output.WaitingToken+": <answer>`") {
-		t.Fatalf("unexpected question message:\n%s", output.NextAction.ResponseMessage)
-	}
-}
-
-func TestNextActionAskUserQuestionDiscordOmitsTicket(t *testing.T) {
-	t.Parallel()
-
-	model := &recordingToolModel{
-		response: &llms.ContentResponse{
-			Choices: []*llms.ContentChoice{{
-				ToolCalls: []llms.ToolCall{{
-					ID:   "toolu_question",
-					Type: "function",
-					FunctionCall: &llms.FunctionCall{
-						Name:      planningtool.AskUserQuestionToolName,
-						Arguments: `{"header":"Theme","question":"Which theme should OpenCTO use?","options":[{"label":"Orange (Recommended)","description":"Use orange accents."},{"label":"Blue","description":"Use blue accents."}]}`,
-					},
-				}},
-			}},
-		},
-	}
-	engine := &OpenAIEngine{reasoningModel: model}
-	output, err := engine.NextAction(context.Background(), agent.NextActionInput{
-		ProjectID:      "project-1",
-		ExecutionCycle: 1,
-		ChannelType:    domain.ChannelTypeDiscord,
-		Context: agent.Context{
-			Project: domain.Project{ID: "project-1"},
-			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", ChannelType: domain.ChannelTypeDiscord, Body: "create app"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("NextAction: %v", err)
-	}
-	if output.Status != "waiting" || output.WaitingKind != "question" || output.WaitingToken != "" {
-		t.Fatalf("expected Discord question waiting without token, got %#v", output)
-	}
-	if strings.Contains(output.NextAction.ResponseMessage, "Q-") ||
-		strings.Contains(output.NextAction.ResponseMessage, "Reply with `") ||
-		!strings.Contains(output.NextAction.ResponseMessage, "Reply to this message, or write in its thread, with your answer.") {
-		t.Fatalf("unexpected Discord question message:\n%s", output.NextAction.ResponseMessage)
-	}
-}
-
-func TestNextActionProposePlanReturnsWaiting(t *testing.T) {
-	t.Parallel()
-
-	model := &recordingToolModel{
-		response: &llms.ContentResponse{
-			Choices: []*llms.ContentChoice{{
-				ToolCalls: []llms.ToolCall{{
-					ID:   "toolu_plan",
-					Type: "function",
-					FunctionCall: &llms.FunctionCall{
-						Name:      planningtool.ProposePlanToolName,
-						Arguments: `{"title":"Add auth","summary":"Implement session auth with minimal surface area.","build":["Session middleware"],"skip":["OAuth providers"],"risks":["Session invalidation"],"tradeoffs":["Simple self-hosting over third-party identity"],"architecture":["HTTP middleware and SQLite-backed sessions"],"steps":["Add storage model","Wire middleware"],"verification":["Unit tests","Manual login flow"]}`,
-					},
-				}},
-			}},
-		},
-	}
-	engine := &OpenAIEngine{reasoningModel: model}
-	output, err := engine.NextAction(context.Background(), agent.NextActionInput{
-		ProjectID:      "project-1",
-		ExecutionCycle: 1,
-		Context: agent.Context{
-			Project: domain.Project{ID: "project-1"},
-			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", Body: "add auth"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("NextAction: %v", err)
-	}
-	if output.Status != "waiting" || output.WaitingKind != "plan" || !strings.HasPrefix(output.WaitingToken, "P-") {
-		t.Fatalf("expected plan waiting output, got %#v", output)
-	}
-	if output.ToolChoice != nil || len(output.ToolChoices) != 0 {
-		t.Fatalf("proposed plan should not produce executable tool choices: %#v", output)
-	}
-	if !strings.Contains(output.NextAction.ResponseMessage, "approve "+output.WaitingToken) ||
-		!strings.Contains(output.NextAction.ResponseMessage, "Build:") ||
-		!strings.Contains(output.NextAction.ResponseMessage, "Verification:") {
-		t.Fatalf("unexpected proposed plan message:\n%s", output.NextAction.ResponseMessage)
-	}
-}
-
-func TestNextActionProposePlanDiscordOmitsTicket(t *testing.T) {
-	t.Parallel()
-
-	model := &recordingToolModel{
-		response: &llms.ContentResponse{
-			Choices: []*llms.ContentChoice{{
-				ToolCalls: []llms.ToolCall{{
-					ID:   "toolu_plan",
-					Type: "function",
-					FunctionCall: &llms.FunctionCall{
-						Name:      planningtool.ProposePlanToolName,
-						Arguments: `{"title":"Create app","summary":"Create a Vite app.","build":["Scaffold app"],"steps":["Run create vite"],"verification":["Run build"]}`,
-					},
-				}},
-			}},
-		},
-	}
-	engine := &OpenAIEngine{reasoningModel: model}
-	output, err := engine.NextAction(context.Background(), agent.NextActionInput{
-		ProjectID:      "project-1",
-		ExecutionCycle: 1,
-		ChannelType:    domain.ChannelTypeDiscord,
-		Context: agent.Context{
-			Project: domain.Project{ID: "project-1"},
-			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", ChannelType: domain.ChannelTypeDiscord, Body: "create app"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("NextAction: %v", err)
-	}
-	if output.Status != "waiting" || output.WaitingKind != "plan" || output.WaitingToken != "" {
-		t.Fatalf("expected Discord plan waiting without token, got %#v", output)
-	}
-	if strings.Contains(output.NextAction.ResponseMessage, "P-") ||
-		strings.Contains(output.NextAction.ResponseMessage, "approve P-") ||
-		strings.Contains(output.NextAction.ResponseMessage, "Reply with `") ||
-		!strings.Contains(output.NextAction.ResponseMessage, "Reply to this message, or write in its thread, to approve or revise.") {
-		t.Fatalf("unexpected Discord plan message:\n%s", output.NextAction.ResponseMessage)
-	}
-}
-
-func TestNextActionRejectsPlanningToolMixedWithExecution(t *testing.T) {
-	t.Parallel()
-
-	model := &recordingToolModel{
-		response: &llms.ContentResponse{
-			Choices: []*llms.ContentChoice{{
-				ToolCalls: []llms.ToolCall{
-					{
-						ID:   "toolu_question",
-						Type: "function",
-						FunctionCall: &llms.FunctionCall{
-							Name:      planningtool.AskUserQuestionToolName,
-							Arguments: `{"header":"Auth","question":"Which auth model?","options":[{"label":"Sessions (Recommended)","description":"Use sessions."},{"label":"JWT","description":"Use tokens."}]}`,
-						},
-					},
-					{
-						ID:   "toolu_exec",
-						Type: "function",
-						FunctionCall: &llms.FunctionCall{
-							Name:      toolregistry.CommandToolName,
-							Arguments: `{"command":"go","args":["test","./..."],"cwd":"","timeout_ms":120000,"run_mode":"wait_for_exit","idempotency":"read_only","process_scope":"stop_on_finish","description":"run tests","destructive":false}`,
-						},
-					},
-				},
-			}},
-		},
-	}
-	engine := &OpenAIEngine{reasoningModel: model}
-	_, err := engine.NextAction(context.Background(), agent.NextActionInput{
-		ProjectID: "project-1",
-		Context: agent.Context{
-			Project: domain.Project{ID: "project-1"},
-			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", Body: "add auth"},
-		},
-	})
-	if err == nil || !strings.Contains(err.Error(), "planning pseudo-tools must be called alone") {
-		t.Fatalf("expected mixed planning tool rejection, got %v", err)
 	}
 }
 

@@ -626,62 +626,6 @@ func TestReportResponseIncludesAttachments(t *testing.T) {
 	}
 }
 
-func TestReportResponsePersistsWaitingPromptForDiscordThread(t *testing.T) {
-	t.Parallel()
-
-	upserted := []domain.ConversationMessage{}
-	upsertedThreads := []domain.ConversationThread{}
-	reporter := &captureReporter{
-		receipts: []domain.ReportReceipt{{
-			MessageID: "bot-prompt-1",
-			ChannelID: "channel-1",
-			ContextID: "guild-1",
-		}},
-	}
-	activities := Activities{
-		Reporter: reporter,
-		Store: stubProjectStore{
-			upsertedConversation: &upserted,
-			upsertedThreads:      &upsertedThreads,
-		},
-	}
-	_, err := activities.ReportResponse(context.Background(), ReportResponseRequest{
-		Event: domain.Event{
-			ID:          "event-1",
-			ProjectID:   "project-1",
-			ChannelType: domain.ChannelTypeDiscord,
-			ChannelID:   "channel-1",
-		},
-		Message:     "Reply to this message, or write in its thread, with your answer.",
-		WaitingKind: "question",
-	})
-	if err != nil {
-		t.Fatalf("report response: %v", err)
-	}
-	if len(upserted) != 2 {
-		t.Fatalf("expected source-channel and future-thread conversation rows, got %#v", upserted)
-	}
-	got := map[string]domain.ConversationMessage{}
-	for _, message := range upserted {
-		got[message.ChannelID+"|"+message.ThreadID] = message
-	}
-	if _, ok := got["channel-1|"]; !ok {
-		t.Fatalf("expected prompt stored in the source channel, got %#v", upserted)
-	}
-	threadPrompt, ok := got["bot-prompt-1|bot-prompt-1"]
-	if !ok {
-		t.Fatalf("expected prompt stored for the Discord message thread, got %#v", upserted)
-	}
-	if threadPrompt.Role != domain.ConversationRoleAssistant ||
-		threadPrompt.Metadata[domain.MetadataKeyWaitingKind] != "question" ||
-		threadPrompt.Metadata["message_id"] != "bot-prompt-1" {
-		t.Fatalf("unexpected thread prompt conversation row: %#v", threadPrompt)
-	}
-	if len(upsertedThreads) != 1 || upsertedThreads[0].ThreadID != "bot-prompt-1" || upsertedThreads[0].RootMessageID != "bot-prompt-1" {
-		t.Fatalf("expected future Discord thread ownership, got %#v", upsertedThreads)
-	}
-}
-
 func TestReportResponsePersistsNormalDiscordReportForFutureThread(t *testing.T) {
 	t.Parallel()
 
@@ -727,39 +671,11 @@ func TestReportResponsePersistsNormalDiscordReportForFutureThread(t *testing.T) 
 	if threadMessage.Role != domain.ConversationRoleAssistant ||
 		threadMessage.Body != "Here is what I currently have saved in memory." ||
 		threadMessage.Metadata["source"] != "report_response" ||
-		threadMessage.Metadata["message_id"] != "bot-message-1" ||
-		threadMessage.Metadata[domain.MetadataKeyWaitingKind] != "" {
+		threadMessage.Metadata["message_id"] != "bot-message-1" {
 		t.Fatalf("unexpected future thread conversation row: %#v", threadMessage)
 	}
 	if len(upsertedThreads) != 1 || upsertedThreads[0].ThreadID != "bot-message-1" || upsertedThreads[0].RootMessageID != "bot-message-1" {
 		t.Fatalf("expected future Discord thread ownership, got %#v", upsertedThreads)
-	}
-}
-
-func TestPersistNextActionSkipsWaitingConversationMessage(t *testing.T) {
-	t.Parallel()
-
-	upserted := []domain.ConversationMessage{}
-	activities := Activities{
-		Store: stubProjectStore{upsertedConversation: &upserted},
-	}
-	err := activities.PersistNextAction(context.Background(), PersistNextActionRequest{
-		Event: domain.Event{
-			ID:          "event-1",
-			ProjectID:   "project-1",
-			ChannelType: domain.ChannelTypeDiscord,
-			ChannelID:   "channel-1",
-		},
-		NextAction: agent.NextAction{
-			ResponseMessage: "Plan:\n- create app\n- run build",
-		},
-		Status: NextActionStatusWaiting,
-	})
-	if err != nil {
-		t.Fatalf("persist next action: %v", err)
-	}
-	if len(upserted) != 0 {
-		t.Fatalf("waiting prompts should be persisted after report delivery only, got %#v", upserted)
 	}
 }
 
@@ -2000,7 +1916,7 @@ func TestNextActionLoadsConversationFromLatestAdditionalThreadEvent(t *testing.T
 		ChannelType: domain.ChannelTypeDiscord,
 		ChannelID:   "bot-prompt-1",
 		Body:        "1",
-		Metadata:    domain.Metadata{domain.MetadataKeyControl: domain.MetadataControlPlanningAnswer},
+		Metadata:    domain.Metadata{domain.MetadataKeyControl: domain.MetadataControlTaskReply},
 	}
 	_, err := activities.NextAction(context.Background(), NextActionRequest{
 		ProjectID:        "project-1",
@@ -2022,159 +1938,6 @@ func TestNextActionLoadsConversationFromLatestAdditionalThreadEvent(t *testing.T
 	}
 	if len(input.Context.AdditionalEvents) != 1 || input.Context.AdditionalEvents[0].Body != "1" {
 		t.Fatalf("expected routed thread reply in additional events, got %#v", input.Context.AdditionalEvents)
-	}
-}
-
-func TestNextActionRequiresExplicitPlanApprovalBeforeMutatingTool(t *testing.T) {
-	t.Parallel()
-
-	activities := Activities{
-		Engine: stubEngine{output: agent.NextActionOutput{
-			ToolChoice: &agent.ToolChoice{
-				ToolCallID:  "toolu_edit",
-				Type:        domain.ToolTypeExec,
-				Intent:      "edit files",
-				Command:     "go",
-				Args:        []string{"fmt", "./..."},
-				Idempotency: domain.ToolIdempotencyIdempotent,
-				Metadata: map[string]string{
-					"tool_call_id": "toolu_edit",
-				},
-			},
-			Status: NextActionStatusTool,
-		}},
-	}
-
-	result, err := activities.NextAction(context.Background(), NextActionRequest{
-		ProjectID: "project-1",
-		Event:     domain.Event{ID: "event-1", ProjectID: "project-1", Body: "add auth"},
-		NextAction: agent.NextAction{
-			WaitingKind:  "plan",
-			WaitingToken: "P-12345678",
-		},
-		AdditionalEvents: []domain.Event{{
-			ID:        "event-2",
-			ProjectID: "project-1",
-			Body:      "P-12345678: change the storage approach",
-		}},
-		ExecutionCycle: 2,
-	})
-	if err != nil {
-		t.Fatalf("next action: %v", err)
-	}
-	if result.Status != NextActionStatusWaiting {
-		t.Fatalf("expected waiting status, got %#v", result)
-	}
-	if result.ToolChoice != nil || len(result.ToolChoices) != 0 {
-		t.Fatalf("mutating tool should be blocked until approval: %#v", result)
-	}
-	if result.WaitingToken != "P-12345678" || !strings.Contains(result.NextAction.ResponseMessage, "approve P-12345678") {
-		t.Fatalf("expected explicit approval prompt, got %#v", result)
-	}
-}
-
-func TestNextActionAllowsPlanApprovalFromReplyMetadata(t *testing.T) {
-	t.Parallel()
-
-	activities := Activities{
-		Engine: stubEngine{output: agent.NextActionOutput{
-			ToolChoice: &agent.ToolChoice{
-				ToolCallID:  "toolu_edit",
-				Type:        domain.ToolTypeExec,
-				Intent:      "edit files",
-				Command:     "go",
-				Args:        []string{"fmt", "./..."},
-				Idempotency: domain.ToolIdempotencyIdempotent,
-				Metadata: map[string]string{
-					"tool_call_id": "toolu_edit",
-				},
-			},
-			Status: NextActionStatusTool,
-		}},
-	}
-
-	result, err := activities.NextAction(context.Background(), NextActionRequest{
-		ProjectID: "project-1",
-		Event:     domain.Event{ID: "event-1", ProjectID: "project-1", Body: "add auth"},
-		NextAction: agent.NextAction{
-			WaitingKind:  "plan",
-			WaitingToken: "P-12345678",
-		},
-		AdditionalEvents: []domain.Event{{
-			ID:        "event-2",
-			ProjectID: "project-1",
-			Body:      "Do it now!",
-			Metadata: domain.Metadata{
-				domain.MetadataKeyControl:          domain.MetadataControlPlanningAnswer,
-				domain.MetadataKeyWaitingKind:      "plan",
-				domain.MetadataKeyApprovalDecision: domain.MetadataApprovalApproved,
-			},
-		}},
-		ExecutionCycle: 2,
-	})
-	if err != nil {
-		t.Fatalf("next action: %v", err)
-	}
-	if result.Status != NextActionStatusTool {
-		t.Fatalf("expected mutating tool after reply approval metadata, got %#v", result)
-	}
-	if result.ToolChoice == nil || result.ToolChoice.Command != "go" {
-		t.Fatalf("expected tool choice to pass through: %#v", result.ToolChoice)
-	}
-}
-
-func TestNextActionBlocksUntokenedPlanApprovalPhraseFromMutating(t *testing.T) {
-	t.Parallel()
-
-	base := time.Now()
-	activities := Activities{
-		Store: stubProjectStore{
-			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
-				storage.ConversationScopeProject: {
-					{
-						ID:        "conversation-1",
-						ProjectID: "project-1",
-						Role:      domain.ConversationRoleAssistant,
-						Body:      "Plan P-19ec437d: Create React+Vite example app\nReply with `approve P-19ec437d`.",
-						CreatedAt: base,
-					},
-				},
-			},
-		},
-		ConversationEnabled: true,
-		ConversationLimit:   10,
-		Engine: stubEngine{output: agent.NextActionOutput{
-			ToolChoice: &agent.ToolChoice{
-				ToolCallID:  "toolu_edit",
-				Type:        domain.ToolTypeExec,
-				Intent:      "edit files",
-				Command:     "go",
-				Args:        []string{"fmt", "./..."},
-				Idempotency: domain.ToolIdempotencyIdempotent,
-				Metadata: map[string]string{
-					"tool_call_id": "toolu_edit",
-				},
-			},
-			Status: NextActionStatusTool,
-		}},
-	}
-
-	result, err := activities.NextAction(context.Background(), NextActionRequest{
-		ProjectID:      "project-1",
-		Event:          domain.Event{ID: "event-2", ProjectID: "project-1", Body: "Do it!"},
-		ExecutionCycle: 1,
-	})
-	if err != nil {
-		t.Fatalf("next action: %v", err)
-	}
-	if result.Status != NextActionStatusCompleted {
-		t.Fatalf("expected completed clarification instead of mutation, got %#v", result)
-	}
-	if result.ToolChoice != nil || len(result.ToolChoices) != 0 {
-		t.Fatalf("untokened approval phrase should not run a mutating tool: %#v", result)
-	}
-	if !strings.Contains(result.NextAction.ResponseMessage, "approve P-19EC437D") {
-		t.Fatalf("expected explicit token guidance, got %#v", result.NextAction.ResponseMessage)
 	}
 }
 

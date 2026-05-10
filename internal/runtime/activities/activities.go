@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"regexp"
 	goruntime "runtime"
 	"sort"
 	"strconv"
@@ -24,7 +23,6 @@ import (
 	"github.com/opencto/opencto/internal/config"
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/embedding"
-	"github.com/opencto/opencto/internal/runtime/approval"
 	"github.com/opencto/opencto/internal/runtime/scheduled"
 	skillcatalog "github.com/opencto/opencto/internal/skills"
 	"github.com/opencto/opencto/internal/storage"
@@ -111,8 +109,6 @@ type NextActionResult struct {
 	ToolChoice   *agent.ToolChoice         `json:"tool_choice,omitempty"`
 	ToolChoices  []agent.ToolChoice        `json:"tool_choices,omitempty"`
 	WorkItemID   string                    `json:"work_item_id,omitempty"`
-	WaitingToken string                    `json:"waiting_token,omitempty"`
-	WaitingKind  string                    `json:"waiting_kind,omitempty"`
 	Observation  *agent.ExecutionFeedback  `json:"observation,omitempty"`
 	Observations []agent.ExecutionFeedback `json:"observations,omitempty"`
 	Status       string                    `json:"status"`
@@ -136,7 +132,6 @@ type ReportResponseRequest struct {
 	Message     string                    `json:"message"`
 	Attachments []domain.ReportAttachment `json:"attachments,omitempty"`
 	ReplyTo     *domain.ReportReply       `json:"reply_to,omitempty"`
-	WaitingKind string                    `json:"waiting_kind,omitempty"`
 }
 
 type ReportResponseResult struct {
@@ -209,7 +204,6 @@ type ExecuteToolResult struct {
 
 const (
 	NextActionStatusTool      = "tool"
-	NextActionStatusWaiting   = "waiting"
 	NextActionStatusCompleted = "completed"
 	NextActionStatusBlocked   = "blocked"
 	NextActionStatusFailed    = "failed"
@@ -223,10 +217,8 @@ const (
 	defaultExecTailBytes          = 16 << 10
 )
 
-var planningTokenPattern = regexp.MustCompile(`(?i)\b[QP]-[0-9a-f]{8}\b`)
-
 func (r NextActionResult) IsTerminal() bool {
-	return r.Status != NextActionStatusTool && r.Status != NextActionStatusWaiting
+	return r.Status != NextActionStatusTool
 }
 
 type toolExecutionContext struct {
@@ -664,7 +656,7 @@ func (a *Activities) ReportResponse(ctx context.Context, request ReportResponseR
 		)
 		return ReportResponseResult{}, err
 	}
-	if err := a.persistReportedConversationMessages(ctx, request.Event, report, strings.TrimSpace(request.WaitingKind), receipts); err != nil {
+	if err := a.persistReportedConversationMessages(ctx, request.Event, report, receipts); err != nil {
 		a.logActivityStep("ReportResponse", "conversation_error",
 			slog.String("project_id", request.Event.ProjectID),
 			slog.String("event_id", request.Event.ID),
@@ -687,7 +679,7 @@ func (a *Activities) ReportResponse(ctx context.Context, request ReportResponseR
 	return ReportResponseResult{Receipts: receipts}, nil
 }
 
-func (a *Activities) persistReportedConversationMessages(ctx context.Context, event domain.Event, report domain.ReportMessage, waitingKind string, receipts []domain.ReportReceipt) error {
+func (a *Activities) persistReportedConversationMessages(ctx context.Context, event domain.Event, report domain.ReportMessage, receipts []domain.ReportReceipt) error {
 	if a.Store == nil || strings.TrimSpace(report.Text) == "" {
 		return nil
 	}
@@ -698,10 +690,9 @@ func (a *Activities) persistReportedConversationMessages(ctx context.Context, ev
 	if projectID == "" {
 		return nil
 	}
-	waitingKind = strings.TrimSpace(waitingKind)
 	targets := reportedConversationTargets(event, receipts)
 	for index, target := range targets {
-		if !shouldPersistReportedConversationTarget(event, waitingKind, target) {
+		if !shouldPersistReportedConversationTarget(event, target) {
 			continue
 		}
 		metadata := domain.Metadata{
@@ -710,12 +701,8 @@ func (a *Activities) persistReportedConversationMessages(ctx context.Context, ev
 		if target.MessageID != "" {
 			metadata["message_id"] = target.MessageID
 		}
-		if waitingKind != "" {
-			metadata["status"] = NextActionStatusWaiting
-			metadata[domain.MetadataKeyWaitingKind] = waitingKind
-		}
 		message := domain.ConversationMessage{
-			ID:          stableActivityID("conversation-assistant-report", projectID, event.ID, waitingKind, strconv.Itoa(index), target.MessageID, target.ChannelID, target.ThreadID, report.Text),
+			ID:          stableActivityID("conversation-assistant-report", projectID, event.ID, strconv.Itoa(index), target.MessageID, target.ChannelID, target.ThreadID, report.Text),
 			ProjectID:   projectID,
 			EventID:     event.ID,
 			Role:        domain.ConversationRoleAssistant,
@@ -736,10 +723,7 @@ func (a *Activities) persistReportedConversationMessages(ctx context.Context, ev
 	return nil
 }
 
-func shouldPersistReportedConversationTarget(event domain.Event, waitingKind string, target reportedConversationTarget) bool {
-	if strings.TrimSpace(waitingKind) != "" {
-		return true
-	}
+func shouldPersistReportedConversationTarget(event domain.Event, target reportedConversationTarget) bool {
 	return strings.TrimSpace(target.ChannelID) != strings.TrimSpace(event.ChannelID) ||
 		strings.TrimSpace(target.ThreadID) != strings.TrimSpace(event.ThreadID)
 }
@@ -1570,16 +1554,6 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		}
 	}
 
-	if engineOutput.Status == NextActionStatusTool && planApprovalRequired(nextAction, loaded.AdditionalEvents) && outputHasMutatingTool(engineOutput) {
-		token := strings.TrimSpace(nextAction.WaitingToken)
-		engineOutput = explicitPlanApprovalWaitingOutput(event.ChannelType, nextAction, token)
-	}
-	if event.ChannelType != domain.ChannelTypeDiscord && engineOutput.Status == NextActionStatusTool && outputHasMutatingTool(engineOutput) {
-		if token := unscopedPlanApprovalToken(event, loaded.Conversation); token != "" {
-			engineOutput = unscopedPlanApprovalOutput(nextAction, token)
-		}
-	}
-
 	a.logActivityStep("NextAction", "dispatch_status",
 		slog.String("project_id", projectID),
 		slog.String("event_id", event.ID),
@@ -1588,8 +1562,6 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 	switch engineOutput.Status {
 	case NextActionStatusTool:
 		return a.prepareToolNextAction(ctx, nextAction, observations, engineOutput, request.ExecutionCycle, now)
-	case NextActionStatusWaiting:
-		return a.prepareWaitingNextAction(nextAction, observations, engineOutput, now)
 	case NextActionStatusCompleted, NextActionStatusBlocked, NextActionStatusFailed, NextActionStatusIgnored:
 		return a.finishNextAction(ctx, event, nextAction, lastObservation(observations), observations, engineOutput, request.Processes, now)
 	default:
@@ -1626,143 +1598,10 @@ func inferDiscordThreadContext(event domain.Event) domain.Event {
 		return event
 	}
 	switch strings.TrimSpace(event.Metadata[domain.MetadataKeyControl]) {
-	case domain.MetadataControlPlanningAnswer, domain.MetadataControlTaskReply:
+	case domain.MetadataControlTaskReply:
 		event.ThreadID = strings.TrimSpace(event.ChannelID)
 	}
 	return event
-}
-
-func explicitPlanApprovalWaitingOutput(channelType domain.ChannelType, nextAction agent.NextAction, token string) agent.NextActionOutput {
-	message := "I need explicit approval before mutating files or systems for this plan."
-	if channelType == domain.ChannelTypeDiscord {
-		message += " Reply to this message, or write in its thread, to approve or revise."
-	} else if strings.TrimSpace(token) != "" {
-		message += " Reply with `approve " + strings.TrimSpace(token) + "` to proceed, or `" + strings.TrimSpace(token) + ": <changes>` to revise it."
-	}
-	nextAction.ResponseMessage = message
-	nextAction.WaitingKind = "plan"
-	nextAction.WaitingToken = token
-	return agent.NextActionOutput{
-		NextAction:   nextAction,
-		WaitingKind:  "plan",
-		WaitingToken: token,
-		Status:       NextActionStatusWaiting,
-	}
-}
-
-func planApprovalRequired(nextAction agent.NextAction, additionalEvents []domain.Event) bool {
-	token := strings.TrimSpace(nextAction.WaitingToken)
-	if strings.TrimSpace(nextAction.WaitingKind) != "plan" {
-		return false
-	}
-	return !hasPlanApproval(additionalEvents, token)
-}
-
-func hasPlanApproval(events []domain.Event, token string) bool {
-	token = normalizePlanningToken(token)
-	for _, event := range events {
-		if event.Metadata[domain.MetadataKeyApprovalDecision] == domain.MetadataApprovalApproved &&
-			event.Metadata[domain.MetadataKeyWaitingKind] == "plan" {
-			return true
-		}
-		if event.ChannelType == domain.ChannelTypeDiscord {
-			continue
-		}
-		if token == "" {
-			continue
-		}
-		if explicitPlanApprovalBody(event.Body, token) {
-			return true
-		}
-		if normalizePlanningToken(event.Metadata[domain.MetadataKeyPlanningToken]) == token && planApprovalPhrase(event.Body) {
-			return true
-		}
-	}
-	return false
-}
-
-func explicitPlanApprovalBody(body string, token string) bool {
-	fields := strings.Fields(strings.TrimSpace(body))
-	return len(fields) >= 2 && strings.EqualFold(fields[0], "approve") && normalizePlanningToken(fields[1]) == token
-}
-
-func planApprovalPhrase(body string) bool {
-	return approval.IsApprovalPhrase(body)
-}
-
-func unscopedPlanApprovalToken(event domain.Event, conversation []domain.ConversationMessage) string {
-	if normalizePlanningToken(event.Metadata[domain.MetadataKeyPlanningToken]) != "" {
-		return ""
-	}
-	if normalizePlanningToken(planningTokenPattern.FindString(event.Body)) != "" {
-		return ""
-	}
-	if !planApprovalPhrase(event.Body) {
-		return ""
-	}
-	return latestPlanTokenFromConversation(conversation)
-}
-
-func latestPlanTokenFromConversation(conversation []domain.ConversationMessage) string {
-	for index := len(conversation) - 1; index >= 0; index-- {
-		message := conversation[index]
-		if message.Role != domain.ConversationRoleAssistant {
-			continue
-		}
-		matches := planningTokenPattern.FindAllString(message.Body, -1)
-		for matchIndex := len(matches) - 1; matchIndex >= 0; matchIndex-- {
-			token := normalizePlanningToken(matches[matchIndex])
-			if strings.HasPrefix(token, "P-") {
-				return token
-			}
-		}
-	}
-	return ""
-}
-
-func unscopedPlanApprovalOutput(nextAction agent.NextAction, token string) agent.NextActionOutput {
-	message := "I can't treat a bare confirmation as plan approval because it was not tied to the plan."
-	if strings.TrimSpace(token) != "" {
-		message += " Reply with `approve " + strings.TrimSpace(token) + "` or reply directly to the plan message."
-	}
-	nextAction.ResponseMessage = message
-	nextAction.WaitingKind = ""
-	nextAction.WaitingToken = ""
-	return agent.NextActionOutput{
-		NextAction: nextAction,
-		Status:     NextActionStatusCompleted,
-	}
-}
-
-func outputHasMutatingTool(output agent.NextActionOutput) bool {
-	choices := append([]agent.ToolChoice(nil), output.ToolChoices...)
-	if len(choices) == 0 && output.ToolChoice != nil {
-		choices = []agent.ToolChoice{*output.ToolChoice}
-	}
-	for _, choice := range choices {
-		if mutatingToolChoice(choice) {
-			return true
-		}
-	}
-	return false
-}
-
-func mutatingToolChoice(choice agent.ToolChoice) bool {
-	switch choice.Type {
-	case domain.ToolTypeRead, domain.ToolTypeGlob, domain.ToolTypeGrep, domain.ToolTypeMemorySearch, domain.ToolTypeMemoryList, domain.ToolTypeSkill:
-		return false
-	case domain.ToolTypeExec:
-		return choice.Destructive || choice.Idempotency != domain.ToolIdempotencyReadOnly
-	case domain.ToolTypeSchedule:
-		return choice.Idempotency != domain.ToolIdempotencyReadOnly
-	default:
-		return true
-	}
-}
-
-func normalizePlanningToken(token string) string {
-	token = strings.Trim(strings.TrimSpace(token), "`.,:;()[]{}")
-	return strings.ToUpper(token)
 }
 
 func (a *Activities) prepareToolNextAction(ctx context.Context, nextAction agent.NextAction, observations []agent.ExecutionFeedback, output agent.NextActionOutput, cycle int, now time.Time) (NextActionResult, error) {
@@ -1851,58 +1690,6 @@ func (a *Activities) prepareToolNextAction(ctx context.Context, nextAction agent
 		Observation:  observation,
 		Observations: observations,
 		Status:       NextActionStatusTool,
-	}, nil
-}
-
-func (a *Activities) prepareWaitingNextAction(nextAction agent.NextAction, observations []agent.ExecutionFeedback, output agent.NextActionOutput, now time.Time) (NextActionResult, error) {
-	a.logActivityStep("NextAction", "prepare_waiting_begin",
-		slog.String("waiting_token", strings.TrimSpace(output.WaitingToken)),
-		slog.String("waiting_kind", strings.TrimSpace(output.WaitingKind)),
-	)
-	message := strings.TrimSpace(output.NextAction.ResponseMessage)
-	token := firstNonEmpty(output.WaitingToken, output.NextAction.WaitingToken)
-	kind := firstNonEmpty(output.WaitingKind, output.NextAction.WaitingKind)
-	if message == "" {
-		return NextActionResult{}, fmt.Errorf("%w: waiting next action is missing response message", agent.ErrInvalidNextAction)
-	}
-	if kind == "" {
-		kind = "question"
-	}
-
-	nextAction.ToolChoice = agent.ToolChoice{}
-	nextAction.ResponseMessage = message
-	nextAction.WaitingToken = token
-	nextAction.WaitingKind = kind
-	workItemID := currentNextActionWorkItemID(nextAction, lastObservation(observations))
-	if workItemID == "" && len(nextAction.WorkItems) > 0 {
-		workItemID = nextAction.WorkItems[0].ID
-	}
-	index := nextActionWorkItemIndexByID(nextAction.WorkItems, workItemID)
-	if index >= 0 {
-		nextAction.WorkItems[index].Status = domain.WorkItemStatusPending
-		nextAction.WorkItems[index].UpdatedAt = now
-		if nextAction.WorkItems[index].Metadata == nil {
-			nextAction.WorkItems[index].Metadata = map[string]string{}
-		}
-		if token != "" {
-			nextAction.WorkItems[index].Metadata["waiting_token"] = token
-		}
-		nextAction.WorkItems[index].Metadata["waiting_kind"] = kind
-	}
-
-	a.logActivityStep("NextAction", "prepare_waiting_done",
-		slog.String("work_item_id", strings.TrimSpace(workItemID)),
-		slog.String("waiting_token", token),
-		slog.String("waiting_kind", kind),
-	)
-	return NextActionResult{
-		NextAction:   nextAction,
-		WorkItemID:   workItemID,
-		WaitingToken: token,
-		WaitingKind:  kind,
-		Observation:  lastObservation(observations),
-		Observations: observations,
-		Status:       NextActionStatusWaiting,
 	}, nil
 }
 
