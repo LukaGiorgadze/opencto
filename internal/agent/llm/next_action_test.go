@@ -704,6 +704,75 @@ func TestBuildNextActionMessagesAddsConversationSummaries(t *testing.T) {
 	}
 }
 
+func TestConversationContextBudgetsUseSummaryHeavySplitWhenSummariesExist(t *testing.T) {
+	t.Parallel()
+
+	summaryBudget, historyBudget := conversationContextBudgets(20000, true)
+	if summaryBudget != 14000 || historyBudget != 6000 {
+		t.Fatalf("expected 70%% summary and 30%% raw history budgets, got summary=%d history=%d", summaryBudget, historyBudget)
+	}
+}
+
+func TestBuildNextActionMessagesPreservesChannelAndThreadSummariesBeforeRawHistory(t *testing.T) {
+	t.Parallel()
+
+	raw := make([]domain.ConversationMessage, 0, 20)
+	for i := 0; i < 20; i++ {
+		raw = append(raw, domain.ConversationMessage{
+			ID:   "recent-" + strconv.Itoa(i),
+			Role: domain.ConversationRoleUser,
+			Body: "recent-" + strconv.Itoa(i) + " " + strings.Repeat("raw-thread-detail ", 80),
+		})
+	}
+	input := agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event: domain.Event{
+				ID:        "event-current",
+				ProjectID: "project-1",
+				Body:      "continue",
+			},
+			ConversationSummaries: []domain.ConversationSummary{
+				{
+					ID:      "thread-summary",
+					Scope:   domain.ConversationSummaryScopeThread,
+					Summary: "THREAD-SUMMARY " + strings.Repeat("thread-summary-detail ", 700),
+				},
+				{
+					ID:      "channel-summary",
+					Scope:   domain.ConversationSummaryScopeChannel,
+					Summary: "CHANNEL-SUMMARY must remain visible.",
+				},
+			},
+			Conversation:                raw,
+			ConversationMaxContextChars: 20000,
+		},
+	}
+
+	messages, err := buildNextActionMessages(input)
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	if len(messages) != 4 {
+		t.Fatalf("expected system, summary, history, and user messages, got %d", len(messages))
+	}
+	summary := messageText(messages[1])
+	if !strings.Contains(summary, "summary[thread]") || !strings.Contains(summary, "THREAD-SUMMARY") {
+		t.Fatalf("expected thread summary in bounded summary context:\n%s", summary)
+	}
+	if !strings.Contains(summary, "summary[channel]") || !strings.Contains(summary, "CHANNEL-SUMMARY") {
+		t.Fatalf("expected channel summary to survive alongside long thread summary:\n%s", summary)
+	}
+	history := messageText(messages[2])
+	if len(history) > 6000 {
+		t.Fatalf("expected raw thread history to stay within 30%% budget, got %d chars", len(history))
+	}
+	if !strings.Contains(history, "recent-19") {
+		t.Fatalf("expected most recent raw thread history to be retained:\n%s", history)
+	}
+}
+
 func TestBuildNextActionMessagesExcludesCurrentAndAdditionalEventsFromHistory(t *testing.T) {
 	t.Parallel()
 

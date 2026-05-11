@@ -230,9 +230,10 @@ func TestNormalizeMessageUsesStateThreadChannel(t *testing.T) {
 		t.Fatalf("add guild: %v", err)
 	}
 	if err := session.State.ChannelAdd(&discordgo.Channel{
-		ID:      "thread-1",
-		GuildID: "guild-1",
-		Type:    discordgo.ChannelTypeGuildPublicThread,
+		ID:       "thread-1",
+		GuildID:  "guild-1",
+		ParentID: "channel-1",
+		Type:     discordgo.ChannelTypeGuildPublicThread,
 	}); err != nil {
 		t.Fatalf("add thread channel: %v", err)
 	}
@@ -256,6 +257,9 @@ func TestNormalizeMessageUsesStateThreadChannel(t *testing.T) {
 	}
 	if event.ThreadID != "thread-1" {
 		t.Fatalf("expected thread id from state channel, got %q", event.ThreadID)
+	}
+	if event.ChannelID != "channel-1" {
+		t.Fatalf("expected parent channel id for thread message, got %q", event.ChannelID)
 	}
 }
 
