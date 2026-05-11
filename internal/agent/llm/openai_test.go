@@ -22,7 +22,7 @@ func TestResolveOpenAIAPIKeyFromConfig(t *testing.T) {
 }
 
 func TestResolveOpenAIAPIKeyFromEnvironment(t *testing.T) {
-	t.Setenv("LITELLM_PROXY_KEY", "env-key")
+	t.Setenv("BIFROST_API_KEY", "env-key")
 	key, source, err := ResolveOpenAIAPIKey(config.LLMConfig{})
 	if err != nil {
 		t.Fatalf("resolve api key: %v", err)
@@ -36,7 +36,7 @@ func TestResolveOpenAIAPIKeyFromEnvironment(t *testing.T) {
 }
 
 func TestResolveOpenAIAPIKeyMissingEnvironment(t *testing.T) {
-	t.Setenv("LITELLM_PROXY_KEY", "")
+	t.Setenv("BIFROST_API_KEY", "")
 
 	key, source, err := ResolveOpenAIAPIKey(config.LLMConfig{})
 	if err == nil {

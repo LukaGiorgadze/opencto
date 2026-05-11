@@ -22,7 +22,10 @@ const (
 	APIKeySourceEnvironment APIKeySource = "environment"
 )
 
-const eventPayloadAttachmentsKey = "attachments"
+const (
+	bifrostAPIKeyEnv           = "BIFROST_API_KEY"
+	eventPayloadAttachmentsKey = "attachments"
+)
 
 var defaultImageResolver = media.NewImageResolver(media.DefaultImageResolverConfig())
 
@@ -31,9 +34,9 @@ func ResolveOpenAIAPIKey(cfg config.LLMConfig) (string, APIKeySource, error) {
 		return value, APIKeySourceConfig, nil
 	}
 
-	value := strings.TrimSpace(os.Getenv("LITELLM_PROXY_KEY"))
+	value := strings.TrimSpace(os.Getenv(bifrostAPIKeyEnv))
 	if value == "" {
-		return "", "", fmt.Errorf("environment variable %q is not set", "LITELLM_PROXY_KEY")
+		return "", "", fmt.Errorf("environment variable %q is not set", bifrostAPIKeyEnv)
 	}
 	return value, APIKeySourceEnvironment, nil
 }

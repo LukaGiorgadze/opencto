@@ -120,9 +120,9 @@ services:
     ports:
       - "8080:8080"
 
-  litellm:
-    image: docker.litellm.ai/berriai/litellm:main-stable
-    container_name: opencto-litellm
+  bifrost:
+    image: maximhq/bifrost:latest
+    container_name: opencto-bifrost
     restart: unless-stopped
     depends_on:
       postgresql:
@@ -130,20 +130,17 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://temporal:temporal@postgresql:5432/postgres
-      MAX_STRING_LENGTH_PROMPT_IN_DB: 100000
+      BIFROST_API_KEY: ${BIFROST_API_KEY:-sk-bf-opencto-local}
     volumes:
-      - ./litellm.yaml:/app/litellm.yaml:ro
-    command:
-      - "--config=/app/litellm.yaml"
+      - ./bifrost.json:/app/data/config.json:ro
     networks:
       - opencto-network
     ports:
-      - "4000:4000"
+      - "4000:8080"
     healthcheck:
       test:
         - CMD-SHELL
-        - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"
+        - wget -qO- http://localhost:8080/health >/dev/null
       interval: 30s
       timeout: 10s
       retries: 3

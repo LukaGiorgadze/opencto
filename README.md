@@ -55,13 +55,13 @@ Recommended local setup:
 
 ```bash
 export OPENAI_API_KEY="sk-..."
-export LITELLM_PROXY_KEY="sk-admin"
+export BIFROST_API_KEY="sk-bf-opencto-local"
 task worker
 ```
 
 `task worker` now runs through `air`, so code changes rebuild and restart automatically.
 
-When using the local LiteLLM proxy, `OPENAI_API_KEY` is the upstream provider key for LiteLLM and `LITELLM_PROXY_KEY` is the key OpenCTO uses to authenticate to LiteLLM. OpenCTO now reads `LITELLM_PROXY_KEY` directly from the environment. A direct `llm.api_key` value is also supported for local-only testing, but environment variables are safer.
+When using the local Bifrost gateway, `OPENAI_API_KEY` is the upstream provider key for Bifrost and `BIFROST_API_KEY` is the virtual key OpenCTO uses to authenticate to Bifrost. OpenCTO reads `BIFROST_API_KEY` directly from the environment. A direct `llm.api_key` value is also supported for local-only testing, but environment variables are safer.
 
 ## Discord
 

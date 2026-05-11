@@ -27,7 +27,7 @@
   },
   "llm": {
     "provider": "openai",
-    "base_url": "http://127.0.0.1:4000",
+    "base_url": "http://127.0.0.1:4000/openai",
     "model_reasoning": "gpt-5.4-nano",
     "model_fast": "gpt-5.4-nano",
     "model_summary": "gpt-5.4-nano",
