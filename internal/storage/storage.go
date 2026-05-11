@@ -40,6 +40,8 @@ type RuntimeStore interface {
 	UpsertExecutionAttempt(context.Context, domain.ExecutionAttempt) error
 	UpsertToolInvocation(context.Context, domain.ToolInvocation) error
 	UpsertConversationThread(context.Context, domain.ConversationThread) error
+	GetConversationThread(context.Context, ConversationThreadQuery) (domain.ConversationThread, bool, error)
+	GetConversationRootMessage(context.Context, ConversationRootMessageQuery) (domain.ConversationMessage, bool, error)
 	UpsertConversationMessage(context.Context, domain.ConversationMessage) error
 	ListConversationMessages(context.Context, ConversationQuery) ([]domain.ConversationMessage, error)
 	UpsertConversationSummary(context.Context, domain.ConversationSummary) error
@@ -63,27 +65,45 @@ const (
 )
 
 type ConversationQuery struct {
-	ProjectID      string
-	ChannelType    domain.ChannelType
-	ChannelID      string
-	ThreadID       string
-	Scope          ConversationScope
-	Roles          []domain.ConversationRole
-	Limit          int
-	AfterCreatedAt time.Time
-	AfterID        string
-	OldestFirst    bool
-	ExcludeEventID string
-	ExcludeControl bool
+	ProjectID       string
+	ChannelType     domain.ChannelType
+	ChannelID       string
+	ThreadID        string
+	Scope           ConversationScope
+	Roles           []domain.ConversationRole
+	Limit           int
+	AfterCreatedAt  time.Time
+	AfterID         string
+	BeforeCreatedAt time.Time
+	BeforeID        string
+	OldestFirst     bool
+	ExcludeEventID  string
+	ExcludeControl  bool
 }
 
-type ConversationSummaryQuery struct {
+type ConversationThreadQuery struct {
 	ProjectID   string
 	ChannelType domain.ChannelType
 	ChannelID   string
 	ThreadID    string
-	Scope       domain.ConversationSummaryScope
-	Limit       int
+}
+
+type ConversationRootMessageQuery struct {
+	ProjectID   string
+	ChannelType domain.ChannelType
+	ChannelID   string
+	MessageID   string
+}
+
+type ConversationSummaryQuery struct {
+	ProjectID       string
+	ChannelType     domain.ChannelType
+	ChannelID       string
+	ThreadID        string
+	Scope           domain.ConversationSummaryScope
+	Limit           int
+	BeforeCreatedAt time.Time
+	BeforeID        string
 }
 
 func DefaultDBPath(workspaceRoot string) string {

@@ -50,6 +50,7 @@ type Adapter struct {
 	attachmentLimits AttachmentLimits
 	channelMu        sync.Mutex
 	threadChannels   map[string]string
+	threadParents    map[string]string
 }
 
 func New(projectID, token, _ string, dispatcher *runtime.Dispatcher, logger *slog.Logger, opts ...Options) (*Adapter, error) {
@@ -87,6 +88,7 @@ func New(projectID, token, _ string, dispatcher *runtime.Dispatcher, logger *slo
 		messageLimits:    options.MessageLimits,
 		attachmentLimits: options.AttachmentLimits,
 		threadChannels:   map[string]string{},
+		threadParents:    map[string]string{},
 	}, nil
 }
 
@@ -168,7 +170,11 @@ func (a *Adapter) NormalizeMessage(ctx context.Context, message *discordgo.Messa
 	now := time.Now().UTC()
 	a.hydrateEmptyDiscordMessage(ctx, message)
 	body := normalizeDiscordBody(message.Content)
-	threadID := a.discordThreadID(message)
+	threadID, parentChannelID := a.discordThreadContext(message)
+	channelID := strings.TrimSpace(message.ChannelID)
+	if threadID != "" && parentChannelID != "" {
+		channelID = parentChannelID
+	}
 	attachments, err := a.normalizeAttachments(ctx, id, message.Attachments, now)
 	if err != nil {
 		return domain.Event{}, err
@@ -187,7 +193,7 @@ func (a *Adapter) NormalizeMessage(ctx context.Context, message *discordgo.Messa
 		ID:          id,
 		ProjectID:   a.projectID,
 		Kind:        domain.EventKindMessage,
-		ChannelID:   message.ChannelID,
+		ChannelID:   channelID,
 		ChannelType: domain.ChannelTypeDiscord,
 		ThreadID:    threadID,
 		ActorID:     message.Author.ID,
@@ -209,7 +215,7 @@ func (a *Adapter) NormalizeMessage(ctx context.Context, message *discordgo.Messa
 	a.log().Info("discord message normalized",
 		slog.String("event_id", event.ID),
 		slog.String("source_message_id", message.ID),
-		slog.String("channel_id", message.ChannelID),
+		slog.String("channel_id", channelID),
 		slog.String("guild_id", message.GuildID),
 		slog.String("thread_id", threadID),
 		slog.String("reply_to_message_id", metadata[domain.MetadataKeyReplyToMessageID]),
@@ -311,29 +317,38 @@ func addDiscordReplyMetadata(message *discordgo.MessageCreate, payload map[strin
 }
 
 func (a *Adapter) discordThreadID(message *discordgo.MessageCreate) string {
+	threadID, _ := a.discordThreadContext(message)
+	return threadID
+}
+
+func (a *Adapter) discordThreadContext(message *discordgo.MessageCreate) (string, string) {
 	if message == nil || message.Message == nil {
-		return ""
+		return "", ""
 	}
 	if message.Thread != nil && message.Thread.IsThread() {
 		a.log().Info("discord thread detected from message thread",
 			slog.String("channel_id", message.ChannelID),
 			slog.String("thread_id", strings.TrimSpace(message.Thread.ID)),
 		)
-		return strings.TrimSpace(message.Thread.ID)
+		return strings.TrimSpace(message.Thread.ID), strings.TrimSpace(message.Thread.ParentID)
 	}
 	channelID := strings.TrimSpace(message.ChannelID)
 	if channelID == "" || a == nil || a.session == nil {
-		return ""
+		return "", ""
 	}
 	a.channelMu.Lock()
 	if a.threadChannels != nil {
 		if threadID, ok := a.threadChannels[channelID]; ok {
+			parentID := ""
+			if a.threadParents != nil {
+				parentID = a.threadParents[channelID]
+			}
 			a.channelMu.Unlock()
 			a.log().Info("discord thread cache hit",
 				slog.String("channel_id", channelID),
 				slog.String("thread_id", threadID),
 			)
-			return threadID
+			return threadID, parentID
 		}
 	}
 	a.channelMu.Unlock()
@@ -341,47 +356,54 @@ func (a *Adapter) discordThreadID(message *discordgo.MessageCreate) string {
 	if a.session.State != nil {
 		if channel, err := a.session.State.Channel(channelID); err == nil && channel != nil {
 			threadID := ""
+			parentID := ""
 			if channel.IsThread() {
 				threadID = strings.TrimSpace(channel.ID)
+				parentID = strings.TrimSpace(channel.ParentID)
 			}
-			a.channelMu.Lock()
-			if a.threadChannels == nil {
-				a.threadChannels = map[string]string{}
-			}
-			a.threadChannels[channelID] = threadID
-			a.channelMu.Unlock()
+			a.cacheDiscordThreadContext(channelID, threadID, parentID)
 			a.log().Info("discord thread detected from state",
 				slog.String("channel_id", channelID),
 				slog.String("thread_id", threadID),
 			)
-			return threadID
+			return threadID, parentID
 		}
 	}
 
 	channel, err := a.session.Channel(channelID)
 	threadID := ""
+	parentID := ""
 	if err == nil && channel != nil && channel.IsThread() {
 		threadID = strings.TrimSpace(channel.ID)
+		parentID = strings.TrimSpace(channel.ParentID)
 	}
 	if err != nil {
 		a.log().Warn("discord thread lookup failed",
 			slog.String("channel_id", channelID),
 			slog.String("error", err.Error()),
 		)
-		return ""
+		return "", ""
 	}
 
-	a.channelMu.Lock()
-	if a.threadChannels == nil {
-		a.threadChannels = map[string]string{}
-	}
-	a.threadChannels[channelID] = threadID
-	a.channelMu.Unlock()
+	a.cacheDiscordThreadContext(channelID, threadID, parentID)
 	a.log().Info("discord thread detected from rest",
 		slog.String("channel_id", channelID),
 		slog.String("thread_id", threadID),
 	)
-	return threadID
+	return threadID, parentID
+}
+
+func (a *Adapter) cacheDiscordThreadContext(channelID, threadID, parentID string) {
+	a.channelMu.Lock()
+	defer a.channelMu.Unlock()
+	if a.threadChannels == nil {
+		a.threadChannels = map[string]string{}
+	}
+	if a.threadParents == nil {
+		a.threadParents = map[string]string{}
+	}
+	a.threadChannels[channelID] = threadID
+	a.threadParents[channelID] = parentID
 }
 
 func (a *Adapter) log() *slog.Logger {
@@ -680,7 +702,7 @@ func discordReportReceipt(event domain.Event, sent *discordgo.Message) domain.Re
 	}
 	if sent != nil {
 		receipt.MessageID = strings.TrimSpace(sent.ID)
-		if strings.TrimSpace(sent.ChannelID) != "" {
+		if strings.TrimSpace(receipt.ChannelID) == "" && strings.TrimSpace(sent.ChannelID) != "" {
 			receipt.ChannelID = strings.TrimSpace(sent.ChannelID)
 		}
 		if strings.TrimSpace(sent.GuildID) != "" {

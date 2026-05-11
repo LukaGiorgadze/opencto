@@ -94,7 +94,7 @@ func TestReportSplitsMessagesByConfiguredLimit(t *testing.T) {
 		t.Fatalf("expected %d receipts, got %#v", len(want), receipts)
 	}
 	for i, receipt := range receipts {
-		if receipt.MessageID != strconv.Itoa(i+1) || receipt.ChannelID != "thread-1" || receipt.ThreadID != "thread-1" {
+		if receipt.MessageID != strconv.Itoa(i+1) || receipt.ChannelID != "channel-1" || receipt.ThreadID != "thread-1" {
 			t.Fatalf("unexpected receipt %d: %#v", i, receipt)
 		}
 	}

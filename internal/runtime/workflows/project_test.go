@@ -1056,6 +1056,122 @@ func TestProjectWorkflowRoutesThreadMessageToOwnedTask(t *testing.T) {
 	}
 }
 
+func TestProjectWorkflowDoesNotRouteParentChannelMessageToThreadTask(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ProjectWorkflow)
+	var seen []string
+	received := false
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context, input workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		seen = append(seen, input.Event.ID)
+		if input.Event.ID != "event-1" {
+			return workflows.TaskWorkflowResult{Completed: true}, nil
+		}
+		selector := workflow.NewSelector(ctx)
+		selector.AddReceive(workflow.GetSignalChannel(ctx, workflows.SignalTaskAdditionalContext), func(c workflow.ReceiveChannel, more bool) {
+			var signal workflows.AdditionalContextSignal
+			c.Receive(ctx, &signal)
+			received = signal.Event.ID == "event-2"
+		})
+		selector.AddFuture(workflow.NewTimer(ctx, 3*time.Millisecond), func(workflow.Future) {})
+		selector.Select(ctx)
+		return workflows.TaskWorkflowResult{Completed: true}, nil
+	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "project-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			ThreadID:    "thread-1",
+			Body:        "do work",
+		}})
+	}, 0)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:          "event-2",
+			ProjectID:   "project-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			Body:        "new main-channel task",
+		}})
+	}, time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.CancelWorkflow()
+	}, 6*time.Millisecond)
+
+	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	if received {
+		t.Fatalf("parent channel message should not route into thread task")
+	}
+	if strings.Join(seen, ",") != "event-1,event-2" {
+		t.Fatalf("parent channel message should start a separate task, got %#v", seen)
+	}
+}
+
+func TestProjectWorkflowRoutesUnownedThreadMessageToActiveParentChannelTask(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ProjectWorkflow)
+	var seen []string
+	received := false
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context, input workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		seen = append(seen, input.Event.ID)
+		if input.Event.ID != "event-1" {
+			return workflows.TaskWorkflowResult{Completed: true}, nil
+		}
+		var signal workflows.AdditionalContextSignal
+		workflow.GetSignalChannel(ctx, workflows.SignalTaskAdditionalContext).Receive(ctx, &signal)
+		received = signal.Event.ID == "event-2" &&
+			signal.Event.ChannelID == "channel-1" &&
+			signal.Event.ThreadID == "thread-1" &&
+			signal.Event.Metadata[domain.MetadataKeyControl] == domain.MetadataControlTaskReply
+		return workflows.TaskWorkflowResult{Completed: true}, nil
+	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "project-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			Body:        "do work",
+		}})
+	}, 0)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:          "event-2",
+			ProjectID:   "project-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			ThreadID:    "thread-1",
+			Body:        "thread follow-up",
+		}})
+	}, time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.CancelWorkflow()
+	}, 5*time.Millisecond)
+
+	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	if !received {
+		t.Fatalf("expected thread message to route to active parent-channel task")
+	}
+	if strings.Join(seen, ",") != "event-1" {
+		t.Fatalf("thread follow-up should not start a separate task, got %#v", seen)
+	}
+}
+
 func TestProjectWorkflowRoutesThreadChannelMessageToOwnedTask(t *testing.T) {
 	t.Parallel()
 
