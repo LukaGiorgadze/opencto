@@ -280,15 +280,15 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event, conver
 	var conversationSummaries []domain.ConversationSummary
 	if a.Store != nil && a.ConversationEnabled {
 		var err error
-		conversation, err = a.loadConversationHistory(ctx, conversationEvent)
-		if err != nil {
-			return agent.Context{}, err
-		}
 		if a.ConversationSummaryEnabled {
 			conversationSummaries, err = a.loadConversationSummaries(ctx, conversationEvent)
 			if err != nil {
 				return agent.Context{}, err
 			}
+		}
+		conversation, err = a.loadConversationHistory(ctx, conversationEvent, conversationSummaries)
+		if err != nil {
+			return agent.Context{}, err
 		}
 	}
 
@@ -322,7 +322,7 @@ func autoContextMemoryScopes(event domain.Event) []domain.MemoryScope {
 	return []domain.MemoryScope{domain.MemoryScopeProject, domain.MemoryScopeUser, domain.MemoryScopeGlobal}
 }
 
-func (a *Activities) loadConversationHistory(ctx context.Context, event domain.Event) ([]domain.ConversationMessage, error) {
+func (a *Activities) loadConversationHistory(ctx context.Context, event domain.Event, summaries []domain.ConversationSummary) ([]domain.ConversationMessage, error) {
 	limit := storage.DefaultConversationHistoryLimit(a.ConversationLimit)
 	if limit > 50 {
 		limit = 50
@@ -339,13 +339,15 @@ func (a *Activities) loadConversationHistory(ctx context.Context, event domain.E
 	}
 	var messages []domain.ConversationMessage
 	seen := map[string]bool{}
-	appendMessages := func(scope storage.ConversationScope, remaining int) error {
-		if remaining <= 0 {
+	appendMessages := func(scope storage.ConversationScope, cutoff domain.ConversationSummary) error {
+		if limit <= 0 {
 			return nil
 		}
 		query := base
 		query.Scope = scope
-		query.Limit = remaining
+		query.Limit = limit
+		query.AfterCreatedAt = cutoff.ToCreatedAt
+		query.AfterID = cutoff.ToMessageID
 		found, err := a.Store.ListConversationMessages(ctx, query)
 		if err != nil {
 			return err
@@ -359,24 +361,45 @@ func (a *Activities) loadConversationHistory(ctx context.Context, event domain.E
 		}
 		return nil
 	}
+	threadSummary, _ := latestConversationSummary(summaries, domain.ConversationSummaryScopeThread)
+	channelSummary, hasChannelSummary := latestConversationSummary(summaries, domain.ConversationSummaryScopeChannel)
+	projectSummary, _ := latestConversationSummary(summaries, domain.ConversationSummaryScopeProject)
 	if strings.TrimSpace(event.ChannelID) != "" {
 		if strings.TrimSpace(event.ThreadID) != "" {
-			if err := appendMessages(storage.ConversationScopeThread, limit-len(messages)); err != nil {
+			if err := appendMessages(storage.ConversationScopeThread, threadSummary); err != nil {
 				return nil, err
 			}
-		} else if err := appendMessages(storage.ConversationScopeChannel, limit-len(messages)); err != nil {
+			if !hasChannelSummary {
+				if err := appendMessages(storage.ConversationScopeChannel, domain.ConversationSummary{}); err != nil {
+					return nil, err
+				}
+			}
+		} else if err := appendMessages(storage.ConversationScopeChannel, channelSummary); err != nil {
 			return nil, err
 		}
 	} else {
-		if err := appendMessages(storage.ConversationScopeProject, limit-len(messages)); err != nil {
+		if err := appendMessages(storage.ConversationScopeProject, projectSummary); err != nil {
 			return nil, err
 		}
 	}
 	sortConversationMessages(messages)
-	if len(messages) > limit {
-		messages = messages[len(messages)-limit:]
-	}
 	return messages, nil
+}
+
+func latestConversationSummary(summaries []domain.ConversationSummary, scope domain.ConversationSummaryScope) (domain.ConversationSummary, bool) {
+	var latest domain.ConversationSummary
+	found := false
+	for _, summary := range summaries {
+		if summary.Scope != scope {
+			continue
+		}
+		if !found || summary.ToCreatedAt.After(latest.ToCreatedAt) ||
+			(summary.ToCreatedAt.Equal(latest.ToCreatedAt) && summary.ToMessageID > latest.ToMessageID) {
+			latest = summary
+			found = true
+		}
+	}
+	return latest, found
 }
 
 func sortConversationMessages(messages []domain.ConversationMessage) {

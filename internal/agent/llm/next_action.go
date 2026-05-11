@@ -324,7 +324,7 @@ func conversationContextBudgets(maxChars int, hasSummaries bool) (int, int) {
 	if !hasSummaries {
 		return 0, maxChars
 	}
-	summaryBudget := maxChars * 4 / 10
+	summaryBudget := maxChars * 7 / 10
 	if summaryBudget < 1000 {
 		summaryBudget = maxChars / 2
 	}
@@ -348,11 +348,15 @@ func conversationSummaryContextMessage(summaries []domain.ConversationSummary, m
 	}
 	remaining := maxChars - len(header) - 1
 	selected := make([]string, 0, len(summaries))
-	for _, summary := range summaries {
+	for i, summary := range summaries {
 		if remaining <= 0 {
 			break
 		}
-		entry := conversationSummaryEntry(summary, remaining)
+		entryBudget := remaining
+		if left := len(summaries) - i; left > 1 {
+			entryBudget = remaining / left
+		}
+		entry := conversationSummaryEntry(summary, entryBudget)
 		if strings.TrimSpace(entry) == "" {
 			continue
 		}
