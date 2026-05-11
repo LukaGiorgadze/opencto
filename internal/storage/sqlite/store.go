@@ -1066,19 +1066,14 @@ WHERE project_id = ? AND channel_type = ? AND thread_id = ?
 func (s *Store) GetConversationRootMessage(ctx context.Context, query storage.ConversationRootMessageQuery) (domain.ConversationMessage, bool, error) {
 	projectID := strings.TrimSpace(query.ProjectID)
 	messageID := strings.TrimSpace(query.MessageID)
-	if projectID == "" || query.ChannelType == "" || messageID == "" {
+	channelID := strings.TrimSpace(query.ChannelID)
+	if projectID == "" || query.ChannelType == "" || channelID == "" || messageID == "" {
 		return domain.ConversationMessage{}, false, nil
 	}
-	where := []string{"cm.project_id = ?", "cm.channel_type = ?"}
-	args := []any{projectID, string(query.ChannelType)}
-	channelID := strings.TrimSpace(query.ChannelID)
-	sourceMatch := "(COALESCE(json_extract(e.provenance, '$.source_id'), '') = ? OR COALESCE(json_extract(e.payload, '$.message_id'), '') = ?)"
-	if channelID != "" {
-		sourceMatch = "(cm.channel_id = ? AND cm.thread_id = '' AND " + sourceMatch + ")"
-		args = append(args, channelID)
-	}
+	where := []string{"cm.project_id = ?", "cm.channel_type = ?", "cm.channel_id = ?", "cm.thread_id = ''"}
+	args := []any{projectID, string(query.ChannelType), channelID}
 	args = append(args, messageID, messageID, messageID)
-	where = append(where, "("+sourceMatch+" OR COALESCE(json_extract(cm.metadata, '$.message_id'), '') = ?)")
+	where = append(where, `(COALESCE(json_extract(e.provenance, '$.source_id'), '') = ? OR COALESCE(json_extract(e.payload, '$.message_id'), '') = ? OR COALESCE(json_extract(cm.metadata, '$.message_id'), '') = ?)`)
 	rows, err := s.db.QueryContext(ctx, `
 SELECT cm.id, cm.project_id, cm.event_id, cm.role, cm.channel_type, cm.channel_id, cm.thread_id, cm.body, cm.tool_call_id, cm.metadata, cm.created_at
 FROM conversation_messages cm

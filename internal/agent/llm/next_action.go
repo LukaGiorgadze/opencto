@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -396,25 +397,34 @@ func conversationSummaryContextMessage(summaries []domain.ConversationSummary, m
 }
 
 func conversationSummariesByPriority(summaries []domain.ConversationSummary) []domain.ConversationSummary {
-	ordered := make([]domain.ConversationSummary, 0, len(summaries))
-	appendScope := func(scope domain.ConversationSummaryScope) {
-		for _, summary := range summaries {
-			if summary.Scope == scope {
-				ordered = append(ordered, summary)
-			}
+	ordered := append([]domain.ConversationSummary(nil), summaries...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		left := ordered[i]
+		right := ordered[j]
+		leftPriority := conversationSummaryScopePriority(left.Scope)
+		rightPriority := conversationSummaryScopePriority(right.Scope)
+		if leftPriority != rightPriority {
+			return leftPriority < rightPriority
 		}
-	}
-	appendScope(domain.ConversationSummaryScopeThread)
-	appendScope(domain.ConversationSummaryScopeChannel)
-	appendScope(domain.ConversationSummaryScopeProject)
-	for _, summary := range summaries {
-		if summary.Scope != domain.ConversationSummaryScopeThread &&
-			summary.Scope != domain.ConversationSummaryScopeChannel &&
-			summary.Scope != domain.ConversationSummaryScopeProject {
-			ordered = append(ordered, summary)
+		if !left.ToCreatedAt.Equal(right.ToCreatedAt) {
+			return left.ToCreatedAt.After(right.ToCreatedAt)
 		}
-	}
+		return left.ToMessageID > right.ToMessageID
+	})
 	return ordered
+}
+
+func conversationSummaryScopePriority(scope domain.ConversationSummaryScope) int {
+	switch scope {
+	case domain.ConversationSummaryScopeThread:
+		return 0
+	case domain.ConversationSummaryScopeChannel:
+		return 1
+	case domain.ConversationSummaryScopeProject:
+		return 2
+	default:
+		return 3
+	}
 }
 
 func conversationSummaryEntry(summary domain.ConversationSummary, budget int) string {

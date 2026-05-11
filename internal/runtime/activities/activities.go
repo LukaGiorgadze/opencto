@@ -338,29 +338,38 @@ func (a *Activities) conversationThreadBoundary(ctx context.Context, event domai
 	if threadID == "" {
 		return conversationBoundary{}, false, nil
 	}
-	thread, ok, err := a.Store.GetConversationThread(ctx, storage.ConversationThreadQuery{
+	thread := domain.ConversationThread{
+		ProjectID:   strings.TrimSpace(event.ProjectID),
+		ChannelType: event.ChannelType,
+		ChannelID:   strings.TrimSpace(event.ChannelID),
+		ThreadID:    threadID,
+	}
+	stored, ok, err := a.Store.GetConversationThread(ctx, storage.ConversationThreadQuery{
 		ProjectID:   strings.TrimSpace(event.ProjectID),
 		ChannelType: event.ChannelType,
 		ThreadID:    threadID,
 	})
-	if err != nil || !ok || thread.CreatedAt.IsZero() {
+	if err != nil {
 		return conversationBoundary{}, false, err
+	}
+	if ok {
+		thread = stored
 	}
 	if root, ok, err := a.conversationThreadRootMessage(ctx, event, thread); err != nil {
 		return conversationBoundary{}, false, err
 	} else if ok {
 		boundary := conversationBoundary{
-			CreatedAt:      thread.CreatedAt,
+			CreatedAt:      firstNonZeroTime(root.CreatedAt, thread.CreatedAt, event.CreatedAt),
 			MessageID:      strings.TrimSpace(root.ID),
 			RootMessage:    root,
 			HasRootMessage: true,
 		}
-		if !root.CreatedAt.IsZero() {
-			boundary.CreatedAt = root.CreatedAt
-		}
 		return boundary, true, nil
 	}
-	return conversationBoundary{CreatedAt: thread.CreatedAt}, true, nil
+	if !thread.CreatedAt.IsZero() {
+		return conversationBoundary{CreatedAt: thread.CreatedAt}, true, nil
+	}
+	return conversationBoundary{}, false, nil
 }
 
 func (a *Activities) conversationThreadRootMessage(ctx context.Context, event domain.Event, thread domain.ConversationThread) (domain.ConversationMessage, bool, error) {

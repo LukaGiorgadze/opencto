@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tmc/langchaingo/llms"
 
@@ -776,6 +777,39 @@ func TestBuildNextActionMessagesPrioritizesThreadSummaryBeforeChannelSummary(t *
 	}
 	if !strings.Contains(history, "recent-19") {
 		t.Fatalf("expected most recent raw thread history to be retained:\n%s", history)
+	}
+}
+
+func TestConversationSummaryContextPrioritizesNewestSummaryWithinScope(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	summary := conversationSummaryContextMessage([]domain.ConversationSummary{
+		{
+			ID:          "old-thread-summary",
+			Scope:       domain.ConversationSummaryScopeThread,
+			Summary:     "OLD-THREAD " + strings.Repeat("old thread detail ", 80),
+			ToCreatedAt: base,
+		},
+		{
+			ID:          "new-thread-summary",
+			Scope:       domain.ConversationSummaryScopeThread,
+			Summary:     "NEWEST-THREAD-SUMMARY must survive.",
+			ToCreatedAt: base.Add(time.Minute),
+		},
+		{
+			ID:          "channel-summary",
+			Scope:       domain.ConversationSummaryScopeChannel,
+			Summary:     "CHANNEL-SUMMARY can use remaining space.",
+			ToCreatedAt: base.Add(2 * time.Minute),
+		},
+	}, 180)
+
+	if !strings.Contains(summary, "NEWEST-THREAD-SUMMARY") {
+		t.Fatalf("expected newest thread summary to be prioritized:\n%s", summary)
+	}
+	if strings.Contains(summary, "OLD-THREAD") {
+		t.Fatalf("expected older thread summary to be trimmed before newest one:\n%s", summary)
 	}
 }
 

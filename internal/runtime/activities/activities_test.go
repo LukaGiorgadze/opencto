@@ -1639,6 +1639,54 @@ func TestLoadContextWithChannelAndThreadSummariesIncludesChannelGapRootAndThread
 	}
 }
 
+func TestLoadContextFallsBackToDiscordThreadRootWhenThreadRecordIsMissing(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	root := domain.ConversationMessage{
+		ID:          "root-message",
+		ProjectID:   "default",
+		Role:        domain.ConversationRoleUser,
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		Body:        "original parent request",
+		CreatedAt:   base.Add(2 * time.Minute),
+	}
+	activities := Activities{
+		Store: stubProjectStore{
+			rootMessages: map[string]domain.ConversationMessage{
+				"thread-1": root,
+			},
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeThread: {
+					{ID: "thread-recent", ProjectID: "default", Role: domain.ConversationRoleAssistant, Body: "thread answer", CreatedAt: base.Add(3 * time.Minute)},
+				},
+				storage.ConversationScopeChannel: {
+					{ID: "channel-before-root", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "channel context before root", CreatedAt: base.Add(time.Minute)},
+					{ID: "channel-after-root", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "channel context after root", CreatedAt: base.Add(4 * time.Minute)},
+				},
+			},
+		},
+		Project:             domain.Project{ID: "default", Name: "OpenCTO"},
+		ConversationEnabled: true,
+		ConversationLimit:   20,
+	}
+	loaded, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:          "current-event",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		ThreadID:    "thread-1",
+		Body:        "continue",
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if got := idsFromConversation(loaded.Conversation); strings.Join(got, ",") != "channel-before-root,root-message,thread-recent" {
+		t.Fatalf("expected fallback root boundary without thread record, got %#v", loaded.Conversation)
+	}
+}
+
 func TestLoadContextForOldThreadExcludesChannelMessagesAfterThreadStart(t *testing.T) {
 	t.Parallel()
 

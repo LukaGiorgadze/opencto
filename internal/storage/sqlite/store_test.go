@@ -618,6 +618,65 @@ func TestConversationRootMessageUsesConversationMetadataMessageID(t *testing.T) 
 	}
 }
 
+func TestConversationRootMessageIsScopedToParentChannel(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	messages := []domain.ConversationMessage{
+		{
+			ID:          "wrong-channel",
+			ProjectID:   "default",
+			Role:        domain.ConversationRoleUser,
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-b",
+			Body:        "same message id in another channel",
+			Metadata:    domain.Metadata{"message_id": "shared-message-id"},
+			CreatedAt:   base,
+		},
+		{
+			ID:          "wrong-thread",
+			ProjectID:   "default",
+			Role:        domain.ConversationRoleUser,
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-a",
+			ThreadID:    "thread-a",
+			Body:        "same message id inside thread",
+			Metadata:    domain.Metadata{"message_id": "shared-message-id"},
+			CreatedAt:   base.Add(time.Second),
+		},
+		{
+			ID:          "right-parent-channel",
+			ProjectID:   "default",
+			Role:        domain.ConversationRoleUser,
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-a",
+			Body:        "same message id in parent channel",
+			Metadata:    domain.Metadata{"message_id": "shared-message-id"},
+			CreatedAt:   base.Add(2 * time.Second),
+		},
+	}
+	for _, message := range messages {
+		if err := store.UpsertConversationMessage(ctx, message); err != nil {
+			t.Fatalf("upsert conversation %s: %v", message.ID, err)
+		}
+	}
+
+	found, ok, err := store.GetConversationRootMessage(ctx, storage.ConversationRootMessageQuery{
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-a",
+		MessageID:   "shared-message-id",
+	})
+	if err != nil {
+		t.Fatalf("get root message: %v", err)
+	}
+	if !ok || found.ID != "right-parent-channel" {
+		t.Fatalf("expected root message from requested parent channel only, got ok=%v message=%#v", ok, found)
+	}
+}
+
 func TestConversationSummariesUseScopedHistory(t *testing.T) {
 	t.Parallel()
 
