@@ -98,7 +98,7 @@ services:
     environment:
       TEMPORAL_ADDRESS: temporal:7233
       DEFAULT_NAMESPACE: default
-      TEMPORAL_SEARCH_ATTRIBUTES: opencto_project_id,opencto_work_item_id,opencto_event_id
+      TEMPORAL_SEARCH_ATTRIBUTES: opencto_project_id
     networks:
       - opencto-network
     volumes:

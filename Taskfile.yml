@@ -16,20 +16,35 @@ tasks:
   dev:
     aliases: [run]
     desc: Run the OpenCTO app in serve mode with Air reloads.
+    deps:
+      - bootstrap
     cmd: air --c .air.serve.toml -- -config {{.CONFIG}}
 
   serve:
     aliases: [app]
     desc: Run the OpenCTO app in serve mode with Air reloads.
+    deps:
+      - bootstrap
     cmd: air --c .air.serve.toml -- -config {{.CONFIG}}
 
   worker:
     desc: Run the Temporal worker with Air reloads.
+    deps:
+      - bootstrap
     cmd: air --c .air.worker.toml -- -config {{.CONFIG}}
 
   validate:
     desc: Validate the OpenCTO configuration.
     cmd: go run ./cmd/opencto -config {{.CONFIG}} -mode validate
+
+  bootstrap:
+    desc: Initialize local OpenCTO runtime state.
+    cmd: go run ./cmd/opencto -config {{.CONFIG}} -mode bootstrap
+
+  doctor:
+    aliases: [check-env]
+    desc: Check local tools, runtime state, Discord env, and Temporal readiness.
+    cmd: go run ./cmd/opencto -config {{.CONFIG}} -mode doctor
 
   inject:
     desc: Inject a local event. Override BODY and ACTOR as needed.
@@ -64,15 +79,14 @@ tasks:
   fmt:
     aliases: [format]
     desc: Format Go source files.
-    cmd: gofmt -w $(find cmd internal pkg -type f -name '*.go')
+    cmd: gofmt -w cmd internal
 
   test:
     desc: Run the Go test suite with the race detector.
-    cmd: go test ./.... --race
+    cmd: go test -race ./...
 
   check:
     desc: Run validation and tests.
-    deps:
-      - validate
-      - test
-    cmd: wait
+    cmds:
+      - task: validate
+      - task: test
