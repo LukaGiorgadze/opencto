@@ -702,7 +702,7 @@ func discordReportReceipt(event domain.Event, sent *discordgo.Message) domain.Re
 	}
 	if sent != nil {
 		receipt.MessageID = strings.TrimSpace(sent.ID)
-		if strings.TrimSpace(sent.ChannelID) != "" {
+		if strings.TrimSpace(receipt.ChannelID) == "" && strings.TrimSpace(sent.ChannelID) != "" {
 			receipt.ChannelID = strings.TrimSpace(sent.ChannelID)
 		}
 		if strings.TrimSpace(sent.GuildID) != "" {

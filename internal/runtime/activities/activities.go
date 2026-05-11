@@ -256,18 +256,18 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event, conver
 			return agent.Context{}, err
 		}
 	}
-	memoryEvent := inferDiscordThreadContext(conversationEvent)
+	contextEvent := inferDiscordThreadContext(conversationEvent)
 	var memories []domain.Memory
 	if a.Store != nil && a.MemoryEnabled {
 		var err error
 		memories, err = a.searchMemories(ctx, domain.MemorySearchRequest{
-			ProjectID:      strings.TrimSpace(memoryEvent.ProjectID),
-			UserID:         eventUserID(memoryEvent),
-			ChannelType:    memoryEvent.ChannelType,
-			ChannelID:      strings.TrimSpace(memoryEvent.ChannelID),
-			ThreadID:       strings.TrimSpace(memoryEvent.ThreadID),
-			Query:          strings.TrimSpace(firstNonEmpty(memoryEvent.Body, event.Body)),
-			Scopes:         autoContextMemoryScopes(memoryEvent),
+			ProjectID:      strings.TrimSpace(contextEvent.ProjectID),
+			UserID:         eventUserID(contextEvent),
+			ChannelType:    contextEvent.ChannelType,
+			ChannelID:      strings.TrimSpace(contextEvent.ChannelID),
+			ThreadID:       strings.TrimSpace(contextEvent.ThreadID),
+			Query:          strings.TrimSpace(firstNonEmpty(contextEvent.Body, event.Body)),
+			Scopes:         autoContextMemoryScopes(contextEvent),
 			Limit:          storage.DefaultAutoContextLimit(a.MemoryLimit),
 			FallbackRecent: true,
 		})
@@ -280,17 +280,17 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event, conver
 	var conversationSummaries []domain.ConversationSummary
 	if a.Store != nil && a.ConversationEnabled {
 		var err error
-		boundary, hasBoundary, err := a.conversationThreadBoundary(ctx, conversationEvent)
+		boundary, hasBoundary, err := a.conversationThreadBoundary(ctx, contextEvent)
 		if err != nil {
 			return agent.Context{}, err
 		}
 		if a.ConversationSummaryEnabled {
-			conversationSummaries, err = a.loadConversationSummaries(ctx, conversationEvent, boundary, hasBoundary)
+			conversationSummaries, err = a.loadConversationSummaries(ctx, contextEvent, boundary, hasBoundary)
 			if err != nil {
 				return agent.Context{}, err
 			}
 		}
-		conversation, err = a.loadConversationHistory(ctx, conversationEvent, conversationSummaries, boundary, hasBoundary)
+		conversation, err = a.loadConversationHistory(ctx, contextEvent, conversationSummaries, boundary, hasBoundary)
 		if err != nil {
 			return agent.Context{}, err
 		}
@@ -347,6 +347,7 @@ func (a *Activities) conversationThreadBoundary(ctx context.Context, event domai
 	stored, ok, err := a.Store.GetConversationThread(ctx, storage.ConversationThreadQuery{
 		ProjectID:   strings.TrimSpace(event.ProjectID),
 		ChannelType: event.ChannelType,
+		ChannelID:   strings.TrimSpace(event.ChannelID),
 		ThreadID:    threadID,
 	})
 	if err != nil {
@@ -504,12 +505,10 @@ func (a *Activities) loadConversationSummaries(ctx context.Context, event domain
 			scopes = append(scopes,
 				summaryScopeQuery{scope: domain.ConversationSummaryScopeThread, limit: 3},
 				summaryScopeQuery{scope: domain.ConversationSummaryScopeChannel, limit: 1},
-				summaryScopeQuery{scope: domain.ConversationSummaryScopeProject, limit: 1},
 			)
 		} else {
 			scopes = append(scopes,
 				summaryScopeQuery{scope: domain.ConversationSummaryScopeChannel, limit: 3},
-				summaryScopeQuery{scope: domain.ConversationSummaryScopeProject, limit: 1},
 			)
 		}
 	} else {
@@ -864,7 +863,7 @@ func reportedConversationTargets(event domain.Event, receipts []domain.ReportRec
 		if event.ChannelType == domain.ChannelTypeDiscord && threadID == "" && messageID != "" {
 			add(reportedConversationTarget{
 				MessageID: messageID,
-				ChannelID: messageID,
+				ChannelID: channelID,
 				ThreadID:  messageID,
 			})
 		}
@@ -891,7 +890,7 @@ func (a *Activities) persistReportedConversationThreads(ctx context.Context, eve
 			continue
 		}
 		thread := domain.ConversationThread{
-			ID:            stableActivityID("conversation-thread", event.ProjectID, string(event.ChannelType), target.ThreadID),
+			ID:            stableActivityID("conversation-thread", event.ProjectID, string(event.ChannelType), target.ChannelID, target.ThreadID),
 			ProjectID:     strings.TrimSpace(event.ProjectID),
 			ChannelType:   event.ChannelType,
 			ChannelID:     strings.TrimSpace(target.ChannelID),
@@ -929,7 +928,7 @@ func (a *Activities) persistConversationThread(ctx context.Context, thread domai
 		return nil
 	}
 	if thread.ID == "" {
-		thread.ID = stableActivityID("conversation-thread", thread.ProjectID, string(thread.ChannelType), thread.ThreadID)
+		thread.ID = stableActivityID("conversation-thread", thread.ProjectID, string(thread.ChannelType), thread.ChannelID, thread.ThreadID)
 	}
 	return a.Store.UpsertConversationThread(ctx, thread)
 }
@@ -944,7 +943,7 @@ func conversationThreadFromEvent(event domain.Event) domain.ConversationThread {
 	}
 	createdAt := firstNonZeroTime(event.CreatedAt, time.Now().UTC())
 	thread := domain.ConversationThread{
-		ID:            stableActivityID("conversation-thread", projectID, string(event.ChannelType), threadID),
+		ID:            stableActivityID("conversation-thread", projectID, string(event.ChannelType), channelID, threadID),
 		ProjectID:     projectID,
 		ChannelType:   event.ChannelType,
 		ChannelID:     channelID,
@@ -1294,6 +1293,7 @@ func (a *Activities) compressionRootMessage(ctx context.Context, event domain.Ev
 	thread, ok, err := a.Store.GetConversationThread(ctx, storage.ConversationThreadQuery{
 		ProjectID:   strings.TrimSpace(event.ProjectID),
 		ChannelType: event.ChannelType,
+		ChannelID:   strings.TrimSpace(event.ChannelID),
 		ThreadID:    strings.TrimSpace(event.ThreadID),
 	})
 	if err != nil {
@@ -2840,6 +2840,10 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
 		}
 		sourceEvent := inferDiscordThreadContext(execution.SourceEvent)
+		scope, err := memoryScopeForEvent(req.Scope, sourceEvent)
+		if err != nil {
+			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+		}
 		memory := domain.Memory{
 			ID:          stableActivityID("memory", execution.ProjectID, execution.ToolCallID, strings.TrimSpace(req.Content)),
 			ProjectID:   execution.ProjectID,
@@ -2847,7 +2851,7 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 			ChannelType: sourceEvent.ChannelType,
 			ChannelID:   strings.TrimSpace(sourceEvent.ChannelID),
 			ThreadID:    strings.TrimSpace(sourceEvent.ThreadID),
-			Scope:       memoryScopeForEvent(req.Scope, sourceEvent),
+			Scope:       scope,
 			Kind:        firstNonEmpty(req.Kind, "fact"),
 			Content:     strings.TrimSpace(req.Content),
 			Tags:        req.Tags,
@@ -2882,6 +2886,10 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 		}
 		sourceEvent := inferDiscordThreadContext(execution.SourceEvent)
 		tags := cleanMemoryTags(req.Tags)
+		scopes, err := memorySearchScopesForEvent(req.Scope, sourceEvent)
+		if err != nil {
+			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+		}
 		memories, err := a.searchMemories(ctx, domain.MemorySearchRequest{
 			ProjectID:   execution.ProjectID,
 			UserID:      eventUserID(sourceEvent),
@@ -2889,7 +2897,7 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 			ChannelID:   strings.TrimSpace(sourceEvent.ChannelID),
 			ThreadID:    strings.TrimSpace(sourceEvent.ThreadID),
 			Query:       strings.TrimSpace(req.Query),
-			Scopes:      memorySearchScopesForEvent(req.Scope, sourceEvent),
+			Scopes:      scopes,
 			Tags:        tags,
 			Limit:       req.Limit,
 		})
@@ -2912,7 +2920,10 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 		}
 		sourceEvent := inferDiscordThreadContext(execution.SourceEvent)
 		tags := cleanMemoryTags(req.Tags)
-		scopes := memorySearchScopesForEvent(req.Scope, sourceEvent)
+		scopes, err := memorySearchScopesForEvent(req.Scope, sourceEvent)
+		if err != nil {
+			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+		}
 		memories, err := a.Store.ListMemories(ctx, domain.MemoryListRequest{
 			ProjectID:   execution.ProjectID,
 			UserID:      eventUserID(sourceEvent),
@@ -3890,55 +3901,58 @@ func executeToolResultPayload(result ExecuteToolResult) json.RawMessage {
 	return mustJSON(payload)
 }
 
-func memoryScope(value string) domain.MemoryScope {
+func memoryScope(value string) (domain.MemoryScope, error) {
 	switch domain.MemoryScope(strings.ToLower(strings.TrimSpace(value))) {
 	case domain.MemoryScopeThread:
-		return domain.MemoryScopeThread
+		return domain.MemoryScopeThread, nil
 	case domain.MemoryScopeChannel:
-		return domain.MemoryScopeChannel
+		return domain.MemoryScopeChannel, nil
 	case domain.MemoryScopeGlobal:
-		return domain.MemoryScopeGlobal
+		return domain.MemoryScopeGlobal, nil
 	case domain.MemoryScopeUser:
-		return domain.MemoryScopeUser
+		return domain.MemoryScopeUser, nil
+	case domain.MemoryScopeProject:
+		return domain.MemoryScopeProject, nil
 	default:
-		return domain.MemoryScopeProject
+		return "", fmt.Errorf("unsupported memory scope %q", value)
 	}
 }
 
-func memoryScopeForEvent(value string, event domain.Event) domain.MemoryScope {
+func memoryScopeForEvent(value string, event domain.Event) (domain.MemoryScope, error) {
 	if strings.TrimSpace(value) == "" {
 		event = inferDiscordThreadContext(event)
 		if strings.TrimSpace(event.ThreadID) != "" {
-			return domain.MemoryScopeThread
+			return domain.MemoryScopeThread, nil
 		}
 		if strings.TrimSpace(event.ChannelID) != "" {
-			return domain.MemoryScopeChannel
+			return domain.MemoryScopeChannel, nil
 		}
+		return domain.MemoryScopeProject, nil
 	}
 	return memoryScope(value)
 }
 
-func memorySearchScopes(value string) []domain.MemoryScope {
+func memorySearchScopes(value string) ([]domain.MemoryScope, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case memorytool.ScopeThread:
-		return []domain.MemoryScope{domain.MemoryScopeThread}
+		return []domain.MemoryScope{domain.MemoryScopeThread}, nil
 	case memorytool.ScopeChannel:
-		return []domain.MemoryScope{domain.MemoryScopeChannel}
+		return []domain.MemoryScope{domain.MemoryScopeChannel}, nil
 	case memorytool.ScopeProject:
-		return []domain.MemoryScope{domain.MemoryScopeProject}
+		return []domain.MemoryScope{domain.MemoryScopeProject}, nil
 	case memorytool.ScopeUser:
-		return []domain.MemoryScope{domain.MemoryScopeUser}
+		return []domain.MemoryScope{domain.MemoryScopeUser}, nil
 	case memorytool.ScopeGlobal:
-		return []domain.MemoryScope{domain.MemoryScopeGlobal}
+		return []domain.MemoryScope{domain.MemoryScopeGlobal}, nil
 	default:
-		return []domain.MemoryScope{domain.MemoryScopeProject, domain.MemoryScopeUser, domain.MemoryScopeGlobal}
+		return nil, fmt.Errorf("unsupported memory scope %q", value)
 	}
 }
 
-func memorySearchScopesForEvent(value string, event domain.Event) []domain.MemoryScope {
+func memorySearchScopesForEvent(value string, event domain.Event) ([]domain.MemoryScope, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", memorytool.ScopeAll:
-		return autoContextMemoryScopes(inferDiscordThreadContext(event))
+		return autoContextMemoryScopes(inferDiscordThreadContext(event)), nil
 	}
 	return memorySearchScopes(value)
 }

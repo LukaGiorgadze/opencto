@@ -84,6 +84,7 @@ type ConversationQuery struct {
 type ConversationThreadQuery struct {
 	ProjectID   string
 	ChannelType domain.ChannelType
+	ChannelID   string
 	ThreadID    string
 }
 

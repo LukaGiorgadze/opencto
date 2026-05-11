@@ -37,6 +37,7 @@ type stubProjectStore struct {
 	conversationsByScope map[storage.ConversationScope][]domain.ConversationMessage
 	conversationQueries  *[]storage.ConversationQuery
 	conversationThreads  map[string]domain.ConversationThread
+	threadQueries        *[]storage.ConversationThreadQuery
 	rootMessages         map[string]domain.ConversationMessage
 	summariesByScope     map[domain.ConversationSummaryScope][]domain.ConversationSummary
 	summaryQueries       *[]storage.ConversationSummaryQuery
@@ -183,12 +184,34 @@ func (s stubProjectStore) UpsertConversationThread(_ context.Context, thread dom
 }
 
 func (s stubProjectStore) GetConversationThread(_ context.Context, query storage.ConversationThreadQuery) (domain.ConversationThread, bool, error) {
-	thread, ok := s.conversationThreads[strings.TrimSpace(query.ThreadID)]
-	return thread, ok, nil
+	if s.threadQueries != nil {
+		*s.threadQueries = append(*s.threadQueries, query)
+	}
+	for _, thread := range s.conversationThreads {
+		if strings.TrimSpace(thread.ProjectID) == strings.TrimSpace(query.ProjectID) &&
+			thread.ChannelType == query.ChannelType &&
+			strings.TrimSpace(thread.ChannelID) == strings.TrimSpace(query.ChannelID) &&
+			strings.TrimSpace(thread.ThreadID) == strings.TrimSpace(query.ThreadID) {
+			return thread, true, nil
+		}
+	}
+	return domain.ConversationThread{}, false, nil
 }
 
 func (s stubProjectStore) GetConversationRootMessage(_ context.Context, query storage.ConversationRootMessageQuery) (domain.ConversationMessage, bool, error) {
 	message, ok := s.rootMessages[strings.TrimSpace(query.MessageID)]
+	if !ok {
+		return domain.ConversationMessage{}, false, nil
+	}
+	if strings.TrimSpace(message.ProjectID) != "" && strings.TrimSpace(message.ProjectID) != strings.TrimSpace(query.ProjectID) {
+		return domain.ConversationMessage{}, false, nil
+	}
+	if message.ChannelType != "" && message.ChannelType != query.ChannelType {
+		return domain.ConversationMessage{}, false, nil
+	}
+	if strings.TrimSpace(message.ChannelID) != "" && strings.TrimSpace(message.ChannelID) != strings.TrimSpace(query.ChannelID) {
+		return domain.ConversationMessage{}, false, nil
+	}
 	return message, ok, nil
 }
 
@@ -209,6 +232,18 @@ func (s stubProjectStore) ListConversationMessages(_ context.Context, query stor
 	}
 	filtered := make([]domain.ConversationMessage, 0, len(source))
 	for _, message := range source {
+		if strings.TrimSpace(message.ProjectID) != "" && strings.TrimSpace(message.ProjectID) != strings.TrimSpace(query.ProjectID) {
+			continue
+		}
+		if message.ChannelType != "" && message.ChannelType != query.ChannelType {
+			continue
+		}
+		if strings.TrimSpace(message.ChannelID) != "" && strings.TrimSpace(message.ChannelID) != strings.TrimSpace(query.ChannelID) {
+			continue
+		}
+		if strings.TrimSpace(message.ThreadID) != "" && strings.TrimSpace(message.ThreadID) != strings.TrimSpace(query.ThreadID) {
+			continue
+		}
 		if !query.AfterCreatedAt.IsZero() {
 			if message.CreatedAt.Before(query.AfterCreatedAt) || (message.CreatedAt.Equal(query.AfterCreatedAt) && message.ID <= query.AfterID) {
 				continue
@@ -246,6 +281,18 @@ func (s stubProjectStore) ListConversationSummaries(_ context.Context, query sto
 	}
 	filtered := make([]domain.ConversationSummary, 0, len(source))
 	for _, summary := range source {
+		if strings.TrimSpace(summary.ProjectID) != "" && strings.TrimSpace(summary.ProjectID) != strings.TrimSpace(query.ProjectID) {
+			continue
+		}
+		if summary.ChannelType != "" && summary.ChannelType != query.ChannelType {
+			continue
+		}
+		if strings.TrimSpace(summary.ChannelID) != "" && strings.TrimSpace(summary.ChannelID) != strings.TrimSpace(query.ChannelID) {
+			continue
+		}
+		if strings.TrimSpace(summary.ThreadID) != "" && strings.TrimSpace(summary.ThreadID) != strings.TrimSpace(query.ThreadID) {
+			continue
+		}
 		if !query.BeforeCreatedAt.IsZero() {
 			if summary.ToCreatedAt.After(query.BeforeCreatedAt) ||
 				(strings.TrimSpace(query.BeforeID) != "" && summary.ToCreatedAt.Equal(query.BeforeCreatedAt) && summary.ToMessageID > query.BeforeID) {
@@ -527,8 +574,11 @@ func TestExtractMemoryStoresThreadScopedCandidate(t *testing.T) {
 		searchRequests[1].ThreadID != "thread-2" ||
 		len(searchRequests[0].Scopes) != 5 ||
 		searchRequests[0].Scopes[0] != domain.MemoryScopeThread ||
-		searchRequests[0].Scopes[1] != domain.MemoryScopeChannel {
-		t.Fatalf("expected visible thread context memory search, got %#v", searchRequests)
+		searchRequests[0].Scopes[1] != domain.MemoryScopeChannel ||
+		searchRequests[0].Scopes[2] != domain.MemoryScopeProject ||
+		searchRequests[0].Scopes[3] != domain.MemoryScopeUser ||
+		searchRequests[0].Scopes[4] != domain.MemoryScopeGlobal {
+		t.Fatalf("expected thread context memory search, got %#v", searchRequests)
 	}
 }
 
@@ -692,7 +742,7 @@ func TestReportResponsePersistsNormalDiscordReportForFutureThread(t *testing.T) 
 	for _, message := range upserted {
 		got[message.ChannelID+"|"+message.ThreadID] = message
 	}
-	threadMessage, ok := got["bot-message-1|bot-message-1"]
+	threadMessage, ok := got["channel-1|bot-message-1"]
 	if !ok {
 		t.Fatalf("expected normal report stored for the Discord message thread, got %#v", upserted)
 	}
@@ -702,7 +752,10 @@ func TestReportResponsePersistsNormalDiscordReportForFutureThread(t *testing.T) 
 		threadMessage.Metadata["message_id"] != "bot-message-1" {
 		t.Fatalf("unexpected future thread conversation row: %#v", threadMessage)
 	}
-	if len(upsertedThreads) != 1 || upsertedThreads[0].ThreadID != "bot-message-1" || upsertedThreads[0].RootMessageID != "bot-message-1" {
+	if len(upsertedThreads) != 1 ||
+		upsertedThreads[0].ChannelID != "channel-1" ||
+		upsertedThreads[0].ThreadID != "bot-message-1" ||
+		upsertedThreads[0].RootMessageID != "bot-message-1" {
 		t.Fatalf("expected future Discord thread ownership, got %#v", upsertedThreads)
 	}
 }
@@ -887,7 +940,43 @@ func TestLoadContextIncludesBoundedMemoryWhenEnabled(t *testing.T) {
 	}
 }
 
-func TestLoadContextUsesOnlyThreadMemoryInThread(t *testing.T) {
+func TestLoadContextIncludesSharedMemoryInChannel(t *testing.T) {
+	t.Parallel()
+
+	var searchRequests []domain.MemorySearchRequest
+	activities := Activities{
+		Store:         stubProjectStore{searchRequests: &searchRequests},
+		Project:       domain.Project{ID: "default", Name: "OpenCTO"},
+		MemoryEnabled: true,
+		MemoryLimit:   5,
+	}
+	_, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:          "event-1",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		ActorID:     "user-1",
+		Body:        "continue here",
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if len(searchRequests) != 1 {
+		t.Fatalf("expected one memory search, got %#v", searchRequests)
+	}
+	request := searchRequests[0]
+	if request.ChannelID != "channel-1" ||
+		request.ThreadID != "" ||
+		len(request.Scopes) != 4 ||
+		request.Scopes[0] != domain.MemoryScopeChannel ||
+		request.Scopes[1] != domain.MemoryScopeProject ||
+		request.Scopes[2] != domain.MemoryScopeUser ||
+		request.Scopes[3] != domain.MemoryScopeGlobal {
+		t.Fatalf("expected channel plus shared memory search, got %#v", request)
+	}
+}
+
+func TestLoadContextIncludesSharedMemoryInThread(t *testing.T) {
 	t.Parallel()
 
 	var searchRequests []domain.MemorySearchRequest
@@ -917,8 +1006,11 @@ func TestLoadContextUsesOnlyThreadMemoryInThread(t *testing.T) {
 		request.ThreadID != "thread-1" ||
 		len(request.Scopes) != 5 ||
 		request.Scopes[0] != domain.MemoryScopeThread ||
-		request.Scopes[1] != domain.MemoryScopeChannel {
-		t.Fatalf("expected visible thread memory search, got %#v", request)
+		request.Scopes[1] != domain.MemoryScopeChannel ||
+		request.Scopes[2] != domain.MemoryScopeProject ||
+		request.Scopes[3] != domain.MemoryScopeUser ||
+		request.Scopes[4] != domain.MemoryScopeGlobal {
+		t.Fatalf("expected thread, channel, and shared memory search, got %#v", request)
 	}
 }
 
@@ -1113,6 +1205,105 @@ func TestExecuteMemoryToolListsCurrentUserMemories(t *testing.T) {
 	}
 }
 
+func TestExecuteMemoryToolRejectsInvalidSearchScope(t *testing.T) {
+	t.Parallel()
+
+	var searchRequests []domain.MemorySearchRequest
+	activities := Activities{
+		Store:         stubProjectStore{searchRequests: &searchRequests},
+		MemoryEnabled: true,
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "default",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemorySearch,
+			Intent:     "search memory",
+			Input:      []byte(`{"scope":"workspace","query":"storage","tags":[],"limit":10}`),
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+			},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), `unsupported memory scope "workspace"`) {
+		t.Fatalf("expected invalid scope error, got result=%#v err=%v", result, err)
+	}
+	if result.Status != domain.ExecutionStatusFailed || len(searchRequests) != 0 {
+		t.Fatalf("expected failed result without search request, got result=%#v requests=%#v", result, searchRequests)
+	}
+}
+
+func TestExecuteMemoryToolRejectsInvalidListScope(t *testing.T) {
+	t.Parallel()
+
+	var listRequests []domain.MemoryListRequest
+	activities := Activities{
+		Store:         stubProjectStore{listRequests: &listRequests},
+		MemoryEnabled: true,
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "default",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemoryList,
+			Intent:     "list memory",
+			Input:      []byte(`{"scope":"workspace","kind":"","tags":[],"limit":10}`),
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+			},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), `unsupported memory scope "workspace"`) {
+		t.Fatalf("expected invalid scope error, got result=%#v err=%v", result, err)
+	}
+	if result.Status != domain.ExecutionStatusFailed || len(listRequests) != 0 {
+		t.Fatalf("expected failed result without list request, got result=%#v requests=%#v", result, listRequests)
+	}
+}
+
+func TestExecuteMemoryToolRejectsInvalidAddScope(t *testing.T) {
+	t.Parallel()
+
+	remembered := []domain.Memory{}
+	activities := Activities{
+		Store:         stubProjectStore{remembered: &remembered},
+		MemoryEnabled: true,
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "default",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemoryProposeAdd,
+			Intent:     "remember memory",
+			Input:      []byte(`{"content":"Use SQLite for local state.","scope":"workspace","kind":"fact","tags":[],"confidence":1,"pinned":false,"reason":"test"}`),
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+			},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), `unsupported memory scope "workspace"`) {
+		t.Fatalf("expected invalid scope error, got result=%#v err=%v", result, err)
+	}
+	if result.Status != domain.ExecutionStatusFailed || len(remembered) != 0 {
+		t.Fatalf("expected failed result without remembered memory, got result=%#v remembered=%#v", result, remembered)
+	}
+}
+
 func TestExecuteMemoryToolDefaultsToThreadScopeInThread(t *testing.T) {
 	t.Parallel()
 
@@ -1153,8 +1344,11 @@ func TestExecuteMemoryToolDefaultsToThreadScopeInThread(t *testing.T) {
 		request.ThreadID != "thread-1" ||
 		len(request.Scopes) != 5 ||
 		request.Scopes[0] != domain.MemoryScopeThread ||
-		request.Scopes[1] != domain.MemoryScopeChannel {
-		t.Fatalf("expected visible thread list request, got %#v", request)
+		request.Scopes[1] != domain.MemoryScopeChannel ||
+		request.Scopes[2] != domain.MemoryScopeProject ||
+		request.Scopes[3] != domain.MemoryScopeUser ||
+		request.Scopes[4] != domain.MemoryScopeGlobal {
+		t.Fatalf("expected thread list request with shared scopes, got %#v", request)
 	}
 }
 
@@ -1437,6 +1631,49 @@ func TestLoadContextIncludesScopedConversationHistory(t *testing.T) {
 		if !query.ExcludeControl {
 			t.Fatalf("expected control messages to be excluded from normal history, got %#v", query)
 		}
+	}
+}
+
+func TestLoadContextInfersTaskReplyConversationScope(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	queries := []storage.ConversationQuery{}
+	activities := Activities{
+		Store: stubProjectStore{
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeThread: {
+					{ID: "thread-message", ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "thread-1", ThreadID: "thread-1", Role: domain.ConversationRoleUser, Body: "thread", CreatedAt: base},
+				},
+				storage.ConversationScopeChannel: {
+					{ID: "channel-message", ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "thread-1", Role: domain.ConversationRoleAssistant, Body: "channel", CreatedAt: base.Add(time.Second)},
+				},
+			},
+			conversationQueries: &queries,
+		},
+		Project:             domain.Project{ID: "default", Name: "OpenCTO"},
+		ConversationEnabled: true,
+		ConversationLimit:   5,
+	}
+	loaded, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:          "current-event",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "thread-1",
+		Body:        "continue",
+		Metadata:    domain.Metadata{domain.MetadataKeyControl: domain.MetadataControlTaskReply},
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if got := idsFromConversation(loaded.Conversation); strings.Join(got, ",") != "thread-message,channel-message" {
+		t.Fatalf("expected inferred thread and channel history, got %#v", loaded.Conversation)
+	}
+	if len(queries) != 2 ||
+		queries[0].Scope != storage.ConversationScopeThread ||
+		queries[0].ThreadID != "thread-1" ||
+		queries[1].Scope != storage.ConversationScopeChannel {
+		t.Fatalf("expected inferred task reply conversation queries, got %#v", queries)
 	}
 }
 
@@ -1733,6 +1970,63 @@ func TestLoadContextForOldThreadExcludesChannelMessagesAfterThreadStart(t *testi
 	}
 }
 
+func TestLoadContextLooksUpThreadMetadataByChannel(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	threadQueries := []storage.ConversationThreadQuery{}
+	activities := Activities{
+		Store: stubProjectStore{
+			threadQueries: &threadQueries,
+			conversationThreads: map[string]domain.ConversationThread{
+				"channel-1/thread-1": {
+					ProjectID:   "default",
+					ChannelType: domain.ChannelTypeDiscord,
+					ChannelID:   "channel-1",
+					ThreadID:    "thread-1",
+					CreatedAt:   base.Add(time.Minute),
+				},
+				"channel-2/thread-1": {
+					ProjectID:   "default",
+					ChannelType: domain.ChannelTypeDiscord,
+					ChannelID:   "channel-2",
+					ThreadID:    "thread-1",
+					CreatedAt:   base.Add(5 * time.Minute),
+				},
+			},
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeThread: {
+					{ID: "thread-recent", ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-1", ThreadID: "thread-1", Role: domain.ConversationRoleUser, Body: "thread follow-up", CreatedAt: base.Add(10 * time.Minute)},
+				},
+				storage.ConversationScopeChannel: {
+					{ID: "channel-before", ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-1", Role: domain.ConversationRoleUser, Body: "channel context before thread", CreatedAt: base},
+					{ID: "channel-after-start", ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-1", Role: domain.ConversationRoleUser, Body: "should be after the real thread start", CreatedAt: base.Add(2 * time.Minute)},
+				},
+			},
+		},
+		Project:             domain.Project{ID: "default", Name: "OpenCTO"},
+		ConversationEnabled: true,
+		ConversationLimit:   20,
+	}
+	loaded, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:          "current-event",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		ThreadID:    "thread-1",
+		Body:        "continue old thread",
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if len(threadQueries) != 1 || threadQueries[0].ChannelID != "channel-1" {
+		t.Fatalf("expected thread metadata lookup to include channel id, got %#v", threadQueries)
+	}
+	if got := idsFromConversation(loaded.Conversation); strings.Join(got, ",") != "channel-before,thread-recent" {
+		t.Fatalf("expected context bounded by channel-1 thread metadata, got %#v", loaded.Conversation)
+	}
+}
+
 func TestLoadContextForOldThreadExcludesChannelSummariesAfterThreadStart(t *testing.T) {
 	t.Parallel()
 
@@ -1811,7 +2105,7 @@ func TestLoadContextForOldThreadExcludesChannelSummariesAfterThreadStart(t *test
 	}
 }
 
-func TestLoadContextIncludesThreadAndFallbackConversationSummaries(t *testing.T) {
+func TestLoadContextIncludesOnlyChannelScopedConversationSummaries(t *testing.T) {
 	t.Parallel()
 
 	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
@@ -1850,13 +2144,12 @@ func TestLoadContextIncludesThreadAndFallbackConversationSummaries(t *testing.T)
 	for _, summary := range loaded.ConversationSummaries {
 		got = append(got, summary.ID)
 	}
-	if strings.Join(got, ",") != "thread-summary,channel-summary,project-summary" {
+	if strings.Join(got, ",") != "thread-summary,channel-summary" {
 		t.Fatalf("unexpected summaries: %#v", loaded.ConversationSummaries)
 	}
-	if len(queries) != 3 ||
+	if len(queries) != 2 ||
 		queries[0].Scope != domain.ConversationSummaryScopeThread ||
-		queries[1].Scope != domain.ConversationSummaryScopeChannel ||
-		queries[2].Scope != domain.ConversationSummaryScopeProject {
+		queries[1].Scope != domain.ConversationSummaryScopeChannel {
 		t.Fatalf("unexpected summary queries: %#v", queries)
 	}
 }
@@ -2430,8 +2723,10 @@ func TestCompressConversationIncludesThreadRootMessage(t *testing.T) {
 	}
 	upserted := []domain.ConversationSummary{}
 	compressorInput := agent.ConversationCompressionInput{}
+	threadQueries := []storage.ConversationThreadQuery{}
 	activities := Activities{
 		Store: stubProjectStore{
+			threadQueries: &threadQueries,
 			conversationThreads: map[string]domain.ConversationThread{
 				"thread-a": {
 					ProjectID:     "default",
@@ -2478,6 +2773,9 @@ func TestCompressConversationIncludesThreadRootMessage(t *testing.T) {
 		compressorInput.Messages[1].ID != "thread-message-0" ||
 		compressorInput.Messages[4].ID != "thread-message-3" {
 		t.Fatalf("expected compressor input to include root message before thread candidates, got %#v", compressorInput.Messages)
+	}
+	if len(threadQueries) != 1 || threadQueries[0].ChannelID != "channel-a" {
+		t.Fatalf("expected compression thread lookup to include channel id, got %#v", threadQueries)
 	}
 	if len(upserted) != 1 ||
 		upserted[0].FromMessageID != "thread-message-0" ||

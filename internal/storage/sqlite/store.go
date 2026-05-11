@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	currentSchemaVersion = 8
+	currentSchemaVersion = 9
 	memoryVectorDims     = 1536
 )
 
@@ -167,6 +167,7 @@ var migrations = []migration{
 	{version: 6, sql: migrationV6},
 	{version: 7, sql: migrationV7, apply: applyMemoryChannelScopeMigration},
 	{version: 8, sql: migrationV8},
+	{version: 9, sql: migrationV9},
 }
 
 func applyMigration(ctx context.Context, db *sql.DB, migration migration) error {
@@ -367,7 +368,7 @@ CREATE TABLE IF NOT EXISTS conversation_threads (
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL,
 	last_message_at TEXT NOT NULL,
-	UNIQUE(project_id, channel_type, thread_id)
+	UNIQUE(project_id, channel_type, channel_id, thread_id)
 );
 CREATE INDEX IF NOT EXISTS idx_conversation_threads_project_updated ON conversation_threads(project_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_conversation_threads_project_channel ON conversation_threads(project_id, channel_type, channel_id);
@@ -621,7 +622,7 @@ CREATE TABLE IF NOT EXISTS conversation_threads (
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL,
 	last_message_at TEXT NOT NULL,
-	UNIQUE(project_id, channel_type, thread_id)
+	UNIQUE(project_id, channel_type, channel_id, thread_id)
 );
 CREATE INDEX IF NOT EXISTS idx_conversation_threads_project_updated ON conversation_threads(project_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_conversation_threads_project_channel ON conversation_threads(project_id, channel_type, channel_id);
@@ -695,6 +696,10 @@ UPDATE memories
 SET kind = 'fact'
 WHERE lower(trim(kind)) IN ('project', 'user');
 `
+
+const migrationV9 = `
+DROP TABLE IF EXISTS conversation_threads;
+` + conversationThreadsSchemaSQL
 
 func (s *Store) EnsureProject(ctx context.Context, project domain.Project) error {
 	project.ID = strings.TrimSpace(project.ID)
@@ -994,7 +999,7 @@ func (s *Store) UpsertConversationThread(ctx context.Context, thread domain.Conv
 	thread.ChannelID = strings.TrimSpace(thread.ChannelID)
 	thread.ThreadID = strings.TrimSpace(thread.ThreadID)
 	if thread.ID == "" {
-		thread.ID = stableStoreID("conversation-thread", thread.ProjectID, string(thread.ChannelType), thread.ThreadID)
+		thread.ID = stableStoreID("conversation-thread", thread.ProjectID, string(thread.ChannelType), thread.ChannelID, thread.ThreadID)
 	}
 	if thread.ProjectID == "" {
 		return fmt.Errorf("conversation thread project id is required")
@@ -1028,8 +1033,7 @@ func (s *Store) UpsertConversationThread(ctx context.Context, thread domain.Conv
 	_, err = s.db.ExecContext(ctx, `
 INSERT INTO conversation_threads(id, project_id, channel_type, channel_id, thread_id, root_message_id, workflow_id, event_id, title, status, metadata, created_at, updated_at, last_message_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, json(?), ?, ?, ?)
-ON CONFLICT(project_id, channel_type, thread_id) DO UPDATE SET
-	channel_id = CASE WHEN excluded.channel_id <> '' THEN excluded.channel_id ELSE conversation_threads.channel_id END,
+ON CONFLICT(project_id, channel_type, channel_id, thread_id) DO UPDATE SET
 	root_message_id = CASE WHEN excluded.root_message_id <> '' THEN excluded.root_message_id ELSE conversation_threads.root_message_id END,
 	workflow_id = CASE WHEN excluded.workflow_id <> '' THEN excluded.workflow_id ELSE conversation_threads.workflow_id END,
 	event_id = CASE WHEN excluded.event_id <> '' THEN excluded.event_id ELSE conversation_threads.event_id END,
@@ -1044,15 +1048,16 @@ ON CONFLICT(project_id, channel_type, thread_id) DO UPDATE SET
 
 func (s *Store) GetConversationThread(ctx context.Context, query storage.ConversationThreadQuery) (domain.ConversationThread, bool, error) {
 	projectID := strings.TrimSpace(query.ProjectID)
+	channelID := strings.TrimSpace(query.ChannelID)
 	threadID := strings.TrimSpace(query.ThreadID)
-	if projectID == "" || query.ChannelType == "" || threadID == "" {
+	if projectID == "" || query.ChannelType == "" || channelID == "" || threadID == "" {
 		return domain.ConversationThread{}, false, nil
 	}
 	row := s.db.QueryRowContext(ctx, `
 SELECT id, project_id, channel_type, channel_id, thread_id, root_message_id, workflow_id, event_id, title, status, metadata, created_at, updated_at, last_message_at
 FROM conversation_threads
-WHERE project_id = ? AND channel_type = ? AND thread_id = ?
-`, projectID, string(query.ChannelType), threadID)
+WHERE project_id = ? AND channel_type = ? AND channel_id = ? AND thread_id = ?
+`, projectID, string(query.ChannelType), channelID, threadID)
 	thread, err := scanConversationThread(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.ConversationThread{}, false, nil
@@ -1070,8 +1075,8 @@ func (s *Store) GetConversationRootMessage(ctx context.Context, query storage.Co
 	if projectID == "" || query.ChannelType == "" || channelID == "" || messageID == "" {
 		return domain.ConversationMessage{}, false, nil
 	}
-	where := []string{"cm.project_id = ?", "cm.channel_type = ?", "cm.channel_id = ?", "cm.thread_id = ''"}
-	args := []any{projectID, string(query.ChannelType), channelID}
+	where := []string{"cm.project_id = ?", "cm.channel_type = ?", "cm.channel_id = ?", "(cm.thread_id = '' OR cm.thread_id = ?)"}
+	args := []any{projectID, string(query.ChannelType), channelID, messageID}
 	args = append(args, messageID, messageID, messageID)
 	where = append(where, `(COALESCE(json_extract(e.provenance, '$.source_id'), '') = ? OR COALESCE(json_extract(e.payload, '$.message_id'), '') = ? OR COALESCE(json_extract(cm.metadata, '$.message_id'), '') = ?)`)
 	rows, err := s.db.QueryContext(ctx, `
@@ -1121,11 +1126,21 @@ func scanConversationThread(row conversationThreadScanner) (domain.ConversationT
 }
 
 func (s *Store) UpsertConversationMessage(ctx context.Context, message domain.ConversationMessage) error {
+	message.ID = strings.TrimSpace(message.ID)
+	message.ProjectID = strings.TrimSpace(message.ProjectID)
+	message.ChannelID = strings.TrimSpace(message.ChannelID)
+	message.ThreadID = strings.TrimSpace(message.ThreadID)
 	if strings.TrimSpace(message.ID) == "" {
 		return fmt.Errorf("conversation message id is required")
 	}
 	if strings.TrimSpace(message.ProjectID) == "" {
 		return fmt.Errorf("conversation message project id is required")
+	}
+	if message.ChannelID != "" && message.ChannelType == "" {
+		return fmt.Errorf("conversation channel message requires channel type")
+	}
+	if message.ThreadID != "" && (message.ChannelType == "" || message.ChannelID == "") {
+		return fmt.Errorf("conversation thread message requires channel type and id")
 	}
 	if message.CreatedAt.IsZero() {
 		message.CreatedAt = time.Now().UTC()
@@ -1148,7 +1163,7 @@ func (s *Store) UpsertConversationMessage(ctx context.Context, message domain.Co
 		tool_call_id = excluded.tool_call_id,
 		metadata = excluded.metadata,
 		created_at = excluded.created_at
-	`, message.ID, message.ProjectID, strings.TrimSpace(message.EventID), string(message.Role), string(message.ChannelType), strings.TrimSpace(message.ChannelID), strings.TrimSpace(message.ThreadID), message.Body, strings.TrimSpace(message.ToolCallID), metadata, formatTime(message.CreatedAt))
+	`, message.ID, message.ProjectID, strings.TrimSpace(message.EventID), string(message.Role), string(message.ChannelType), message.ChannelID, message.ThreadID, message.Body, strings.TrimSpace(message.ToolCallID), metadata, formatTime(message.CreatedAt))
 	return err
 }
 
@@ -1745,11 +1760,11 @@ LIMIT ?
 }
 
 func memoryVisibilitySQL(projectID, userID string, channelType domain.ChannelType, channelID, threadID string, scopes []domain.MemoryScope) (string, []any) {
-	scopes = normalizeMemoryScopes(scopes)
 	projectID = strings.TrimSpace(projectID)
 	userID = strings.TrimSpace(userID)
 	channelID = strings.TrimSpace(channelID)
 	threadID = strings.TrimSpace(threadID)
+	scopes = normalizeMemoryScopes(scopes)
 	includeThread := hasMemoryScope(scopes, domain.MemoryScopeThread)
 	includeChannel := hasMemoryScope(scopes, domain.MemoryScopeChannel)
 	includeProject := hasMemoryScope(scopes, domain.MemoryScopeProject)
@@ -1757,14 +1772,9 @@ func memoryVisibilitySQL(projectID, userID string, channelType domain.ChannelTyp
 	includeGlobal := hasMemoryScope(scopes, domain.MemoryScopeGlobal)
 	var clauses []string
 	var args []any
-	if includeThread && projectID != "" && threadID != "" {
-		if channelID != "" {
-			clauses = append(clauses, `(m.scope = 'thread' AND m.project_id = ? AND m.thread_id = ? AND ((m.channel_type = ? AND m.channel_id = ?) OR m.channel_id = ''))`)
-			args = append(args, projectID, threadID, string(channelType), channelID)
-		} else {
-			clauses = append(clauses, `(m.scope = 'thread' AND m.project_id = ? AND m.thread_id = ?)`)
-			args = append(args, projectID, threadID)
-		}
+	if includeThread && projectID != "" && channelID != "" && threadID != "" {
+		clauses = append(clauses, `(m.scope = 'thread' AND m.project_id = ? AND m.thread_id = ? AND m.channel_type = ? AND m.channel_id = ?)`)
+		args = append(args, projectID, threadID, string(channelType), channelID)
 	}
 	if includeChannel && projectID != "" && channelID != "" {
 		clauses = append(clauses, `(m.scope = 'channel' AND m.project_id = ? AND m.channel_type = ? AND m.channel_id = ?)`)
@@ -2001,7 +2011,7 @@ func duplicateMemoryID(ctx context.Context, tx *sql.Tx, memory domain.Memory) (s
 		where = append(where, "scope = 'thread'", "project_id = ?", "thread_id = ?")
 		args = append(args, strings.TrimSpace(memory.ProjectID), strings.TrimSpace(memory.ThreadID))
 		if strings.TrimSpace(memory.ChannelID) != "" {
-			where = append(where, "((channel_type = ? AND channel_id = ?) OR channel_id = '')")
+			where = append(where, "channel_type = ?", "channel_id = ?")
 			args = append(args, string(memory.ChannelType), strings.TrimSpace(memory.ChannelID))
 		}
 	case domain.MemoryScopeChannel:
