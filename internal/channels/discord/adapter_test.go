@@ -219,6 +219,40 @@ func TestNotifyTypingUsesContext(t *testing.T) {
 	}
 }
 
+func TestNotifyTypingUsesThreadTarget(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointChannels := discordgo.EndpointChannels
+	discordgo.EndpointChannels = server.URL + "/channels/"
+	t.Cleanup(func() {
+		discordgo.EndpointChannels = oldEndpointChannels
+	})
+
+	session, err := discordgo.New("Bot test-token")
+	if err != nil {
+		t.Fatalf("new discord session: %v", err)
+	}
+	session.Client = server.Client()
+
+	adapter := &Adapter{session: session}
+	err = adapter.NotifyTyping(context.Background(), domain.Event{
+		ChannelID:   "channel-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		ThreadID:    "thread-1",
+	})
+	if err != nil {
+		t.Fatalf("notify typing: %v", err)
+	}
+	if gotPath != "/channels/thread-1/typing" {
+		t.Fatalf("expected typing in thread, got path %q", gotPath)
+	}
+}
+
 func TestNormalizeMessageUsesStateThreadChannel(t *testing.T) {
 	t.Parallel()
 

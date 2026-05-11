@@ -646,7 +646,7 @@ func firstNonEmpty(values ...string) string {
 }
 
 func (a *Adapter) Report(ctx context.Context, event domain.Event, report domain.ReportMessage) ([]domain.ReportReceipt, error) {
-	targetChannelID := discordReportChannelID(event)
+	targetChannelID := discordOutboundChannelID(event)
 	if a.session == nil || targetChannelID == "" {
 		return nil, nil
 	}
@@ -687,7 +687,7 @@ func (a *Adapter) Report(ctx context.Context, event domain.Event, report domain.
 	return receipts, nil
 }
 
-func discordReportChannelID(event domain.Event) string {
+func discordOutboundChannelID(event domain.Event) string {
 	if threadID := strings.TrimSpace(event.ThreadID); threadID != "" {
 		return threadID
 	}
@@ -776,7 +776,8 @@ func closeDiscordFiles(closers []io.Closer) {
 }
 
 func (a *Adapter) NotifyTyping(ctx context.Context, event domain.Event) error {
-	if a.session == nil || strings.TrimSpace(event.ChannelID) == "" {
+	targetChannelID := discordOutboundChannelID(event)
+	if a.session == nil || targetChannelID == "" {
 		return nil
 	}
 	select {
@@ -787,7 +788,7 @@ func (a *Adapter) NotifyTyping(ctx context.Context, event domain.Event) error {
 	typingCtx, cancel := context.WithTimeout(ctx, discordTypingTimeout)
 	defer cancel()
 	return a.session.ChannelTyping(
-		event.ChannelID,
+		targetChannelID,
 		discordgo.WithContext(typingCtx),
 		discordgo.WithRetryOnRatelimit(false),
 		discordgo.WithRestRetries(0),
