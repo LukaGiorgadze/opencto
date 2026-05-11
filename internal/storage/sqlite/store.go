@@ -1042,6 +1042,51 @@ ON CONFLICT(project_id, channel_type, thread_id) DO UPDATE SET
 	return err
 }
 
+func (s *Store) GetConversationThread(ctx context.Context, query storage.ConversationThreadQuery) (domain.ConversationThread, bool, error) {
+	projectID := strings.TrimSpace(query.ProjectID)
+	threadID := strings.TrimSpace(query.ThreadID)
+	if projectID == "" || query.ChannelType == "" || threadID == "" {
+		return domain.ConversationThread{}, false, nil
+	}
+	row := s.db.QueryRowContext(ctx, `
+SELECT id, project_id, channel_type, channel_id, thread_id, root_message_id, workflow_id, event_id, title, status, metadata, created_at, updated_at, last_message_at
+FROM conversation_threads
+WHERE project_id = ? AND channel_type = ? AND thread_id = ?
+`, projectID, string(query.ChannelType), threadID)
+	thread, err := scanConversationThread(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.ConversationThread{}, false, nil
+	}
+	if err != nil {
+		return domain.ConversationThread{}, false, err
+	}
+	return thread, true, nil
+}
+
+type conversationThreadScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanConversationThread(row conversationThreadScanner) (domain.ConversationThread, error) {
+	var thread domain.ConversationThread
+	var channelType string
+	var metadata string
+	var createdAt string
+	var updatedAt string
+	var lastMessageAt string
+	if err := row.Scan(&thread.ID, &thread.ProjectID, &channelType, &thread.ChannelID, &thread.ThreadID, &thread.RootMessageID, &thread.WorkflowID, &thread.EventID, &thread.Title, &thread.Status, &metadata, &createdAt, &updatedAt, &lastMessageAt); err != nil {
+		return domain.ConversationThread{}, err
+	}
+	thread.ChannelType = domain.ChannelType(channelType)
+	if err := decodeJSON(metadata, &thread.Metadata); err != nil {
+		return domain.ConversationThread{}, err
+	}
+	thread.CreatedAt = parseTime(createdAt)
+	thread.UpdatedAt = parseTime(updatedAt)
+	thread.LastMessageAt = parseTime(lastMessageAt)
+	return thread, nil
+}
+
 func (s *Store) UpsertConversationMessage(ctx context.Context, message domain.ConversationMessage) error {
 	if strings.TrimSpace(message.ID) == "" {
 		return fmt.Errorf("conversation message id is required")
@@ -1121,6 +1166,16 @@ func (s *Store) ListConversationMessages(ctx context.Context, query storage.Conv
 		where = append(where, "(created_at > ? OR (created_at = ? AND id > ?))")
 		after := formatTime(query.AfterCreatedAt)
 		args = append(args, after, after, strings.TrimSpace(query.AfterID))
+	}
+	if !query.BeforeCreatedAt.IsZero() {
+		before := formatTime(query.BeforeCreatedAt)
+		if beforeID := strings.TrimSpace(query.BeforeID); beforeID != "" {
+			where = append(where, "(created_at < ? OR (created_at = ? AND id <= ?))")
+			args = append(args, before, before, beforeID)
+		} else {
+			where = append(where, "created_at <= ?")
+			args = append(args, before)
+		}
 	}
 	roles := normalizeConversationRoles(query.Roles)
 	if len(roles) > 0 {
@@ -1301,6 +1356,16 @@ func (s *Store) ListConversationSummaries(ctx context.Context, query storage.Con
 		args = append(args, string(query.ChannelType), channelID, threadID)
 	default:
 		return nil, fmt.Errorf("unsupported conversation summary scope %q", query.Scope)
+	}
+	if !query.BeforeCreatedAt.IsZero() {
+		before := formatTime(query.BeforeCreatedAt)
+		if beforeID := strings.TrimSpace(query.BeforeID); beforeID != "" {
+			where = append(where, "(to_created_at < ? OR (to_created_at = ? AND to_message_id <= ?))")
+			args = append(args, before, before, beforeID)
+		} else {
+			where = append(where, "to_created_at <= ?")
+			args = append(args, before)
+		}
 	}
 	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, `

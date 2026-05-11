@@ -280,13 +280,17 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event, conver
 	var conversationSummaries []domain.ConversationSummary
 	if a.Store != nil && a.ConversationEnabled {
 		var err error
+		boundary, hasBoundary, err := a.conversationThreadBoundary(ctx, conversationEvent)
+		if err != nil {
+			return agent.Context{}, err
+		}
 		if a.ConversationSummaryEnabled {
-			conversationSummaries, err = a.loadConversationSummaries(ctx, conversationEvent)
+			conversationSummaries, err = a.loadConversationSummaries(ctx, conversationEvent, boundary, hasBoundary)
 			if err != nil {
 				return agent.Context{}, err
 			}
 		}
-		conversation, err = a.loadConversationHistory(ctx, conversationEvent, conversationSummaries)
+		conversation, err = a.loadConversationHistory(ctx, conversationEvent, conversationSummaries, boundary, hasBoundary)
 		if err != nil {
 			return agent.Context{}, err
 		}
@@ -322,7 +326,27 @@ func autoContextMemoryScopes(event domain.Event) []domain.MemoryScope {
 	return []domain.MemoryScope{domain.MemoryScopeProject, domain.MemoryScopeUser, domain.MemoryScopeGlobal}
 }
 
-func (a *Activities) loadConversationHistory(ctx context.Context, event domain.Event, summaries []domain.ConversationSummary) ([]domain.ConversationMessage, error) {
+type conversationBoundary struct {
+	CreatedAt time.Time
+}
+
+func (a *Activities) conversationThreadBoundary(ctx context.Context, event domain.Event) (conversationBoundary, bool, error) {
+	threadID := strings.TrimSpace(event.ThreadID)
+	if threadID == "" {
+		return conversationBoundary{}, false, nil
+	}
+	thread, ok, err := a.Store.GetConversationThread(ctx, storage.ConversationThreadQuery{
+		ProjectID:   strings.TrimSpace(event.ProjectID),
+		ChannelType: event.ChannelType,
+		ThreadID:    threadID,
+	})
+	if err != nil || !ok || thread.CreatedAt.IsZero() {
+		return conversationBoundary{}, false, err
+	}
+	return conversationBoundary{CreatedAt: thread.CreatedAt}, true, nil
+}
+
+func (a *Activities) loadConversationHistory(ctx context.Context, event domain.Event, summaries []domain.ConversationSummary, boundary conversationBoundary, hasBoundary bool) ([]domain.ConversationMessage, error) {
 	limit := storage.DefaultConversationHistoryLimit(a.ConversationLimit)
 	if limit > 50 {
 		limit = 50
@@ -348,6 +372,9 @@ func (a *Activities) loadConversationHistory(ctx context.Context, event domain.E
 		query.Limit = limit
 		query.AfterCreatedAt = cutoff.ToCreatedAt
 		query.AfterID = cutoff.ToMessageID
+		if hasBoundary && scope != storage.ConversationScopeThread {
+			query.BeforeCreatedAt = boundary.CreatedAt
+		}
 		found, err := a.Store.ListConversationMessages(ctx, query)
 		if err != nil {
 			return err
@@ -413,7 +440,7 @@ func sortConversationMessages(messages []domain.ConversationMessage) {
 	})
 }
 
-func (a *Activities) loadConversationSummaries(ctx context.Context, event domain.Event) ([]domain.ConversationSummary, error) {
+func (a *Activities) loadConversationSummaries(ctx context.Context, event domain.Event, boundary conversationBoundary, hasBoundary bool) ([]domain.ConversationSummary, error) {
 	base := storage.ConversationSummaryQuery{
 		ProjectID:   strings.TrimSpace(event.ProjectID),
 		ChannelType: event.ChannelType,
@@ -447,6 +474,9 @@ func (a *Activities) loadConversationSummaries(ctx context.Context, event domain
 		query := base
 		query.Scope = item.scope
 		query.Limit = item.limit
+		if hasBoundary && item.scope != domain.ConversationSummaryScopeThread {
+			query.BeforeCreatedAt = boundary.CreatedAt
+		}
 		found, err := a.Store.ListConversationSummaries(ctx, query)
 		if err != nil {
 			return nil, err
