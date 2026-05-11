@@ -37,6 +37,7 @@ type stubProjectStore struct {
 	conversationsByScope map[storage.ConversationScope][]domain.ConversationMessage
 	conversationQueries  *[]storage.ConversationQuery
 	conversationThreads  map[string]domain.ConversationThread
+	rootMessages         map[string]domain.ConversationMessage
 	summariesByScope     map[domain.ConversationSummaryScope][]domain.ConversationSummary
 	summaryQueries       *[]storage.ConversationSummaryQuery
 	upsertedSummaries    *[]domain.ConversationSummary
@@ -184,6 +185,11 @@ func (s stubProjectStore) UpsertConversationThread(_ context.Context, thread dom
 func (s stubProjectStore) GetConversationThread(_ context.Context, query storage.ConversationThreadQuery) (domain.ConversationThread, bool, error) {
 	thread, ok := s.conversationThreads[strings.TrimSpace(query.ThreadID)]
 	return thread, ok, nil
+}
+
+func (s stubProjectStore) GetConversationRootMessage(_ context.Context, query storage.ConversationRootMessageQuery) (domain.ConversationMessage, bool, error) {
+	message, ok := s.rootMessages[strings.TrimSpace(query.MessageID)]
+	return message, ok, nil
 }
 
 func (s stubProjectStore) UpsertConversationMessage(_ context.Context, message domain.ConversationMessage) error {
@@ -2214,6 +2220,90 @@ func TestCompressConversationSummarizesOlderMessages(t *testing.T) {
 	}
 	if upserted[0].Scope != domain.ConversationSummaryScopeChannel || upserted[0].ChannelID != "channel-a" {
 		t.Fatalf("unexpected summary scope: %#v", upserted[0])
+	}
+}
+
+func TestCompressConversationIncludesThreadRootMessage(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	root := domain.ConversationMessage{
+		ID:          "root-message",
+		ProjectID:   "default",
+		Role:        domain.ConversationRoleUser,
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-a",
+		Body:        "original parent request",
+		CreatedAt:   base,
+	}
+	var messages []domain.ConversationMessage
+	for i := 0; i < 6; i++ {
+		messages = append(messages, domain.ConversationMessage{
+			ID:          fmt.Sprintf("thread-message-%d", i),
+			ProjectID:   "default",
+			Role:        domain.ConversationRoleUser,
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-a",
+			ThreadID:    "thread-a",
+			Body:        strings.Repeat("thread context ", 30),
+			CreatedAt:   base.Add(time.Duration(i+1) * time.Minute),
+		})
+	}
+	upserted := []domain.ConversationSummary{}
+	compressorInput := agent.ConversationCompressionInput{}
+	activities := Activities{
+		Store: stubProjectStore{
+			conversationThreads: map[string]domain.ConversationThread{
+				"thread-a": {
+					ProjectID:     "default",
+					ChannelType:   domain.ChannelTypeDiscord,
+					ChannelID:     "channel-a",
+					ThreadID:      "thread-a",
+					RootMessageID: "root-source-message",
+					CreatedAt:     base.Add(time.Minute),
+				},
+			},
+			rootMessages: map[string]domain.ConversationMessage{
+				"root-source-message": root,
+			},
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeThread: messages,
+			},
+			upsertedSummaries: &upserted,
+		},
+		ConversationCompressor:      stubConversationCompressor{output: agent.ConversationCompressionOutput{Summary: "Older thread context."}, input: &compressorInput},
+		ConversationEnabled:         true,
+		ConversationSummaryEnabled:  true,
+		ConversationSummaryTrigger:  100,
+		ConversationSummaryMaxChars: 1000,
+		ConversationSummaryRecent:   2,
+	}
+
+	result, err := activities.CompressConversation(context.Background(), CompressConversationRequest{
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "default",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-a",
+			ThreadID:    "thread-a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("compress conversation: %v", err)
+	}
+	if !result.Summarized || result.MessageCount != 4 {
+		t.Fatalf("unexpected compression result: %#v", result)
+	}
+	if len(compressorInput.Messages) != 5 ||
+		compressorInput.Messages[0].ID != "root-message" ||
+		compressorInput.Messages[1].ID != "thread-message-0" ||
+		compressorInput.Messages[4].ID != "thread-message-3" {
+		t.Fatalf("expected compressor input to include root message before thread candidates, got %#v", compressorInput.Messages)
+	}
+	if len(upserted) != 1 ||
+		upserted[0].FromMessageID != "thread-message-0" ||
+		upserted[0].ToMessageID != "thread-message-3" {
+		t.Fatalf("thread summary range should not include root message: %#v", upserted)
 	}
 }
 

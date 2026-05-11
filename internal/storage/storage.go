@@ -41,6 +41,7 @@ type RuntimeStore interface {
 	UpsertToolInvocation(context.Context, domain.ToolInvocation) error
 	UpsertConversationThread(context.Context, domain.ConversationThread) error
 	GetConversationThread(context.Context, ConversationThreadQuery) (domain.ConversationThread, bool, error)
+	GetConversationRootMessage(context.Context, ConversationRootMessageQuery) (domain.ConversationMessage, bool, error)
 	UpsertConversationMessage(context.Context, domain.ConversationMessage) error
 	ListConversationMessages(context.Context, ConversationQuery) ([]domain.ConversationMessage, error)
 	UpsertConversationSummary(context.Context, domain.ConversationSummary) error
@@ -84,6 +85,13 @@ type ConversationThreadQuery struct {
 	ProjectID   string
 	ChannelType domain.ChannelType
 	ThreadID    string
+}
+
+type ConversationRootMessageQuery struct {
+	ProjectID   string
+	ChannelType domain.ChannelType
+	ChannelID   string
+	MessageID   string
 }
 
 type ConversationSummaryQuery struct {

@@ -408,6 +408,52 @@ func TestConversationMessagesUseScopedHistory(t *testing.T) {
 	}
 }
 
+func TestConversationRootMessageUsesEventSourceID(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	event := domain.Event{
+		ID:          "event-1",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-a",
+		Body:        "original parent request",
+		Provenance:  domain.Provenance{SourceID: "discord-message-1"},
+		CreatedAt:   base,
+	}
+	if _, err := store.AppendEvent(ctx, event); err != nil {
+		t.Fatalf("append event: %v", err)
+	}
+	message := domain.ConversationMessage{
+		ID:          "conversation-1",
+		ProjectID:   "default",
+		EventID:     event.ID,
+		Role:        domain.ConversationRoleUser,
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-a",
+		Body:        event.Body,
+		CreatedAt:   base,
+	}
+	if err := store.UpsertConversationMessage(ctx, message); err != nil {
+		t.Fatalf("upsert conversation: %v", err)
+	}
+
+	found, ok, err := store.GetConversationRootMessage(ctx, storage.ConversationRootMessageQuery{
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-a",
+		MessageID:   "discord-message-1",
+	})
+	if err != nil {
+		t.Fatalf("get root message: %v", err)
+	}
+	if !ok || found.ID != "conversation-1" {
+		t.Fatalf("expected parent conversation message, got ok=%v message=%#v", ok, found)
+	}
+}
+
 func TestConversationSummariesUseScopedHistory(t *testing.T) {
 	t.Parallel()
 

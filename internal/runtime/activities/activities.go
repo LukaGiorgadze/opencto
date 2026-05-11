@@ -343,7 +343,28 @@ func (a *Activities) conversationThreadBoundary(ctx context.Context, event domai
 	if err != nil || !ok || thread.CreatedAt.IsZero() {
 		return conversationBoundary{}, false, err
 	}
+	if root, ok, err := a.conversationThreadRootMessage(ctx, event, thread); err != nil {
+		return conversationBoundary{}, false, err
+	} else if ok && !root.CreatedAt.IsZero() {
+		return conversationBoundary{CreatedAt: root.CreatedAt}, true, nil
+	}
 	return conversationBoundary{CreatedAt: thread.CreatedAt}, true, nil
+}
+
+func (a *Activities) conversationThreadRootMessage(ctx context.Context, event domain.Event, thread domain.ConversationThread) (domain.ConversationMessage, bool, error) {
+	messageID := strings.TrimSpace(thread.RootMessageID)
+	if messageID == "" && event.ChannelType == domain.ChannelTypeDiscord {
+		messageID = strings.TrimSpace(event.ThreadID)
+	}
+	if messageID == "" {
+		return domain.ConversationMessage{}, false, nil
+	}
+	return a.Store.GetConversationRootMessage(ctx, storage.ConversationRootMessageQuery{
+		ProjectID:   strings.TrimSpace(event.ProjectID),
+		ChannelType: event.ChannelType,
+		ChannelID:   strings.TrimSpace(event.ChannelID),
+		MessageID:   messageID,
+	})
 }
 
 func (a *Activities) loadConversationHistory(ctx context.Context, event domain.Event, summaries []domain.ConversationSummary, boundary conversationBoundary, hasBoundary bool) ([]domain.ConversationMessage, error) {
@@ -857,7 +878,7 @@ func (a *Activities) persistReportedConversationThreads(ctx context.Context, eve
 			UpdatedAt:     time.Now().UTC(),
 			LastMessageAt: time.Now().UTC(),
 		}
-		if thread.RootMessageID == "" && event.ChannelType == domain.ChannelTypeDiscord && thread.ChannelID == thread.ThreadID {
+		if thread.RootMessageID == "" && event.ChannelType == domain.ChannelTypeDiscord {
 			thread.RootMessageID = thread.ThreadID
 		}
 		if err := a.persistConversationThread(ctx, thread); err != nil {
@@ -911,7 +932,7 @@ func conversationThreadFromEvent(event domain.Event) domain.ConversationThread {
 		UpdatedAt:     createdAt,
 		LastMessageAt: createdAt,
 	}
-	if thread.RootMessageID == "" && event.ChannelType == domain.ChannelTypeDiscord && channelID == threadID {
+	if thread.RootMessageID == "" && event.ChannelType == domain.ChannelTypeDiscord {
 		thread.RootMessageID = threadID
 	}
 	return thread
@@ -1135,6 +1156,10 @@ func (a *Activities) CompressConversation(ctx context.Context, request CompressC
 		return CompressConversationResult{}, nil
 	}
 	summaryScope, conversationScope := conversationCompressionScopes(event)
+	rootMessage, hasRootMessage, err := a.compressionRootMessage(ctx, event, summaryScope)
+	if err != nil {
+		return CompressConversationResult{}, err
+	}
 	query := storage.ConversationSummaryQuery{
 		ProjectID:   strings.TrimSpace(event.ProjectID),
 		ChannelType: event.ChannelType,
@@ -1180,10 +1205,11 @@ func (a *Activities) CompressConversation(ctx context.Context, request CompressC
 	if sourceChars < trigger {
 		return CompressConversationResult{Scope: string(summaryScope), MessageCount: len(candidates), SourceChars: sourceChars}, nil
 	}
+	compressorMessages := conversationCompressionMessagesWithRoot(rootMessage, hasRootMessage, candidates)
 	output, err := a.ConversationCompressor.CompressConversation(ctx, agent.ConversationCompressionInput{
 		ProjectID:       strings.TrimSpace(event.ProjectID),
 		Scope:           summaryScope,
-		Messages:        candidates,
+		Messages:        compressorMessages,
 		MaxSummaryChars: storage.DefaultConversationSummaryMaxChars(a.ConversationSummaryMaxChars),
 	})
 	if err != nil {
@@ -1232,6 +1258,39 @@ func (a *Activities) CompressConversation(ctx context.Context, request CompressC
 		MessageCount: len(candidates),
 		SourceChars:  sourceChars,
 	}, nil
+}
+
+func (a *Activities) compressionRootMessage(ctx context.Context, event domain.Event, scope domain.ConversationSummaryScope) (domain.ConversationMessage, bool, error) {
+	if scope != domain.ConversationSummaryScopeThread || strings.TrimSpace(event.ThreadID) == "" {
+		return domain.ConversationMessage{}, false, nil
+	}
+	thread, ok, err := a.Store.GetConversationThread(ctx, storage.ConversationThreadQuery{
+		ProjectID:   strings.TrimSpace(event.ProjectID),
+		ChannelType: event.ChannelType,
+		ThreadID:    strings.TrimSpace(event.ThreadID),
+	})
+	if err != nil {
+		return domain.ConversationMessage{}, false, err
+	}
+	if !ok {
+		thread = domain.ConversationThread{RootMessageID: strings.TrimSpace(event.ThreadID)}
+	}
+	return a.conversationThreadRootMessage(ctx, event, thread)
+}
+
+func conversationCompressionMessagesWithRoot(root domain.ConversationMessage, ok bool, messages []domain.ConversationMessage) []domain.ConversationMessage {
+	if !ok || strings.TrimSpace(root.ID) == "" {
+		return messages
+	}
+	for _, message := range messages {
+		if strings.TrimSpace(message.ID) == strings.TrimSpace(root.ID) {
+			return messages
+		}
+	}
+	out := make([]domain.ConversationMessage, 0, len(messages)+1)
+	out = append(out, root)
+	out = append(out, messages...)
+	return out
 }
 
 func conversationCompressionScopes(event domain.Event) (domain.ConversationSummaryScope, storage.ConversationScope) {
