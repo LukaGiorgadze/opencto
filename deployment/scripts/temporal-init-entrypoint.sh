@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-attributes="opencto_project_id,opencto_work_item_id,opencto_event_id"
+attributes="opencto_project_id"
 old_ifs="$IFS"
 IFS=','
 set -- ${attributes}

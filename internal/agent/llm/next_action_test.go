@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tmc/langchaingo/llms"
 
@@ -701,6 +702,142 @@ func TestBuildNextActionMessagesAddsConversationSummaries(t *testing.T) {
 	history := messageText(messages[2])
 	if !strings.Contains(history, "Recent conversation history") || !strings.Contains(history, "assistant: I can implement") {
 		t.Fatalf("unexpected history context:\n%s", history)
+	}
+}
+
+func TestConversationContextBudgetsUseSummaryHeavySplitWhenSummariesExist(t *testing.T) {
+	t.Parallel()
+
+	summaryBudget, historyBudget := conversationContextBudgets(20000, true)
+	if summaryBudget != 14000 || historyBudget != 6000 {
+		t.Fatalf("expected 70%% summary and 30%% raw history budgets, got summary=%d history=%d", summaryBudget, historyBudget)
+	}
+}
+
+func TestBuildNextActionMessagesPrioritizesThreadSummaryBeforeChannelSummary(t *testing.T) {
+	t.Parallel()
+
+	raw := make([]domain.ConversationMessage, 0, 20)
+	for i := 0; i < 20; i++ {
+		raw = append(raw, domain.ConversationMessage{
+			ID:   "recent-" + strconv.Itoa(i),
+			Role: domain.ConversationRoleUser,
+			Body: "recent-" + strconv.Itoa(i) + " " + strings.Repeat("raw-thread-detail ", 80),
+		})
+	}
+	input := agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event: domain.Event{
+				ID:        "event-current",
+				ProjectID: "project-1",
+				Body:      "continue",
+			},
+			ConversationSummaries: []domain.ConversationSummary{
+				{
+					ID:      "thread-summary",
+					Scope:   domain.ConversationSummaryScopeThread,
+					Summary: "THREAD-SUMMARY " + strings.Repeat("thread-summary-detail ", 350) + "THREAD-END",
+				},
+				{
+					ID:      "channel-summary",
+					Scope:   domain.ConversationSummaryScopeChannel,
+					Summary: "CHANNEL-SUMMARY " + strings.Repeat("channel-summary-detail ", 700) + "CHANNEL-END",
+				},
+			},
+			Conversation:                raw,
+			ConversationMaxContextChars: 20000,
+		},
+	}
+
+	messages, err := buildNextActionMessages(input)
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	if len(messages) != 4 {
+		t.Fatalf("expected system, summary, history, and user messages, got %d", len(messages))
+	}
+	summary := messageText(messages[1])
+	if !strings.Contains(summary, "summary[thread]") || !strings.Contains(summary, "THREAD-SUMMARY") {
+		t.Fatalf("expected thread summary in bounded summary context:\n%s", summary)
+	}
+	if !strings.Contains(summary, "THREAD-END") {
+		t.Fatalf("expected full thread summary to be kept before truncating channel summary:\n%s", summary)
+	}
+	if !strings.Contains(summary, "summary[channel]") || !strings.Contains(summary, "CHANNEL-SUMMARY") {
+		t.Fatalf("expected remaining budget to include the channel summary:\n%s", summary)
+	}
+	if strings.Contains(summary, "CHANNEL-END") {
+		t.Fatalf("expected channel summary to be truncated before thread summary:\n%s", summary)
+	}
+	history := messageText(messages[2])
+	if len(history) > 6000 {
+		t.Fatalf("expected raw thread history to stay within 30%% budget, got %d chars", len(history))
+	}
+	if !strings.Contains(history, "recent-19") {
+		t.Fatalf("expected most recent raw thread history to be retained:\n%s", history)
+	}
+}
+
+func TestConversationSummaryContextPrioritizesNewestSummaryWithinScope(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	summary := conversationSummaryContextMessage([]domain.ConversationSummary{
+		{
+			ID:          "old-thread-summary",
+			Scope:       domain.ConversationSummaryScopeThread,
+			Summary:     "OLD-THREAD " + strings.Repeat("old thread detail ", 80),
+			ToCreatedAt: base,
+		},
+		{
+			ID:          "new-thread-summary",
+			Scope:       domain.ConversationSummaryScopeThread,
+			Summary:     "NEWEST-THREAD-SUMMARY must survive.",
+			ToCreatedAt: base.Add(time.Minute),
+		},
+		{
+			ID:          "channel-summary",
+			Scope:       domain.ConversationSummaryScopeChannel,
+			Summary:     "CHANNEL-SUMMARY can use remaining space.",
+			ToCreatedAt: base.Add(2 * time.Minute),
+		},
+	}, 180)
+
+	if !strings.Contains(summary, "NEWEST-THREAD-SUMMARY") {
+		t.Fatalf("expected newest thread summary to be prioritized:\n%s", summary)
+	}
+	if strings.Contains(summary, "OLD-THREAD") {
+		t.Fatalf("expected older thread summary to be trimmed before newest one:\n%s", summary)
+	}
+}
+
+func TestConversationHistoryKeepsThreadRootBeforeExtraChannelRawHistory(t *testing.T) {
+	t.Parallel()
+
+	messages := []domain.ConversationMessage{
+		{ID: "channel-old", Role: domain.ConversationRoleUser, Body: "DROP-OLD-CHANNEL " + strings.Repeat("old channel detail ", 20)},
+		{ID: "root", Role: domain.ConversationRoleUser, Body: "KEEP-THREAD-ROOT original parent request"},
+	}
+	for i := 0; i < 8; i++ {
+		messages = append(messages, domain.ConversationMessage{
+			ID:       "thread-" + strconv.Itoa(i),
+			Role:     domain.ConversationRoleUser,
+			ThreadID: "thread-1",
+			Body:     "thread-" + strconv.Itoa(i) + " " + strings.Repeat("thread detail ", 20),
+		})
+	}
+
+	history := conversationContextMessage(messages, 700)
+	if !strings.Contains(history, "KEEP-THREAD-ROOT") {
+		t.Fatalf("expected thread root to be kept before extra channel raw history:\n%s", history)
+	}
+	if !strings.Contains(history, "thread-7") {
+		t.Fatalf("expected newest thread history to be kept:\n%s", history)
+	}
+	if strings.Contains(history, "DROP-OLD-CHANNEL") {
+		t.Fatalf("expected older channel raw history to be trimmed first:\n%s", history)
 	}
 }
 

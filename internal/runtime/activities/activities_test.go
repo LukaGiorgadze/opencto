@@ -36,6 +36,9 @@ type stubProjectStore struct {
 	forgetRequests       *[]domain.MemoryForgetRequest
 	conversationsByScope map[storage.ConversationScope][]domain.ConversationMessage
 	conversationQueries  *[]storage.ConversationQuery
+	conversationThreads  map[string]domain.ConversationThread
+	threadQueries        *[]storage.ConversationThreadQuery
+	rootMessages         map[string]domain.ConversationMessage
 	summariesByScope     map[domain.ConversationSummaryScope][]domain.ConversationSummary
 	summaryQueries       *[]storage.ConversationSummaryQuery
 	upsertedSummaries    *[]domain.ConversationSummary
@@ -180,6 +183,38 @@ func (s stubProjectStore) UpsertConversationThread(_ context.Context, thread dom
 	return nil
 }
 
+func (s stubProjectStore) GetConversationThread(_ context.Context, query storage.ConversationThreadQuery) (domain.ConversationThread, bool, error) {
+	if s.threadQueries != nil {
+		*s.threadQueries = append(*s.threadQueries, query)
+	}
+	for _, thread := range s.conversationThreads {
+		if strings.TrimSpace(thread.ProjectID) == strings.TrimSpace(query.ProjectID) &&
+			thread.ChannelType == query.ChannelType &&
+			strings.TrimSpace(thread.ChannelID) == strings.TrimSpace(query.ChannelID) &&
+			strings.TrimSpace(thread.ThreadID) == strings.TrimSpace(query.ThreadID) {
+			return thread, true, nil
+		}
+	}
+	return domain.ConversationThread{}, false, nil
+}
+
+func (s stubProjectStore) GetConversationRootMessage(_ context.Context, query storage.ConversationRootMessageQuery) (domain.ConversationMessage, bool, error) {
+	message, ok := s.rootMessages[strings.TrimSpace(query.MessageID)]
+	if !ok {
+		return domain.ConversationMessage{}, false, nil
+	}
+	if strings.TrimSpace(message.ProjectID) != "" && strings.TrimSpace(message.ProjectID) != strings.TrimSpace(query.ProjectID) {
+		return domain.ConversationMessage{}, false, nil
+	}
+	if message.ChannelType != "" && message.ChannelType != query.ChannelType {
+		return domain.ConversationMessage{}, false, nil
+	}
+	if strings.TrimSpace(message.ChannelID) != "" && strings.TrimSpace(message.ChannelID) != strings.TrimSpace(query.ChannelID) {
+		return domain.ConversationMessage{}, false, nil
+	}
+	return message, ok, nil
+}
+
 func (s stubProjectStore) UpsertConversationMessage(_ context.Context, message domain.ConversationMessage) error {
 	if s.upsertedConversation != nil {
 		*s.upsertedConversation = append(*s.upsertedConversation, message)
@@ -197,8 +232,26 @@ func (s stubProjectStore) ListConversationMessages(_ context.Context, query stor
 	}
 	filtered := make([]domain.ConversationMessage, 0, len(source))
 	for _, message := range source {
+		if strings.TrimSpace(message.ProjectID) != "" && strings.TrimSpace(message.ProjectID) != strings.TrimSpace(query.ProjectID) {
+			continue
+		}
+		if message.ChannelType != "" && message.ChannelType != query.ChannelType {
+			continue
+		}
+		if strings.TrimSpace(message.ChannelID) != "" && strings.TrimSpace(message.ChannelID) != strings.TrimSpace(query.ChannelID) {
+			continue
+		}
+		if strings.TrimSpace(message.ThreadID) != "" && strings.TrimSpace(message.ThreadID) != strings.TrimSpace(query.ThreadID) {
+			continue
+		}
 		if !query.AfterCreatedAt.IsZero() {
 			if message.CreatedAt.Before(query.AfterCreatedAt) || (message.CreatedAt.Equal(query.AfterCreatedAt) && message.ID <= query.AfterID) {
+				continue
+			}
+		}
+		if !query.BeforeCreatedAt.IsZero() {
+			if message.CreatedAt.After(query.BeforeCreatedAt) ||
+				(strings.TrimSpace(query.BeforeID) != "" && message.CreatedAt.Equal(query.BeforeCreatedAt) && message.ID > query.BeforeID) {
 				continue
 			}
 		}
@@ -226,11 +279,33 @@ func (s stubProjectStore) ListConversationSummaries(_ context.Context, query sto
 	if len(source) == 0 {
 		return nil, nil
 	}
-	limit := query.Limit
-	if limit <= 0 || limit > len(source) {
-		limit = len(source)
+	filtered := make([]domain.ConversationSummary, 0, len(source))
+	for _, summary := range source {
+		if strings.TrimSpace(summary.ProjectID) != "" && strings.TrimSpace(summary.ProjectID) != strings.TrimSpace(query.ProjectID) {
+			continue
+		}
+		if summary.ChannelType != "" && summary.ChannelType != query.ChannelType {
+			continue
+		}
+		if strings.TrimSpace(summary.ChannelID) != "" && strings.TrimSpace(summary.ChannelID) != strings.TrimSpace(query.ChannelID) {
+			continue
+		}
+		if strings.TrimSpace(summary.ThreadID) != "" && strings.TrimSpace(summary.ThreadID) != strings.TrimSpace(query.ThreadID) {
+			continue
+		}
+		if !query.BeforeCreatedAt.IsZero() {
+			if summary.ToCreatedAt.After(query.BeforeCreatedAt) ||
+				(strings.TrimSpace(query.BeforeID) != "" && summary.ToCreatedAt.Equal(query.BeforeCreatedAt) && summary.ToMessageID > query.BeforeID) {
+				continue
+			}
+		}
+		filtered = append(filtered, summary)
 	}
-	return append([]domain.ConversationSummary(nil), source[:limit]...), nil
+	limit := query.Limit
+	if limit <= 0 || limit > len(filtered) {
+		limit = len(filtered)
+	}
+	return append([]domain.ConversationSummary(nil), filtered[:limit]...), nil
 }
 
 func (s stubProjectStore) RememberMemory(_ context.Context, memory domain.Memory) (domain.Memory, error) {
@@ -499,8 +574,11 @@ func TestExtractMemoryStoresThreadScopedCandidate(t *testing.T) {
 		searchRequests[1].ThreadID != "thread-2" ||
 		len(searchRequests[0].Scopes) != 5 ||
 		searchRequests[0].Scopes[0] != domain.MemoryScopeThread ||
-		searchRequests[0].Scopes[1] != domain.MemoryScopeChannel {
-		t.Fatalf("expected visible thread context memory search, got %#v", searchRequests)
+		searchRequests[0].Scopes[1] != domain.MemoryScopeChannel ||
+		searchRequests[0].Scopes[2] != domain.MemoryScopeProject ||
+		searchRequests[0].Scopes[3] != domain.MemoryScopeUser ||
+		searchRequests[0].Scopes[4] != domain.MemoryScopeGlobal {
+		t.Fatalf("expected thread context memory search, got %#v", searchRequests)
 	}
 }
 
@@ -664,7 +742,7 @@ func TestReportResponsePersistsNormalDiscordReportForFutureThread(t *testing.T) 
 	for _, message := range upserted {
 		got[message.ChannelID+"|"+message.ThreadID] = message
 	}
-	threadMessage, ok := got["bot-message-1|bot-message-1"]
+	threadMessage, ok := got["channel-1|bot-message-1"]
 	if !ok {
 		t.Fatalf("expected normal report stored for the Discord message thread, got %#v", upserted)
 	}
@@ -674,7 +752,10 @@ func TestReportResponsePersistsNormalDiscordReportForFutureThread(t *testing.T) 
 		threadMessage.Metadata["message_id"] != "bot-message-1" {
 		t.Fatalf("unexpected future thread conversation row: %#v", threadMessage)
 	}
-	if len(upsertedThreads) != 1 || upsertedThreads[0].ThreadID != "bot-message-1" || upsertedThreads[0].RootMessageID != "bot-message-1" {
+	if len(upsertedThreads) != 1 ||
+		upsertedThreads[0].ChannelID != "channel-1" ||
+		upsertedThreads[0].ThreadID != "bot-message-1" ||
+		upsertedThreads[0].RootMessageID != "bot-message-1" {
 		t.Fatalf("expected future Discord thread ownership, got %#v", upsertedThreads)
 	}
 }
@@ -859,7 +940,43 @@ func TestLoadContextIncludesBoundedMemoryWhenEnabled(t *testing.T) {
 	}
 }
 
-func TestLoadContextUsesOnlyThreadMemoryInThread(t *testing.T) {
+func TestLoadContextIncludesSharedMemoryInChannel(t *testing.T) {
+	t.Parallel()
+
+	var searchRequests []domain.MemorySearchRequest
+	activities := Activities{
+		Store:         stubProjectStore{searchRequests: &searchRequests},
+		Project:       domain.Project{ID: "default", Name: "OpenCTO"},
+		MemoryEnabled: true,
+		MemoryLimit:   5,
+	}
+	_, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:          "event-1",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		ActorID:     "user-1",
+		Body:        "continue here",
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if len(searchRequests) != 1 {
+		t.Fatalf("expected one memory search, got %#v", searchRequests)
+	}
+	request := searchRequests[0]
+	if request.ChannelID != "channel-1" ||
+		request.ThreadID != "" ||
+		len(request.Scopes) != 4 ||
+		request.Scopes[0] != domain.MemoryScopeChannel ||
+		request.Scopes[1] != domain.MemoryScopeProject ||
+		request.Scopes[2] != domain.MemoryScopeUser ||
+		request.Scopes[3] != domain.MemoryScopeGlobal {
+		t.Fatalf("expected channel plus shared memory search, got %#v", request)
+	}
+}
+
+func TestLoadContextIncludesSharedMemoryInThread(t *testing.T) {
 	t.Parallel()
 
 	var searchRequests []domain.MemorySearchRequest
@@ -889,8 +1006,11 @@ func TestLoadContextUsesOnlyThreadMemoryInThread(t *testing.T) {
 		request.ThreadID != "thread-1" ||
 		len(request.Scopes) != 5 ||
 		request.Scopes[0] != domain.MemoryScopeThread ||
-		request.Scopes[1] != domain.MemoryScopeChannel {
-		t.Fatalf("expected visible thread memory search, got %#v", request)
+		request.Scopes[1] != domain.MemoryScopeChannel ||
+		request.Scopes[2] != domain.MemoryScopeProject ||
+		request.Scopes[3] != domain.MemoryScopeUser ||
+		request.Scopes[4] != domain.MemoryScopeGlobal {
+		t.Fatalf("expected thread, channel, and shared memory search, got %#v", request)
 	}
 }
 
@@ -1085,6 +1205,105 @@ func TestExecuteMemoryToolListsCurrentUserMemories(t *testing.T) {
 	}
 }
 
+func TestExecuteMemoryToolRejectsInvalidSearchScope(t *testing.T) {
+	t.Parallel()
+
+	var searchRequests []domain.MemorySearchRequest
+	activities := Activities{
+		Store:         stubProjectStore{searchRequests: &searchRequests},
+		MemoryEnabled: true,
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "default",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemorySearch,
+			Intent:     "search memory",
+			Input:      []byte(`{"scope":"workspace","query":"storage","tags":[],"limit":10}`),
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+			},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), `unsupported memory scope "workspace"`) {
+		t.Fatalf("expected invalid scope error, got result=%#v err=%v", result, err)
+	}
+	if result.Status != domain.ExecutionStatusFailed || len(searchRequests) != 0 {
+		t.Fatalf("expected failed result without search request, got result=%#v requests=%#v", result, searchRequests)
+	}
+}
+
+func TestExecuteMemoryToolRejectsInvalidListScope(t *testing.T) {
+	t.Parallel()
+
+	var listRequests []domain.MemoryListRequest
+	activities := Activities{
+		Store:         stubProjectStore{listRequests: &listRequests},
+		MemoryEnabled: true,
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "default",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemoryList,
+			Intent:     "list memory",
+			Input:      []byte(`{"scope":"workspace","kind":"","tags":[],"limit":10}`),
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+			},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), `unsupported memory scope "workspace"`) {
+		t.Fatalf("expected invalid scope error, got result=%#v err=%v", result, err)
+	}
+	if result.Status != domain.ExecutionStatusFailed || len(listRequests) != 0 {
+		t.Fatalf("expected failed result without list request, got result=%#v requests=%#v", result, listRequests)
+	}
+}
+
+func TestExecuteMemoryToolRejectsInvalidAddScope(t *testing.T) {
+	t.Parallel()
+
+	remembered := []domain.Memory{}
+	activities := Activities{
+		Store:         stubProjectStore{remembered: &remembered},
+		MemoryEnabled: true,
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "default",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemoryProposeAdd,
+			Intent:     "remember memory",
+			Input:      []byte(`{"content":"Use SQLite for local state.","scope":"workspace","kind":"fact","tags":[],"confidence":1,"pinned":false,"reason":"test"}`),
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+			},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), `unsupported memory scope "workspace"`) {
+		t.Fatalf("expected invalid scope error, got result=%#v err=%v", result, err)
+	}
+	if result.Status != domain.ExecutionStatusFailed || len(remembered) != 0 {
+		t.Fatalf("expected failed result without remembered memory, got result=%#v remembered=%#v", result, remembered)
+	}
+}
+
 func TestExecuteMemoryToolDefaultsToThreadScopeInThread(t *testing.T) {
 	t.Parallel()
 
@@ -1125,8 +1344,11 @@ func TestExecuteMemoryToolDefaultsToThreadScopeInThread(t *testing.T) {
 		request.ThreadID != "thread-1" ||
 		len(request.Scopes) != 5 ||
 		request.Scopes[0] != domain.MemoryScopeThread ||
-		request.Scopes[1] != domain.MemoryScopeChannel {
-		t.Fatalf("expected visible thread list request, got %#v", request)
+		request.Scopes[1] != domain.MemoryScopeChannel ||
+		request.Scopes[2] != domain.MemoryScopeProject ||
+		request.Scopes[3] != domain.MemoryScopeUser ||
+		request.Scopes[4] != domain.MemoryScopeGlobal {
+		t.Fatalf("expected thread list request with shared scopes, got %#v", request)
 	}
 }
 
@@ -1394,10 +1616,12 @@ func TestLoadContextIncludesScopedConversationHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load context: %v", err)
 	}
-	if got := idsFromConversation(loaded.Conversation); strings.Join(got, ",") != "thread-1,thread-2" {
+	if got := idsFromConversation(loaded.Conversation); strings.Join(got, ",") != "thread-1,thread-2,channel-1" {
 		t.Fatalf("unexpected conversation history: %#v", loaded.Conversation)
 	}
-	if len(queries) != 1 || queries[0].Scope != storage.ConversationScopeThread {
+	if len(queries) != 2 ||
+		queries[0].Scope != storage.ConversationScopeThread ||
+		queries[1].Scope != storage.ConversationScopeChannel {
 		t.Fatalf("unexpected conversation queries: %#v", queries)
 	}
 	for _, query := range queries {
@@ -1410,7 +1634,478 @@ func TestLoadContextIncludesScopedConversationHistory(t *testing.T) {
 	}
 }
 
-func TestLoadContextIncludesThreadAndFallbackConversationSummaries(t *testing.T) {
+func TestLoadContextInfersTaskReplyConversationScope(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	queries := []storage.ConversationQuery{}
+	activities := Activities{
+		Store: stubProjectStore{
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeThread: {
+					{ID: "thread-message", ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "thread-1", ThreadID: "thread-1", Role: domain.ConversationRoleUser, Body: "thread", CreatedAt: base},
+				},
+				storage.ConversationScopeChannel: {
+					{ID: "channel-message", ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "thread-1", Role: domain.ConversationRoleAssistant, Body: "channel", CreatedAt: base.Add(time.Second)},
+				},
+			},
+			conversationQueries: &queries,
+		},
+		Project:             domain.Project{ID: "default", Name: "OpenCTO"},
+		ConversationEnabled: true,
+		ConversationLimit:   5,
+	}
+	loaded, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:          "current-event",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "thread-1",
+		Body:        "continue",
+		Metadata:    domain.Metadata{domain.MetadataKeyControl: domain.MetadataControlTaskReply},
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if got := idsFromConversation(loaded.Conversation); strings.Join(got, ",") != "thread-message,channel-message" {
+		t.Fatalf("expected inferred thread and channel history, got %#v", loaded.Conversation)
+	}
+	if len(queries) != 2 ||
+		queries[0].Scope != storage.ConversationScopeThread ||
+		queries[0].ThreadID != "thread-1" ||
+		queries[1].Scope != storage.ConversationScopeChannel {
+		t.Fatalf("expected inferred task reply conversation queries, got %#v", queries)
+	}
+}
+
+func TestLoadContextWithChannelSummaryIncludesUnsummarizedChannelHistoryBeforeThreadRoot(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	root := domain.ConversationMessage{
+		ID:          "root-message",
+		ProjectID:   "default",
+		Role:        domain.ConversationRoleUser,
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		Body:        "original parent request",
+		CreatedAt:   base.Add(2 * time.Minute),
+	}
+	conversationQueries := []storage.ConversationQuery{}
+	summaryQueries := []storage.ConversationSummaryQuery{}
+	activities := Activities{
+		Store: stubProjectStore{
+			conversationThreads: map[string]domain.ConversationThread{
+				"thread-1": {
+					ProjectID:     "default",
+					ChannelType:   domain.ChannelTypeDiscord,
+					ChannelID:     "channel-1",
+					ThreadID:      "thread-1",
+					RootMessageID: "root-source-message",
+					CreatedAt:     base.Add(2 * time.Minute),
+				},
+			},
+			rootMessages: map[string]domain.ConversationMessage{
+				"root-source-message": root,
+			},
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeThread: {
+					{ID: "thread-1", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "thread prior", CreatedAt: base.Add(3 * time.Minute)},
+					{ID: "thread-2", ProjectID: "default", Role: domain.ConversationRoleAssistant, Body: "thread answer", CreatedAt: base.Add(4 * time.Minute)},
+				},
+				storage.ConversationScopeChannel: {
+					{ID: "channel-covered", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "already summarized channel detail", CreatedAt: base},
+					{ID: "channel-gap", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "main channel detail before thread", CreatedAt: base.Add(time.Minute)},
+					{ID: "channel-after-root", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "main channel detail after thread", CreatedAt: base.Add(5 * time.Minute)},
+				},
+			},
+			summariesByScope: map[domain.ConversationSummaryScope][]domain.ConversationSummary{
+				domain.ConversationSummaryScopeChannel: {
+					{
+						ID:            "channel-summary",
+						ProjectID:     "default",
+						ChannelType:   domain.ChannelTypeDiscord,
+						ChannelID:     "channel-1",
+						Scope:         domain.ConversationSummaryScopeChannel,
+						Summary:       "Channel-level summary.",
+						FromMessageID: "channel-old",
+						ToMessageID:   "channel-covered",
+						FromCreatedAt: base,
+						ToCreatedAt:   base,
+					},
+				},
+			},
+			conversationQueries: &conversationQueries,
+			summaryQueries:      &summaryQueries,
+		},
+		Project:                    domain.Project{ID: "default", Name: "OpenCTO"},
+		ConversationEnabled:        true,
+		ConversationLimit:          10,
+		ConversationSummaryEnabled: true,
+	}
+	loaded, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:          "current-event",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		ThreadID:    "thread-1",
+		Body:        "continue",
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if got := idsFromConversation(loaded.Conversation); strings.Join(got, ",") != "channel-gap,root-message,thread-1,thread-2" {
+		t.Fatalf("expected unsummarized channel history, thread root, and thread raw history, got %#v", loaded.Conversation)
+	}
+	if len(loaded.ConversationSummaries) != 1 || loaded.ConversationSummaries[0].ID != "channel-summary" {
+		t.Fatalf("expected channel summary, got %#v", loaded.ConversationSummaries)
+	}
+	if len(conversationQueries) != 2 ||
+		conversationQueries[0].Scope != storage.ConversationScopeThread ||
+		conversationQueries[1].Scope != storage.ConversationScopeChannel {
+		t.Fatalf("expected thread and channel raw history queries, got %#v", conversationQueries)
+	}
+	if !conversationQueries[1].AfterCreatedAt.Equal(base) ||
+		!conversationQueries[1].BeforeCreatedAt.Equal(root.CreatedAt) ||
+		conversationQueries[1].BeforeID != root.ID {
+		t.Fatalf("expected channel history after summary and before root, got %#v", conversationQueries[1])
+	}
+	if len(summaryQueries) < 2 ||
+		summaryQueries[0].Scope != domain.ConversationSummaryScopeThread ||
+		summaryQueries[1].Scope != domain.ConversationSummaryScopeChannel {
+		t.Fatalf("expected thread then channel summary lookups, got %#v", summaryQueries)
+	}
+}
+
+func TestLoadContextWithChannelAndThreadSummariesIncludesChannelGapRootAndThreadRaw(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	root := domain.ConversationMessage{
+		ID:          "root-message",
+		ProjectID:   "default",
+		Role:        domain.ConversationRoleUser,
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		Body:        "original parent request",
+		CreatedAt:   base.Add(3 * time.Minute),
+	}
+	activities := Activities{
+		Store: stubProjectStore{
+			conversationThreads: map[string]domain.ConversationThread{
+				"thread-1": {
+					ProjectID:     "default",
+					ChannelType:   domain.ChannelTypeDiscord,
+					ChannelID:     "channel-1",
+					ThreadID:      "thread-1",
+					RootMessageID: "root-source-message",
+					CreatedAt:     base.Add(3 * time.Minute),
+				},
+			},
+			rootMessages: map[string]domain.ConversationMessage{
+				"root-source-message": root,
+			},
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeThread: {
+					{ID: "thread-covered", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "covered by thread summary", CreatedAt: base.Add(4 * time.Minute)},
+					{ID: "thread-gap", ProjectID: "default", Role: domain.ConversationRoleAssistant, Body: "unsummarized thread answer", CreatedAt: base.Add(5 * time.Minute)},
+				},
+				storage.ConversationScopeChannel: {
+					{ID: "channel-covered", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "covered by channel summary", CreatedAt: base},
+					{ID: "channel-gap-1", ProjectID: "default", Role: domain.ConversationRoleAssistant, Body: "channel answer before root", CreatedAt: base.Add(time.Minute)},
+					{ID: "channel-gap-2", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "channel request before root", CreatedAt: base.Add(2 * time.Minute)},
+					{ID: "channel-after-root", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "channel request after root", CreatedAt: base.Add(10 * time.Minute)},
+				},
+			},
+			summariesByScope: map[domain.ConversationSummaryScope][]domain.ConversationSummary{
+				domain.ConversationSummaryScopeThread: {
+					{
+						ID:            "thread-summary",
+						ProjectID:     "default",
+						ChannelType:   domain.ChannelTypeDiscord,
+						ChannelID:     "channel-1",
+						ThreadID:      "thread-1",
+						Scope:         domain.ConversationSummaryScopeThread,
+						Summary:       "Thread-level summary.",
+						FromMessageID: "thread-old",
+						ToMessageID:   "thread-covered",
+						FromCreatedAt: base.Add(4 * time.Minute),
+						ToCreatedAt:   base.Add(4 * time.Minute),
+					},
+				},
+				domain.ConversationSummaryScopeChannel: {
+					{
+						ID:            "channel-summary",
+						ProjectID:     "default",
+						ChannelType:   domain.ChannelTypeDiscord,
+						ChannelID:     "channel-1",
+						Scope:         domain.ConversationSummaryScopeChannel,
+						Summary:       "Channel-level summary.",
+						FromMessageID: "channel-old",
+						ToMessageID:   "channel-covered",
+						FromCreatedAt: base,
+						ToCreatedAt:   base,
+					},
+				},
+			},
+		},
+		Project:                    domain.Project{ID: "default", Name: "OpenCTO"},
+		ConversationEnabled:        true,
+		ConversationLimit:          20,
+		ConversationSummaryEnabled: true,
+	}
+	loaded, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:          "current-event",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		ThreadID:    "thread-1",
+		Body:        "continue",
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if got := idsFromConversation(loaded.Conversation); strings.Join(got, ",") != "channel-gap-1,channel-gap-2,root-message,thread-gap" {
+		t.Fatalf("expected channel gap, root, and unsummarized thread raw history, got %#v", loaded.Conversation)
+	}
+	gotSummaries := make([]string, 0, len(loaded.ConversationSummaries))
+	for _, summary := range loaded.ConversationSummaries {
+		gotSummaries = append(gotSummaries, summary.ID)
+	}
+	if strings.Join(gotSummaries, ",") != "thread-summary,channel-summary" {
+		t.Fatalf("expected thread and channel summaries, got %#v", loaded.ConversationSummaries)
+	}
+}
+
+func TestLoadContextFallsBackToDiscordThreadRootWhenThreadRecordIsMissing(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	root := domain.ConversationMessage{
+		ID:          "root-message",
+		ProjectID:   "default",
+		Role:        domain.ConversationRoleUser,
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		Body:        "original parent request",
+		CreatedAt:   base.Add(2 * time.Minute),
+	}
+	activities := Activities{
+		Store: stubProjectStore{
+			rootMessages: map[string]domain.ConversationMessage{
+				"thread-1": root,
+			},
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeThread: {
+					{ID: "thread-recent", ProjectID: "default", Role: domain.ConversationRoleAssistant, Body: "thread answer", CreatedAt: base.Add(3 * time.Minute)},
+				},
+				storage.ConversationScopeChannel: {
+					{ID: "channel-before-root", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "channel context before root", CreatedAt: base.Add(time.Minute)},
+					{ID: "channel-after-root", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "channel context after root", CreatedAt: base.Add(4 * time.Minute)},
+				},
+			},
+		},
+		Project:             domain.Project{ID: "default", Name: "OpenCTO"},
+		ConversationEnabled: true,
+		ConversationLimit:   20,
+	}
+	loaded, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:          "current-event",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		ThreadID:    "thread-1",
+		Body:        "continue",
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if got := idsFromConversation(loaded.Conversation); strings.Join(got, ",") != "channel-before-root,root-message,thread-recent" {
+		t.Fatalf("expected fallback root boundary without thread record, got %#v", loaded.Conversation)
+	}
+}
+
+func TestLoadContextForOldThreadExcludesChannelMessagesAfterThreadStart(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	threadStart := base.Add(time.Minute)
+	activities := Activities{
+		Store: stubProjectStore{
+			conversationThreads: map[string]domain.ConversationThread{
+				"thread-1": {
+					ProjectID:   "default",
+					ChannelType: domain.ChannelTypeDiscord,
+					ChannelID:   "channel-1",
+					ThreadID:    "thread-1",
+					CreatedAt:   threadStart,
+				},
+			},
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeThread: {
+					{ID: "thread-recent", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "old thread follow-up", CreatedAt: base.Add(10 * time.Minute)},
+				},
+				storage.ConversationScopeChannel: {
+					{ID: "channel-before", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "channel context before thread", CreatedAt: base},
+					{ID: "channel-after", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "newer channel context should not leak", CreatedAt: base.Add(5 * time.Minute)},
+				},
+			},
+		},
+		Project:             domain.Project{ID: "default", Name: "OpenCTO"},
+		ConversationEnabled: true,
+		ConversationLimit:   20,
+	}
+	loaded, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:          "current-event",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		ThreadID:    "thread-1",
+		Body:        "continue old thread",
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if got := idsFromConversation(loaded.Conversation); strings.Join(got, ",") != "channel-before,thread-recent" {
+		t.Fatalf("expected old channel context plus thread context only, got %#v", loaded.Conversation)
+	}
+}
+
+func TestLoadContextLooksUpThreadMetadataByChannel(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	threadQueries := []storage.ConversationThreadQuery{}
+	activities := Activities{
+		Store: stubProjectStore{
+			threadQueries: &threadQueries,
+			conversationThreads: map[string]domain.ConversationThread{
+				"channel-1/thread-1": {
+					ProjectID:   "default",
+					ChannelType: domain.ChannelTypeDiscord,
+					ChannelID:   "channel-1",
+					ThreadID:    "thread-1",
+					CreatedAt:   base.Add(time.Minute),
+				},
+				"channel-2/thread-1": {
+					ProjectID:   "default",
+					ChannelType: domain.ChannelTypeDiscord,
+					ChannelID:   "channel-2",
+					ThreadID:    "thread-1",
+					CreatedAt:   base.Add(5 * time.Minute),
+				},
+			},
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeThread: {
+					{ID: "thread-recent", ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-1", ThreadID: "thread-1", Role: domain.ConversationRoleUser, Body: "thread follow-up", CreatedAt: base.Add(10 * time.Minute)},
+				},
+				storage.ConversationScopeChannel: {
+					{ID: "channel-before", ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-1", Role: domain.ConversationRoleUser, Body: "channel context before thread", CreatedAt: base},
+					{ID: "channel-after-start", ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-1", Role: domain.ConversationRoleUser, Body: "should be after the real thread start", CreatedAt: base.Add(2 * time.Minute)},
+				},
+			},
+		},
+		Project:             domain.Project{ID: "default", Name: "OpenCTO"},
+		ConversationEnabled: true,
+		ConversationLimit:   20,
+	}
+	loaded, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:          "current-event",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		ThreadID:    "thread-1",
+		Body:        "continue old thread",
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if len(threadQueries) != 1 || threadQueries[0].ChannelID != "channel-1" {
+		t.Fatalf("expected thread metadata lookup to include channel id, got %#v", threadQueries)
+	}
+	if got := idsFromConversation(loaded.Conversation); strings.Join(got, ",") != "channel-before,thread-recent" {
+		t.Fatalf("expected context bounded by channel-1 thread metadata, got %#v", loaded.Conversation)
+	}
+}
+
+func TestLoadContextForOldThreadExcludesChannelSummariesAfterThreadStart(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	threadStart := base.Add(time.Minute)
+	activities := Activities{
+		Store: stubProjectStore{
+			conversationThreads: map[string]domain.ConversationThread{
+				"thread-1": {
+					ProjectID:   "default",
+					ChannelType: domain.ChannelTypeDiscord,
+					ChannelID:   "channel-1",
+					ThreadID:    "thread-1",
+					CreatedAt:   threadStart,
+				},
+			},
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeThread: {
+					{ID: "thread-recent", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "old thread follow-up", CreatedAt: base.Add(10 * time.Minute)},
+				},
+			},
+			summariesByScope: map[domain.ConversationSummaryScope][]domain.ConversationSummary{
+				domain.ConversationSummaryScopeChannel: {
+					{
+						ID:            "channel-summary-before",
+						ProjectID:     "default",
+						ChannelType:   domain.ChannelTypeDiscord,
+						ChannelID:     "channel-1",
+						Scope:         domain.ConversationSummaryScopeChannel,
+						Summary:       "Channel context before thread.",
+						FromMessageID: "channel-old",
+						ToMessageID:   "channel-before",
+						FromCreatedAt: base,
+						ToCreatedAt:   base,
+					},
+					{
+						ID:            "channel-summary-after",
+						ProjectID:     "default",
+						ChannelType:   domain.ChannelTypeDiscord,
+						ChannelID:     "channel-1",
+						Scope:         domain.ConversationSummaryScopeChannel,
+						Summary:       "Newer channel context should not leak.",
+						FromMessageID: "channel-new",
+						ToMessageID:   "channel-after",
+						FromCreatedAt: base.Add(2 * time.Minute),
+						ToCreatedAt:   base.Add(5 * time.Minute),
+					},
+				},
+			},
+		},
+		Project:                    domain.Project{ID: "default", Name: "OpenCTO"},
+		ConversationEnabled:        true,
+		ConversationLimit:          20,
+		ConversationSummaryEnabled: true,
+	}
+	loaded, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:          "current-event",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		ThreadID:    "thread-1",
+		Body:        "continue old thread",
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	gotSummaries := make([]string, 0, len(loaded.ConversationSummaries))
+	for _, summary := range loaded.ConversationSummaries {
+		gotSummaries = append(gotSummaries, summary.ID)
+	}
+	if strings.Join(gotSummaries, ",") != "channel-summary-before" {
+		t.Fatalf("expected only pre-thread channel summary, got %#v", loaded.ConversationSummaries)
+	}
+	if got := idsFromConversation(loaded.Conversation); strings.Join(got, ",") != "thread-recent" {
+		t.Fatalf("expected only thread raw history when pre-thread channel summary exists, got %#v", loaded.Conversation)
+	}
+}
+
+func TestLoadContextIncludesOnlyChannelScopedConversationSummaries(t *testing.T) {
 	t.Parallel()
 
 	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
@@ -1449,14 +2144,144 @@ func TestLoadContextIncludesThreadAndFallbackConversationSummaries(t *testing.T)
 	for _, summary := range loaded.ConversationSummaries {
 		got = append(got, summary.ID)
 	}
-	if strings.Join(got, ",") != "thread-summary,channel-summary,project-summary" {
+	if strings.Join(got, ",") != "thread-summary,channel-summary" {
 		t.Fatalf("unexpected summaries: %#v", loaded.ConversationSummaries)
 	}
-	if len(queries) != 3 ||
+	if len(queries) != 2 ||
 		queries[0].Scope != domain.ConversationSummaryScopeThread ||
-		queries[1].Scope != domain.ConversationSummaryScopeChannel ||
-		queries[2].Scope != domain.ConversationSummaryScopeProject {
+		queries[1].Scope != domain.ConversationSummaryScopeChannel {
 		t.Fatalf("unexpected summary queries: %#v", queries)
+	}
+}
+
+func TestLoadContextWithChannelAndThreadSummariesUsesUnsummarizedThreadRawHistory(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	activities := Activities{
+		Store: stubProjectStore{
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeThread: {
+					{ID: "thread-old-1", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "covered by thread summary", CreatedAt: base},
+					{ID: "thread-old-2", ProjectID: "default", Role: domain.ConversationRoleAssistant, Body: "also covered by thread summary", CreatedAt: base.Add(time.Second)},
+					{ID: "thread-recent-1", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "recent thread detail", CreatedAt: base.Add(2 * time.Second)},
+					{ID: "thread-recent-2", ProjectID: "default", Role: domain.ConversationRoleAssistant, Body: "recent thread answer", CreatedAt: base.Add(3 * time.Second)},
+				},
+				storage.ConversationScopeChannel: {
+					{ID: "channel-covered", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "covered by channel summary", CreatedAt: base},
+				},
+			},
+			summariesByScope: map[domain.ConversationSummaryScope][]domain.ConversationSummary{
+				domain.ConversationSummaryScopeThread: {
+					{
+						ID:            "thread-summary",
+						ProjectID:     "default",
+						ChannelType:   domain.ChannelTypeDiscord,
+						ChannelID:     "channel-1",
+						ThreadID:      "thread-1",
+						Scope:         domain.ConversationSummaryScopeThread,
+						Summary:       "Thread-level summary.",
+						FromMessageID: "thread-old-1",
+						ToMessageID:   "thread-old-2",
+						FromCreatedAt: base,
+						ToCreatedAt:   base.Add(time.Second),
+					},
+				},
+				domain.ConversationSummaryScopeChannel: {
+					{
+						ID:            "channel-summary",
+						ProjectID:     "default",
+						ChannelType:   domain.ChannelTypeDiscord,
+						ChannelID:     "channel-1",
+						Scope:         domain.ConversationSummaryScopeChannel,
+						Summary:       "Channel-level summary.",
+						FromMessageID: "channel-covered",
+						ToMessageID:   "channel-covered",
+						FromCreatedAt: base,
+						ToCreatedAt:   base,
+					},
+				},
+			},
+		},
+		Project:                    domain.Project{ID: "default", Name: "OpenCTO"},
+		ConversationEnabled:        true,
+		ConversationLimit:          20,
+		ConversationSummaryEnabled: true,
+	}
+	loaded, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:          "current-event",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		ThreadID:    "thread-1",
+		Body:        "continue",
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if got := idsFromConversation(loaded.Conversation); strings.Join(got, ",") != "thread-recent-1,thread-recent-2" {
+		t.Fatalf("expected only unsummarized thread raw history, got %#v", loaded.Conversation)
+	}
+	gotSummaries := make([]string, 0, len(loaded.ConversationSummaries))
+	for _, summary := range loaded.ConversationSummaries {
+		gotSummaries = append(gotSummaries, summary.ID)
+	}
+	if strings.Join(gotSummaries, ",") != "thread-summary,channel-summary" {
+		t.Fatalf("expected thread and channel summaries, got %#v", loaded.ConversationSummaries)
+	}
+}
+
+func TestLoadContextWithChannelSummaryUsesUnsummarizedChannelRawHistory(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	activities := Activities{
+		Store: stubProjectStore{
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeChannel: {
+					{ID: "channel-old-1", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "covered by channel summary", CreatedAt: base},
+					{ID: "channel-old-2", ProjectID: "default", Role: domain.ConversationRoleAssistant, Body: "also covered by channel summary", CreatedAt: base.Add(time.Second)},
+					{ID: "channel-recent-1", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "recent channel detail", CreatedAt: base.Add(2 * time.Second)},
+					{ID: "channel-recent-2", ProjectID: "default", Role: domain.ConversationRoleAssistant, Body: "recent channel answer", CreatedAt: base.Add(3 * time.Second)},
+				},
+			},
+			summariesByScope: map[domain.ConversationSummaryScope][]domain.ConversationSummary{
+				domain.ConversationSummaryScopeChannel: {
+					{
+						ID:            "channel-summary",
+						ProjectID:     "default",
+						ChannelType:   domain.ChannelTypeDiscord,
+						ChannelID:     "channel-1",
+						Scope:         domain.ConversationSummaryScopeChannel,
+						Summary:       "Channel-level summary.",
+						FromMessageID: "channel-old-1",
+						ToMessageID:   "channel-old-2",
+						FromCreatedAt: base,
+						ToCreatedAt:   base.Add(time.Second),
+					},
+				},
+			},
+		},
+		Project:                    domain.Project{ID: "default", Name: "OpenCTO"},
+		ConversationEnabled:        true,
+		ConversationLimit:          20,
+		ConversationSummaryEnabled: true,
+	}
+	loaded, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:          "current-event",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		Body:        "continue",
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if got := idsFromConversation(loaded.Conversation); strings.Join(got, ",") != "channel-recent-1,channel-recent-2" {
+		t.Fatalf("expected only unsummarized channel raw history, got %#v", loaded.Conversation)
+	}
+	if len(loaded.ConversationSummaries) != 1 || loaded.ConversationSummaries[0].ID != "channel-summary" {
+		t.Fatalf("expected channel summary, got %#v", loaded.ConversationSummaries)
 	}
 }
 
@@ -1867,6 +2692,95 @@ func TestCompressConversationSummarizesOlderMessages(t *testing.T) {
 	}
 	if upserted[0].Scope != domain.ConversationSummaryScopeChannel || upserted[0].ChannelID != "channel-a" {
 		t.Fatalf("unexpected summary scope: %#v", upserted[0])
+	}
+}
+
+func TestCompressConversationIncludesThreadRootMessage(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	root := domain.ConversationMessage{
+		ID:          "root-message",
+		ProjectID:   "default",
+		Role:        domain.ConversationRoleUser,
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-a",
+		Body:        "original parent request",
+		CreatedAt:   base,
+	}
+	var messages []domain.ConversationMessage
+	for i := 0; i < 6; i++ {
+		messages = append(messages, domain.ConversationMessage{
+			ID:          fmt.Sprintf("thread-message-%d", i),
+			ProjectID:   "default",
+			Role:        domain.ConversationRoleUser,
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-a",
+			ThreadID:    "thread-a",
+			Body:        strings.Repeat("thread context ", 30),
+			CreatedAt:   base.Add(time.Duration(i+1) * time.Minute),
+		})
+	}
+	upserted := []domain.ConversationSummary{}
+	compressorInput := agent.ConversationCompressionInput{}
+	threadQueries := []storage.ConversationThreadQuery{}
+	activities := Activities{
+		Store: stubProjectStore{
+			threadQueries: &threadQueries,
+			conversationThreads: map[string]domain.ConversationThread{
+				"thread-a": {
+					ProjectID:     "default",
+					ChannelType:   domain.ChannelTypeDiscord,
+					ChannelID:     "channel-a",
+					ThreadID:      "thread-a",
+					RootMessageID: "root-source-message",
+					CreatedAt:     base.Add(time.Minute),
+				},
+			},
+			rootMessages: map[string]domain.ConversationMessage{
+				"root-source-message": root,
+			},
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeThread: messages,
+			},
+			upsertedSummaries: &upserted,
+		},
+		ConversationCompressor:      stubConversationCompressor{output: agent.ConversationCompressionOutput{Summary: "Older thread context."}, input: &compressorInput},
+		ConversationEnabled:         true,
+		ConversationSummaryEnabled:  true,
+		ConversationSummaryTrigger:  100,
+		ConversationSummaryMaxChars: 1000,
+		ConversationSummaryRecent:   2,
+	}
+
+	result, err := activities.CompressConversation(context.Background(), CompressConversationRequest{
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "default",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-a",
+			ThreadID:    "thread-a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("compress conversation: %v", err)
+	}
+	if !result.Summarized || result.MessageCount != 4 {
+		t.Fatalf("unexpected compression result: %#v", result)
+	}
+	if len(compressorInput.Messages) != 5 ||
+		compressorInput.Messages[0].ID != "root-message" ||
+		compressorInput.Messages[1].ID != "thread-message-0" ||
+		compressorInput.Messages[4].ID != "thread-message-3" {
+		t.Fatalf("expected compressor input to include root message before thread candidates, got %#v", compressorInput.Messages)
+	}
+	if len(threadQueries) != 1 || threadQueries[0].ChannelID != "channel-a" {
+		t.Fatalf("expected compression thread lookup to include channel id, got %#v", threadQueries)
+	}
+	if len(upserted) != 1 ||
+		upserted[0].FromMessageID != "thread-message-0" ||
+		upserted[0].ToMessageID != "thread-message-3" {
+		t.Fatalf("thread summary range should not include root message: %#v", upserted)
 	}
 }
 

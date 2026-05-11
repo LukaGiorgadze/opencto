@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -264,8 +265,18 @@ func conversationContextMessage(messages []domain.ConversationMessage, maxChars 
 	}
 	items := compactConversationHistoryItems(messages)
 	remaining := maxChars - len(header) - 1
-	selected := make([]string, 0, len(items))
+	selected := map[int]string{}
+	if rootIndex := conversationHistoryThreadRootIndex(items); rootIndex >= 0 {
+		entry := conversationHistoryItemEntry(items[rootIndex], conversationPinnedRootBudget(remaining))
+		if strings.TrimSpace(entry) != "" {
+			selected[rootIndex] = entry
+			remaining -= len(entry) + 1
+		}
+	}
 	for i := len(items) - 1; i >= 0 && remaining > 0; i-- {
+		if _, ok := selected[i]; ok {
+			continue
+		}
 		entry := conversationHistoryItemEntry(items[i], remaining)
 		if strings.TrimSpace(entry) == "" {
 			continue
@@ -273,7 +284,7 @@ func conversationContextMessage(messages []domain.ConversationMessage, maxChars 
 		if len(entry) > remaining {
 			entry = truncateText(entry, remaining)
 		}
-		selected = append(selected, entry)
+		selected[i] = entry
 		remaining -= len(entry) + 1
 	}
 	if len(selected) == 0 {
@@ -281,11 +292,20 @@ func conversationContextMessage(messages []domain.ConversationMessage, maxChars 
 	}
 	var builder strings.Builder
 	builder.WriteString(header)
-	for i := len(selected) - 1; i >= 0; i-- {
-		builder.WriteString("\n")
-		builder.WriteString(selected[i])
+	for i := range items {
+		if entry, ok := selected[i]; ok {
+			builder.WriteString("\n")
+			builder.WriteString(entry)
+		}
 	}
 	return strings.TrimSpace(builder.String())
+}
+
+func conversationPinnedRootBudget(remaining int) int {
+	if remaining > 1200 {
+		return 1200
+	}
+	return remaining
 }
 
 func dedupeAdjacentAssistantConversationMessages(messages []domain.ConversationMessage) []domain.ConversationMessage {
@@ -324,7 +344,7 @@ func conversationContextBudgets(maxChars int, hasSummaries bool) (int, int) {
 	if !hasSummaries {
 		return 0, maxChars
 	}
-	summaryBudget := maxChars * 4 / 10
+	summaryBudget := maxChars * 7 / 10
 	if summaryBudget < 1000 {
 		summaryBudget = maxChars / 2
 	}
@@ -347,12 +367,14 @@ func conversationSummaryContextMessage(summaries []domain.ConversationSummary, m
 		return truncateText(header, maxChars)
 	}
 	remaining := maxChars - len(header) - 1
+	summaries = conversationSummariesByPriority(summaries)
 	selected := make([]string, 0, len(summaries))
 	for _, summary := range summaries {
 		if remaining <= 0 {
 			break
 		}
-		entry := conversationSummaryEntry(summary, remaining)
+		entryBudget := remaining
+		entry := conversationSummaryEntry(summary, entryBudget)
 		if strings.TrimSpace(entry) == "" {
 			continue
 		}
@@ -374,6 +396,37 @@ func conversationSummaryContextMessage(summaries []domain.ConversationSummary, m
 	return strings.TrimSpace(builder.String())
 }
 
+func conversationSummariesByPriority(summaries []domain.ConversationSummary) []domain.ConversationSummary {
+	ordered := append([]domain.ConversationSummary(nil), summaries...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		left := ordered[i]
+		right := ordered[j]
+		leftPriority := conversationSummaryScopePriority(left.Scope)
+		rightPriority := conversationSummaryScopePriority(right.Scope)
+		if leftPriority != rightPriority {
+			return leftPriority < rightPriority
+		}
+		if !left.ToCreatedAt.Equal(right.ToCreatedAt) {
+			return left.ToCreatedAt.After(right.ToCreatedAt)
+		}
+		return left.ToMessageID > right.ToMessageID
+	})
+	return ordered
+}
+
+func conversationSummaryScopePriority(scope domain.ConversationSummaryScope) int {
+	switch scope {
+	case domain.ConversationSummaryScopeThread:
+		return 0
+	case domain.ConversationSummaryScopeChannel:
+		return 1
+	case domain.ConversationSummaryScopeProject:
+		return 2
+	default:
+		return 3
+	}
+}
+
 func conversationSummaryEntry(summary domain.ConversationSummary, budget int) string {
 	body := strings.TrimSpace(summary.Summary)
 	if body == "" {
@@ -388,9 +441,10 @@ func conversationSummaryEntry(summary domain.ConversationSummary, budget int) st
 }
 
 type conversationHistoryItem struct {
-	Role  domain.ConversationRole
-	Label string
-	Body  string
+	Role     domain.ConversationRole
+	Label    string
+	Body     string
+	ThreadID string
 }
 
 func compactConversationHistoryItems(messages []domain.ConversationMessage) []conversationHistoryItem {
@@ -421,10 +475,30 @@ func conversationHistoryMessageItem(message domain.ConversationMessage) conversa
 		return conversationHistoryItem{}
 	}
 	return conversationHistoryItem{
-		Role:  message.Role,
-		Label: conversationHistoryLabel(message),
-		Body:  body,
+		Role:     message.Role,
+		Label:    conversationHistoryLabel(message),
+		Body:     body,
+		ThreadID: strings.TrimSpace(message.ThreadID),
 	}
+}
+
+func conversationHistoryThreadRootIndex(items []conversationHistoryItem) int {
+	firstThread := -1
+	for i, item := range items {
+		if strings.TrimSpace(item.ThreadID) != "" {
+			firstThread = i
+			break
+		}
+	}
+	if firstThread <= 0 {
+		return -1
+	}
+	for i := firstThread - 1; i >= 0; i-- {
+		if strings.TrimSpace(items[i].ThreadID) == "" {
+			return i
+		}
+	}
+	return -1
 }
 
 func conversationHistoryEntry(message domain.ConversationMessage, budget int) string {
@@ -500,9 +574,10 @@ func compactEditToolHistory(messages []domain.ConversationMessage) (conversation
 		return conversationHistoryItem{}, 0, false
 	}
 	return conversationHistoryItem{
-		Role:  domain.ConversationRoleTool,
-		Label: first.Label + " x" + strconv.Itoa(len(infos)),
-		Body:  compactEditToolBody(infos),
+		Role:     domain.ConversationRoleTool,
+		Label:    first.Label + " x" + strconv.Itoa(len(infos)),
+		Body:     compactEditToolBody(infos),
+		ThreadID: strings.TrimSpace(messages[0].ThreadID),
 	}, len(infos), true
 }
 

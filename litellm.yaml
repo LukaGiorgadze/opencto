@@ -46,6 +46,5 @@ model_list:
           api_key: os.environ/ANTHROPIC_API_KEY
 
 general_settings:
-    master_key: sk-admin
     store_model_in_db: true
     store_prompts_in_spend_logs: true

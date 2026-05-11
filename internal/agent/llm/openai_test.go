@@ -36,6 +36,8 @@ func TestResolveOpenAIAPIKeyFromEnvironment(t *testing.T) {
 }
 
 func TestResolveOpenAIAPIKeyMissingEnvironment(t *testing.T) {
+	t.Setenv("LITELLM_PROXY_KEY", "")
+
 	key, source, err := ResolveOpenAIAPIKey(config.LLMConfig{})
 	if err == nil {
 		t.Fatal("expected missing env error")

@@ -22,8 +22,6 @@ import (
 	"github.com/opencto/opencto/internal/observability"
 	"github.com/opencto/opencto/internal/runtime"
 	"github.com/opencto/opencto/internal/runtime/activities"
-	"github.com/opencto/opencto/internal/storage"
-	sqlitestore "github.com/opencto/opencto/internal/storage/sqlite"
 	"github.com/opencto/opencto/internal/tools/exec"
 	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
 )
@@ -36,7 +34,7 @@ var defaultProject = domain.Project{
 func main() {
 	var (
 		configPath = flag.String("config", "config.json", "path to config file")
-		mode       = flag.String("mode", "validate", "validate|worker|inject|serve")
+		mode       = flag.String("mode", "validate", "validate|bootstrap|doctor|check-env|worker|inject|serve")
 		body       = flag.String("body", "", "event body for inject mode")
 		actor      = flag.String("actor", "local-user", "actor name for inject mode")
 	)
@@ -61,6 +59,21 @@ func main() {
 		return
 	}
 
+	if *mode == "bootstrap" {
+		if err := runBootstrap(ctx, cfg, defaultProject, logger); err != nil {
+			logger.Error("bootstrap failed", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		return
+	}
+
+	if *mode == "doctor" || *mode == "check-env" {
+		if err := runDoctor(ctx, *configPath, cfg, defaultProject, os.Stdout); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
+
 	temporalClient, err := client.Dial(client.Options{
 		HostPort:  cfg.Temporal.HostPort,
 		Namespace: cfg.Temporal.Namespace,
@@ -72,6 +85,17 @@ func main() {
 	defer temporalClient.Close()
 
 	dispatcher := runtime.NewDispatcher(temporalClient, cfg.Temporal.TaskQueue, cfg.Temporal.ContinueAsNewAfterEvents)
+
+	if *mode == "inject" {
+		injector := local.NewInjector(defaultProject.ID, dispatcher, logger)
+		if _, err := injector.Inject(ctx, *actor, *body); err != nil {
+			logger.Error("inject local event", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		logger.Info("event injected", slog.String("project_id", defaultProject.ID))
+		return
+	}
+
 	var reporter activities.Reporter = local.NewReporter(logger)
 	engine := buildNextActionEngine(cfg, logger)
 	memoryEmbedder := buildMemoryEmbedder(cfg, logger)
@@ -79,29 +103,15 @@ func main() {
 	conversationCompressor := buildConversationCompressor(cfg, logger)
 
 	if *mode == "worker" || *mode == "serve" {
-		dbPath := storage.DefaultDBPath(cfg.General.WorkspaceRoot)
-		store, err := sqlitestore.Open(ctx, dbPath)
+		store, dbPath, err := openRuntimeStore(ctx, cfg)
 		if err != nil {
 			logger.Error("open sqlite store", slog.String("path", dbPath), slog.String("error", err.Error()))
 			os.Exit(1)
 		}
 		defer store.Close()
-		switch *mode {
-		case "worker":
-			if err := store.Migrate(ctx); err != nil {
-				logger.Error("migrate sqlite store", slog.String("path", dbPath), slog.String("error", err.Error()))
-				os.Exit(1)
-			}
-			if err := store.EnsureProject(ctx, defaultProject); err != nil {
-				logger.Error("ensure default project", slog.String("project_id", defaultProject.ID), slog.String("error", err.Error()))
-				os.Exit(1)
-			}
-			logger.Info("sqlite store migrated", slog.String("path", dbPath), slog.String("project_id", defaultProject.ID))
-		case "serve":
-			if err := store.VerifySchema(ctx); err != nil {
-				logger.Error("sqlite store schema is not ready", slog.String("path", dbPath), slog.String("error", err.Error()))
-				os.Exit(1)
-			}
+		if err := bootstrapRuntimeStore(ctx, store, dbPath, defaultProject, logger); err != nil {
+			logger.Error("bootstrap sqlite store", slog.String("path", dbPath), slog.String("error", err.Error()))
+			os.Exit(1)
 		}
 
 		var discordAdapter *discord.Adapter
@@ -186,16 +196,6 @@ func main() {
 		}
 
 		<-ctx.Done()
-		return
-	}
-
-	if *mode == "inject" {
-		injector := local.NewInjector(defaultProject.ID, dispatcher, logger)
-		if _, err := injector.Inject(ctx, *actor, *body); err != nil {
-			logger.Error("inject local event", slog.String("error", err.Error()))
-			os.Exit(1)
-		}
-		logger.Info("event injected", slog.String("project_id", defaultProject.ID))
 		return
 	}
 
