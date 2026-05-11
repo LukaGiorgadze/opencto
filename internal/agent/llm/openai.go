@@ -23,6 +23,7 @@ const (
 )
 
 const (
+	openAIAPIKeyEnv            = "OPENAI_API_KEY"
 	bifrostAPIKeyEnv           = "BIFROST_API_KEY"
 	eventPayloadAttachmentsKey = "attachments"
 )
@@ -34,9 +35,13 @@ func ResolveOpenAIAPIKey(cfg config.LLMConfig) (string, APIKeySource, error) {
 		return value, APIKeySourceConfig, nil
 	}
 
-	value := strings.TrimSpace(os.Getenv(bifrostAPIKeyEnv))
+	envName := openAIAPIKeyEnv
+	if cfg.Bifrost.Enabled {
+		envName = bifrostAPIKeyEnv
+	}
+	value := strings.TrimSpace(os.Getenv(envName))
 	if value == "" {
-		return "", "", fmt.Errorf("environment variable %q is not set", bifrostAPIKeyEnv)
+		return "", "", fmt.Errorf("environment variable %q is not set", envName)
 	}
 	return value, APIKeySourceEnvironment, nil
 }

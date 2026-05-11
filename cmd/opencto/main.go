@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"syscall"
 
@@ -45,7 +47,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
 		os.Exit(1)
 	}
-	openCTORoot, err := os.Getwd()
+	openCTORoot, err := resolveOpenCTORoot()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "resolve OpenCTO root: %v\n", err)
 		os.Exit(1)
@@ -203,6 +205,14 @@ func main() {
 	os.Exit(1)
 }
 
+func resolveOpenCTORoot() (string, error) {
+	_, file, _, ok := goruntime.Caller(0)
+	if !ok {
+		return "", fmt.Errorf("resolve caller path")
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..")), nil
+}
+
 func buildNextActionEngine(cfg config.Config, logger *slog.Logger) agent.Engine {
 	unavailable := func(reason string) agent.Engine {
 		return agent.NewUnavailableEngine(reason)
@@ -231,6 +241,7 @@ func buildNextActionEngine(cfg config.Config, logger *slog.Logger) agent.Engine 
 		slog.String("model_fast", cfg.LLM.ModelFast),
 		slog.String("model_transcription", cfg.LLM.ModelTranscription),
 		slog.String("api_key_source", string(source)),
+		slog.Bool("bifrost_enabled", cfg.LLM.Bifrost.Enabled),
 	)
 	return engine
 }
@@ -263,6 +274,7 @@ func buildMemoryEmbedder(cfg config.Config, logger *slog.Logger) embedding.Embed
 		slog.String("model", cfg.Memory.Embedding.Model),
 		slog.Int("dimensions", cfg.Memory.Embedding.Dimensions),
 		slog.String("api_key_source", string(source)),
+		slog.Bool("bifrost_enabled", cfg.LLM.Bifrost.Enabled),
 	)
 	return embedder
 }
@@ -289,6 +301,7 @@ func buildMemoryExtractor(cfg config.Config, logger *slog.Logger) agent.MemoryEx
 		slog.String("base_url", cfg.LLM.BaseURL),
 		slog.String("model", cfg.LLM.ModelFast),
 		slog.String("api_key_source", string(source)),
+		slog.Bool("bifrost_enabled", cfg.LLM.Bifrost.Enabled),
 	)
 	return extractor
 }
@@ -315,6 +328,7 @@ func buildConversationCompressor(cfg config.Config, logger *slog.Logger) agent.C
 		slog.String("base_url", cfg.LLM.BaseURL),
 		slog.String("model", cfg.LLM.ModelSummary),
 		slog.String("api_key_source", string(source)),
+		slog.Bool("bifrost_enabled", cfg.LLM.Bifrost.Enabled),
 	)
 	return compressor
 }

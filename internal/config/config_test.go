@@ -165,7 +165,10 @@ func TestLoadParsesLLMSecretFields(t *testing.T) {
     "base_url": "http://127.0.0.1:4000",
     "model_reasoning": "gpt-5.4",
     "model_fast": "gpt-5.4-mini",
-    "model_transcription": "gpt-4o-mini-transcribe"
+    "model_transcription": "gpt-4o-mini-transcribe",
+    "bifrost": {
+      "enabled": true
+    }
   },
   "temporal": {
     "host_port": "127.0.0.1:7233",
@@ -198,6 +201,9 @@ func TestLoadParsesLLMSecretFields(t *testing.T) {
 	}
 	if cfg.LLM.ModelSummary != "gpt-5.4-mini" {
 		t.Fatalf("expected summary model to default to fast model, got %s", cfg.LLM.ModelSummary)
+	}
+	if !cfg.LLM.Bifrost.Enabled {
+		t.Fatal("expected bifrost to be enabled")
 	}
 }
 

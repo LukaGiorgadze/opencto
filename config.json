@@ -31,7 +31,10 @@
     "model_reasoning": "gpt-5.4-nano",
     "model_fast": "gpt-5.4-nano",
     "model_summary": "gpt-5.4-nano",
-    "model_transcription": "gpt-4o-mini-transcribe"
+    "model_transcription": "gpt-4o-mini-transcribe",
+    "bifrost": {
+      "enabled": true
+    }
   },
   "temporal": {
     "host_port": "127.0.0.1:7233",

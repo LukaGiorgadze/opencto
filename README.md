@@ -55,13 +55,36 @@ Recommended local setup:
 
 ```bash
 export OPENAI_API_KEY="sk-..."
-export BIFROST_API_KEY="sk-bf-opencto-local"
 task worker
 ```
 
 `task worker` now runs through `air`, so code changes rebuild and restart automatically.
 
-When using the local Bifrost gateway, `OPENAI_API_KEY` is the upstream provider key for Bifrost and `BIFROST_API_KEY` is the virtual key OpenCTO uses to authenticate to Bifrost. OpenCTO reads `BIFROST_API_KEY` directly from the environment. A direct `llm.api_key` value is also supported for local-only testing, but environment variables are safer.
+By default, OpenCTO connects directly to the OpenAI API using `llm.base_url` and reads `OPENAI_API_KEY` from the environment. A direct `llm.api_key` value is also supported for local-only testing, but environment variables are safer.
+
+The local Bifrost gateway is optional. To use it, set:
+
+```json
+{
+  "llm": {
+    "base_url": "http://127.0.0.1:4000/openai",
+    "bifrost": {
+      "enabled": true
+    }
+  }
+}
+```
+
+Then start infrastructure with the Bifrost profile and export both keys. The gateway reads its provider and virtual-key settings from `bifrost.json`.
+
+```bash
+export OPENAI_API_KEY="sk-..."
+export BIFROST_API_KEY="sk-bf-opencto-local"
+docker compose --profile bifrost up -d --remove-orphans
+task worker
+```
+
+In that mode, `OPENAI_API_KEY` is the upstream provider key for Bifrost and `BIFROST_API_KEY` is the virtual key OpenCTO uses to authenticate to Bifrost.
 
 ## Discord
 

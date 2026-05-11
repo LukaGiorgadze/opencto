@@ -48,14 +48,15 @@ type fileConfig struct {
 }
 
 type llmFileConfig struct {
-	Provider           string `json:"provider"`
-	BaseURL            string `json:"base_url"`
-	ModelReasoning     string `json:"model_reasoning"`
-	ModelFast          string `json:"model_fast"`
-	ModelSummary       string `json:"model_summary"`
-	ModelTranscription string `json:"model_transcription"`
-	TranscriptionModel string `json:"transcription_model"`
-	APIKey             string `json:"api_key"`
+	Provider           string        `json:"provider"`
+	BaseURL            string        `json:"base_url"`
+	ModelReasoning     string        `json:"model_reasoning"`
+	ModelFast          string        `json:"model_fast"`
+	ModelSummary       string        `json:"model_summary"`
+	ModelTranscription string        `json:"model_transcription"`
+	TranscriptionModel string        `json:"transcription_model"`
+	APIKey             string        `json:"api_key"`
+	Bifrost            BifrostConfig `json:"bifrost"`
 }
 
 type GeneralConfig struct {
@@ -124,13 +125,18 @@ type conversationFileConfig struct {
 }
 
 type LLMConfig struct {
-	Provider           string `json:"provider"`
-	BaseURL            string `json:"base_url"`
-	ModelReasoning     string `json:"model_reasoning"`
-	ModelFast          string `json:"model_fast"`
-	ModelSummary       string `json:"model_summary"`
-	ModelTranscription string `json:"model_transcription"`
-	APIKey             string `json:"api_key"`
+	Provider           string        `json:"provider"`
+	BaseURL            string        `json:"base_url"`
+	ModelReasoning     string        `json:"model_reasoning"`
+	ModelFast          string        `json:"model_fast"`
+	ModelSummary       string        `json:"model_summary"`
+	ModelTranscription string        `json:"model_transcription"`
+	APIKey             string        `json:"api_key"`
+	Bifrost            BifrostConfig `json:"bifrost"`
+}
+
+type BifrostConfig struct {
+	Enabled bool `json:"enabled"`
 }
 
 type TemporalConfig struct {
@@ -191,6 +197,7 @@ func Load(path string) (Config, error) {
 			ModelSummary:       firstNonEmpty(raw.LLM.ModelSummary, raw.LLM.ModelFast),
 			ModelTranscription: firstNonEmpty(raw.LLM.ModelTranscription, raw.LLM.TranscriptionModel),
 			APIKey:             raw.LLM.APIKey,
+			Bifrost:            raw.LLM.Bifrost,
 		},
 		Temporal:      raw.Temporal,
 		Channels:      raw.Channels,
