@@ -327,7 +327,10 @@ func autoContextMemoryScopes(event domain.Event) []domain.MemoryScope {
 }
 
 type conversationBoundary struct {
-	CreatedAt time.Time
+	CreatedAt      time.Time
+	MessageID      string
+	RootMessage    domain.ConversationMessage
+	HasRootMessage bool
 }
 
 func (a *Activities) conversationThreadBoundary(ctx context.Context, event domain.Event) (conversationBoundary, bool, error) {
@@ -345,8 +348,17 @@ func (a *Activities) conversationThreadBoundary(ctx context.Context, event domai
 	}
 	if root, ok, err := a.conversationThreadRootMessage(ctx, event, thread); err != nil {
 		return conversationBoundary{}, false, err
-	} else if ok && !root.CreatedAt.IsZero() {
-		return conversationBoundary{CreatedAt: root.CreatedAt}, true, nil
+	} else if ok {
+		boundary := conversationBoundary{
+			CreatedAt:      thread.CreatedAt,
+			MessageID:      strings.TrimSpace(root.ID),
+			RootMessage:    root,
+			HasRootMessage: true,
+		}
+		if !root.CreatedAt.IsZero() {
+			boundary.CreatedAt = root.CreatedAt
+		}
+		return boundary, true, nil
 	}
 	return conversationBoundary{CreatedAt: thread.CreatedAt}, true, nil
 }
@@ -384,6 +396,13 @@ func (a *Activities) loadConversationHistory(ctx context.Context, event domain.E
 	}
 	var messages []domain.ConversationMessage
 	seen := map[string]bool{}
+	appendMessage := func(message domain.ConversationMessage) {
+		if strings.TrimSpace(message.ID) == "" || seen[message.ID] {
+			return
+		}
+		seen[message.ID] = true
+		messages = append(messages, message)
+	}
 	appendMessages := func(scope storage.ConversationScope, cutoff domain.ConversationSummary) error {
 		if limit <= 0 {
 			return nil
@@ -395,32 +414,30 @@ func (a *Activities) loadConversationHistory(ctx context.Context, event domain.E
 		query.AfterID = cutoff.ToMessageID
 		if hasBoundary && scope != storage.ConversationScopeThread {
 			query.BeforeCreatedAt = boundary.CreatedAt
+			query.BeforeID = boundary.MessageID
 		}
 		found, err := a.Store.ListConversationMessages(ctx, query)
 		if err != nil {
 			return err
 		}
 		for _, message := range found {
-			if strings.TrimSpace(message.ID) == "" || seen[message.ID] {
-				continue
-			}
-			seen[message.ID] = true
-			messages = append(messages, message)
+			appendMessage(message)
 		}
 		return nil
 	}
 	threadSummary, _ := latestConversationSummary(summaries, domain.ConversationSummaryScopeThread)
-	channelSummary, hasChannelSummary := latestConversationSummary(summaries, domain.ConversationSummaryScopeChannel)
+	channelSummary, _ := latestConversationSummary(summaries, domain.ConversationSummaryScopeChannel)
 	projectSummary, _ := latestConversationSummary(summaries, domain.ConversationSummaryScopeProject)
 	if strings.TrimSpace(event.ChannelID) != "" {
 		if strings.TrimSpace(event.ThreadID) != "" {
 			if err := appendMessages(storage.ConversationScopeThread, threadSummary); err != nil {
 				return nil, err
 			}
-			if !hasChannelSummary {
-				if err := appendMessages(storage.ConversationScopeChannel, domain.ConversationSummary{}); err != nil {
-					return nil, err
-				}
+			if err := appendMessages(storage.ConversationScopeChannel, channelSummary); err != nil {
+				return nil, err
+			}
+			if boundary.HasRootMessage {
+				appendMessage(boundary.RootMessage)
 			}
 		} else if err := appendMessages(storage.ConversationScopeChannel, channelSummary); err != nil {
 			return nil, err
@@ -497,6 +514,7 @@ func (a *Activities) loadConversationSummaries(ctx context.Context, event domain
 		query.Limit = item.limit
 		if hasBoundary && item.scope != domain.ConversationSummaryScopeThread {
 			query.BeforeCreatedAt = boundary.CreatedAt
+			query.BeforeID = boundary.MessageID
 		}
 		found, err := a.Store.ListConversationSummaries(ctx, query)
 		if err != nil {
