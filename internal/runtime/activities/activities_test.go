@@ -1539,6 +1539,106 @@ func TestLoadContextWithChannelSummaryIncludesUnsummarizedChannelHistoryBeforeTh
 	}
 }
 
+func TestLoadContextWithChannelAndThreadSummariesIncludesChannelGapRootAndThreadRaw(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	root := domain.ConversationMessage{
+		ID:          "root-message",
+		ProjectID:   "default",
+		Role:        domain.ConversationRoleUser,
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		Body:        "original parent request",
+		CreatedAt:   base.Add(3 * time.Minute),
+	}
+	activities := Activities{
+		Store: stubProjectStore{
+			conversationThreads: map[string]domain.ConversationThread{
+				"thread-1": {
+					ProjectID:     "default",
+					ChannelType:   domain.ChannelTypeDiscord,
+					ChannelID:     "channel-1",
+					ThreadID:      "thread-1",
+					RootMessageID: "root-source-message",
+					CreatedAt:     base.Add(3 * time.Minute),
+				},
+			},
+			rootMessages: map[string]domain.ConversationMessage{
+				"root-source-message": root,
+			},
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeThread: {
+					{ID: "thread-covered", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "covered by thread summary", CreatedAt: base.Add(4 * time.Minute)},
+					{ID: "thread-gap", ProjectID: "default", Role: domain.ConversationRoleAssistant, Body: "unsummarized thread answer", CreatedAt: base.Add(5 * time.Minute)},
+				},
+				storage.ConversationScopeChannel: {
+					{ID: "channel-covered", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "covered by channel summary", CreatedAt: base},
+					{ID: "channel-gap-1", ProjectID: "default", Role: domain.ConversationRoleAssistant, Body: "channel answer before root", CreatedAt: base.Add(time.Minute)},
+					{ID: "channel-gap-2", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "channel request before root", CreatedAt: base.Add(2 * time.Minute)},
+					{ID: "channel-after-root", ProjectID: "default", Role: domain.ConversationRoleUser, Body: "channel request after root", CreatedAt: base.Add(10 * time.Minute)},
+				},
+			},
+			summariesByScope: map[domain.ConversationSummaryScope][]domain.ConversationSummary{
+				domain.ConversationSummaryScopeThread: {
+					{
+						ID:            "thread-summary",
+						ProjectID:     "default",
+						ChannelType:   domain.ChannelTypeDiscord,
+						ChannelID:     "channel-1",
+						ThreadID:      "thread-1",
+						Scope:         domain.ConversationSummaryScopeThread,
+						Summary:       "Thread-level summary.",
+						FromMessageID: "thread-old",
+						ToMessageID:   "thread-covered",
+						FromCreatedAt: base.Add(4 * time.Minute),
+						ToCreatedAt:   base.Add(4 * time.Minute),
+					},
+				},
+				domain.ConversationSummaryScopeChannel: {
+					{
+						ID:            "channel-summary",
+						ProjectID:     "default",
+						ChannelType:   domain.ChannelTypeDiscord,
+						ChannelID:     "channel-1",
+						Scope:         domain.ConversationSummaryScopeChannel,
+						Summary:       "Channel-level summary.",
+						FromMessageID: "channel-old",
+						ToMessageID:   "channel-covered",
+						FromCreatedAt: base,
+						ToCreatedAt:   base,
+					},
+				},
+			},
+		},
+		Project:                    domain.Project{ID: "default", Name: "OpenCTO"},
+		ConversationEnabled:        true,
+		ConversationLimit:          20,
+		ConversationSummaryEnabled: true,
+	}
+	loaded, err := activities.LoadContext(context.Background(), domain.Event{
+		ID:          "current-event",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		ThreadID:    "thread-1",
+		Body:        "continue",
+	})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if got := idsFromConversation(loaded.Conversation); strings.Join(got, ",") != "channel-gap-1,channel-gap-2,root-message,thread-gap" {
+		t.Fatalf("expected channel gap, root, and unsummarized thread raw history, got %#v", loaded.Conversation)
+	}
+	gotSummaries := make([]string, 0, len(loaded.ConversationSummaries))
+	for _, summary := range loaded.ConversationSummaries {
+		gotSummaries = append(gotSummaries, summary.ID)
+	}
+	if strings.Join(gotSummaries, ",") != "thread-summary,channel-summary" {
+		t.Fatalf("expected thread and channel summaries, got %#v", loaded.ConversationSummaries)
+	}
+}
+
 func TestLoadContextForOldThreadExcludesChannelMessagesAfterThreadStart(t *testing.T) {
 	t.Parallel()
 

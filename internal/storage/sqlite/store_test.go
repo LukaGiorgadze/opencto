@@ -408,6 +408,90 @@ func TestConversationMessagesUseScopedHistory(t *testing.T) {
 	}
 }
 
+func TestConversationMessagesRespectBeforeCreatedAtAndID(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	rootTime := base.Add(time.Minute)
+	messages := []domain.ConversationMessage{
+		{
+			ID:          "covered",
+			ProjectID:   "default",
+			Role:        domain.ConversationRoleUser,
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-a",
+			Body:        "covered by summary",
+			CreatedAt:   base,
+		},
+		{
+			ID:          "a-gap",
+			ProjectID:   "default",
+			Role:        domain.ConversationRoleAssistant,
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-a",
+			Body:        "after summary before root",
+			CreatedAt:   rootTime.Add(-time.Second),
+		},
+		{
+			ID:          "m-root",
+			ProjectID:   "default",
+			Role:        domain.ConversationRoleUser,
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-a",
+			Body:        "root message",
+			CreatedAt:   rootTime,
+		},
+		{
+			ID:          "z-after-same-time",
+			ProjectID:   "default",
+			Role:        domain.ConversationRoleUser,
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-a",
+			Body:        "same timestamp after root",
+			CreatedAt:   rootTime,
+		},
+		{
+			ID:          "after-later",
+			ProjectID:   "default",
+			Role:        domain.ConversationRoleUser,
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-a",
+			Body:        "after root",
+			CreatedAt:   rootTime.Add(time.Second),
+		},
+	}
+	for _, message := range messages {
+		if err := store.UpsertConversationMessage(ctx, message); err != nil {
+			t.Fatalf("upsert conversation message %s: %v", message.ID, err)
+		}
+	}
+
+	found, err := store.ListConversationMessages(ctx, storage.ConversationQuery{
+		ProjectID:       "default",
+		ChannelType:     domain.ChannelTypeDiscord,
+		ChannelID:       "channel-a",
+		Scope:           storage.ConversationScopeChannel,
+		Limit:           10,
+		AfterCreatedAt:  base,
+		AfterID:         "covered",
+		BeforeCreatedAt: rootTime,
+		BeforeID:        "m-root",
+		OldestFirst:     true,
+	})
+	if err != nil {
+		t.Fatalf("list bounded conversation messages: %v", err)
+	}
+	got := make([]string, 0, len(found))
+	for _, message := range found {
+		got = append(got, message.ID)
+	}
+	if strings.Join(got, ",") != "a-gap,m-root" {
+		t.Fatalf("unexpected bounded conversation messages: %#v", found)
+	}
+}
+
 func TestConversationRootMessageUsesEventSourceID(t *testing.T) {
 	t.Parallel()
 
@@ -451,6 +535,86 @@ func TestConversationRootMessageUsesEventSourceID(t *testing.T) {
 	}
 	if !ok || found.ID != "conversation-1" {
 		t.Fatalf("expected parent conversation message, got ok=%v message=%#v", ok, found)
+	}
+}
+
+func TestConversationRootMessageUsesEventPayloadMessageID(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	event := domain.Event{
+		ID:          "event-1",
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-a",
+		Body:        "original parent request",
+		Payload:     map[string]any{"message_id": "payload-message-1"},
+		CreatedAt:   base,
+	}
+	if _, err := store.AppendEvent(ctx, event); err != nil {
+		t.Fatalf("append event: %v", err)
+	}
+	message := domain.ConversationMessage{
+		ID:          "conversation-1",
+		ProjectID:   "default",
+		EventID:     event.ID,
+		Role:        domain.ConversationRoleUser,
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-a",
+		Body:        event.Body,
+		CreatedAt:   base,
+	}
+	if err := store.UpsertConversationMessage(ctx, message); err != nil {
+		t.Fatalf("upsert conversation: %v", err)
+	}
+
+	found, ok, err := store.GetConversationRootMessage(ctx, storage.ConversationRootMessageQuery{
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-a",
+		MessageID:   "payload-message-1",
+	})
+	if err != nil {
+		t.Fatalf("get root message: %v", err)
+	}
+	if !ok || found.ID != "conversation-1" {
+		t.Fatalf("expected parent conversation message from payload id, got ok=%v message=%#v", ok, found)
+	}
+}
+
+func TestConversationRootMessageUsesConversationMetadataMessageID(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	message := domain.ConversationMessage{
+		ID:          "conversation-1",
+		ProjectID:   "default",
+		Role:        domain.ConversationRoleUser,
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-a",
+		Body:        "original parent request",
+		Metadata:    domain.Metadata{"message_id": "metadata-message-1"},
+		CreatedAt:   base,
+	}
+	if err := store.UpsertConversationMessage(ctx, message); err != nil {
+		t.Fatalf("upsert conversation: %v", err)
+	}
+
+	found, ok, err := store.GetConversationRootMessage(ctx, storage.ConversationRootMessageQuery{
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-a",
+		MessageID:   "metadata-message-1",
+	})
+	if err != nil {
+		t.Fatalf("get root message: %v", err)
+	}
+	if !ok || found.ID != "conversation-1" {
+		t.Fatalf("expected parent conversation message from metadata id, got ok=%v message=%#v", ok, found)
 	}
 }
 
@@ -524,6 +688,122 @@ func TestConversationSummariesUseScopedHistory(t *testing.T) {
 	}
 	if len(project) != 1 || project[0].ID != "project-summary" {
 		t.Fatalf("unexpected project summaries: %#v", project)
+	}
+}
+
+func TestConversationSummariesRespectBeforeCreatedAtAndID(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	rootTime := base.Add(time.Minute)
+	summaries := []domain.ConversationSummary{
+		{
+			ID:            "summary-covered",
+			ProjectID:     "default",
+			ChannelType:   domain.ChannelTypeDiscord,
+			ChannelID:     "channel-a",
+			Scope:         domain.ConversationSummaryScopeChannel,
+			Summary:       "Covered channel context.",
+			FromMessageID: "covered-start",
+			ToMessageID:   "covered",
+			FromCreatedAt: base.Add(-time.Minute),
+			ToCreatedAt:   base,
+			MessageCount:  2,
+			SourceChars:   200,
+			CreatedAt:     base,
+			UpdatedAt:     base,
+		},
+		{
+			ID:            "summary-gap",
+			ProjectID:     "default",
+			ChannelType:   domain.ChannelTypeDiscord,
+			ChannelID:     "channel-a",
+			Scope:         domain.ConversationSummaryScopeChannel,
+			Summary:       "Gap channel context.",
+			FromMessageID: "a-gap-start",
+			ToMessageID:   "a-gap",
+			FromCreatedAt: base,
+			ToCreatedAt:   rootTime.Add(-time.Second),
+			MessageCount:  2,
+			SourceChars:   200,
+			CreatedAt:     base,
+			UpdatedAt:     base,
+		},
+		{
+			ID:            "summary-root",
+			ProjectID:     "default",
+			ChannelType:   domain.ChannelTypeDiscord,
+			ChannelID:     "channel-a",
+			Scope:         domain.ConversationSummaryScopeChannel,
+			Summary:       "Root-bounded channel context.",
+			FromMessageID: "m-root-start",
+			ToMessageID:   "m-root",
+			FromCreatedAt: base,
+			ToCreatedAt:   rootTime,
+			MessageCount:  2,
+			SourceChars:   200,
+			CreatedAt:     base,
+			UpdatedAt:     base,
+		},
+		{
+			ID:            "summary-after-same-time",
+			ProjectID:     "default",
+			ChannelType:   domain.ChannelTypeDiscord,
+			ChannelID:     "channel-a",
+			Scope:         domain.ConversationSummaryScopeChannel,
+			Summary:       "Same-time after-root channel context.",
+			FromMessageID: "z-after-start",
+			ToMessageID:   "z-after-same-time",
+			FromCreatedAt: base,
+			ToCreatedAt:   rootTime,
+			MessageCount:  2,
+			SourceChars:   200,
+			CreatedAt:     base,
+			UpdatedAt:     base,
+		},
+		{
+			ID:            "summary-after-later",
+			ProjectID:     "default",
+			ChannelType:   domain.ChannelTypeDiscord,
+			ChannelID:     "channel-a",
+			Scope:         domain.ConversationSummaryScopeChannel,
+			Summary:       "Later after-root channel context.",
+			FromMessageID: "after-later-start",
+			ToMessageID:   "after-later",
+			FromCreatedAt: base,
+			ToCreatedAt:   rootTime.Add(time.Second),
+			MessageCount:  2,
+			SourceChars:   200,
+			CreatedAt:     base,
+			UpdatedAt:     base,
+		},
+	}
+	for _, summary := range summaries {
+		if err := store.UpsertConversationSummary(ctx, summary); err != nil {
+			t.Fatalf("upsert summary %s: %v", summary.ID, err)
+		}
+	}
+
+	found, err := store.ListConversationSummaries(ctx, storage.ConversationSummaryQuery{
+		ProjectID:       "default",
+		ChannelType:     domain.ChannelTypeDiscord,
+		ChannelID:       "channel-a",
+		Scope:           domain.ConversationSummaryScopeChannel,
+		Limit:           10,
+		BeforeCreatedAt: rootTime,
+		BeforeID:        "m-root",
+	})
+	if err != nil {
+		t.Fatalf("list bounded conversation summaries: %v", err)
+	}
+	got := make([]string, 0, len(found))
+	for _, summary := range found {
+		got = append(got, summary.ID)
+	}
+	if strings.Join(got, ",") != "summary-covered,summary-gap,summary-root" {
+		t.Fatalf("unexpected bounded conversation summaries: %#v", found)
 	}
 }
 
