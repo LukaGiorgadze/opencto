@@ -230,9 +230,9 @@ func TestBuildNextActionMessagesReplaysMultipleToolResults(t *testing.T) {
 				WorkItemID:      "wi-1",
 				ToolCallID:      "call_skill",
 				Tool:            domain.ToolTypeSkill,
-				RequestedAction: "load skill show-me",
+				RequestedAction: "load skill example-skill",
 				Status:          string(domain.ExecutionStatusSucceeded),
-				Input:           json.RawMessage(`{"skill_id":"show-me"}`),
+				Input:           json.RawMessage(`{"skill_id":"example-skill"}`),
 				Observation:     "loaded",
 				Metadata: map[string]string{
 					"tool_call_ids": "call_skill,call_grep",
@@ -2103,7 +2103,7 @@ func TestNextActionReturnsTerminalAttachments(t *testing.T) {
 	}
 
 	output, err := engine.NextAction(context.Background(), agent.NextActionInput{
-		Context: agent.Context{Event: domain.Event{Body: "show me"}},
+		Context: agent.Context{Event: domain.Event{Body: "capture screenshot"}},
 	})
 	if err != nil {
 		t.Fatalf("NextAction final: %v", err)
