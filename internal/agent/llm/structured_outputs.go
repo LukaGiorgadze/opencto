@@ -14,61 +14,6 @@ func conversationCompressionResponseFormat() *openai.ResponseFormat {
 	)
 }
 
-func memoryExtractionResponseFormat() *openai.ResponseFormat {
-	return jsonSchemaResponseFormat(
-		"memory_extraction",
-		objectSchema(
-			map[string]*openai.ResponseFormatJSONSchemaProperty{
-				"candidates": {
-					Type: "array",
-					Items: objectSchema(
-						map[string]*openai.ResponseFormatJSONSchemaProperty{
-							"scope": {
-								Type: "string",
-								Enum: []any{"user", "global", "project", "channel", "thread"},
-							},
-							"kind": {
-								Type: "string",
-								Enum: []any{
-									"fact",
-									"preference",
-									"instruction",
-									"decision",
-									"constraint",
-									"identity",
-									"workflow",
-									"reference",
-									"feedback",
-								},
-							},
-							"content": stringSchema(),
-							"tags": {
-								Type:  "array",
-								Items: stringSchema(),
-							},
-							"confidence": {
-								Type: "number",
-							},
-							"pinned": {
-								Type: "boolean",
-							},
-							"reason": stringSchema(),
-						},
-						"scope",
-						"kind",
-						"content",
-						"tags",
-						"confidence",
-						"pinned",
-						"reason",
-					),
-				},
-			},
-			"candidates",
-		),
-	)
-}
-
 func jsonSchemaResponseFormat(name string, schema *openai.ResponseFormatJSONSchemaProperty) *openai.ResponseFormat {
 	return &openai.ResponseFormat{
 		Type: "json_schema",

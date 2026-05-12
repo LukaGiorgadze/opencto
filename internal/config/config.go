@@ -77,10 +77,9 @@ type StorageConfig struct {
 }
 
 type MemoryConfig struct {
-	Enabled            bool                  `json:"enabled"`
-	AutoContextLimit   int                   `json:"auto_context_limit"`
-	AutoExtractEnabled bool                  `json:"auto_extract_enabled"`
-	Embedding          MemoryEmbeddingConfig `json:"embedding"`
+	Enabled          bool                  `json:"enabled"`
+	AutoContextLimit int                   `json:"auto_context_limit"`
+	Embedding        MemoryEmbeddingConfig `json:"embedding"`
 }
 
 type ConversationConfig struct {
@@ -94,10 +93,9 @@ type ConversationConfig struct {
 }
 
 type memoryFileConfig struct {
-	Enabled            *bool                     `json:"enabled"`
-	AutoContextLimit   int                       `json:"auto_context_limit"`
-	AutoExtractEnabled *bool                     `json:"auto_extract_enabled"`
-	Embedding          memoryEmbeddingFileConfig `json:"embedding"`
+	Enabled          *bool                     `json:"enabled"`
+	AutoContextLimit int                       `json:"auto_context_limit"`
+	Embedding        memoryEmbeddingFileConfig `json:"embedding"`
 }
 
 type memoryEmbeddingFileConfig struct {
@@ -316,10 +314,9 @@ func normalizeMemory(value memoryFileConfig) MemoryConfig {
 		limit = 5
 	}
 	return MemoryConfig{
-		Enabled:            enabled,
-		AutoContextLimit:   limit,
-		AutoExtractEnabled: defaultBool(value.AutoExtractEnabled, true),
-		Embedding:          normalizeMemoryEmbedding(value.Embedding),
+		Enabled:          enabled,
+		AutoContextLimit: limit,
+		Embedding:        normalizeMemoryEmbedding(value.Embedding),
 	}
 }
 

@@ -49,12 +49,6 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			MaximumInterval:    30 * time.Second,
 		},
 	}
-	memoryExtractionAO := workflow.ActivityOptions{
-		StartToCloseTimeout: time.Minute,
-		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: 1,
-		},
-	}
 	conversationCompressionAO := workflow.ActivityOptions{
 		StartToCloseTimeout: 2 * time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
@@ -75,7 +69,6 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 	nextActionCtx := workflow.WithActivityOptions(ctx, nextActionAO)
 	toolCtx := workflow.WithActivityOptions(ctx, toolAO)
 	persistenceCtx := workflow.WithActivityOptions(ctx, persistenceAO)
-	memoryExtractionCtx := workflow.WithActivityOptions(ctx, memoryExtractionAO)
 	conversationCompressionCtx := workflow.WithActivityOptions(ctx, conversationCompressionAO)
 	sessionCtx := workflow.WithActivityOptions(ctx, sessionAO)
 	session := startResponseSession(ctx, sessionCtx, input.ProjectID, input.Event)
@@ -91,14 +84,10 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 	var observationHistory []agent.ExecutionFeedback
 	var lastResults []activities.ExecuteToolResult
 	var processes []domain.ProcessReference
-	skipAutoMemoryContext := activities.IsExplicitMemoryRequest(input.Event.Body)
 
 	if !input.ResumedFromPause {
 		if err := persistEvent(persistenceCtx, activities.PersistEventRequest{Event: input.Event}); err != nil {
 			return TaskWorkflowResult{}, err
-		}
-		if err := extractMemory(memoryExtractionCtx, activities.ExtractMemoryRequest{Event: input.Event}); err != nil {
-			workflow.GetLogger(ctx).Warn("memory extraction failed", "error", err)
 		}
 		if err := compressConversation(conversationCompressionCtx, activities.CompressConversationRequest{Event: input.Event}); err != nil {
 			workflow.GetLogger(ctx).Warn("conversation compression failed", "error", err)
@@ -110,16 +99,15 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)
 		}
 		next, err := nextAction(nextActionCtx, activities.NextActionRequest{
-			ProjectID:             input.ProjectID,
-			Event:                 input.Event,
-			AdditionalEvents:      additionalEvents,
-			NextAction:            currentAction,
-			LastResults:           lastResults,
-			ObservationHistory:    observationHistory,
-			Processes:             processes,
-			ExecutionCycle:        cycle,
-			ResumedFromPause:      input.ResumedFromPause,
-			SkipAutoMemoryContext: skipAutoMemoryContext,
+			ProjectID:          input.ProjectID,
+			Event:              input.Event,
+			AdditionalEvents:   additionalEvents,
+			NextAction:         currentAction,
+			LastResults:        lastResults,
+			ObservationHistory: observationHistory,
+			Processes:          processes,
+			ExecutionCycle:     cycle,
+			ResumedFromPause:   input.ResumedFromPause,
 		})
 		if err != nil {
 			return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)
@@ -179,17 +167,16 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 	}
 
 	final, err := nextAction(nextActionCtx, activities.NextActionRequest{
-		ProjectID:             input.ProjectID,
-		Event:                 input.Event,
-		AdditionalEvents:      additionalEvents,
-		NextAction:            currentAction,
-		LastResults:           lastResults,
-		ObservationHistory:    observationHistory,
-		Processes:             processes,
-		ExecutionCycle:        maxExecutionCycles + 1,
-		ForceFinal:            true,
-		ResumedFromPause:      input.ResumedFromPause,
-		SkipAutoMemoryContext: skipAutoMemoryContext,
+		ProjectID:          input.ProjectID,
+		Event:              input.Event,
+		AdditionalEvents:   additionalEvents,
+		NextAction:         currentAction,
+		LastResults:        lastResults,
+		ObservationHistory: observationHistory,
+		Processes:          processes,
+		ExecutionCycle:     maxExecutionCycles + 1,
+		ForceFinal:         true,
+		ResumedFromPause:   input.ResumedFromPause,
 	})
 	if err != nil {
 		return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)
@@ -220,10 +207,6 @@ func nextAction(ctx workflow.Context, request activities.NextActionRequest) (act
 
 func persistEvent(ctx workflow.Context, request activities.PersistEventRequest) error {
 	return workflow.ExecuteActivity(ctx, "Activities.PersistEvent", request).Get(ctx, nil)
-}
-
-func extractMemory(ctx workflow.Context, request activities.ExtractMemoryRequest) error {
-	return workflow.ExecuteActivity(ctx, "Activities.ExtractMemory", request).Get(ctx, nil)
 }
 
 func compressConversation(ctx workflow.Context, request activities.CompressConversationRequest) error {

@@ -23,7 +23,6 @@ func registerTaskWorkflowActivities(env *testsuite.TestWorkflowEnvironment) {
 	env.RegisterActivityWithOptions((&activities.Activities{}).ExecuteTool, activity.RegisterOptions{Name: "Activities.ExecuteTool"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).ExecuteMemoryTool, activity.RegisterOptions{Name: "Activities.ExecuteMemoryTool"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).PersistEvent, activity.RegisterOptions{Name: "Activities.PersistEvent"})
-	env.RegisterActivityWithOptions((&activities.Activities{}).ExtractMemory, activity.RegisterOptions{Name: "Activities.ExtractMemory"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).PersistNextAction, activity.RegisterOptions{Name: "Activities.PersistNextAction"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).PersistToolResult, activity.RegisterOptions{Name: "Activities.PersistToolResult"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).ResponseSession, activity.RegisterOptions{Name: "Activities.ResponseSession"})
@@ -112,35 +111,6 @@ func TestTaskWorkflowAlternatesNextActionAndExecuteTool(t *testing.T) {
 	}
 	if !result.Completed {
 		t.Fatalf("expected workflow to complete")
-	}
-	env.AssertExpectations(t)
-}
-
-func TestTaskWorkflowSkipsAutoMemoryContextForExplicitMemoryRequest(t *testing.T) {
-	t.Parallel()
-
-	var suite testsuite.WorkflowTestSuite
-	env := suite.NewTestWorkflowEnvironment()
-	env.RegisterWorkflow(workflows.TaskWorkflow)
-	registerTaskWorkflowActivities(env)
-
-	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
-		return request.ExecutionCycle == 1 && request.SkipAutoMemoryContext
-	})).Return(activities.NextActionResult{
-		NextAction: agent.NextAction{ResponseMessage: "saved"},
-		Status:     activities.NextActionStatusCompleted,
-	}, nil).Once()
-
-	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{
-		ProjectID: "project-1",
-		Event: domain.Event{
-			ID:        "event-1",
-			ProjectID: "project-1",
-			Body:      "For this project, remember that deployment should use Fly.io.",
-		},
-	})
-	if err := env.GetWorkflowError(); err != nil {
-		t.Fatalf("task workflow failed: %v", err)
 	}
 	env.AssertExpectations(t)
 }
@@ -744,7 +714,6 @@ func TestTaskWorkflowUsesLatestAdditionalContextAsReportTarget(t *testing.T) {
 		env.SignalWorkflow(workflows.SignalTaskAdditionalContext, workflows.AdditionalContextSignal{Event: additional})
 	}, 0)
 	env.OnActivity("Activities.PersistEvent", mock.Anything, mock.Anything).Return(nil)
-	env.OnActivity("Activities.ExtractMemory", mock.Anything, mock.Anything).Return(nil)
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
 		return len(request.AdditionalEvents) == 1 && request.AdditionalEvents[0].ID == "event-2"
 	})).Return(activities.NextActionResult{

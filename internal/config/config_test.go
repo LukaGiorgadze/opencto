@@ -246,7 +246,7 @@ func TestLoadDefaultsStorageAndMemory(t *testing.T) {
 	if cfg.Storage.Provider != "sqlite" {
 		t.Fatalf("expected sqlite storage provider, got %q", cfg.Storage.Provider)
 	}
-	if !cfg.Memory.Enabled || cfg.Memory.AutoContextLimit != 5 || !cfg.Memory.AutoExtractEnabled {
+	if !cfg.Memory.Enabled || cfg.Memory.AutoContextLimit != 5 {
 		t.Fatalf("unexpected memory defaults: %#v", cfg.Memory)
 	}
 	if !cfg.Memory.Embedding.Enabled || cfg.Memory.Embedding.Provider != "openai" || cfg.Memory.Embedding.Model != "text-embedding-3-small" || cfg.Memory.Embedding.Dimensions != 1536 {
@@ -269,11 +269,10 @@ func TestLoadParsesMemoryEmbeddingConfig(t *testing.T) {
   "general": {
     "workspace_root": "."
   },
-  "memory": {
-    "enabled": true,
-    "auto_context_limit": 8,
-    "auto_extract_enabled": false,
-    "embedding": {
+	"memory": {
+	    "enabled": true,
+	    "auto_context_limit": 8,
+	    "embedding": {
       "enabled": false,
       "provider": "openai",
       "model": "text-embedding-3-small",
@@ -306,7 +305,7 @@ func TestLoadParsesMemoryEmbeddingConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if cfg.Memory.AutoContextLimit != 8 || cfg.Memory.AutoExtractEnabled || cfg.Memory.Embedding.Enabled {
+	if cfg.Memory.AutoContextLimit != 8 || cfg.Memory.Embedding.Enabled {
 		t.Fatalf("unexpected memory config: %#v", cfg.Memory)
 	}
 	if cfg.Memory.Embedding.Provider != "openai" || cfg.Memory.Embedding.Model != "text-embedding-3-small" || cfg.Memory.Embedding.Dimensions != 1536 {

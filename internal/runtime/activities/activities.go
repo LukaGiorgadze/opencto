@@ -66,7 +66,6 @@ type Activities struct {
 	Reporter                    Reporter
 	EventEnqueuer               EventEnqueuer
 	MemoryEmbedder              embedding.Embedder
-	MemoryExtractor             agent.MemoryExtractor
 	ConversationCompressor      agent.ConversationCompressor
 	Project                     domain.Project
 	WorkspaceRoot               string
@@ -74,7 +73,6 @@ type Activities struct {
 	SkillsRoot                  string
 	StateDir                    string
 	MemoryEnabled               bool
-	MemoryAutoExtractEnabled    bool
 	MemoryLimit                 int
 	ConversationEnabled         bool
 	ConversationLimit           int
@@ -90,19 +88,18 @@ type Activities struct {
 }
 
 type NextActionRequest struct {
-	ProjectID             string                    `json:"project_id"`
-	Event                 domain.Event              `json:"event"`
-	AdditionalEvents      []domain.Event            `json:"additional_events,omitempty"`
-	NextAction            agent.NextAction          `json:"next_action"`
-	LastResult            *ExecuteToolResult        `json:"last_result,omitempty"`
-	LastResults           []ExecuteToolResult       `json:"last_results,omitempty"`
-	ObservationHistory    []agent.ExecutionFeedback `json:"observation_history,omitempty"`
-	Processes             []domain.ProcessReference `json:"processes,omitempty"`
-	ExecutionCycle        int                       `json:"execution_cycle"`
-	ForceFinal            bool                      `json:"force_final,omitempty"`
-	ResumedFromPause      bool                      `json:"resumed_from_pause,omitempty"`
-	SkipAutoMemoryContext bool                      `json:"skip_auto_memory_context,omitempty"`
-	Completion            *TaskCompletionRequest    `json:"completion,omitempty"`
+	ProjectID          string                    `json:"project_id"`
+	Event              domain.Event              `json:"event"`
+	AdditionalEvents   []domain.Event            `json:"additional_events,omitempty"`
+	NextAction         agent.NextAction          `json:"next_action"`
+	LastResult         *ExecuteToolResult        `json:"last_result,omitempty"`
+	LastResults        []ExecuteToolResult       `json:"last_results,omitempty"`
+	ObservationHistory []agent.ExecutionFeedback `json:"observation_history,omitempty"`
+	Processes          []domain.ProcessReference `json:"processes,omitempty"`
+	ExecutionCycle     int                       `json:"execution_cycle"`
+	ForceFinal         bool                      `json:"force_final,omitempty"`
+	ResumedFromPause   bool                      `json:"resumed_from_pause,omitempty"`
+	Completion         *TaskCompletionRequest    `json:"completion,omitempty"`
 }
 
 type NextActionResult struct {
@@ -148,16 +145,6 @@ type ResponseSessionRequest struct {
 
 type PersistEventRequest struct {
 	Event domain.Event `json:"event"`
-}
-
-type ExtractMemoryRequest struct {
-	Event domain.Event `json:"event"`
-}
-
-type ExtractMemoryResult struct {
-	Candidates int `json:"candidates"`
-	Remembered int `json:"remembered"`
-	Rejected   int `json:"rejected"`
 }
 
 type CompressConversationRequest struct {
@@ -247,10 +234,10 @@ type toolRunResult struct {
 }
 
 func (a *Activities) LoadContext(ctx context.Context, event domain.Event) (agent.Context, error) {
-	return a.loadContext(ctx, event, event, nil, false)
+	return a.loadContext(ctx, event, event, nil)
 }
 
-func (a *Activities) loadContext(ctx context.Context, event domain.Event, conversationEvent domain.Event, additionalEvents []domain.Event, skipAutoMemoryContext bool) (agent.Context, error) {
+func (a *Activities) loadContext(ctx context.Context, event domain.Event, conversationEvent domain.Event, additionalEvents []domain.Event) (agent.Context, error) {
 	var activeWorkItems []domain.WorkItem
 	if a.Store != nil {
 		var err error
@@ -265,7 +252,7 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event, conver
 		return agent.Context{}, err
 	}
 	var memories []domain.Memory
-	if a.Store != nil && a.MemoryEnabled && !skipAutoMemoryContext {
+	if a.Store != nil && a.MemoryEnabled {
 		query := strings.TrimSpace(firstNonEmpty(contextEvent.Body, event.Body))
 		embeddingQuery := prepareMemoryEmbeddingQuery(query, event, additionalEvents, conversation)
 		memories, err = a.searchMemoriesWithEmbeddingQuery(ctx, domain.MemorySearchRequest{
@@ -756,75 +743,6 @@ func memoryMetadata(event domain.Event, reason string) domain.Metadata {
 	return metadata
 }
 
-func shouldSkipMemoryExtraction(event domain.Event) bool {
-	if event.Kind != "" && event.Kind != domain.EventKindMessage {
-		return true
-	}
-	if strings.TrimSpace(event.Metadata[domain.MetadataKeyControl]) != "" {
-		return true
-	}
-	body := strings.TrimSpace(event.Body)
-	return body == "" || strings.HasPrefix(body, "Uploaded attachment(s):") || IsExplicitMemoryRequest(body)
-}
-
-// IsExplicitMemoryRequest reports whether the user is directly asking memory tools to save context.
-func IsExplicitMemoryRequest(body string) bool {
-	text := strings.ToLower(strings.Join(strings.Fields(body), " "))
-	for _, marker := range []string{
-		"remember ",
-		"remember:",
-		"please remember ",
-		"can you remember ",
-		"could you remember ",
-		"save this ",
-		"save that ",
-		"store this ",
-		"store that ",
-		"note that ",
-		"make a note ",
-		"save to memory",
-		"save it to memory",
-		"store in memory",
-		"add to memory",
-	} {
-		if strings.HasPrefix(text, marker) || strings.Contains(text, ", "+marker) {
-			return true
-		}
-	}
-	return false
-}
-
-func autoExtractedMemory(event domain.Event, userID string, candidate agent.MemoryCandidate) (domain.Memory, bool) {
-	content := strings.TrimSpace(candidate.Content)
-	if content == "" {
-		return domain.Memory{}, false
-	}
-	scope := candidate.Scope
-	switch scope {
-	case domain.MemoryScopeThread, domain.MemoryScopeChannel, domain.MemoryScopeGlobal, domain.MemoryScopeProject, domain.MemoryScopeUser:
-	default:
-		return domain.Memory{}, false
-	}
-	return domain.Memory{
-		ID:          stableActivityID("auto-memory", event.ProjectID, userID, string(scope), string(event.ChannelType), strings.TrimSpace(event.ChannelID), strings.TrimSpace(event.ThreadID), content),
-		ProjectID:   strings.TrimSpace(event.ProjectID),
-		UserID:      strings.TrimSpace(userID),
-		ChannelType: event.ChannelType,
-		ChannelID:   strings.TrimSpace(event.ChannelID),
-		ThreadID:    strings.TrimSpace(event.ThreadID),
-		Scope:       scope,
-		Kind:        strings.TrimSpace(candidate.Kind),
-		Content:     content,
-		Tags:        cleanMemoryTags(candidate.Tags),
-		Source:      "auto_memory",
-		SourceID:    strings.TrimSpace(event.ID),
-		Actor:       strings.TrimSpace(event.ActorName),
-		Confidence:  candidate.Confidence,
-		Pinned:      candidate.Pinned,
-		Metadata:    memoryMetadata(event, candidate.Reason),
-	}, true
-}
-
 func excludeMemoriesFromSource(memories []domain.Memory, sourceID string) []domain.Memory {
 	sourceID = strings.TrimSpace(sourceID)
 	if sourceID == "" || len(memories) == 0 {
@@ -1281,105 +1199,6 @@ func (a *Activities) PersistEvent(ctx context.Context, request PersistEventReque
 	return nil
 }
 
-func (a *Activities) ExtractMemory(ctx context.Context, request ExtractMemoryRequest) (ExtractMemoryResult, error) {
-	if a.Store == nil || !a.MemoryEnabled || !a.MemoryAutoExtractEnabled || a.MemoryExtractor == nil {
-		return ExtractMemoryResult{}, nil
-	}
-	event := request.Event
-	if shouldSkipMemoryExtraction(event) {
-		return ExtractMemoryResult{}, nil
-	}
-	if strings.TrimSpace(event.ProjectID) == "" {
-		event.ProjectID = strings.TrimSpace(a.Project.ID)
-	}
-	if strings.TrimSpace(event.ProjectID) == "" || strings.TrimSpace(event.Body) == "" {
-		return ExtractMemoryResult{}, nil
-	}
-
-	memoryEvent := inferDiscordThreadContext(event)
-	userID := eventUserID(memoryEvent)
-	query := strings.TrimSpace(memoryEvent.Body)
-	conversation, _, err := a.loadConversationContext(ctx, memoryEvent)
-	if err != nil {
-		a.logActivityStep("ExtractMemory", "conversation_context_failed",
-			slog.String("project_id", event.ProjectID),
-			slog.String("event_id", event.ID),
-			slog.String("error", err.Error()),
-		)
-		conversation = nil
-	}
-	existing, err := a.searchMemoriesWithEmbeddingQuery(ctx, domain.MemorySearchRequest{
-		ProjectID:      strings.TrimSpace(memoryEvent.ProjectID),
-		UserID:         userID,
-		ChannelType:    memoryEvent.ChannelType,
-		ChannelID:      strings.TrimSpace(memoryEvent.ChannelID),
-		ThreadID:       strings.TrimSpace(memoryEvent.ThreadID),
-		Query:          query,
-		Scopes:         autoContextMemoryScopes(memoryEvent),
-		Limit:          5,
-		FallbackRecent: true,
-	}, prepareMemoryEmbeddingQuery(query, memoryEvent, nil, conversation))
-	if err != nil {
-		a.logActivityStep("ExtractMemory", "search_failed",
-			slog.String("project_id", event.ProjectID),
-			slog.String("event_id", event.ID),
-			slog.String("error", err.Error()),
-		)
-		existing = nil
-	}
-
-	output, err := a.MemoryExtractor.ExtractMemories(ctx, agent.MemoryExtractionInput{
-		ProjectID:        strings.TrimSpace(memoryEvent.ProjectID),
-		Event:            memoryEvent,
-		ExistingMemories: existing,
-	})
-	if err != nil {
-		a.logActivityStep("ExtractMemory", "extract_failed",
-			slog.String("project_id", event.ProjectID),
-			slog.String("event_id", event.ID),
-			slog.String("error", err.Error()),
-		)
-		return ExtractMemoryResult{}, nil
-	}
-
-	result := ExtractMemoryResult{Candidates: len(output.Candidates)}
-	for _, candidate := range output.Candidates {
-		memory, ok := autoExtractedMemory(memoryEvent, userID, candidate)
-		if !ok {
-			result.Rejected++
-			continue
-		}
-		remembered, err := a.Store.RememberMemory(ctx, memory)
-		if err != nil {
-			if errors.Is(err, storage.ErrMemoryPolicyRejected) {
-				result.Rejected++
-				a.logActivityStep("ExtractMemory", "policy_rejected",
-					slog.String("project_id", event.ProjectID),
-					slog.String("event_id", event.ID),
-					slog.String("reason", memoryPolicyRejectionReason(err)),
-				)
-				continue
-			}
-			a.logActivityStep("ExtractMemory", "remember_failed",
-				slog.String("project_id", event.ProjectID),
-				slog.String("event_id", event.ID),
-				slog.String("error", err.Error()),
-			)
-			continue
-		}
-		result.Remembered++
-		a.upsertMemoryEmbedding(ctx, remembered)
-	}
-	a.logActivityStep("ExtractMemory", "done",
-		slog.String("project_id", event.ProjectID),
-		slog.String("event_id", event.ID),
-		slog.Int("candidates", result.Candidates),
-		slog.Int("remembered", result.Remembered),
-		slog.Int("rejected", result.Rejected),
-	)
-	return result, nil
-}
-
 func (a *Activities) CompressConversation(ctx context.Context, request CompressConversationRequest) (CompressConversationResult, error) {
 	if a.Store == nil || !a.ConversationEnabled || !a.ConversationSummaryEnabled || a.ConversationCompressor == nil {
 		return CompressConversationResult{}, nil
@@ -1773,7 +1592,7 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		slog.String("event_id", event.ID),
 	)
 	conversationEvent := latestConversationContextEvent(event, request.AdditionalEvents)
-	loaded, err := a.loadContext(ctx, event, conversationEvent, request.AdditionalEvents, request.SkipAutoMemoryContext)
+	loaded, err := a.loadContext(ctx, event, conversationEvent, request.AdditionalEvents)
 	if err != nil {
 		a.logActivityStep("NextAction", "load_context_error",
 			slog.String("project_id", projectID),
