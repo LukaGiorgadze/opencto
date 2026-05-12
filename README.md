@@ -67,7 +67,7 @@ The local Bifrost gateway is optional. To use it, set:
 ```json
 {
   "llm": {
-    "base_url": "http://127.0.0.1:4000/openai",
+    "base_url": "http://127.0.0.1:8081/openai",
     "bifrost": {
       "enabled": true
     }

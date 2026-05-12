@@ -32,7 +32,7 @@ type ChannelType string
 
 const (
 	ChannelTypeDiscord ChannelType = "discord"
-	ChannelTypeLocal   ChannelType = "local"
+	ChannelTypeCLI     ChannelType = "cli"
 )
 
 type EventKind string

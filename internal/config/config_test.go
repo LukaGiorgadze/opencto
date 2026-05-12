@@ -61,7 +61,7 @@ func TestLoadDerivesRuntimeStateDirFromConfiguredWorkspace(t *testing.T) {
   },
   "llm": {
     "provider": "openai",
-    "base_url": "http://127.0.0.1:4000",
+    "base_url": "http://127.0.0.1:8081",
     "model_reasoning": "gpt-5.4",
     "model_fast": "gpt-5.4-mini",
     "model_transcription": "gpt-4o-mini-transcribe"
@@ -111,7 +111,7 @@ func TestLoadExpandsWorkspaceRootHome(t *testing.T) {
   },
   "llm": {
     "provider": "openai",
-    "base_url": "http://127.0.0.1:4000",
+    "base_url": "http://127.0.0.1:8081",
     "model_reasoning": "gpt-5.4",
     "model_fast": "gpt-5.4-mini",
     "model_transcription": "gpt-4o-mini-transcribe"
@@ -162,7 +162,7 @@ func TestLoadParsesLLMSecretFields(t *testing.T) {
   "llm": {
     "provider": "openai",
     "api_key": "test-key",
-    "base_url": "http://127.0.0.1:4000",
+    "base_url": "http://127.0.0.1:8081",
     "model_reasoning": "gpt-5.4",
     "model_fast": "gpt-5.4-mini",
     "model_transcription": "gpt-4o-mini-transcribe",
@@ -193,7 +193,7 @@ func TestLoadParsesLLMSecretFields(t *testing.T) {
 	if cfg.LLM.APIKey != "test-key" {
 		t.Fatalf("unexpected api key: %s", cfg.LLM.APIKey)
 	}
-	if cfg.LLM.BaseURL != "http://127.0.0.1:4000" {
+	if cfg.LLM.BaseURL != "http://127.0.0.1:8081" {
 		t.Fatalf("unexpected llm base url: %s", cfg.LLM.BaseURL)
 	}
 	if cfg.LLM.ModelTranscription != "gpt-4o-mini-transcribe" {
@@ -219,7 +219,7 @@ func TestLoadDefaultsStorageAndMemory(t *testing.T) {
   },
   "llm": {
     "provider": "openai",
-    "base_url": "http://127.0.0.1:4000",
+    "base_url": "http://127.0.0.1:8081",
     "model_reasoning": "gpt-5.4",
     "model_fast": "gpt-5.4-mini",
     "model_transcription": "gpt-4o-mini-transcribe"
@@ -282,7 +282,7 @@ func TestLoadParsesMemoryEmbeddingConfig(t *testing.T) {
   },
   "llm": {
     "provider": "openai",
-    "base_url": "http://127.0.0.1:4000",
+    "base_url": "http://127.0.0.1:8081",
     "model_reasoning": "gpt-5.4",
     "model_fast": "gpt-5.4-mini",
     "model_transcription": "gpt-4o-mini-transcribe"
@@ -335,7 +335,7 @@ func TestLoadParsesConversationConfig(t *testing.T) {
   },
   "llm": {
     "provider": "openai",
-    "base_url": "http://127.0.0.1:4000",
+    "base_url": "http://127.0.0.1:8081",
     "model_reasoning": "gpt-5.4",
     "model_fast": "gpt-5.4-mini",
     "model_transcription": "gpt-4o-mini-transcribe"
@@ -382,7 +382,7 @@ func TestLoadParsesDiscordOutboundAttachmentLimits(t *testing.T) {
 	  },
 	  "llm": {
 	    "provider": "openai",
-	    "base_url": "http://127.0.0.1:4000",
+	    "base_url": "http://127.0.0.1:8081",
 	    "model_reasoning": "gpt-5.4",
 	    "model_fast": "gpt-5.4-mini",
 	    "model_transcription": "gpt-4o-mini-transcribe"
@@ -445,7 +445,7 @@ func TestLoadDefaultsDiscordOutboundMessageLimits(t *testing.T) {
   },
   "llm": {
     "provider": "openai",
-    "base_url": "http://127.0.0.1:4000",
+    "base_url": "http://127.0.0.1:8081",
     "model_reasoning": "gpt-5.4",
     "model_fast": "gpt-5.4-mini",
     "model_transcription": "gpt-4o-mini-transcribe"
@@ -490,7 +490,7 @@ func TestLoadRejectsInvalidDiscordOutboundMessageLimits(t *testing.T) {
   },
   "llm": {
     "provider": "openai",
-    "base_url": "http://127.0.0.1:4000",
+    "base_url": "http://127.0.0.1:8081",
     "model_reasoning": "gpt-5.4",
     "model_fast": "gpt-5.4-mini",
     "model_transcription": "gpt-4o-mini-transcribe"
@@ -542,7 +542,7 @@ func TestLoadRejectsNonPositiveTemporalConfigValues(t *testing.T) {
   },
   "llm": {
     "provider": "openai",
-    "base_url": "http://127.0.0.1:4000",
+    "base_url": "http://127.0.0.1:8081",
     "model_reasoning": "gpt-5.4",
     "model_fast": "gpt-5.4-mini",
     "model_transcription": "gpt-4o-mini-transcribe"

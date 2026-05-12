@@ -504,6 +504,35 @@ func TestExtractMemoryStoresAutoCandidate(t *testing.T) {
 	}
 }
 
+func TestExtractMemorySkipsExplicitMemoryRequest(t *testing.T) {
+	t.Parallel()
+
+	var extractorInput agent.MemoryExtractionInput
+	activities := Activities{
+		Store:                    stubProjectStore{},
+		MemoryEnabled:            true,
+		MemoryAutoExtractEnabled: true,
+		MemoryExtractor:          stubMemoryExtractor{input: &extractorInput},
+	}
+	result, err := activities.ExtractMemory(context.Background(), ExtractMemoryRequest{
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "project-1",
+			Kind:      domain.EventKindMessage,
+			Body:      "For this project, remember that deployment should go through Fly.io, not Render.",
+		},
+	})
+	if err != nil {
+		t.Fatalf("extract memory: %v", err)
+	}
+	if result != (ExtractMemoryResult{}) {
+		t.Fatalf("expected empty result, got %#v", result)
+	}
+	if extractorInput.Event.ID != "" {
+		t.Fatalf("expected extractor to be skipped, got %#v", extractorInput)
+	}
+}
+
 func TestExtractMemoryStoresThreadScopedCandidate(t *testing.T) {
 	t.Parallel()
 
@@ -808,6 +837,53 @@ func TestRuntimeStateDirUsesConfiguredWorkspace(t *testing.T) {
 	}
 }
 
+func TestExtractMemoryEmbedsPreparedQueryWithConversation(t *testing.T) {
+	t.Parallel()
+
+	embeddingInputs := []string{}
+	vector := make([]float32, 1536)
+	activities := Activities{
+		Store: stubProjectStore{
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeChannel: {
+					{
+						ID:          "assistant-context",
+						ProjectID:   "project-1",
+						EventID:     "event-prior",
+						Role:        domain.ConversationRoleAssistant,
+						ChannelType: domain.ChannelTypeDiscord,
+						ChannelID:   "channel-1",
+						Body:        "Use SQLite for local state.",
+					},
+				},
+			},
+		},
+		MemoryEnabled:            true,
+		MemoryAutoExtractEnabled: true,
+		MemoryEmbedder:           fakeEmbedder{vector: vector, inputs: &embeddingInputs},
+		MemoryExtractor:          stubMemoryExtractor{},
+		ConversationEnabled:      true,
+	}
+	_, err := activities.ExtractMemory(context.Background(), ExtractMemoryRequest{
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "project-1",
+			Kind:        domain.EventKindMessage,
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			Body:        "make that the default",
+		},
+	})
+	if err != nil {
+		t.Fatalf("extract memory: %v", err)
+	}
+	if len(embeddingInputs) != 1 ||
+		!strings.Contains(embeddingInputs[0], "Search memory for: make that the default") ||
+		!strings.Contains(embeddingInputs[0], "assistant: Use SQLite for local state.") {
+		t.Fatalf("unexpected embedding inputs: %#v", embeddingInputs)
+	}
+}
+
 func TestLoadContextReturnsProjectAndActiveWorkItems(t *testing.T) {
 	t.Parallel()
 
@@ -937,6 +1013,165 @@ func TestLoadContextIncludesBoundedMemoryWhenEnabled(t *testing.T) {
 	}
 	if len(searchRequests[0].Scopes) != 3 || searchRequests[0].Scopes[1] != domain.MemoryScopeUser {
 		t.Fatalf("expected memory search to include user scope, got %#v", searchRequests[0].Scopes)
+	}
+}
+
+func TestPrepareMemoryEmbeddingQueryUsesRawQuery(t *testing.T) {
+	t.Parallel()
+
+	got := prepareMemoryEmbeddingQuery("  storage preference  ", domain.Event{}, nil, nil)
+	if got != "Search memory for: storage preference" {
+		t.Fatalf("unexpected prepared query:\n%s", got)
+	}
+}
+
+func TestPrepareMemoryEmbeddingQueryIncludesFollowUpContext(t *testing.T) {
+	t.Parallel()
+
+	got := prepareMemoryEmbeddingQuery(
+		"1",
+		domain.Event{ID: "event-current", Body: "create react/vite app"},
+		[]domain.Event{{ID: "event-additional", Body: "1"}},
+		[]domain.ConversationMessage{
+			{ID: "prior", EventID: "event-prior", Role: domain.ConversationRoleUser, Body: "Earlier request"},
+			{ID: "prompt", EventID: "event-current", Role: domain.ConversationRoleAssistant, Body: "Where should I create it?"},
+			{ID: "additional", EventID: "event-additional", Role: domain.ConversationRoleUser, Body: "1"},
+		},
+	)
+	for _, want := range []string{
+		"Search memory for: 1",
+		"Current request: create react/vite app",
+		"Follow-up: 1",
+		"assistant: Where should I create it?",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected prepared query to contain %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "user: 1") {
+		t.Fatalf("current/additional user events should not be duplicated in context:\n%s", got)
+	}
+}
+
+func TestPrepareMemoryEmbeddingQueryRequiresCurrentAnchor(t *testing.T) {
+	t.Parallel()
+
+	got := prepareMemoryEmbeddingQuery("", domain.Event{}, nil, []domain.ConversationMessage{{
+		ID:   "prior",
+		Role: domain.ConversationRoleAssistant,
+		Body: "Use SQLite for local state.",
+	}})
+	if got != "" {
+		t.Fatalf("expected empty prepared query without current anchor, got:\n%s", got)
+	}
+}
+
+func TestPrepareMemoryEmbeddingQueryIsBounded(t *testing.T) {
+	t.Parallel()
+
+	got := prepareMemoryEmbeddingQuery(strings.Repeat("x", memoryEmbeddingQueryMaxChars+500), domain.Event{}, nil, nil)
+	if len([]rune(got)) > memoryEmbeddingQueryMaxChars {
+		t.Fatalf("prepared query exceeded bound: %d > %d", len([]rune(got)), memoryEmbeddingQueryMaxChars)
+	}
+}
+
+func TestPrepareMemoryEmbeddingQueryPreservesNewestContextWhenBounded(t *testing.T) {
+	t.Parallel()
+
+	got := prepareMemoryEmbeddingQuery(
+		"1",
+		domain.Event{ID: "event-current", Body: "create react/vite app"},
+		nil,
+		[]domain.ConversationMessage{
+			{ID: "old", EventID: "event-old", Role: domain.ConversationRoleUser, Body: strings.Repeat("older context ", 300)},
+			{ID: "prompt", EventID: "event-current", Role: domain.ConversationRoleAssistant, Body: "Where should I create it?"},
+		},
+	)
+	if len([]rune(got)) > memoryEmbeddingQueryMaxChars {
+		t.Fatalf("prepared query exceeded bound: %d > %d", len([]rune(got)), memoryEmbeddingQueryMaxChars)
+	}
+	if !strings.Contains(got, "assistant: Where should I create it?") {
+		t.Fatalf("expected newest assistant context to survive bounded query:\n%s", got)
+	}
+}
+
+func TestLoadContextEmbedsPreparedMemoryQueryFromConversation(t *testing.T) {
+	t.Parallel()
+
+	searchRequests := []domain.MemorySearchRequest{}
+	embeddingInputs := []string{}
+	vector := make([]float32, 1536)
+	activities := Activities{
+		Store: stubProjectStore{
+			searchRequests: &searchRequests,
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeThread: {
+					{
+						ID:          "prompt",
+						ProjectID:   "project-1",
+						EventID:     "event-1",
+						Role:        domain.ConversationRoleAssistant,
+						ChannelType: domain.ChannelTypeDiscord,
+						ChannelID:   "bot-prompt-1",
+						ThreadID:    "bot-prompt-1",
+						Body:        "Where should I create it?",
+					},
+					{
+						ID:          "additional",
+						ProjectID:   "project-1",
+						EventID:     "event-2",
+						Role:        domain.ConversationRoleUser,
+						ChannelType: domain.ChannelTypeDiscord,
+						ChannelID:   "bot-prompt-1",
+						ThreadID:    "bot-prompt-1",
+						Body:        "1",
+					},
+				},
+			},
+		},
+		MemoryEnabled:       true,
+		MemoryEmbedder:      fakeEmbedder{vector: vector, inputs: &embeddingInputs},
+		ConversationEnabled: true,
+	}
+	event := domain.Event{
+		ID:          "event-1",
+		ProjectID:   "project-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		Body:        "create react/vite app",
+	}
+	followUp := domain.Event{
+		ID:          "event-2",
+		ProjectID:   "project-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "bot-prompt-1",
+		Body:        "1",
+		Metadata:    domain.Metadata{domain.MetadataKeyControl: domain.MetadataControlTaskReply},
+	}
+
+	_, err := activities.loadContext(context.Background(), event, followUp, []domain.Event{followUp})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if len(searchRequests) != 1 || searchRequests[0].Query != "1" {
+		t.Fatalf("expected raw query to remain on search request, got %#v", searchRequests)
+	}
+	if len(embeddingInputs) != 1 {
+		t.Fatalf("expected one embedding input, got %#v", embeddingInputs)
+	}
+	input := embeddingInputs[0]
+	for _, want := range []string{
+		"Search memory for: 1",
+		"Current request: create react/vite app",
+		"Follow-up: 1",
+		"assistant: Where should I create it?",
+	} {
+		if !strings.Contains(input, want) {
+			t.Fatalf("expected embedding input to contain %q:\n%s", want, input)
+		}
+	}
+	if strings.Contains(input, "user: 1") {
+		t.Fatalf("additional user event should not be duplicated in embedding context:\n%s", input)
 	}
 }
 
@@ -1235,6 +1470,70 @@ func TestExecuteMemoryToolRejectsInvalidSearchScope(t *testing.T) {
 	}
 	if result.Status != domain.ExecutionStatusFailed || len(searchRequests) != 0 {
 		t.Fatalf("expected failed result without search request, got result=%#v requests=%#v", result, searchRequests)
+	}
+}
+
+func TestExecuteMemoryToolSearchEmbedsPreparedQuery(t *testing.T) {
+	t.Parallel()
+
+	searchRequests := []domain.MemorySearchRequest{}
+	embeddingInputs := []string{}
+	vector := make([]float32, 1536)
+	activities := Activities{
+		Store: stubProjectStore{
+			searchRequests: &searchRequests,
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeChannel: {
+					{
+						ID:          "assistant-context",
+						ProjectID:   "default",
+						EventID:     "event-prior",
+						Role:        domain.ConversationRoleAssistant,
+						ChannelType: domain.ChannelTypeDiscord,
+						ChannelID:   "channel-1",
+						Body:        "Use SQLite for local state.",
+					},
+				},
+			},
+		},
+		MemoryEnabled:       true,
+		MemoryEmbedder:      fakeEmbedder{vector: vector, inputs: &embeddingInputs},
+		ConversationEnabled: true,
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "default",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			Body:        "make that the default",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemorySearch,
+			Intent:     "search memory",
+			Input:      []byte(`{"scope":"all","query":"that default","tags":[],"limit":5}`),
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute memory search: %v", err)
+	}
+	if result.Status != domain.ExecutionStatusSucceeded {
+		t.Fatalf("unexpected memory search result: %#v", result)
+	}
+	if len(searchRequests) != 1 || searchRequests[0].Query != "that default" {
+		t.Fatalf("expected raw query to remain on search request, got %#v", searchRequests)
+	}
+	if len(embeddingInputs) != 1 ||
+		!strings.Contains(embeddingInputs[0], "Search memory for: that default") ||
+		!strings.Contains(embeddingInputs[0], "Current request: make that the default") ||
+		!strings.Contains(embeddingInputs[0], "assistant: Use SQLite for local state.") {
+		t.Fatalf("unexpected embedding inputs: %#v", embeddingInputs)
 	}
 }
 
@@ -2621,7 +2920,7 @@ func TestNextActionPassesEventChannelToEngine(t *testing.T) {
 	event := domain.Event{
 		ID:          "event-1",
 		ProjectID:   "project-1",
-		ChannelType: domain.ChannelTypeLocal,
+		ChannelType: domain.ChannelTypeCLI,
 		Body:        "inspect workspace",
 	}
 	_, err := activities.NextAction(context.Background(), NextActionRequest{
@@ -2632,7 +2931,7 @@ func TestNextActionPassesEventChannelToEngine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("next action: %v", err)
 	}
-	if input.ChannelType != domain.ChannelTypeLocal {
+	if input.ChannelType != domain.ChannelTypeCLI {
 		t.Fatalf("expected local channel, got %q", input.ChannelType)
 	}
 }

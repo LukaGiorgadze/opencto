@@ -1,62 +1,62 @@
 {
-  "general": {
-    "workspace_root": "$HOME/.opencto"
-  },
-  "storage": {
-    "provider": "sqlite"
-  },
-  "memory": {
-    "enabled": true,
-    "auto_context_limit": 5,
-    "auto_extract_enabled": true,
-    "embedding": {
-      "enabled": true,
-      "provider": "openai",
-      "model": "text-embedding-3-small",
-      "dimensions": 1536
+    "general": {
+        "workspace_root": "$HOME/.opencto"
+    },
+    "storage": {
+        "provider": "sqlite"
+    },
+    "llm": {
+        "provider": "openai",
+        "base_url": "http://127.0.0.1:8081/openai",
+        "model_reasoning": "gpt-5.4-nano",
+        "model_fast": "gpt-5.4-nano",
+        "model_summary": "gpt-5.4-nano",
+        "model_transcription": "gpt-4o-mini-transcribe",
+        "bifrost": {
+            "enabled": true
+        }
+    },
+    "memory": {
+        "enabled": true,
+        "auto_context_limit": 5,
+        "auto_extract_enabled": true,
+        "embedding": {
+            "enabled": true,
+            "provider": "openai",
+            "model": "text-embedding-3-small",
+            "dimensions": 1536
+        }
+    },
+    "conversation": {
+        "enabled": true,
+        "history_limit": 20,
+        "max_context_chars": 20000,
+        "summary_enabled": true,
+        "summary_trigger_chars": 24000,
+        "summary_max_chars": 6000,
+        "summary_recent_messages": 10
+    },
+    "temporal": {
+        "host_port": "127.0.0.1:7233",
+        "namespace": "default",
+        "task_queue": "opencto",
+        "continue_as_new_after_events": 1000
+    },
+    "channels": {
+        "discord": {
+            "enabled": true,
+            "outbound_messages": {
+                "max_chars": 2000
+            },
+            "outbound_attachments": {
+                "max_files": 10,
+                "max_file_bytes": 10485760,
+                "max_total_bytes": 26214400
+            }
+        }
+    },
+    "observability": {
+        "log_level": "INFO",
+        "json_logs": true
     }
-  },
-  "conversation": {
-    "enabled": true,
-    "history_limit": 20,
-    "max_context_chars": 20000,
-    "summary_enabled": true,
-    "summary_trigger_chars": 24000,
-    "summary_max_chars": 6000,
-    "summary_recent_messages": 10
-  },
-  "llm": {
-    "provider": "openai",
-    "base_url": "http://127.0.0.1:4000/openai",
-    "model_reasoning": "gpt-5.4-nano",
-    "model_fast": "gpt-5.4-nano",
-    "model_summary": "gpt-5.4-nano",
-    "model_transcription": "gpt-4o-mini-transcribe",
-    "bifrost": {
-      "enabled": true
-    }
-  },
-  "temporal": {
-    "host_port": "127.0.0.1:7233",
-    "namespace": "default",
-    "task_queue": "opencto",
-    "continue_as_new_after_events": 1000
-  },
-  "channels": {
-    "discord": {
-      "enabled": true,
-      "outbound_messages": {
-        "max_chars": 2000
-      },
-      "outbound_attachments": {
-        "max_files": 10,
-        "max_file_bytes": 10485760,
-        "max_total_bytes": 26214400
-      }
-    }
-  },
-  "observability": {
-    "log_level": "INFO",
-    "json_logs": true
-  }
 }

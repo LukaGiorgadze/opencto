@@ -5,7 +5,7 @@
     "properties": {
         "query": {
             "type": "string",
-            "description": "Search query for remembered thread, channel, project, user, or global context. Search before proposing memory changes when a related memory may already exist."
+            "description": "Standalone, referent-resolved search query for remembered thread, channel, project, user, or global context. Resolve pronouns and follow-up phrases using the current conversation before calling this tool. Search before proposing memory changes when a related memory may already exist."
         },
         "scope": {
             "type": "string",

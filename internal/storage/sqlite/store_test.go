@@ -1878,7 +1878,7 @@ func TestMemoryChannelScopeIsVisibleOnlyToChannel(t *testing.T) {
 
 	found, err = store.SearchMemories(ctx, domain.MemorySearchRequest{
 		ProjectID:      "default",
-		ChannelType:    domain.ChannelTypeLocal,
+		ChannelType:    domain.ChannelTypeCLI,
 		ChannelID:      "channel-1",
 		Scopes:         []domain.MemoryScope{domain.MemoryScopeChannel},
 		FallbackRecent: true,

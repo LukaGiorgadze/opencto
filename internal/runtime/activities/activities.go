@@ -209,12 +209,14 @@ const (
 	NextActionStatusFailed    = "failed"
 	NextActionStatusIgnored   = "ignored"
 
-	defaultResponseSessionRefresh = 4 * time.Second
-	defaultResponseSessionTimeout = 3 * time.Second
-	defaultResponseSessionMaxAge  = 30 * time.Minute
-	defaultToolHeartbeatGap       = 2 * time.Second
-	defaultExecGrace              = 2 * time.Minute
-	defaultExecTailBytes          = 16 << 10
+	defaultResponseSessionRefresh   = 4 * time.Second
+	defaultResponseSessionTimeout   = 3 * time.Second
+	defaultResponseSessionMaxAge    = 30 * time.Minute
+	defaultToolHeartbeatGap         = 2 * time.Second
+	defaultExecGrace                = 2 * time.Minute
+	defaultExecTailBytes            = 16 << 10
+	memoryEmbeddingQueryMaxChars    = 1600
+	memoryEmbeddingQueryMaxMessages = 6
 )
 
 func (r NextActionResult) IsTerminal() bool {
@@ -244,10 +246,10 @@ type toolRunResult struct {
 }
 
 func (a *Activities) LoadContext(ctx context.Context, event domain.Event) (agent.Context, error) {
-	return a.loadContext(ctx, event, event)
+	return a.loadContext(ctx, event, event, nil)
 }
 
-func (a *Activities) loadContext(ctx context.Context, event domain.Event, conversationEvent domain.Event) (agent.Context, error) {
+func (a *Activities) loadContext(ctx context.Context, event domain.Event, conversationEvent domain.Event, additionalEvents []domain.Event) (agent.Context, error) {
 	var activeWorkItems []domain.WorkItem
 	if a.Store != nil {
 		var err error
@@ -257,43 +259,29 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event, conver
 		}
 	}
 	contextEvent := inferDiscordThreadContext(conversationEvent)
+	conversation, conversationSummaries, err := a.loadConversationContext(ctx, contextEvent)
+	if err != nil {
+		return agent.Context{}, err
+	}
 	var memories []domain.Memory
 	if a.Store != nil && a.MemoryEnabled {
-		var err error
-		memories, err = a.searchMemories(ctx, domain.MemorySearchRequest{
+		query := strings.TrimSpace(firstNonEmpty(contextEvent.Body, event.Body))
+		embeddingQuery := prepareMemoryEmbeddingQuery(query, event, additionalEvents, conversation)
+		memories, err = a.searchMemoriesWithEmbeddingQuery(ctx, domain.MemorySearchRequest{
 			ProjectID:      strings.TrimSpace(contextEvent.ProjectID),
 			UserID:         eventUserID(contextEvent),
 			ChannelType:    contextEvent.ChannelType,
 			ChannelID:      strings.TrimSpace(contextEvent.ChannelID),
 			ThreadID:       strings.TrimSpace(contextEvent.ThreadID),
-			Query:          strings.TrimSpace(firstNonEmpty(contextEvent.Body, event.Body)),
+			Query:          query,
 			Scopes:         autoContextMemoryScopes(contextEvent),
 			Limit:          storage.DefaultAutoContextLimit(a.MemoryLimit),
 			FallbackRecent: true,
-		})
+		}, embeddingQuery)
 		if err != nil {
 			return agent.Context{}, err
 		}
 		memories = excludeMemoriesFromSource(memories, event.ID)
-	}
-	var conversation []domain.ConversationMessage
-	var conversationSummaries []domain.ConversationSummary
-	if a.Store != nil && a.ConversationEnabled {
-		var err error
-		boundary, hasBoundary, err := a.conversationThreadBoundary(ctx, contextEvent)
-		if err != nil {
-			return agent.Context{}, err
-		}
-		if a.ConversationSummaryEnabled {
-			conversationSummaries, err = a.loadConversationSummaries(ctx, contextEvent, boundary, hasBoundary)
-			if err != nil {
-				return agent.Context{}, err
-			}
-		}
-		conversation, err = a.loadConversationHistory(ctx, contextEvent, conversationSummaries, boundary, hasBoundary)
-		if err != nil {
-			return agent.Context{}, err
-		}
 	}
 
 	project := a.Project
@@ -324,6 +312,190 @@ func autoContextMemoryScopes(event domain.Event) []domain.MemoryScope {
 		return []domain.MemoryScope{domain.MemoryScopeChannel, domain.MemoryScopeProject, domain.MemoryScopeUser, domain.MemoryScopeGlobal}
 	}
 	return []domain.MemoryScope{domain.MemoryScopeProject, domain.MemoryScopeUser, domain.MemoryScopeGlobal}
+}
+
+func (a *Activities) loadConversationContext(ctx context.Context, event domain.Event) ([]domain.ConversationMessage, []domain.ConversationSummary, error) {
+	if a.Store == nil || !a.ConversationEnabled {
+		return nil, nil, nil
+	}
+	boundary, hasBoundary, err := a.conversationThreadBoundary(ctx, event)
+	if err != nil {
+		return nil, nil, err
+	}
+	var summaries []domain.ConversationSummary
+	if a.ConversationSummaryEnabled {
+		summaries, err = a.loadConversationSummaries(ctx, event, boundary, hasBoundary)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	conversation, err := a.loadConversationHistory(ctx, event, summaries, boundary, hasBoundary)
+	if err != nil {
+		return nil, nil, err
+	}
+	return conversation, summaries, nil
+}
+
+func prepareMemoryEmbeddingQuery(query string, currentEvent domain.Event, additionalEvents []domain.Event, conversation []domain.ConversationMessage) string {
+	query = cleanMemoryEmbeddingQueryText(query)
+	current := cleanMemoryEmbeddingQueryText(currentEvent.Body)
+	if query == "" {
+		query = current
+	}
+
+	var anchors []string
+	if query != "" {
+		anchors = append(anchors, "Search memory for: "+query)
+	}
+	if current != "" && current != query {
+		anchors = append(anchors, "Current request: "+current)
+	}
+	for _, event := range additionalEvents {
+		if followup := cleanMemoryEmbeddingQueryText(event.Body); followup != "" {
+			anchors = append(anchors, "Follow-up: "+followup)
+		}
+	}
+	if len(anchors) == 0 {
+		return ""
+	}
+	return buildMemoryEmbeddingQuery(anchors, memoryEmbeddingQueryContextLines(currentEvent, additionalEvents, conversation))
+}
+
+func buildMemoryEmbeddingQuery(anchors []string, context []string) string {
+	var builder memoryEmbeddingQueryBuilder
+	for _, line := range anchors {
+		if !builder.append(line) {
+			return builder.String()
+		}
+	}
+	if len(context) == 0 || !builder.append("Recent context:") {
+		return builder.String()
+	}
+	contextStart := len(builder.lines)
+	for _, line := range context {
+		if !builder.append(line) {
+			break
+		}
+	}
+	if len(builder.lines) == contextStart {
+		builder.lines = builder.lines[:contextStart-1]
+	}
+	return builder.String()
+}
+
+func memoryEmbeddingQueryContextLines(currentEvent domain.Event, additionalEvents []domain.Event, conversation []domain.ConversationMessage) []string {
+	if len(conversation) == 0 {
+		return nil
+	}
+	excludedEventIDs := map[string]bool{}
+	excludedUserBodies := map[string]bool{}
+	addExcludedMemoryQueryEvent(excludedEventIDs, excludedUserBodies, currentEvent)
+	for _, event := range additionalEvents {
+		addExcludedMemoryQueryEvent(excludedEventIDs, excludedUserBodies, event)
+	}
+
+	selected := make([]domain.ConversationMessage, 0, memoryEmbeddingQueryMaxMessages)
+	for i := len(conversation) - 1; i >= 0 && len(selected) < memoryEmbeddingQueryMaxMessages; i-- {
+		message := conversation[i]
+		label := memoryEmbeddingQueryRoleLabel(message.Role)
+		if label == "" {
+			continue
+		}
+		body := cleanMemoryEmbeddingQueryText(message.Body)
+		if body == "" {
+			continue
+		}
+		if message.Role == domain.ConversationRoleUser &&
+			(excludedEventIDs[strings.TrimSpace(message.EventID)] || excludedUserBodies[body]) {
+			continue
+		}
+		selected = append(selected, message)
+	}
+
+	lines := make([]string, 0, len(selected))
+	for _, message := range selected {
+		label := memoryEmbeddingQueryRoleLabel(message.Role)
+		body := cleanMemoryEmbeddingQueryText(message.Body)
+		if label == "" || body == "" {
+			continue
+		}
+		lines = append(lines, label+": "+body)
+	}
+	return lines
+}
+
+func addExcludedMemoryQueryEvent(ids map[string]bool, bodies map[string]bool, event domain.Event) {
+	if id := strings.TrimSpace(event.ID); id != "" {
+		ids[id] = true
+	}
+	if body := cleanMemoryEmbeddingQueryText(event.Body); body != "" {
+		bodies[body] = true
+	}
+}
+
+func memoryEmbeddingQueryRoleLabel(role domain.ConversationRole) string {
+	switch role {
+	case domain.ConversationRoleUser:
+		return "user"
+	case domain.ConversationRoleAssistant:
+		return "assistant"
+	default:
+		return ""
+	}
+}
+
+func cleanMemoryEmbeddingQueryText(value string) string {
+	return strings.Join(strings.Fields(value), " ")
+}
+
+type memoryEmbeddingQueryBuilder struct {
+	lines []string
+	chars int
+}
+
+func (b *memoryEmbeddingQueryBuilder) append(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+	remaining := memoryEmbeddingQueryMaxChars - b.chars
+	if len(b.lines) > 0 {
+		remaining--
+	}
+	if remaining <= 0 {
+		return false
+	}
+	if memoryEmbeddingQueryTextLen(line) > remaining {
+		line = truncateMemoryEmbeddingQueryText(line, remaining)
+		if line == "" {
+			return false
+		}
+	}
+	if len(b.lines) > 0 {
+		b.chars++
+	}
+	b.lines = append(b.lines, line)
+	b.chars += memoryEmbeddingQueryTextLen(line)
+	return true
+}
+
+func (b memoryEmbeddingQueryBuilder) String() string {
+	return strings.TrimSpace(strings.Join(b.lines, "\n"))
+}
+
+func memoryEmbeddingQueryTextLen(value string) int {
+	return len([]rune(value))
+}
+
+func truncateMemoryEmbeddingQueryText(value string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(strings.TrimSpace(value))
+	if len(runes) <= max {
+		return string(runes)
+	}
+	return strings.TrimSpace(string(runes[:max]))
 }
 
 type conversationBoundary struct {
@@ -591,7 +763,33 @@ func shouldSkipMemoryExtraction(event domain.Event) bool {
 		return true
 	}
 	body := strings.TrimSpace(event.Body)
-	return body == "" || strings.HasPrefix(body, "Uploaded attachment(s):")
+	return body == "" || strings.HasPrefix(body, "Uploaded attachment(s):") || isExplicitMemoryRequest(body)
+}
+
+func isExplicitMemoryRequest(body string) bool {
+	text := strings.ToLower(strings.Join(strings.Fields(body), " "))
+	for _, marker := range []string{
+		"remember ",
+		"remember:",
+		"please remember ",
+		"can you remember ",
+		"could you remember ",
+		"save this ",
+		"save that ",
+		"store this ",
+		"store that ",
+		"note that ",
+		"make a note ",
+		"save to memory",
+		"save it to memory",
+		"store in memory",
+		"add to memory",
+	} {
+		if strings.HasPrefix(text, marker) || strings.Contains(text, ", "+marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func autoExtractedMemory(event domain.Event, userID string, candidate agent.MemoryCandidate) (domain.Memory, bool) {
@@ -1098,17 +1296,27 @@ func (a *Activities) ExtractMemory(ctx context.Context, request ExtractMemoryReq
 
 	memoryEvent := inferDiscordThreadContext(event)
 	userID := eventUserID(memoryEvent)
-	existing, err := a.searchMemories(ctx, domain.MemorySearchRequest{
+	query := strings.TrimSpace(memoryEvent.Body)
+	conversation, _, err := a.loadConversationContext(ctx, memoryEvent)
+	if err != nil {
+		a.logActivityStep("ExtractMemory", "conversation_context_failed",
+			slog.String("project_id", event.ProjectID),
+			slog.String("event_id", event.ID),
+			slog.String("error", err.Error()),
+		)
+		conversation = nil
+	}
+	existing, err := a.searchMemoriesWithEmbeddingQuery(ctx, domain.MemorySearchRequest{
 		ProjectID:      strings.TrimSpace(memoryEvent.ProjectID),
 		UserID:         userID,
 		ChannelType:    memoryEvent.ChannelType,
 		ChannelID:      strings.TrimSpace(memoryEvent.ChannelID),
 		ThreadID:       strings.TrimSpace(memoryEvent.ThreadID),
-		Query:          strings.TrimSpace(memoryEvent.Body),
+		Query:          query,
 		Scopes:         autoContextMemoryScopes(memoryEvent),
 		Limit:          5,
 		FallbackRecent: true,
-	})
+	}, prepareMemoryEmbeddingQuery(query, memoryEvent, nil, conversation))
 	if err != nil {
 		a.logActivityStep("ExtractMemory", "search_failed",
 			slog.String("project_id", event.ProjectID),
@@ -1563,7 +1771,7 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		slog.String("event_id", event.ID),
 	)
 	conversationEvent := latestConversationContextEvent(event, request.AdditionalEvents)
-	loaded, err := a.loadContext(ctx, event, conversationEvent)
+	loaded, err := a.loadContext(ctx, event, conversationEvent, request.AdditionalEvents)
 	if err != nil {
 		a.logActivityStep("NextAction", "load_context_error",
 			slog.String("project_id", projectID),
@@ -2885,22 +3093,35 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
 		}
 		sourceEvent := inferDiscordThreadContext(execution.SourceEvent)
+		if strings.TrimSpace(sourceEvent.ProjectID) == "" {
+			sourceEvent.ProjectID = execution.ProjectID
+		}
 		tags := cleanMemoryTags(req.Tags)
 		scopes, err := memorySearchScopesForEvent(req.Scope, sourceEvent)
 		if err != nil {
 			return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
 		}
-		memories, err := a.searchMemories(ctx, domain.MemorySearchRequest{
+		query := strings.TrimSpace(req.Query)
+		conversation, _, err := a.loadConversationContext(ctx, sourceEvent)
+		if err != nil {
+			a.logActivityStep("Memory", "tool_search_conversation_context_failed",
+				slog.String("project_id", execution.ProjectID),
+				slog.String("tool_call_id", execution.ToolCallID),
+				slog.String("error", err.Error()),
+			)
+			conversation = nil
+		}
+		memories, err := a.searchMemoriesWithEmbeddingQuery(ctx, domain.MemorySearchRequest{
 			ProjectID:   execution.ProjectID,
 			UserID:      eventUserID(sourceEvent),
 			ChannelType: sourceEvent.ChannelType,
 			ChannelID:   strings.TrimSpace(sourceEvent.ChannelID),
 			ThreadID:    strings.TrimSpace(sourceEvent.ThreadID),
-			Query:       strings.TrimSpace(req.Query),
+			Query:       query,
 			Scopes:      scopes,
 			Tags:        tags,
 			Limit:       req.Limit,
-		})
+		}, prepareMemoryEmbeddingQuery(query, sourceEvent, nil, conversation))
 		if err != nil {
 			return memoryToolRunResult{}, err
 		}
@@ -3984,12 +4205,13 @@ func memoryForgetScopesForEvent(value string, event domain.Event) ([]domain.Memo
 	return memoryForgetScopes(value)
 }
 
-func (a *Activities) searchMemories(ctx context.Context, request domain.MemorySearchRequest) ([]domain.Memory, error) {
+func (a *Activities) searchMemoriesWithEmbeddingQuery(ctx context.Context, request domain.MemorySearchRequest, embeddingQuery string) ([]domain.Memory, error) {
 	if a.Store == nil {
 		return nil, nil
 	}
-	if a.MemoryEmbedder != nil && strings.TrimSpace(request.Query) != "" {
-		result, err := a.MemoryEmbedder.Embed(ctx, []string{strings.TrimSpace(request.Query)})
+	embeddingQuery = strings.TrimSpace(embeddingQuery)
+	if a.MemoryEmbedder != nil && embeddingQuery != "" {
+		result, err := a.MemoryEmbedder.Embed(ctx, []string{embeddingQuery})
 		if err != nil {
 			a.logActivityStep("Memory", "embed_search_query_failed", slog.String("error", err.Error()))
 		} else if len(result.Embeddings) > 0 && len(result.Embeddings[0]) > 0 {
