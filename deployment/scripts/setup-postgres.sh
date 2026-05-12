@@ -1,24 +1,43 @@
 #!/bin/sh
-# set -eu
+# @@@SNIPSTART compose-postgres-setup
+set -eu
 
-# SQL_PLUGIN="${SQL_PLUGIN:-postgres12}"
-# SQL_HOST="${POSTGRES_SEEDS:-postgresql}"
-# SQL_PORT="${DB_PORT:-5432}"
-# SQL_USER="temporal"
-# SQL_PASSWORD="temporal"
+# Validate required environment variables
+: "${POSTGRES_SEEDS:?ERROR: POSTGRES_SEEDS environment variable is required}"
+: "${POSTGRES_USER:?ERROR: POSTGRES_USER environment variable is required}"
+: "${POSTGRES_PWD:?ERROR: POSTGRES_PWD environment variable is required}"
 
-# export SQL_PLUGIN SQL_HOST SQL_PORT SQL_USER SQL_PASSWORD
+SQL_PLUGIN="${SQL_PLUGIN:-postgres12}"
+SQL_PORT="${DB_PORT:-5432}"
 
-# setup_db() {
-#   database_name="$1"
-#   schema_name="$2"
+run_sql_tool() {
+  database="$1"
+  shift
 
-#   temporal-sql-tool --database "${database_name}" create-database || true
-#   SQL_DATABASE="${database_name}" temporal-sql-tool setup-schema -v 0.0
-#   # Use the schema embedded in the Temporal admin-tools image instead of
-#   # relying on a relative filesystem path inside the container.
-#   SQL_DATABASE="${database_name}" temporal-sql-tool update-schema --schema-name "${schema_name}"
-# }
+  temporal-sql-tool \
+    --plugin "${SQL_PLUGIN}" \
+    --ep "${POSTGRES_SEEDS}" \
+    -u "${POSTGRES_USER}" \
+    --pw "${POSTGRES_PWD}" \
+    -p "${SQL_PORT}" \
+    --db "${database}" \
+    "$@"
+}
 
-# setup_db temporal postgresql/v12/temporal
-# setup_db temporal_visibility postgresql/v12/visibility
+echo 'Starting PostgreSQL schema setup...'
+echo 'Waiting for PostgreSQL port to be available...'
+nc -z -w 10 "${POSTGRES_SEEDS}" "${SQL_PORT}"
+echo 'PostgreSQL port is available'
+
+# Create and setup temporal database
+run_sql_tool temporal --quiet create
+run_sql_tool temporal --quiet setup-schema -v 0.0
+run_sql_tool temporal update-schema -d /etc/temporal/schema/postgresql/v12/temporal/versioned
+
+# Create and setup visibility database
+run_sql_tool temporal_visibility --quiet create
+run_sql_tool temporal_visibility --quiet setup-schema -v 0.0
+run_sql_tool temporal_visibility update-schema -d /etc/temporal/schema/postgresql/v12/visibility/versioned
+
+echo 'PostgreSQL schema setup complete'
+# @@@SNIPEND

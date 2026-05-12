@@ -116,6 +116,35 @@ func TestTaskWorkflowAlternatesNextActionAndExecuteTool(t *testing.T) {
 	env.AssertExpectations(t)
 }
 
+func TestTaskWorkflowSkipsAutoMemoryContextForExplicitMemoryRequest(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.TaskWorkflow)
+	registerTaskWorkflowActivities(env)
+
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
+		return request.ExecutionCycle == 1 && request.SkipAutoMemoryContext
+	})).Return(activities.NextActionResult{
+		NextAction: agent.NextAction{ResponseMessage: "saved"},
+		Status:     activities.NextActionStatusCompleted,
+	}, nil).Once()
+
+	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{
+		ProjectID: "project-1",
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "project-1",
+			Body:      "For this project, remember that deployment should use Fly.io.",
+		},
+	})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("task workflow failed: %v", err)
+	}
+	env.AssertExpectations(t)
+}
+
 func TestTaskWorkflowExecutesMultipleToolChoicesAsSeparateActivities(t *testing.T) {
 	t.Parallel()
 

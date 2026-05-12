@@ -1149,7 +1149,7 @@ func TestLoadContextEmbedsPreparedMemoryQueryFromConversation(t *testing.T) {
 		Metadata:    domain.Metadata{domain.MetadataKeyControl: domain.MetadataControlTaskReply},
 	}
 
-	_, err := activities.loadContext(context.Background(), event, followUp, []domain.Event{followUp})
+	_, err := activities.loadContext(context.Background(), event, followUp, []domain.Event{followUp}, false)
 	if err != nil {
 		t.Fatalf("load context: %v", err)
 	}
@@ -1172,6 +1172,55 @@ func TestLoadContextEmbedsPreparedMemoryQueryFromConversation(t *testing.T) {
 	}
 	if strings.Contains(input, "user: 1") {
 		t.Fatalf("additional user event should not be duplicated in embedding context:\n%s", input)
+	}
+}
+
+func TestLoadContextSkipsAutoMemoryContext(t *testing.T) {
+	t.Parallel()
+
+	searchRequests := []domain.MemorySearchRequest{}
+	embeddingInputs := []string{}
+	vector := make([]float32, 1536)
+	activities := Activities{
+		Store: stubProjectStore{
+			searchRequests: &searchRequests,
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeChannel: {{
+					ID:          "message-1",
+					ProjectID:   "project-1",
+					Role:        domain.ConversationRoleUser,
+					ChannelType: domain.ChannelTypeDiscord,
+					ChannelID:   "channel-1",
+					Body:        "prior context",
+				}},
+			},
+		},
+		MemoryEnabled:       true,
+		MemoryEmbedder:      fakeEmbedder{vector: vector, inputs: &embeddingInputs},
+		ConversationEnabled: true,
+	}
+
+	loaded, err := activities.loadContext(context.Background(), domain.Event{
+		ID:          "event-1",
+		ProjectID:   "project-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		Body:        "remember this",
+	}, domain.Event{
+		ID:          "event-1",
+		ProjectID:   "project-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		Body:        "remember this",
+	}, nil, true)
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if len(searchRequests) != 0 || len(embeddingInputs) != 0 || len(loaded.Memory) != 0 {
+		t.Fatalf("expected memory context to be skipped, searches=%#v embeddings=%#v memory=%#v", searchRequests, embeddingInputs, loaded.Memory)
+	}
+	if len(loaded.Conversation) != 1 {
+		t.Fatalf("expected conversation to still load, got %#v", loaded.Conversation)
 	}
 }
 

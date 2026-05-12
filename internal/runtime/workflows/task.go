@@ -91,6 +91,7 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 	var observationHistory []agent.ExecutionFeedback
 	var lastResults []activities.ExecuteToolResult
 	var processes []domain.ProcessReference
+	skipAutoMemoryContext := activities.IsExplicitMemoryRequest(input.Event.Body)
 
 	if !input.ResumedFromPause {
 		if err := persistEvent(persistenceCtx, activities.PersistEventRequest{Event: input.Event}); err != nil {
@@ -109,15 +110,16 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)
 		}
 		next, err := nextAction(nextActionCtx, activities.NextActionRequest{
-			ProjectID:          input.ProjectID,
-			Event:              input.Event,
-			AdditionalEvents:   additionalEvents,
-			NextAction:         currentAction,
-			LastResults:        lastResults,
-			ObservationHistory: observationHistory,
-			Processes:          processes,
-			ExecutionCycle:     cycle,
-			ResumedFromPause:   input.ResumedFromPause,
+			ProjectID:             input.ProjectID,
+			Event:                 input.Event,
+			AdditionalEvents:      additionalEvents,
+			NextAction:            currentAction,
+			LastResults:           lastResults,
+			ObservationHistory:    observationHistory,
+			Processes:             processes,
+			ExecutionCycle:        cycle,
+			ResumedFromPause:      input.ResumedFromPause,
+			SkipAutoMemoryContext: skipAutoMemoryContext,
 		})
 		if err != nil {
 			return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)
@@ -177,16 +179,17 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 	}
 
 	final, err := nextAction(nextActionCtx, activities.NextActionRequest{
-		ProjectID:          input.ProjectID,
-		Event:              input.Event,
-		AdditionalEvents:   additionalEvents,
-		NextAction:         currentAction,
-		LastResults:        lastResults,
-		ObservationHistory: observationHistory,
-		Processes:          processes,
-		ExecutionCycle:     maxExecutionCycles + 1,
-		ForceFinal:         true,
-		ResumedFromPause:   input.ResumedFromPause,
+		ProjectID:             input.ProjectID,
+		Event:                 input.Event,
+		AdditionalEvents:      additionalEvents,
+		NextAction:            currentAction,
+		LastResults:           lastResults,
+		ObservationHistory:    observationHistory,
+		Processes:             processes,
+		ExecutionCycle:        maxExecutionCycles + 1,
+		ForceFinal:            true,
+		ResumedFromPause:      input.ResumedFromPause,
+		SkipAutoMemoryContext: skipAutoMemoryContext,
 	})
 	if err != nil {
 		return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)

@@ -90,18 +90,19 @@ type Activities struct {
 }
 
 type NextActionRequest struct {
-	ProjectID          string                    `json:"project_id"`
-	Event              domain.Event              `json:"event"`
-	AdditionalEvents   []domain.Event            `json:"additional_events,omitempty"`
-	NextAction         agent.NextAction          `json:"next_action"`
-	LastResult         *ExecuteToolResult        `json:"last_result,omitempty"`
-	LastResults        []ExecuteToolResult       `json:"last_results,omitempty"`
-	ObservationHistory []agent.ExecutionFeedback `json:"observation_history,omitempty"`
-	Processes          []domain.ProcessReference `json:"processes,omitempty"`
-	ExecutionCycle     int                       `json:"execution_cycle"`
-	ForceFinal         bool                      `json:"force_final,omitempty"`
-	ResumedFromPause   bool                      `json:"resumed_from_pause,omitempty"`
-	Completion         *TaskCompletionRequest    `json:"completion,omitempty"`
+	ProjectID             string                    `json:"project_id"`
+	Event                 domain.Event              `json:"event"`
+	AdditionalEvents      []domain.Event            `json:"additional_events,omitempty"`
+	NextAction            agent.NextAction          `json:"next_action"`
+	LastResult            *ExecuteToolResult        `json:"last_result,omitempty"`
+	LastResults           []ExecuteToolResult       `json:"last_results,omitempty"`
+	ObservationHistory    []agent.ExecutionFeedback `json:"observation_history,omitempty"`
+	Processes             []domain.ProcessReference `json:"processes,omitempty"`
+	ExecutionCycle        int                       `json:"execution_cycle"`
+	ForceFinal            bool                      `json:"force_final,omitempty"`
+	ResumedFromPause      bool                      `json:"resumed_from_pause,omitempty"`
+	SkipAutoMemoryContext bool                      `json:"skip_auto_memory_context,omitempty"`
+	Completion            *TaskCompletionRequest    `json:"completion,omitempty"`
 }
 
 type NextActionResult struct {
@@ -246,10 +247,10 @@ type toolRunResult struct {
 }
 
 func (a *Activities) LoadContext(ctx context.Context, event domain.Event) (agent.Context, error) {
-	return a.loadContext(ctx, event, event, nil)
+	return a.loadContext(ctx, event, event, nil, false)
 }
 
-func (a *Activities) loadContext(ctx context.Context, event domain.Event, conversationEvent domain.Event, additionalEvents []domain.Event) (agent.Context, error) {
+func (a *Activities) loadContext(ctx context.Context, event domain.Event, conversationEvent domain.Event, additionalEvents []domain.Event, skipAutoMemoryContext bool) (agent.Context, error) {
 	var activeWorkItems []domain.WorkItem
 	if a.Store != nil {
 		var err error
@@ -264,7 +265,7 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event, conver
 		return agent.Context{}, err
 	}
 	var memories []domain.Memory
-	if a.Store != nil && a.MemoryEnabled {
+	if a.Store != nil && a.MemoryEnabled && !skipAutoMemoryContext {
 		query := strings.TrimSpace(firstNonEmpty(contextEvent.Body, event.Body))
 		embeddingQuery := prepareMemoryEmbeddingQuery(query, event, additionalEvents, conversation)
 		memories, err = a.searchMemoriesWithEmbeddingQuery(ctx, domain.MemorySearchRequest{
@@ -763,10 +764,11 @@ func shouldSkipMemoryExtraction(event domain.Event) bool {
 		return true
 	}
 	body := strings.TrimSpace(event.Body)
-	return body == "" || strings.HasPrefix(body, "Uploaded attachment(s):") || isExplicitMemoryRequest(body)
+	return body == "" || strings.HasPrefix(body, "Uploaded attachment(s):") || IsExplicitMemoryRequest(body)
 }
 
-func isExplicitMemoryRequest(body string) bool {
+// IsExplicitMemoryRequest reports whether the user is directly asking memory tools to save context.
+func IsExplicitMemoryRequest(body string) bool {
 	text := strings.ToLower(strings.Join(strings.Fields(body), " "))
 	for _, marker := range []string{
 		"remember ",
@@ -1771,7 +1773,7 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		slog.String("event_id", event.ID),
 	)
 	conversationEvent := latestConversationContextEvent(event, request.AdditionalEvents)
-	loaded, err := a.loadContext(ctx, event, conversationEvent, request.AdditionalEvents)
+	loaded, err := a.loadContext(ctx, event, conversationEvent, request.AdditionalEvents, request.SkipAutoMemoryContext)
 	if err != nil {
 		a.logActivityStep("NextAction", "load_context_error",
 			slog.String("project_id", projectID),
