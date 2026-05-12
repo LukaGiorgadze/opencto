@@ -1919,6 +1919,12 @@ func (s *Store) UpdateMemory(ctx context.Context, request domain.MemoryUpdateReq
 		}
 		updated.Kind = normalizedKind
 	}
+	if request.Scope != "" {
+		updated.Scope = normalizeMemoryScope(request.Scope)
+		if err := applyMemoryUpdateScopeContext(&updated, request); err != nil {
+			return domain.MemoryUpdateResult{}, err
+		}
+	}
 	if request.ReplaceTags {
 		updated.Tags = cleanTags(request.Tags)
 	}
@@ -1956,9 +1962,9 @@ func (s *Store) UpdateMemory(ctx context.Context, request domain.MemoryUpdateReq
 	}
 	if _, err := tx.ExecContext(ctx, `
 	UPDATE memories
-	SET kind = ?, content = ?, tags = json(?), confidence = ?, pinned = ?, metadata = json(?), updated_at = ?
+	SET project_id = ?, user_id = ?, channel_type = ?, channel_id = ?, thread_id = ?, scope = ?, kind = ?, content = ?, tags = json(?), confidence = ?, pinned = ?, metadata = json(?), updated_at = ?
 	WHERE id = ?
-	`, updated.Kind, updated.Content, tags, updated.Confidence, boolInt(updated.Pinned), metadata, formatTime(updated.UpdatedAt), updated.ID); err != nil {
+	`, strings.TrimSpace(updated.ProjectID), strings.TrimSpace(updated.UserID), string(updated.ChannelType), strings.TrimSpace(updated.ChannelID), strings.TrimSpace(updated.ThreadID), string(updated.Scope), updated.Kind, updated.Content, tags, updated.Confidence, boolInt(updated.Pinned), metadata, formatTime(updated.UpdatedAt), updated.ID); err != nil {
 		return domain.MemoryUpdateResult{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_fts WHERE memory_id = ?`, updated.ID); err != nil {
@@ -1974,6 +1980,63 @@ func (s *Store) UpdateMemory(ctx context.Context, request domain.MemoryUpdateReq
 		return domain.MemoryUpdateResult{}, err
 	}
 	return domain.MemoryUpdateResult{Memory: updated, Updated: true}, nil
+}
+
+func applyMemoryUpdateScopeContext(memory *domain.Memory, request domain.MemoryUpdateRequest) error {
+	projectID := strings.TrimSpace(request.ProjectID)
+	userID := strings.TrimSpace(request.UserID)
+	channelID := strings.TrimSpace(request.ChannelID)
+	threadID := strings.TrimSpace(request.ThreadID)
+	channelType := request.ChannelType
+	if channelID == "" {
+		channelType = ""
+	}
+
+	switch memory.Scope {
+	case domain.MemoryScopeGlobal:
+		memory.ProjectID = ""
+		memory.UserID = ""
+		memory.ChannelType = ""
+		memory.ChannelID = ""
+		memory.ThreadID = ""
+	case domain.MemoryScopeUser:
+		if userID == "" {
+			return memoryPolicyError("user memory user id is required")
+		}
+		memory.ProjectID = ""
+		memory.UserID = userID
+		memory.ChannelType = ""
+		memory.ChannelID = ""
+		memory.ThreadID = ""
+	case domain.MemoryScopeProject:
+		if projectID == "" {
+			return fmt.Errorf("project memory project id is required")
+		}
+		memory.ProjectID = projectID
+		memory.UserID = ""
+		memory.ChannelType = ""
+		memory.ChannelID = ""
+		memory.ThreadID = ""
+	case domain.MemoryScopeChannel:
+		if projectID == "" || channelType == "" || channelID == "" {
+			return memoryPolicyError("channel memory project id, channel type, and channel id are required")
+		}
+		memory.ProjectID = projectID
+		memory.UserID = ""
+		memory.ChannelType = channelType
+		memory.ChannelID = channelID
+		memory.ThreadID = ""
+	case domain.MemoryScopeThread:
+		if projectID == "" || channelType == "" || channelID == "" || threadID == "" {
+			return memoryPolicyError("thread memory project id, channel type, channel id, and thread id are required")
+		}
+		memory.ProjectID = projectID
+		memory.UserID = ""
+		memory.ChannelType = channelType
+		memory.ChannelID = channelID
+		memory.ThreadID = threadID
+	}
+	return nil
 }
 
 func getVisibleMemory(ctx context.Context, tx *sql.Tx, projectID, userID string, channelType domain.ChannelType, channelID, threadID, memoryID string) (domain.Memory, bool, error) {

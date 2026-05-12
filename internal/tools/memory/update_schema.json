@@ -1,7 +1,7 @@
 {
     "type": "object",
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "required": ["memory_id", "content", "kind", "tags_mode", "tags", "confidence_mode", "confidence", "pinned_mode", "pinned", "reason"],
+    "required": ["memory_id", "content", "kind", "scope", "tags_mode", "tags", "confidence_mode", "confidence", "pinned_mode", "pinned", "reason"],
     "properties": {
         "memory_id": {
             "type": "string",
@@ -15,6 +15,11 @@
             "type": "string",
             "enum": ["", "fact", "preference", "instruction", "decision", "constraint", "identity", "workflow", "reference", "feedback"],
             "description": "Replacement short category. Use an empty string to keep existing kind."
+        },
+        "scope": {
+            "type": "string",
+            "enum": ["", "thread", "channel", "project", "user", "global"],
+            "description": "Replacement memory scope. Use an empty string to keep existing scope. Use this to move a memory between thread, channel, project, user, or global visibility; the backend applies the current platform context for thread/channel/user targets."
         },
         "tags_mode": {
             "type": "string",

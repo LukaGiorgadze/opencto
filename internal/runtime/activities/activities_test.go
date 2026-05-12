@@ -1452,6 +1452,62 @@ func TestExecuteMemoryToolUpdatesZeroConfidenceAndUnpins(t *testing.T) {
 	}
 }
 
+func TestExecuteMemoryToolUpdatesScope(t *testing.T) {
+	t.Parallel()
+
+	var updateRequests []domain.MemoryUpdateRequest
+	activities := Activities{
+		Store: stubProjectStore{
+			updateResult: domain.MemoryUpdateResult{
+				Updated: true,
+				Memory: domain.Memory{
+					ID:          "memory-1",
+					ProjectID:   "default",
+					ChannelType: domain.ChannelTypeDiscord,
+					ChannelID:   "channel-1",
+					Scope:       domain.MemoryScopeChannel,
+					Kind:        "preference",
+					Content:     "Use Go for this channel.",
+				},
+			},
+			updateRequests: &updateRequests,
+		},
+		MemoryEnabled: true,
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "default",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemoryProposeUpdate,
+			Intent:     "move memory to channel scope",
+			Input:      []byte(`{"memory_id":"memory-1","content":"","kind":"","scope":"channel","tags_mode":"keep","tags":[],"confidence_mode":"keep","confidence":0,"pinned_mode":"keep","pinned":false,"reason":"applies only to this channel"}`),
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute memory scope update: %v", err)
+	}
+	if len(updateRequests) != 1 {
+		t.Fatalf("expected one update request, got %d", len(updateRequests))
+	}
+	request := updateRequests[0]
+	if request.Scope != domain.MemoryScopeChannel || request.ChannelType != domain.ChannelTypeDiscord || request.ChannelID != "channel-1" {
+		t.Fatalf("expected channel scope update request, got %#v", request)
+	}
+	if result.Metadata["updated"] != "true" || result.Metadata["scope"] != "channel" {
+		t.Fatalf("unexpected scope update result: %#v", result)
+	}
+}
+
 func TestExecuteMemoryToolRememberUpsertsEmbedding(t *testing.T) {
 	t.Parallel()
 

@@ -3023,6 +3023,14 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 			update.Kind = kind
 			hasUpdate = true
 		}
+		if scope := strings.TrimSpace(req.Scope); scope != "" {
+			targetScope, err := memoryScope(scope)
+			if err != nil {
+				return memoryToolRunResult{}, temporal.NewNonRetryableApplicationError(err.Error(), "InvalidMemoryToolRequest", err)
+			}
+			update.Scope = targetScope
+			hasUpdate = true
+		}
 		switch mode := strings.ToLower(strings.TrimSpace(req.TagsMode)); mode {
 		case "", "keep":
 		case "replace":
