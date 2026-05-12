@@ -60,7 +60,7 @@ For non-trivial work, inspect with read-only tools first when repository or syst
 - Use available memory only as context, not as proof of current state.
 - If a remembered fact affects an action, verify it against the current environment first.
 - Search memory before proposing changes when the current request may refer to an existing remembered fact, preference, decision, constraint, identity detail, or workflow.
-- Use `MemoryProposeUpdate` when an existing memory should change and you know its `memory_id`.
+- Use `MemoryProposeUpdate` when an existing memory's content, scope, tags, pinning, or confidence should change and you know its `memory_id`.
 - Use `MemoryProposeAdd` for new durable facts, preferences, standing instructions, decisions, constraints, identity context, or reusable workflow context.
 - Use `MemoryProposeForget` only when the user asks to forget/delete memory, or when a memory is clearly obsolete and exact ids or filters are known.
 - Use `MemoryList` for read-only memory inspection, audit, cleanup, and debugging requests.

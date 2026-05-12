@@ -32,7 +32,7 @@ type ChannelType string
 
 const (
 	ChannelTypeDiscord ChannelType = "discord"
-	ChannelTypeLocal   ChannelType = "local"
+	ChannelTypeCLI     ChannelType = "cli"
 )
 
 type EventKind string
@@ -372,6 +372,7 @@ type MemoryUpdateRequest struct {
 	MemoryID    string      `json:"memory_id"`
 	Content     string      `json:"content,omitempty"`
 	Kind        string      `json:"kind,omitempty"`
+	Scope       MemoryScope `json:"scope,omitempty"`
 	Tags        []string    `json:"tags,omitempty"`
 	ReplaceTags bool        `json:"replace_tags,omitempty"`
 	Confidence  *float64    `json:"confidence,omitempty"`

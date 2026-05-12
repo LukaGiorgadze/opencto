@@ -51,6 +51,7 @@ type ProposeUpdateRequest struct {
 	MemoryID       string   `json:"memory_id"`
 	Content        string   `json:"content,omitempty"`
 	Kind           string   `json:"kind,omitempty"`
+	Scope          string   `json:"scope,omitempty"`
 	TagsMode       string   `json:"tags_mode,omitempty"`
 	Tags           []string `json:"tags,omitempty"`
 	ConfidenceMode string   `json:"confidence_mode,omitempty"`

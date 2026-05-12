@@ -21,13 +21,13 @@ func TestNewLocalEventUsesDefaultChannel(t *testing.T) {
 	}
 
 	if event.ProjectID != "project-1" ||
-		event.ChannelType != domain.ChannelTypeLocal ||
-		event.ChannelID != localDefaultChannelID ||
+		event.ChannelType != domain.ChannelTypeCLI ||
+		event.ChannelID != defaultChannelID ||
 		event.ActorName != "luka" ||
 		event.Body != "do the thing" {
 		t.Fatalf("unexpected event: %#v", event)
 	}
-	if event.Provenance.Source != string(domain.ChannelTypeLocal) ||
+	if event.Provenance.Source != string(domain.ChannelTypeCLI) ||
 		event.Provenance.Actor != "luka" ||
 		!event.Provenance.ObservedAt.Equal(now) ||
 		!event.CreatedAt.Equal(now) {
@@ -44,7 +44,7 @@ func TestReporterTrimsTextAndIgnoresAttachments(t *testing.T) {
 	_, err := reporter.Report(context.Background(), domain.Event{
 		ID:        "event-1",
 		ProjectID: "project-1",
-		ChannelID: localDefaultChannelID,
+		ChannelID: defaultChannelID,
 	}, domain.ReportMessage{
 		Text: "  done  ",
 		Attachments: []domain.ReportAttachment{{

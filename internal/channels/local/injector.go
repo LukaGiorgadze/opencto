@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	localDefaultChannelID        = "default"
+	defaultChannelID             = "default"
 	localOutboundMessageMaxChars = 2000
 )
 
@@ -58,12 +58,12 @@ func newLocalEvent(projectID, actor, body string, now time.Time) (domain.Event, 
 		ID:          id,
 		ProjectID:   projectID,
 		Kind:        domain.EventKindMessage,
-		ChannelID:   localDefaultChannelID,
-		ChannelType: domain.ChannelTypeLocal,
+		ChannelID:   defaultChannelID,
+		ChannelType: domain.ChannelTypeCLI,
 		ActorName:   actor,
 		Body:        body,
 		Provenance: domain.Provenance{
-			Source:     string(domain.ChannelTypeLocal),
+			Source:     string(domain.ChannelTypeCLI),
 			Actor:      actor,
 			ObservedAt: now,
 		},
@@ -90,7 +90,8 @@ func (r *Reporter) Report(_ context.Context, event domain.Event, report domain.R
 		if strings.TrimSpace(chunk) == "" && len(report.Attachments) == 0 {
 			continue
 		}
-		r.logger.Info("local report",
+		r.logger.Info(
+			"local report",
 			slog.String("project_id", event.ProjectID),
 			slog.String("event_id", event.ID),
 			slog.String("channel_id", event.ChannelID),

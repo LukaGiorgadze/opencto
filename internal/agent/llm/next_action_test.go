@@ -488,7 +488,7 @@ func TestBuildNextActionMessagesIncludesMemoryCrudPolicy(t *testing.T) {
 	systemPrompt := messageText(messages[0])
 	for _, expected := range []string{
 		"Search memory before proposing changes",
-		"Use `MemoryProposeUpdate` when an existing memory should change",
+		"Use `MemoryProposeUpdate` when an existing memory's content, scope, tags, pinning, or confidence should change",
 		"Use `MemoryProposeAdd` for new durable facts",
 		"Use `MemoryProposeForget` only when the user asks to forget/delete memory",
 		"Use `MemoryList` for read-only memory inspection",

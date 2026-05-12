@@ -7,6 +7,8 @@ compatibility: Requires Codex CLI
 
 # Codex Non-Interactive Mode
 
+Install: `npm i -g @openai/codex`
+
 Delegate repository code work to `codex exec`. It runs Codex headlessly against
 the target project; progress streams to `stderr`, and the final agent message
 goes to `stdout`.
@@ -123,9 +125,7 @@ resuming a session started from a different project root.
 
 ## Key Flags
 
-For the fuller `codex exec`, `resume`, and `review` option reference, read
-`$OPENCTO_ROOT/skills/codex-noninteractive/references/command-line-options.md`
-when adding or debugging CLI flags.
+For the fuller `codex exec`, `resume`, and `review` option reference, read `references/command-line-options.md` when adding CLI flags or/and different commands.
 
 | Flag | Effect |
 |---|---|

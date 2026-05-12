@@ -59,19 +59,6 @@ func (e stubEngine) NextAction(_ context.Context, input agent.NextActionInput) (
 	return e.output, e.err
 }
 
-type stubMemoryExtractor struct {
-	output agent.MemoryExtractionOutput
-	err    error
-	input  *agent.MemoryExtractionInput
-}
-
-func (e stubMemoryExtractor) ExtractMemories(_ context.Context, input agent.MemoryExtractionInput) (agent.MemoryExtractionOutput, error) {
-	if e.input != nil {
-		*e.input = input
-	}
-	return e.output, e.err
-}
-
 type stubConversationCompressor struct {
 	output agent.ConversationCompressionOutput
 	err    error
@@ -433,247 +420,6 @@ func TestPersistEventUpsertsConversationThread(t *testing.T) {
 	}
 }
 
-func TestExtractMemoryStoresAutoCandidate(t *testing.T) {
-	t.Parallel()
-
-	remembered := []domain.Memory{}
-	searchRequests := []domain.MemorySearchRequest{}
-	var extractorInput agent.MemoryExtractionInput
-	activities := Activities{
-		Store: stubProjectStore{
-			memories: []domain.Memory{{
-				ID:      "memory-existing",
-				Scope:   domain.MemoryScopeProject,
-				Kind:    "instruction",
-				Content: "Existing project instruction.",
-			}},
-			remembered:     &remembered,
-			searchRequests: &searchRequests,
-		},
-		MemoryEnabled:            true,
-		MemoryAutoExtractEnabled: true,
-		MemoryExtractor: stubMemoryExtractor{
-			input: &extractorInput,
-			output: agent.MemoryExtractionOutput{Candidates: []agent.MemoryCandidate{{
-				Scope:      domain.MemoryScopeUser,
-				Kind:       "preference",
-				Content:    "The user prefers short implementation plans before code changes.",
-				Tags:       []string{"planning"},
-				Confidence: 0.8,
-				Reason:     "The user gave a durable collaboration preference.",
-			}}},
-		},
-	}
-
-	result, err := activities.ExtractMemory(context.Background(), ExtractMemoryRequest{
-		Event: domain.Event{
-			ID:          "event-1",
-			ProjectID:   "project-1",
-			Kind:        domain.EventKindMessage,
-			ChannelType: domain.ChannelTypeDiscord,
-			ChannelID:   "channel-1",
-			ActorID:     "actor-1",
-			ActorName:   "Luka",
-			Body:        "before coding, give me a short plan",
-		},
-	})
-	if err != nil {
-		t.Fatalf("extract memory: %v", err)
-	}
-	if result.Candidates != 1 || result.Remembered != 1 || result.Rejected != 0 {
-		t.Fatalf("unexpected result: %#v", result)
-	}
-	if len(searchRequests) != 1 {
-		t.Fatalf("expected one memory search request, got %#v", searchRequests)
-	}
-	if searchRequests[0].UserID != "discord:actor-1" {
-		t.Fatalf("expected discord user id in search, got %#v", searchRequests[0])
-	}
-	if len(extractorInput.ExistingMemories) != 1 {
-		t.Fatalf("expected existing memories to be passed to extractor, got %#v", extractorInput.ExistingMemories)
-	}
-	if len(remembered) != 1 {
-		t.Fatalf("expected remembered memory, got %#v", remembered)
-	}
-	memory := remembered[0]
-	if memory.Scope != domain.MemoryScopeUser || memory.UserID != "discord:actor-1" || memory.Source != "auto_memory" || memory.SourceID != "event-1" {
-		t.Fatalf("unexpected remembered memory: %#v", memory)
-	}
-	if memory.Metadata["reason"] != "The user gave a durable collaboration preference." || memory.Metadata["actor_name"] != "Luka" {
-		t.Fatalf("unexpected memory metadata: %#v", memory.Metadata)
-	}
-}
-
-func TestExtractMemoryStoresThreadScopedCandidate(t *testing.T) {
-	t.Parallel()
-
-	remembered := []domain.Memory{}
-	searchRequests := []domain.MemorySearchRequest{}
-	activities := Activities{
-		Store: stubProjectStore{
-			remembered:     &remembered,
-			searchRequests: &searchRequests,
-		},
-		MemoryEnabled:            true,
-		MemoryAutoExtractEnabled: true,
-		MemoryExtractor: stubMemoryExtractor{
-			output: agent.MemoryExtractionOutput{Candidates: []agent.MemoryCandidate{{
-				Scope:      domain.MemoryScopeThread,
-				Kind:       "decision",
-				Content:    "Use a compact orange theme in this thread.",
-				Tags:       []string{"theme"},
-				Confidence: 0.8,
-			}}},
-		},
-	}
-
-	result, err := activities.ExtractMemory(context.Background(), ExtractMemoryRequest{
-		Event: domain.Event{
-			ID:          "event-1",
-			ProjectID:   "project-1",
-			Kind:        domain.EventKindMessage,
-			ChannelType: domain.ChannelTypeDiscord,
-			ChannelID:   "thread-1",
-			ThreadID:    "thread-1",
-			ActorID:     "actor-1",
-			Body:        "use orange here",
-		},
-	})
-	if err != nil {
-		t.Fatalf("extract memory: %v", err)
-	}
-	if result.Remembered != 1 || len(remembered) != 1 {
-		t.Fatalf("expected remembered thread memory, got result=%#v memories=%#v", result, remembered)
-	}
-	if remembered[0].Scope != domain.MemoryScopeThread || remembered[0].ChannelID != "thread-1" || remembered[0].ThreadID != "thread-1" {
-		t.Fatalf("unexpected remembered thread memory: %#v", remembered[0])
-	}
-	firstMemoryID := remembered[0].ID
-	_, err = activities.ExtractMemory(context.Background(), ExtractMemoryRequest{
-		Event: domain.Event{
-			ID:          "event-2",
-			ProjectID:   "project-1",
-			Kind:        domain.EventKindMessage,
-			ChannelType: domain.ChannelTypeDiscord,
-			ChannelID:   "thread-2",
-			ThreadID:    "thread-2",
-			ActorID:     "actor-1",
-			Body:        "use orange here too",
-		},
-	})
-	if err != nil {
-		t.Fatalf("extract second thread memory: %v", err)
-	}
-	if len(remembered) != 2 || remembered[1].ID == firstMemoryID {
-		t.Fatalf("thread-scoped memories should include thread id in stable identity: %#v", remembered)
-	}
-	if len(searchRequests) != 2 ||
-		searchRequests[0].ChannelID != "thread-1" ||
-		searchRequests[0].ThreadID != "thread-1" ||
-		searchRequests[1].ChannelID != "thread-2" ||
-		searchRequests[1].ThreadID != "thread-2" ||
-		len(searchRequests[0].Scopes) != 5 ||
-		searchRequests[0].Scopes[0] != domain.MemoryScopeThread ||
-		searchRequests[0].Scopes[1] != domain.MemoryScopeChannel ||
-		searchRequests[0].Scopes[2] != domain.MemoryScopeProject ||
-		searchRequests[0].Scopes[3] != domain.MemoryScopeUser ||
-		searchRequests[0].Scopes[4] != domain.MemoryScopeGlobal {
-		t.Fatalf("expected thread context memory search, got %#v", searchRequests)
-	}
-}
-
-func TestExtractMemorySkipsControlMessages(t *testing.T) {
-	t.Parallel()
-
-	var extractorInput agent.MemoryExtractionInput
-	activities := Activities{
-		Store:                    stubProjectStore{},
-		MemoryEnabled:            true,
-		MemoryAutoExtractEnabled: true,
-		MemoryExtractor:          stubMemoryExtractor{input: &extractorInput},
-	}
-	result, err := activities.ExtractMemory(context.Background(), ExtractMemoryRequest{
-		Event: domain.Event{
-			ID:        "event-1",
-			ProjectID: "project-1",
-			Kind:      domain.EventKindMessage,
-			Body:      "cancel",
-			Metadata:  domain.Metadata{domain.MetadataKeyControl: "cancel"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("extract memory: %v", err)
-	}
-	if result != (ExtractMemoryResult{}) {
-		t.Fatalf("expected empty result, got %#v", result)
-	}
-	if extractorInput.Event.ID != "" {
-		t.Fatalf("expected extractor to be skipped, got %#v", extractorInput)
-	}
-}
-
-func TestExtractMemorySkipsAttachmentOnlyFallback(t *testing.T) {
-	t.Parallel()
-
-	var extractorInput agent.MemoryExtractionInput
-	activities := Activities{
-		Store:                    stubProjectStore{},
-		MemoryEnabled:            true,
-		MemoryAutoExtractEnabled: true,
-		MemoryExtractor:          stubMemoryExtractor{input: &extractorInput},
-	}
-	result, err := activities.ExtractMemory(context.Background(), ExtractMemoryRequest{
-		Event: domain.Event{
-			ID:        "event-1",
-			ProjectID: "project-1",
-			Kind:      domain.EventKindMessage,
-			Body:      "Uploaded attachment(s): screenshot.png (image/png)",
-		},
-	})
-	if err != nil {
-		t.Fatalf("extract memory: %v", err)
-	}
-	if result != (ExtractMemoryResult{}) {
-		t.Fatalf("expected empty result, got %#v", result)
-	}
-	if extractorInput.Event.ID != "" {
-		t.Fatalf("expected extractor to be skipped, got %#v", extractorInput)
-	}
-}
-
-func TestExtractMemoryTreatsPolicyRejectionAsNonFatal(t *testing.T) {
-	t.Parallel()
-
-	activities := Activities{
-		Store: stubProjectStore{
-			rememberErr: fmt.Errorf("%w: content appears to describe temporary task state", storage.ErrMemoryPolicyRejected),
-		},
-		MemoryEnabled:            true,
-		MemoryAutoExtractEnabled: true,
-		MemoryExtractor: stubMemoryExtractor{
-			output: agent.MemoryExtractionOutput{Candidates: []agent.MemoryCandidate{{
-				Scope:   domain.MemoryScopeProject,
-				Kind:    "fact",
-				Content: "Use this temporary migration approach today.",
-			}}},
-		},
-	}
-	result, err := activities.ExtractMemory(context.Background(), ExtractMemoryRequest{
-		Event: domain.Event{
-			ID:        "event-1",
-			ProjectID: "project-1",
-			Kind:      domain.EventKindMessage,
-			Body:      "use this temporary migration approach today",
-		},
-	})
-	if err != nil {
-		t.Fatalf("extract memory: %v", err)
-	}
-	if result.Candidates != 1 || result.Remembered != 0 || result.Rejected != 1 {
-		t.Fatalf("unexpected result: %#v", result)
-	}
-}
-
 func TestReportResponseIncludesAttachments(t *testing.T) {
 	t.Parallel()
 
@@ -937,6 +683,165 @@ func TestLoadContextIncludesBoundedMemoryWhenEnabled(t *testing.T) {
 	}
 	if len(searchRequests[0].Scopes) != 3 || searchRequests[0].Scopes[1] != domain.MemoryScopeUser {
 		t.Fatalf("expected memory search to include user scope, got %#v", searchRequests[0].Scopes)
+	}
+}
+
+func TestPrepareMemoryEmbeddingQueryUsesRawQuery(t *testing.T) {
+	t.Parallel()
+
+	got := prepareMemoryEmbeddingQuery("  storage preference  ", domain.Event{}, nil, nil)
+	if got != "Search memory for: storage preference" {
+		t.Fatalf("unexpected prepared query:\n%s", got)
+	}
+}
+
+func TestPrepareMemoryEmbeddingQueryIncludesFollowUpContext(t *testing.T) {
+	t.Parallel()
+
+	got := prepareMemoryEmbeddingQuery(
+		"1",
+		domain.Event{ID: "event-current", Body: "create react/vite app"},
+		[]domain.Event{{ID: "event-additional", Body: "1"}},
+		[]domain.ConversationMessage{
+			{ID: "prior", EventID: "event-prior", Role: domain.ConversationRoleUser, Body: "Earlier request"},
+			{ID: "prompt", EventID: "event-current", Role: domain.ConversationRoleAssistant, Body: "Where should I create it?"},
+			{ID: "additional", EventID: "event-additional", Role: domain.ConversationRoleUser, Body: "1"},
+		},
+	)
+	for _, want := range []string{
+		"Search memory for: 1",
+		"Current request: create react/vite app",
+		"Follow-up: 1",
+		"assistant: Where should I create it?",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected prepared query to contain %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "user: 1") {
+		t.Fatalf("current/additional user events should not be duplicated in context:\n%s", got)
+	}
+}
+
+func TestPrepareMemoryEmbeddingQueryRequiresCurrentAnchor(t *testing.T) {
+	t.Parallel()
+
+	got := prepareMemoryEmbeddingQuery("", domain.Event{}, nil, []domain.ConversationMessage{{
+		ID:   "prior",
+		Role: domain.ConversationRoleAssistant,
+		Body: "Use SQLite for local state.",
+	}})
+	if got != "" {
+		t.Fatalf("expected empty prepared query without current anchor, got:\n%s", got)
+	}
+}
+
+func TestPrepareMemoryEmbeddingQueryIsBounded(t *testing.T) {
+	t.Parallel()
+
+	got := prepareMemoryEmbeddingQuery(strings.Repeat("x", memoryEmbeddingQueryMaxChars+500), domain.Event{}, nil, nil)
+	if len([]rune(got)) > memoryEmbeddingQueryMaxChars {
+		t.Fatalf("prepared query exceeded bound: %d > %d", len([]rune(got)), memoryEmbeddingQueryMaxChars)
+	}
+}
+
+func TestPrepareMemoryEmbeddingQueryPreservesNewestContextWhenBounded(t *testing.T) {
+	t.Parallel()
+
+	got := prepareMemoryEmbeddingQuery(
+		"1",
+		domain.Event{ID: "event-current", Body: "create react/vite app"},
+		nil,
+		[]domain.ConversationMessage{
+			{ID: "old", EventID: "event-old", Role: domain.ConversationRoleUser, Body: strings.Repeat("older context ", 300)},
+			{ID: "prompt", EventID: "event-current", Role: domain.ConversationRoleAssistant, Body: "Where should I create it?"},
+		},
+	)
+	if len([]rune(got)) > memoryEmbeddingQueryMaxChars {
+		t.Fatalf("prepared query exceeded bound: %d > %d", len([]rune(got)), memoryEmbeddingQueryMaxChars)
+	}
+	if !strings.Contains(got, "assistant: Where should I create it?") {
+		t.Fatalf("expected newest assistant context to survive bounded query:\n%s", got)
+	}
+}
+
+func TestLoadContextEmbedsPreparedMemoryQueryFromConversation(t *testing.T) {
+	t.Parallel()
+
+	searchRequests := []domain.MemorySearchRequest{}
+	embeddingInputs := []string{}
+	vector := make([]float32, 1536)
+	activities := Activities{
+		Store: stubProjectStore{
+			searchRequests: &searchRequests,
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeThread: {
+					{
+						ID:          "prompt",
+						ProjectID:   "project-1",
+						EventID:     "event-1",
+						Role:        domain.ConversationRoleAssistant,
+						ChannelType: domain.ChannelTypeDiscord,
+						ChannelID:   "bot-prompt-1",
+						ThreadID:    "bot-prompt-1",
+						Body:        "Where should I create it?",
+					},
+					{
+						ID:          "additional",
+						ProjectID:   "project-1",
+						EventID:     "event-2",
+						Role:        domain.ConversationRoleUser,
+						ChannelType: domain.ChannelTypeDiscord,
+						ChannelID:   "bot-prompt-1",
+						ThreadID:    "bot-prompt-1",
+						Body:        "1",
+					},
+				},
+			},
+		},
+		MemoryEnabled:       true,
+		MemoryEmbedder:      fakeEmbedder{vector: vector, inputs: &embeddingInputs},
+		ConversationEnabled: true,
+	}
+	event := domain.Event{
+		ID:          "event-1",
+		ProjectID:   "project-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		Body:        "create react/vite app",
+	}
+	followUp := domain.Event{
+		ID:          "event-2",
+		ProjectID:   "project-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "bot-prompt-1",
+		Body:        "1",
+		Metadata:    domain.Metadata{domain.MetadataKeyControl: domain.MetadataControlTaskReply},
+	}
+
+	_, err := activities.loadContext(context.Background(), event, followUp, []domain.Event{followUp})
+	if err != nil {
+		t.Fatalf("load context: %v", err)
+	}
+	if len(searchRequests) != 1 || searchRequests[0].Query != "1" {
+		t.Fatalf("expected raw query to remain on search request, got %#v", searchRequests)
+	}
+	if len(embeddingInputs) != 1 {
+		t.Fatalf("expected one embedding input, got %#v", embeddingInputs)
+	}
+	input := embeddingInputs[0]
+	for _, want := range []string{
+		"Search memory for: 1",
+		"Current request: create react/vite app",
+		"Follow-up: 1",
+		"assistant: Where should I create it?",
+	} {
+		if !strings.Contains(input, want) {
+			t.Fatalf("expected embedding input to contain %q:\n%s", want, input)
+		}
+	}
+	if strings.Contains(input, "user: 1") {
+		t.Fatalf("additional user event should not be duplicated in embedding context:\n%s", input)
 	}
 }
 
@@ -1238,6 +1143,70 @@ func TestExecuteMemoryToolRejectsInvalidSearchScope(t *testing.T) {
 	}
 }
 
+func TestExecuteMemoryToolSearchEmbedsPreparedQuery(t *testing.T) {
+	t.Parallel()
+
+	searchRequests := []domain.MemorySearchRequest{}
+	embeddingInputs := []string{}
+	vector := make([]float32, 1536)
+	activities := Activities{
+		Store: stubProjectStore{
+			searchRequests: &searchRequests,
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeChannel: {
+					{
+						ID:          "assistant-context",
+						ProjectID:   "default",
+						EventID:     "event-prior",
+						Role:        domain.ConversationRoleAssistant,
+						ChannelType: domain.ChannelTypeDiscord,
+						ChannelID:   "channel-1",
+						Body:        "Use SQLite for local state.",
+					},
+				},
+			},
+		},
+		MemoryEnabled:       true,
+		MemoryEmbedder:      fakeEmbedder{vector: vector, inputs: &embeddingInputs},
+		ConversationEnabled: true,
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "default",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			Body:        "make that the default",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemorySearch,
+			Intent:     "search memory",
+			Input:      []byte(`{"scope":"all","query":"that default","tags":[],"limit":5}`),
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute memory search: %v", err)
+	}
+	if result.Status != domain.ExecutionStatusSucceeded {
+		t.Fatalf("unexpected memory search result: %#v", result)
+	}
+	if len(searchRequests) != 1 || searchRequests[0].Query != "that default" {
+		t.Fatalf("expected raw query to remain on search request, got %#v", searchRequests)
+	}
+	if len(embeddingInputs) != 1 ||
+		!strings.Contains(embeddingInputs[0], "Search memory for: that default") ||
+		!strings.Contains(embeddingInputs[0], "Current request: make that the default") ||
+		!strings.Contains(embeddingInputs[0], "assistant: Use SQLite for local state.") {
+		t.Fatalf("unexpected embedding inputs: %#v", embeddingInputs)
+	}
+}
+
 func TestExecuteMemoryToolRejectsInvalidListScope(t *testing.T) {
 	t.Parallel()
 
@@ -1480,6 +1449,62 @@ func TestExecuteMemoryToolUpdatesZeroConfidenceAndUnpins(t *testing.T) {
 	}
 	if result.Metadata["updated"] != "true" || !strings.Contains(result.Observation, "confidence: 0.00") || !strings.Contains(result.Observation, "pinned: false") {
 		t.Fatalf("unexpected update result: %#v", result)
+	}
+}
+
+func TestExecuteMemoryToolUpdatesScope(t *testing.T) {
+	t.Parallel()
+
+	var updateRequests []domain.MemoryUpdateRequest
+	activities := Activities{
+		Store: stubProjectStore{
+			updateResult: domain.MemoryUpdateResult{
+				Updated: true,
+				Memory: domain.Memory{
+					ID:          "memory-1",
+					ProjectID:   "default",
+					ChannelType: domain.ChannelTypeDiscord,
+					ChannelID:   "channel-1",
+					Scope:       domain.MemoryScopeChannel,
+					Kind:        "preference",
+					Content:     "Use Go for this channel.",
+				},
+			},
+			updateRequests: &updateRequests,
+		},
+		MemoryEnabled: true,
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "default",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemoryProposeUpdate,
+			Intent:     "move memory to channel scope",
+			Input:      []byte(`{"memory_id":"memory-1","content":"","kind":"","scope":"channel","tags_mode":"keep","tags":[],"confidence_mode":"keep","confidence":0,"pinned_mode":"keep","pinned":false,"reason":"applies only to this channel"}`),
+			Metadata: map[string]string{
+				"execution_cycle": "1",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute memory scope update: %v", err)
+	}
+	if len(updateRequests) != 1 {
+		t.Fatalf("expected one update request, got %d", len(updateRequests))
+	}
+	request := updateRequests[0]
+	if request.Scope != domain.MemoryScopeChannel || request.ChannelType != domain.ChannelTypeDiscord || request.ChannelID != "channel-1" {
+		t.Fatalf("expected channel scope update request, got %#v", request)
+	}
+	if result.Metadata["updated"] != "true" || result.Metadata["scope"] != "channel" {
+		t.Fatalf("unexpected scope update result: %#v", result)
 	}
 }
 
@@ -2621,7 +2646,7 @@ func TestNextActionPassesEventChannelToEngine(t *testing.T) {
 	event := domain.Event{
 		ID:          "event-1",
 		ProjectID:   "project-1",
-		ChannelType: domain.ChannelTypeLocal,
+		ChannelType: domain.ChannelTypeCLI,
 		Body:        "inspect workspace",
 	}
 	_, err := activities.NextAction(context.Background(), NextActionRequest{
@@ -2632,7 +2657,7 @@ func TestNextActionPassesEventChannelToEngine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("next action: %v", err)
 	}
-	if input.ChannelType != domain.ChannelTypeLocal {
+	if input.ChannelType != domain.ChannelTypeCLI {
 		t.Fatalf("expected local channel, got %q", input.ChannelType)
 	}
 }

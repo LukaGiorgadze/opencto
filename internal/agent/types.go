@@ -123,30 +123,6 @@ type Engine interface {
 	NextAction(context.Context, NextActionInput) (NextActionOutput, error)
 }
 
-type MemoryExtractionInput struct {
-	ProjectID        string          `json:"project_id"`
-	Event            domain.Event    `json:"event"`
-	ExistingMemories []domain.Memory `json:"existing_memories,omitempty"`
-}
-
-type MemoryExtractionOutput struct {
-	Candidates []MemoryCandidate `json:"candidates,omitempty"`
-}
-
-type MemoryCandidate struct {
-	Scope      domain.MemoryScope `json:"scope"`
-	Kind       string             `json:"kind"`
-	Content    string             `json:"content"`
-	Tags       []string           `json:"tags,omitempty"`
-	Confidence float64            `json:"confidence,omitempty"`
-	Pinned     bool               `json:"pinned,omitempty"`
-	Reason     string             `json:"reason,omitempty"`
-}
-
-type MemoryExtractor interface {
-	ExtractMemories(context.Context, MemoryExtractionInput) (MemoryExtractionOutput, error)
-}
-
 type ConversationCompressionInput struct {
 	ProjectID       string                          `json:"project_id"`
 	Scope           domain.ConversationSummaryScope `json:"scope"`

@@ -1271,6 +1271,67 @@ func TestUpdateMemoryCanUpdateSharedScopesFromChannelContext(t *testing.T) {
 	}
 }
 
+func TestUpdateMemoryMovesScopeToChannel(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := time.Now().UTC()
+	if _, err := store.RememberMemory(ctx, domain.Memory{
+		ID:        "memory-1",
+		ProjectID: "default",
+		Scope:     domain.MemoryScopeProject,
+		Kind:      "preference",
+		Content:   "Use Go for feature work.",
+		Tags:      []string{"go", "language"},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("remember memory: %v", err)
+	}
+
+	result, err := store.UpdateMemory(ctx, domain.MemoryUpdateRequest{
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		MemoryID:    "memory-1",
+		Scope:       domain.MemoryScopeChannel,
+	})
+	if err != nil {
+		t.Fatalf("move memory scope: %v", err)
+	}
+	if !result.Updated || result.Memory.Scope != domain.MemoryScopeChannel {
+		t.Fatalf("expected memory to move to channel scope, got %#v", result)
+	}
+	if result.Memory.ProjectID != "default" || result.Memory.ChannelType != domain.ChannelTypeDiscord || result.Memory.ChannelID != "channel-1" || result.Memory.ThreadID != "" || result.Memory.UserID != "" {
+		t.Fatalf("unexpected moved memory context: %#v", result.Memory)
+	}
+
+	channelFound, err := store.SearchMemories(ctx, domain.MemorySearchRequest{
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		Scopes:      []domain.MemoryScope{domain.MemoryScopeChannel},
+		Query:       "Go feature work",
+		Limit:       5,
+	})
+	if err != nil {
+		t.Fatalf("search moved channel memory: %v", err)
+	}
+	requireMemoryIDs(t, memoryIDs(channelFound), "memory-1")
+
+	projectFound, err := store.SearchMemories(ctx, domain.MemorySearchRequest{
+		ProjectID: "default",
+		Scopes:    []domain.MemoryScope{domain.MemoryScopeProject},
+		Query:     "Go feature work",
+		Limit:     5,
+	})
+	if err != nil {
+		t.Fatalf("search old project memory scope: %v", err)
+	}
+	requireMemoryIDs(t, memoryIDs(projectFound))
+}
+
 func TestMemoryEmbeddingVectorSearch(t *testing.T) {
 	t.Parallel()
 
@@ -1878,7 +1939,7 @@ func TestMemoryChannelScopeIsVisibleOnlyToChannel(t *testing.T) {
 
 	found, err = store.SearchMemories(ctx, domain.MemorySearchRequest{
 		ProjectID:      "default",
-		ChannelType:    domain.ChannelTypeLocal,
+		ChannelType:    domain.ChannelTypeCLI,
 		ChannelID:      "channel-1",
 		Scopes:         []domain.MemoryScope{domain.MemoryScopeChannel},
 		FallbackRecent: true,
