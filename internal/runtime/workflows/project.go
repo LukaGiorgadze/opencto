@@ -255,21 +255,6 @@ func handleProjectEventSignal(ctx workflow.Context, state *ProjectWorkflowState,
 		signalRoutedEvent(ctx, owner, event)
 		return
 	}
-	if owner := taskRouteOwnerByParentChannel(active, event); owner.WorkflowID != "" {
-		registerRoutedEventOwnership(messageOwners, threadOwners, event, routeOwner{WorkflowID: owner.WorkflowID})
-		workflow.GetLogger(ctx).Info("project route event as task reply",
-			"route", "parent_channel_thread",
-			"event_id", event.ID,
-			"workflow_id", owner.WorkflowID,
-			"channel_id", strings.TrimSpace(event.ChannelID),
-			"thread_id", strings.TrimSpace(event.ThreadID),
-			"message_owners", len(messageOwners),
-			"thread_owners", len(threadOwners),
-		)
-		signalRoutedEvent(ctx, owner, event)
-		return
-	}
-
 	if isStandaloneDiscordMainEvent(event) {
 		workflow.GetLogger(ctx).Info("project route standalone discord message as new task",
 			"event_id", event.ID,
@@ -354,27 +339,6 @@ func taskRouteOwnerByThread(threadOwners map[string]routeOwner, event domain.Eve
 		return routeOwner{}
 	}
 	return cleanRouteOwner(threadOwners[channelID])
-}
-
-func taskRouteOwnerByParentChannel(active map[string]activeTask, event domain.Event) routeOwner {
-	if event.ChannelType != domain.ChannelTypeDiscord ||
-		strings.TrimSpace(event.ThreadID) == "" ||
-		strings.TrimSpace(event.ChannelID) == "" {
-		return routeOwner{}
-	}
-	var owner routeOwner
-	for _, task := range active {
-		if task.Event.ChannelType != event.ChannelType ||
-			strings.TrimSpace(task.Event.ThreadID) != "" ||
-			strings.TrimSpace(task.Event.ChannelID) != strings.TrimSpace(event.ChannelID) {
-			continue
-		}
-		if owner.WorkflowID != "" {
-			return routeOwner{}
-		}
-		owner = routeOwner{WorkflowID: task.WorkflowID}
-	}
-	return owner
 }
 
 func shouldSignalRoutedEvent(event domain.Event) bool {

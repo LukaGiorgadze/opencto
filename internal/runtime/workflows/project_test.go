@@ -1113,7 +1113,7 @@ func TestProjectWorkflowDoesNotRouteParentChannelMessageToThreadTask(t *testing.
 	}
 }
 
-func TestProjectWorkflowRoutesUnownedThreadMessageToActiveParentChannelTask(t *testing.T) {
+func TestProjectWorkflowStartsUnownedThreadMessageAsNewTask(t *testing.T) {
 	t.Parallel()
 
 	var suite testsuite.WorkflowTestSuite
@@ -1126,12 +1126,14 @@ func TestProjectWorkflowRoutesUnownedThreadMessageToActiveParentChannelTask(t *t
 		if input.Event.ID != "event-1" {
 			return workflows.TaskWorkflowResult{Completed: true}, nil
 		}
-		var signal workflows.AdditionalContextSignal
-		workflow.GetSignalChannel(ctx, workflows.SignalTaskAdditionalContext).Receive(ctx, &signal)
-		received = signal.Event.ID == "event-2" &&
-			signal.Event.ChannelID == "channel-1" &&
-			signal.Event.ThreadID == "thread-1" &&
-			signal.Event.Metadata[domain.MetadataKeyControl] == domain.MetadataControlTaskReply
+		selector := workflow.NewSelector(ctx)
+		selector.AddReceive(workflow.GetSignalChannel(ctx, workflows.SignalTaskAdditionalContext), func(c workflow.ReceiveChannel, more bool) {
+			var signal workflows.AdditionalContextSignal
+			c.Receive(ctx, &signal)
+			received = signal.Event.ID == "event-2"
+		})
+		selector.AddFuture(workflow.NewTimer(ctx, 3*time.Millisecond), func(workflow.Future) {})
+		selector.Select(ctx)
 		return workflows.TaskWorkflowResult{Completed: true}, nil
 	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
 
@@ -1162,11 +1164,11 @@ func TestProjectWorkflowRoutesUnownedThreadMessageToActiveParentChannelTask(t *t
 	if err := env.GetWorkflowError(); err == nil {
 		t.Fatalf("expected cancellation error")
 	}
-	if !received {
-		t.Fatalf("expected thread message to route to active parent-channel task")
+	if received {
+		t.Fatalf("unowned thread message should not route to active parent-channel task")
 	}
-	if strings.Join(seen, ",") != "event-1" {
-		t.Fatalf("thread follow-up should not start a separate task, got %#v", seen)
+	if strings.Join(seen, ",") != "event-1,event-2" {
+		t.Fatalf("unowned thread message should start a separate task, got %#v", seen)
 	}
 }
 
