@@ -39,33 +39,29 @@
     },
     "schedule": {
       "type": "object",
-      "required": ["cron", "one_shot_at", "time_zone_name", "overlap_policy", "catchup_window", "pause_on_failure"],
+      "required": ["cron", "one_shot_at", "overlap_policy", "catchup_window", "pause_on_failure"],
       "additionalProperties": false,
       "properties": {
         "cron": {
           "type": "string",
-          "description": "Temporal cron expression for recurring workflows. Empty for one-shot workflows."
+          "description": "Cron expression for recurring workflows. Empty for one-shot workflows."
         },
         "one_shot_at": {
           "type": "string",
           "description": "RFC3339 timestamp for one-shot workflows. Empty for recurring workflows."
         },
-        "time_zone_name": {
-          "type": "string",
-          "description": "Always pass empty string. Backend resolves host IANA timezone."
-        },
         "overlap_policy": {
           "type": "string",
           "enum": ["", "skip", "buffer_one", "buffer_all", "cancel_other", "terminate_other", "allow_all"],
-          "description": "Temporal schedule overlap policy. Use skip by default."
+          "description": "Overlap policy when a previous run is still active. Use skip by default."
         },
         "catchup_window": {
           "type": "string",
-          "description": "Temporal catchup window duration such as 10m. Empty uses backend default."
+          "description": "Catchup window duration such as 10m. Empty uses backend default."
         },
         "pause_on_failure": {
           "type": "boolean",
-          "description": "Temporal pause_on_failure. Use false unless the user asks to pause after failure."
+          "description": "Whether to pause future runs after a workflow failure. Use false unless the user asks to pause after failure."
         }
       }
     },
@@ -88,7 +84,7 @@
     "steps": {
       "type": "array",
       "minItems": 1,
-      "description": "Linear durable workflow steps. Logic must live in src/ files; steps only define command boundaries.",
+      "description": "Linear durable workflow steps. Each step is one single-responsibility command boundary. Split multi-stage work into separate steps, e.g. download, transform, then load. Logic must live in src/ files.",
       "items": {
         "type": "object",
         "required": ["id", "command", "args", "start_to_close_timeout", "schedule_to_close_timeout", "retry_policy"],
@@ -102,7 +98,7 @@
             "type": "string",
             "minLength": 1,
             "pattern": "^\\S+$",
-            "description": "Executable command run from the workflow run directory. Use one executable path/name only; put all arguments in args."
+            "description": "Executable command run from the workflow run directory. Use one executable path/name only; put all arguments in args. This command should run plain step code, not a scheduler, worker, daemon, or orchestration framework."
           },
           "args": {
             "type": "array",
@@ -112,11 +108,11 @@
           },
           "start_to_close_timeout": {
             "type": "string",
-            "description": "Temporal Activity start_to_close_timeout duration, e.g. 10m."
+            "description": "Maximum time a step command may run after it starts, e.g. 10m."
           },
           "schedule_to_close_timeout": {
             "type": "string",
-            "description": "Optional Temporal Activity schedule_to_close_timeout duration. Empty means unset."
+            "description": "Optional maximum total time from scheduling a step to completion. Empty means unset."
           },
           "retry_policy": {
             "type": "object",
@@ -138,7 +134,7 @@
     },
     "files": {
       "type": "array",
-      "description": "Files to create/update in the workflow bundle. Paths must be under src/. The backend owns workflow.yml and .gitignore.",
+      "description": "Files to create/update in the workflow bundle. Paths must be under src/. Write normal runnable programs or scripts for individual steps only. Do not write scheduler, workflow, worker, activity, queue, daemon, or framework orchestration code. The backend owns workflow.yml and .gitignore.",
       "items": {
         "type": "object",
         "required": ["path", "content", "executable"],
@@ -160,11 +156,11 @@
     },
     "paused": {
       "type": "boolean",
-      "description": "For create/update, whether the Temporal schedule starts paused."
+      "description": "For create/update, whether the schedule starts paused."
     },
     "note": {
       "type": "string",
-      "description": "Optional Temporal operation note."
+      "description": "Optional operation note."
     },
     "limit": {
       "type": "integer",
