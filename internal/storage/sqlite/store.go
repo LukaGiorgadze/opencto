@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	currentSchemaVersion = 10
+	currentSchemaVersion = 11
 	memoryVectorDims     = 1536
 )
 
@@ -169,6 +169,7 @@ var migrations = []migration{
 	{version: 8, sql: migrationV8},
 	{version: 9, sql: migrationV9},
 	{version: 10, sql: migrationV10},
+	{version: 11, apply: applyTemporalRunIDMigration},
 }
 
 func applyMigration(ctx context.Context, db *sql.DB, migration migration) error {
@@ -568,6 +569,7 @@ CREATE TABLE IF NOT EXISTS scheduled_workflow_runs (
 	workflow_id TEXT NOT NULL,
 	commit_hash TEXT NOT NULL DEFAULT '',
 	temporal_workflow_id TEXT NOT NULL DEFAULT '',
+	temporal_run_id TEXT NOT NULL DEFAULT '',
 	status TEXT NOT NULL,
 	scheduled_at TEXT NOT NULL,
 	started_at TEXT NOT NULL,
@@ -760,6 +762,29 @@ DROP TABLE IF EXISTS conversation_threads;
 ` + conversationThreadsSchemaSQL
 
 const migrationV10 = scheduledWorkflowsSchemaSQL
+
+func applyTemporalRunIDMigration(ctx context.Context, db *sql.DB, migration migration) error {
+	hasTemporalRunID, err := tableHasColumn(ctx, db, "scheduled_workflow_runs", "temporal_run_id")
+	if err != nil {
+		return err
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	if !hasTemporalRunID {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE scheduled_workflow_runs ADD COLUMN temporal_run_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)`, migration.version, formatTime(time.Now().UTC())); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
 func (s *Store) EnsureProject(ctx context.Context, project domain.Project) error {
 	project.ID = strings.TrimSpace(project.ID)
@@ -2489,13 +2514,14 @@ func (s *Store) UpsertScheduledWorkflowRun(ctx context.Context, run domain.Sched
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `
-INSERT INTO scheduled_workflow_runs(id, project_id, workflow_id, commit_hash, temporal_workflow_id, status, scheduled_at, started_at, completed_at, run_path, failure_summary, metadata)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, json(?))
+INSERT INTO scheduled_workflow_runs(id, project_id, workflow_id, commit_hash, temporal_workflow_id, temporal_run_id, status, scheduled_at, started_at, completed_at, run_path, failure_summary, metadata)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, json(?))
 ON CONFLICT(id) DO UPDATE SET
 	project_id = excluded.project_id,
 	workflow_id = excluded.workflow_id,
 	commit_hash = CASE WHEN excluded.commit_hash <> '' THEN excluded.commit_hash ELSE scheduled_workflow_runs.commit_hash END,
 	temporal_workflow_id = CASE WHEN excluded.temporal_workflow_id <> '' THEN excluded.temporal_workflow_id ELSE scheduled_workflow_runs.temporal_workflow_id END,
+	temporal_run_id = CASE WHEN excluded.temporal_run_id <> '' THEN excluded.temporal_run_id ELSE scheduled_workflow_runs.temporal_run_id END,
 	status = excluded.status,
 	scheduled_at = scheduled_workflow_runs.scheduled_at,
 	started_at = scheduled_workflow_runs.started_at,
@@ -2503,7 +2529,7 @@ ON CONFLICT(id) DO UPDATE SET
 	run_path = CASE WHEN excluded.run_path <> '' THEN excluded.run_path ELSE scheduled_workflow_runs.run_path END,
 	failure_summary = excluded.failure_summary,
 	metadata = excluded.metadata
-`, run.ID, run.ProjectID, run.WorkflowID, run.CommitHash, run.TemporalWorkflowID, string(run.Status), formatTime(run.ScheduledAt), formatTime(run.StartedAt), nullableTime(run.CompletedAt), run.RunPath, run.FailureSummary, metadata)
+`, run.ID, run.ProjectID, run.WorkflowID, run.CommitHash, run.TemporalWorkflowID, run.TemporalRunID, string(run.Status), formatTime(run.ScheduledAt), formatTime(run.StartedAt), nullableTime(run.CompletedAt), run.RunPath, run.FailureSummary, metadata)
 	return err
 }
 

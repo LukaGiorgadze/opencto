@@ -25,10 +25,11 @@ func WorkflowRunWorkflow(ctx workflow.Context, input workflowrun.Input) error {
 	})
 
 	var prepared workflowrun.PrepareResult
-	temporalWorkflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
+	workflowExecution := workflow.GetInfo(ctx).WorkflowExecution
 	if err := workflow.ExecuteActivity(prepareCtx, workflowrun.PrepareActivityName, workflowrun.PrepareRequest{
 		Input:              input,
-		TemporalWorkflowID: temporalWorkflowID,
+		TemporalWorkflowID: workflowExecution.ID,
+		TemporalRunID:      workflowExecution.RunID,
 	}).Get(ctx, &prepared); err != nil {
 		return err
 	}

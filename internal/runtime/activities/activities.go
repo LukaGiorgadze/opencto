@@ -1171,7 +1171,10 @@ func (a *Activities) PrepareWorkflowRun(ctx context.Context, request workflowrun
 	if scheduledAt.IsZero() {
 		scheduledAt = time.Now().UTC()
 	}
-	runID := stableActivityID("scheduled-workflow-run", projectID, workflowID, request.TemporalWorkflowID, scheduledAt.UTC().Format(time.RFC3339Nano))
+	runID := strings.TrimSpace(request.TemporalRunID)
+	if runID == "" {
+		runID = stableActivityID("scheduled-workflow-run", projectID, workflowID, request.TemporalWorkflowID, scheduledAt.UTC().Format(time.RFC3339Nano))
+	}
 	runDir, err := workflowbundle.WorkflowRunDir(a.WorkspaceRoot, workflowID, runID)
 	if err != nil {
 		return workflowrun.PrepareResult{}, err
@@ -1190,7 +1193,7 @@ func (a *Activities) PrepareWorkflowRun(ctx context.Context, request workflowrun
 		return workflowrun.PrepareResult{}, err
 	}
 	startedAt := time.Now().UTC()
-	if err := writeWorkflowRunState(runDir, initialWorkflowRunState(input, manifest, projectID, workflowID, runID, commitHash, request.TemporalWorkflowID, runDir, scheduledAt.UTC(), startedAt)); err != nil {
+	if err := writeWorkflowRunState(runDir, initialWorkflowRunState(input, manifest, projectID, workflowID, runID, commitHash, request.TemporalWorkflowID, request.TemporalRunID, runDir, scheduledAt.UTC(), startedAt)); err != nil {
 		return workflowrun.PrepareResult{}, err
 	}
 	if a.Store != nil {
@@ -1200,6 +1203,7 @@ func (a *Activities) PrepareWorkflowRun(ctx context.Context, request workflowrun
 			WorkflowID:         workflowID,
 			CommitHash:         commitHash,
 			TemporalWorkflowID: strings.TrimSpace(request.TemporalWorkflowID),
+			TemporalRunID:      strings.TrimSpace(request.TemporalRunID),
 			Status:             domain.ExecutionStatusRunning,
 			ScheduledAt:        scheduledAt.UTC(),
 			StartedAt:          startedAt,
@@ -4271,6 +4275,7 @@ type workflowRunState struct {
 	Status             string                 `json:"status"`
 	CommitHash         string                 `json:"commit_hash"`
 	TemporalWorkflowID string                 `json:"temporal_workflow_id,omitempty"`
+	TemporalRunID      string                 `json:"temporal_run_id,omitempty"`
 	ScheduleID         string                 `json:"schedule_id,omitempty"`
 	SourceEventID      string                 `json:"source_event_id,omitempty"`
 	Env                []string               `json:"env,omitempty"`
@@ -4297,7 +4302,7 @@ type workflowRunStepState struct {
 	ErrorDetails  string     `json:"error_details,omitempty"`
 }
 
-func initialWorkflowRunState(input workflowrun.Input, manifest workflowbundle.Manifest, projectID, workflowID, runID, commitHash, temporalWorkflowID, runPath string, scheduledAt, startedAt time.Time) workflowRunState {
+func initialWorkflowRunState(input workflowrun.Input, manifest workflowbundle.Manifest, projectID, workflowID, runID, commitHash, temporalWorkflowID, temporalRunID, runPath string, scheduledAt, startedAt time.Time) workflowRunState {
 	steps := make([]workflowRunStepState, 0, len(manifest.Steps))
 	for _, step := range manifest.Steps {
 		stepID := strings.TrimSpace(step.ID)
@@ -4322,6 +4327,7 @@ func initialWorkflowRunState(input workflowrun.Input, manifest workflowbundle.Ma
 		Status:             string(domain.ExecutionStatusRunning),
 		CommitHash:         strings.TrimSpace(commitHash),
 		TemporalWorkflowID: strings.TrimSpace(temporalWorkflowID),
+		TemporalRunID:      strings.TrimSpace(temporalRunID),
 		ScheduleID:         strings.TrimSpace(input.ScheduleID),
 		SourceEventID:      strings.TrimSpace(input.SourceEvent.ID),
 		Env:                append([]string(nil), manifest.Env...),

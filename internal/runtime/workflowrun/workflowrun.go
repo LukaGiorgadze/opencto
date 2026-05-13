@@ -36,6 +36,7 @@ type Input struct {
 type PrepareRequest struct {
 	Input              Input  `json:"input"`
 	TemporalWorkflowID string `json:"temporal_workflow_id,omitempty"`
+	TemporalRunID      string `json:"temporal_run_id,omitempty"`
 }
 
 type PrepareResult struct {

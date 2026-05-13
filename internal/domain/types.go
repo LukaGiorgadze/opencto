@@ -334,6 +334,7 @@ type ScheduledWorkflowRun struct {
 	WorkflowID         string          `json:"workflow_id"`
 	CommitHash         string          `json:"commit_hash"`
 	TemporalWorkflowID string          `json:"temporal_workflow_id,omitempty"`
+	TemporalRunID      string          `json:"temporal_run_id,omitempty"`
 	Status             ExecutionStatus `json:"status"`
 	ScheduledAt        time.Time       `json:"scheduled_at"`
 	StartedAt          time.Time       `json:"started_at"`

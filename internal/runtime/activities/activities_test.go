@@ -3260,6 +3260,84 @@ func TestNextActionStopsProcessWithStopOnFinishScopeAtCompletion(t *testing.T) {
 	}
 }
 
+func TestPrepareWorkflowRunUsesExecutionRunID(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	workspaceRoot := t.TempDir()
+	workflowID := "finance-check"
+	workflowDir, err := workflowbundle.WorkflowDir(workspaceRoot, workflowID)
+	if err != nil {
+		t.Fatalf("workflow dir: %v", err)
+	}
+	manifest := workflowbundle.Manifest{
+		Version:     1,
+		Name:        "finance check",
+		Description: "",
+		Schedule: workflowbundle.Schedule{
+			Cron:          "0 9 * * *",
+			OneShotAt:     "",
+			TimeZoneName:  "UTC",
+			OverlapPolicy: workflowbundle.OverlapPolicySkip,
+			CatchupWindow: "10m",
+		},
+		NotificationPolicy: workflowbundle.NotificationPolicy{OnFailure: true},
+		Env:                []string{},
+		Steps: []workflowbundle.Step{{
+			ID:                  "check",
+			Command:             "sh",
+			Args:                []string{"src/check.sh"},
+			StartToCloseTimeout: "1m",
+			RetryPolicy: workflowbundle.RetryPolicy{
+				NonRetryableErrorTypes: []string{},
+			},
+		}},
+	}
+	files := []workflowbundle.File{{
+		Path:       "src/check.sh",
+		Content:    "echo ok\n",
+		Executable: true,
+	}}
+	if err := workflowbundle.WriteBundle(ctx, workflowDir, manifest, files); err != nil {
+		t.Fatalf("write bundle: %v", err)
+	}
+	commitHash, err := workflowbundle.CommitBundle(ctx, workflowDir, "initial", files)
+	if err != nil {
+		t.Fatalf("commit bundle: %v", err)
+	}
+
+	result, err := (&Activities{WorkspaceRoot: workspaceRoot}).PrepareWorkflowRun(ctx, workflowrun.PrepareRequest{
+		Input: workflowrun.Input{
+			ProjectID:   "project-1",
+			WorkflowID:  workflowID,
+			CommitHash:  commitHash,
+			ScheduledAt: time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC),
+		},
+		TemporalWorkflowID: "workflow-execution-id",
+		TemporalRunID:      "actual-run-id",
+	})
+	if err != nil {
+		t.Fatalf("prepare workflow run: %v", err)
+	}
+	if result.RunID != "actual-run-id" {
+		t.Fatalf("expected run id to use execution run id, got %q", result.RunID)
+	}
+	wantRunPath, err := workflowbundle.WorkflowRunDir(workspaceRoot, workflowID, "actual-run-id")
+	if err != nil {
+		t.Fatalf("workflow run dir: %v", err)
+	}
+	if result.RunPath != wantRunPath {
+		t.Fatalf("expected run path %q, got %q", wantRunPath, result.RunPath)
+	}
+	state, err := readWorkflowRunState(result.RunPath)
+	if err != nil {
+		t.Fatalf("read run state: %v", err)
+	}
+	if state.RunID != "actual-run-id" || state.TemporalRunID != "actual-run-id" || state.TemporalWorkflowID != "workflow-execution-id" {
+		t.Fatalf("unexpected run state ids: %#v", state)
+	}
+}
+
 func TestCleanupWorkflowRunsKeepsLatestTenSnapshots(t *testing.T) {
 	t.Parallel()
 
