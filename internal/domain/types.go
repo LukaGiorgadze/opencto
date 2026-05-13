@@ -61,6 +61,7 @@ const (
 	ExecutionStatusSucceeded ExecutionStatus = "succeeded"
 	ExecutionStatusFailed    ExecutionStatus = "failed"
 	ExecutionStatusCanceled  ExecutionStatus = "canceled"
+	ExecutionStatusSkipped   ExecutionStatus = "skipped"
 )
 
 type ToolRunMode string
@@ -99,7 +100,7 @@ const (
 	ToolTypeMemoryProposeUpdate ToolType = "MemoryProposeUpdate"
 	ToolTypeMemorySearch        ToolType = "MemorySearch"
 	ToolTypeRead                ToolType = "Read"
-	ToolTypeSchedule            ToolType = "Schedule"
+	ToolTypeSchedule            ToolType = "WorkflowSchedule"
 	ToolTypeSkill               ToolType = "Skill"
 	ToolTypeWrite               ToolType = "Write"
 )
@@ -301,6 +302,65 @@ type ConversationSummary struct {
 	Metadata      Metadata                 `json:"metadata,omitempty"`
 	CreatedAt     time.Time                `json:"created_at"`
 	UpdatedAt     time.Time                `json:"updated_at"`
+}
+
+type ScheduledWorkflowStatus string
+
+const (
+	ScheduledWorkflowStatusActive  ScheduledWorkflowStatus = "active"
+	ScheduledWorkflowStatusPaused  ScheduledWorkflowStatus = "paused"
+	ScheduledWorkflowStatusDeleted ScheduledWorkflowStatus = "deleted"
+)
+
+type ScheduledWorkflow struct {
+	ID                 string                  `json:"id"`
+	ProjectID          string                  `json:"project_id"`
+	Name               string                  `json:"name"`
+	Description        string                  `json:"description,omitempty"`
+	Status             ScheduledWorkflowStatus `json:"status"`
+	CurrentCommitHash  string                  `json:"current_commit_hash"`
+	TemporalScheduleID string                  `json:"temporal_schedule_id,omitempty"`
+	WorkflowPath       string                  `json:"workflow_path,omitempty"`
+	CreatedByEventID   string                  `json:"created_by_event_id,omitempty"`
+	SourceEvent        Event                   `json:"source_event,omitempty"`
+	Metadata           Metadata                `json:"metadata,omitempty"`
+	CreatedAt          time.Time               `json:"created_at"`
+	UpdatedAt          time.Time               `json:"updated_at"`
+}
+
+type ScheduledWorkflowRun struct {
+	ID                 string          `json:"id"`
+	ProjectID          string          `json:"project_id"`
+	WorkflowID         string          `json:"workflow_id"`
+	CommitHash         string          `json:"commit_hash"`
+	TemporalWorkflowID string          `json:"temporal_workflow_id,omitempty"`
+	Status             ExecutionStatus `json:"status"`
+	ScheduledAt        time.Time       `json:"scheduled_at"`
+	StartedAt          time.Time       `json:"started_at"`
+	CompletedAt        *time.Time      `json:"completed_at,omitempty"`
+	RunPath            string          `json:"run_path,omitempty"`
+	FailureSummary     string          `json:"failure_summary,omitempty"`
+	Metadata           Metadata        `json:"metadata,omitempty"`
+}
+
+type ScheduledWorkflowStepRun struct {
+	ID            string          `json:"id"`
+	ProjectID     string          `json:"project_id"`
+	RunID         string          `json:"run_id"`
+	WorkflowID    string          `json:"workflow_id"`
+	StepID        string          `json:"step_id"`
+	Status        ExecutionStatus `json:"status"`
+	Attempt       int             `json:"attempt"`
+	Command       string          `json:"command"`
+	Args          []string        `json:"args,omitempty"`
+	StartedAt     time.Time       `json:"started_at"`
+	CompletedAt   *time.Time      `json:"completed_at,omitempty"`
+	ExitCode      int             `json:"exit_code,omitempty"`
+	StdoutLogPath string          `json:"stdout_log_path,omitempty"`
+	StderrLogPath string          `json:"stderr_log_path,omitempty"`
+	OutputSummary string          `json:"output_summary,omitempty"`
+	ErrorDetails  string          `json:"error_details,omitempty"`
+	Metadata      Metadata        `json:"metadata,omitempty"`
 }
 
 type MemoryScope string

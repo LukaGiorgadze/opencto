@@ -30,9 +30,14 @@ func NewWorker(client client.Client, taskQueue string, activities *activities.Ac
 	w.RegisterActivityWithOptions(activities.ResponseSession, activity.RegisterOptions{Name: "Activities.ResponseSession"})
 	w.RegisterActivityWithOptions(activities.ReportResponse, activity.RegisterOptions{Name: "Activities.ReportResponse"})
 	w.RegisterActivityWithOptions(activities.EnqueueScheduledEvent, activity.RegisterOptions{Name: "Activities.EnqueueScheduledEvent"})
+	w.RegisterActivityWithOptions(activities.PrepareWorkflowRun, activity.RegisterOptions{Name: "Activities.PrepareWorkflowRun"})
+	w.RegisterActivityWithOptions(activities.ExecuteWorkflowStep, activity.RegisterOptions{Name: "Activities.ExecuteWorkflowStep"})
+	w.RegisterActivityWithOptions(activities.CompleteWorkflowRun, activity.RegisterOptions{Name: "Activities.CompleteWorkflowRun"})
+	w.RegisterActivityWithOptions(activities.NotifyWorkflowFailure, activity.RegisterOptions{Name: "Activities.NotifyWorkflowFailure"})
 	w.RegisterWorkflowWithOptions(workflows.ProjectWorkflow, workflow.RegisterOptions{Name: workflows.ProjectWorkflowName})
 	w.RegisterWorkflowWithOptions(workflows.TaskWorkflow, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
 	w.RegisterWorkflowWithOptions(workflows.ScheduledDispatchWorkflow, workflow.RegisterOptions{Name: workflows.ScheduledDispatchWorkflowName})
+	w.RegisterWorkflowWithOptions(workflows.WorkflowRunWorkflow, workflow.RegisterOptions{Name: workflows.WorkflowRunWorkflowName})
 	return &Worker{temporal: w}
 }
 

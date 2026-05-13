@@ -17,8 +17,8 @@ import (
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	memorytool "github.com/opencto/opencto/internal/tools/memory"
 	readtool "github.com/opencto/opencto/internal/tools/read"
-	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
 	skilltool "github.com/opencto/opencto/internal/tools/skill"
+	scheduletool "github.com/opencto/opencto/internal/tools/workflowschedule"
 	writetool "github.com/opencto/opencto/internal/tools/write"
 )
 
@@ -266,12 +266,10 @@ func scheduleToolChoiceFromInput(definition toolregistry.Definition, call llms.T
 	summary := "schedule " + operation
 	if name := strings.TrimSpace(args.Name); name != "" {
 		summary += " " + name
-	} else if id := strings.TrimSpace(args.ScheduleID); id != "" {
+	} else if id := strings.TrimSpace(args.WorkflowID); id != "" {
 		summary += " " + id
 	}
-	if task := strings.TrimSpace(args.Task); task != "" {
-		summary += ": " + task
-	} else if description := strings.TrimSpace(args.Description); description != "" {
+	if description := strings.TrimSpace(args.Description); description != "" {
 		summary += ": " + description
 	}
 	idempotency := domain.ToolIdempotencyNonIdempotent

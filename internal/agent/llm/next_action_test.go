@@ -26,8 +26,8 @@ import (
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	memorytool "github.com/opencto/opencto/internal/tools/memory"
 	readtool "github.com/opencto/opencto/internal/tools/read"
-	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
 	skilltool "github.com/opencto/opencto/internal/tools/skill"
+	scheduletool "github.com/opencto/opencto/internal/tools/workflowschedule"
 )
 
 type recordingToolModel struct {
@@ -1836,7 +1836,7 @@ func TestToolChoiceCapturesScheduleInput(t *testing.T) {
 		Type: "function",
 		FunctionCall: &llms.FunctionCall{
 			Name:      scheduletool.ToolName,
-			Arguments: `{"operation":"create","schedule_id":"","name":"daily hello","description":"","task":"send hello","one_shot_at":"","cron":"0 9 * * *","paused":false,"note":"","limit":0,"include_completed":false}`,
+			Arguments: `{"operation":"create","workflow_id":"daily-hello","name":"daily hello","description":"","schedule":{"cron":"0 9 * * *","one_shot_at":"","time_zone_name":"","overlap_policy":"skip","catchup_window":"10m","pause_on_failure":false},"notification_policy":{"on_failure":true},"env":[],"steps":[{"id":"hello","command":"sh","args":["src/hello.sh"],"start_to_close_timeout":"1m","schedule_to_close_timeout":"","retry_policy":{"initial_interval":"","backoff_coefficient":0,"maximum_interval":"","maximum_attempts":1,"non_retryable_error_types":[]}}],"files":[{"path":"src/hello.sh","content":"echo hello\n","executable":true}],"commit_message":"","commit_hash":"","paused":false,"note":"","limit":0,"include_completed":false}`,
 		},
 	}, agent.ToolSelectionInput{
 		Context: agent.Context{Event: domain.Event{Body: "every morning send hello"}},

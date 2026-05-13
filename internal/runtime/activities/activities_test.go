@@ -19,7 +19,7 @@ import (
 	"github.com/opencto/opencto/internal/storage"
 	exectool "github.com/opencto/opencto/internal/tools/exec"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
-	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
+	scheduletool "github.com/opencto/opencto/internal/tools/workflowschedule"
 )
 
 type stubProjectStore struct {
@@ -346,6 +346,26 @@ func (s stubProjectStore) ForgetMemories(_ context.Context, request domain.Memor
 		*s.forgetRequests = append(*s.forgetRequests, request)
 	}
 	return s.forgetResult, nil
+}
+
+func (s stubProjectStore) UpsertScheduledWorkflow(context.Context, domain.ScheduledWorkflow) error {
+	return nil
+}
+
+func (s stubProjectStore) GetScheduledWorkflow(context.Context, string, string) (domain.ScheduledWorkflow, bool, error) {
+	return domain.ScheduledWorkflow{}, false, nil
+}
+
+func (s stubProjectStore) ListScheduledWorkflows(context.Context, storage.ScheduledWorkflowQuery) ([]domain.ScheduledWorkflow, error) {
+	return nil, nil
+}
+
+func (s stubProjectStore) UpsertScheduledWorkflowRun(context.Context, domain.ScheduledWorkflowRun) error {
+	return nil
+}
+
+func (s stubProjectStore) UpsertScheduledWorkflowStepRun(context.Context, domain.ScheduledWorkflowStepRun) error {
+	return nil
 }
 
 func idsFromConversation(messages []domain.ConversationMessage) []string {
@@ -2492,22 +2512,46 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 
 	scheduleExecutor := &fakeScheduleExecutor{result: scheduletool.Result{
 		Operation:  scheduletool.OperationCreate,
-		ScheduleID: "opencto:project-1:schedule:daily-hello",
+		WorkflowID: "daily-hello",
+		ScheduleID: "opencto:project-1:workflow-schedule:daily-hello",
 		Name:       "daily hello",
-		Kind:       "recurring",
 		TimeZone:   "Asia/Tbilisi",
 		Cron:       "0 9 * * *",
 		Message:    "schedule created",
 	}}
 	activities.Schedule = scheduleExecutor
 	scheduleResult, err := activities.ExecuteTool(ctx, executeRequest(domain.ToolTypeSchedule, "schedule-1", map[string]any{
-		"operation":         "create",
-		"schedule_id":       "",
-		"name":              "daily hello",
-		"description":       "",
-		"task":              "send hello",
-		"one_shot_at":       "",
-		"cron":              "0 9 * * *",
+		"operation":   "create",
+		"workflow_id": "daily-hello",
+		"name":        "daily hello",
+		"description": "",
+		"schedule": map[string]any{
+			"cron":             "0 9 * * *",
+			"one_shot_at":      "",
+			"time_zone_name":   "",
+			"overlap_policy":   "skip",
+			"catchup_window":   "10m",
+			"pause_on_failure": false,
+		},
+		"notification_policy": map[string]any{"on_failure": true},
+		"env":                 []string{},
+		"steps": []map[string]any{{
+			"id":                        "hello",
+			"command":                   "sh",
+			"args":                      []string{"src/hello.sh"},
+			"start_to_close_timeout":    "1m",
+			"schedule_to_close_timeout": "",
+			"retry_policy": map[string]any{
+				"initial_interval":          "",
+				"backoff_coefficient":       0,
+				"maximum_interval":          "",
+				"maximum_attempts":          1,
+				"non_retryable_error_types": []string{},
+			},
+		}},
+		"files":             []map[string]any{},
+		"commit_message":    "",
+		"commit_hash":       "",
 		"paused":            false,
 		"note":              "",
 		"limit":             0,
@@ -2517,7 +2561,7 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 		t.Fatalf("schedule tool: %v", err)
 	}
 	if scheduleResult.Status != domain.ExecutionStatusSucceeded ||
-		scheduleResult.Metadata["schedule_id"] != "opencto:project-1:schedule:daily-hello" ||
+		scheduleResult.Metadata["schedule_id"] != "opencto:project-1:workflow-schedule:daily-hello" ||
 		scheduleExecutor.request.SourceEvent.ChannelID != "channel-1" {
 		t.Fatalf("unexpected schedule result: %#v request=%#v", scheduleResult, scheduleExecutor.request)
 	}
@@ -3057,6 +3101,19 @@ func TestExecuteExecUsesToolChoiceWorkingDir(t *testing.T) {
 	}
 	if result.Metadata["stdout_log_path"] == "" || result.Metadata["stderr_log_path"] == "" {
 		t.Fatalf("expected exec log metadata, got %#v", result.Metadata)
+	}
+}
+
+func TestWorkflowStepAttemptLogPathsAreAttemptSpecific(t *testing.T) {
+	t.Parallel()
+
+	stepDir := filepath.Join(t.TempDir(), "steps", "download")
+	stdoutPath, stderrPath := workflowStepAttemptLogPaths(stepDir, 2)
+	if !strings.HasSuffix(filepath.ToSlash(stdoutPath), "/steps/download/attempt-2/stdout.log") {
+		t.Fatalf("unexpected stdout path: %s", stdoutPath)
+	}
+	if !strings.HasSuffix(filepath.ToSlash(stderrPath), "/steps/download/attempt-2/stderr.log") {
+		t.Fatalf("unexpected stderr path: %s", stderrPath)
 	}
 }
 
