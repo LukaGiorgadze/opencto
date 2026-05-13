@@ -370,7 +370,7 @@ func (e *TemporalExecutor) prepareBundle(ctx context.Context, req Request) (stri
 		return "", workflowbundle.Manifest{}, "", "", err
 	}
 	commitMessage := firstNonEmpty(strings.TrimSpace(req.CommitMessage), strings.TrimSpace(req.Name), "Update workflow "+workflowID)
-	commitHash, err := workflowbundle.CommitAll(ctx, workflowPath, commitMessage)
+	commitHash, err := workflowbundle.CommitBundle(ctx, workflowPath, commitMessage, req.Files)
 	if err != nil {
 		return "", workflowbundle.Manifest{}, "", "", err
 	}
@@ -391,14 +391,27 @@ func (e *TemporalExecutor) manifest(req Request) (workflowbundle.Manifest, error
 		schedule.CatchupWindow = workflowbundle.DefaultCatchupWindow.String()
 	}
 	notification := req.NotificationPolicy
+	env := cleanStrings(req.Env)
+	if env == nil {
+		env = []string{}
+	}
+	steps := append([]workflowbundle.Step(nil), req.Steps...)
+	for index := range steps {
+		if steps[index].Args == nil {
+			steps[index].Args = []string{}
+		}
+		if steps[index].RetryPolicy.NonRetryableErrorTypes == nil {
+			steps[index].RetryPolicy.NonRetryableErrorTypes = []string{}
+		}
+	}
 	manifest := workflowbundle.Manifest{
 		Version:            1,
 		Name:               firstNonEmpty(req.Name, req.WorkflowID),
 		Description:        strings.TrimSpace(req.Description),
 		Schedule:           schedule,
 		NotificationPolicy: notification,
-		Env:                cleanStrings(req.Env),
-		Steps:              append([]workflowbundle.Step(nil), req.Steps...),
+		Env:                env,
+		Steps:              steps,
 	}
 	if err := workflowbundle.ValidateManifest(manifest); err != nil {
 		return workflowbundle.Manifest{}, err

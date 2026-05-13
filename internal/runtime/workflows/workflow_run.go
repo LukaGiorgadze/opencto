@@ -1,6 +1,8 @@
 package workflows
 
 import (
+	"errors"
+	"strings"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -31,6 +33,8 @@ func WorkflowRunWorkflow(ctx workflow.Context, input workflowrun.Input) error {
 		return err
 	}
 
+	cleanupOldWorkflowRuns(ctx, input.WorkflowID, prepared.RunID)
+
 	for _, step := range prepared.Manifest.Steps {
 		stepCtx, err := workflowStepContext(ctx, step)
 		if err != nil {
@@ -47,7 +51,7 @@ func WorkflowRunWorkflow(ctx workflow.Context, input workflowrun.Input) error {
 			Env:        prepared.Manifest.Env,
 		}).Get(ctx, &result)
 		if err != nil {
-			return completeAndNotifyWorkflowFailure(ctx, input, prepared.RunID, prepared.RunPath, err.Error(), prepared.Manifest.NotificationPolicy.OnFailure)
+			return completeAndNotifyWorkflowFailure(ctx, input, prepared.RunID, prepared.RunPath, workflowFailureMessage(err), prepared.Manifest.NotificationPolicy.OnFailure)
 		}
 	}
 
@@ -98,6 +102,37 @@ func workflowStepContext(ctx workflow.Context, step workflowbundle.Step) (workfl
 		options.ScheduleToCloseTimeout = scheduleToClose
 	}
 	return workflow.WithActivityOptions(ctx, options), nil
+}
+
+func cleanupOldWorkflowRuns(ctx workflow.Context, workflowID, currentRunID string) {
+	cleanupCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 3,
+		},
+	})
+	var result workflowrun.CleanupRunsResult
+	err := workflow.ExecuteActivity(cleanupCtx, workflowrun.CleanupRunsActivityName, workflowrun.CleanupRunsRequest{
+		WorkflowID:   workflowID,
+		CurrentRunID: currentRunID,
+		KeepLast:     workflowrun.DefaultRunRetention,
+	}).Get(cleanupCtx, &result)
+	if err != nil {
+		workflow.GetLogger(ctx).Warn("workflow run cleanup failed", "error", err)
+	}
+}
+
+func workflowFailureMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	var applicationErr *temporal.ApplicationError
+	if errors.As(err, &applicationErr) {
+		if message := strings.TrimSpace(applicationErr.Message()); message != "" {
+			return message
+		}
+	}
+	return strings.TrimSpace(err.Error())
 }
 
 func completeAndNotifyWorkflowFailure(ctx workflow.Context, input workflowrun.Input, runID, runPath, failure string, notify bool) error {

@@ -1214,6 +1214,94 @@ func (a *Activities) PrepareWorkflowRun(ctx context.Context, request workflowrun
 	return workflowrun.PrepareResult{RunID: runID, RunPath: runDir, Manifest: manifest}, nil
 }
 
+func (a *Activities) CleanupWorkflowRuns(ctx context.Context, request workflowrun.CleanupRunsRequest) (workflowrun.CleanupRunsResult, error) {
+	workflowID, err := workflowbundle.NormalizeWorkflowID(request.WorkflowID)
+	if err != nil {
+		return workflowrun.CleanupRunsResult{}, err
+	}
+	keep := request.KeepLast
+	if keep <= 0 {
+		keep = workflowrun.DefaultRunRetention
+	}
+	runsDir, err := workflowbundle.WorkflowRunsDir(a.WorkspaceRoot, workflowID)
+	if err != nil {
+		return workflowrun.CleanupRunsResult{}, err
+	}
+	entries, err := os.ReadDir(runsDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return workflowrun.CleanupRunsResult{}, nil
+	}
+	if err != nil {
+		return workflowrun.CleanupRunsResult{}, err
+	}
+
+	runs := make([]workflowRunDirectory, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return workflowrun.CleanupRunsResult{}, err
+		}
+		runs = append(runs, workflowRunDirectory{
+			id:      entry.Name(),
+			path:    filepath.Join(runsDir, entry.Name()),
+			modTime: info.ModTime(),
+		})
+	}
+	sort.Slice(runs, func(i, j int) bool {
+		if runs[i].modTime.Equal(runs[j].modTime) {
+			return runs[i].id > runs[j].id
+		}
+		return runs[i].modTime.After(runs[j].modTime)
+	})
+
+	keepIDs := make(map[string]bool, keep+1)
+	currentRunID := strings.TrimSpace(request.CurrentRunID)
+	for index, run := range runs {
+		if index < keep || run.id == currentRunID {
+			keepIDs[run.id] = true
+		}
+	}
+	var deleted []string
+	for _, run := range runs {
+		if keepIDs[run.id] {
+			continue
+		}
+		if workflowRunDirectoryActive(run.path) {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return workflowrun.CleanupRunsResult{DeletedRunIDs: deleted}, err
+		}
+		if err := os.RemoveAll(run.path); err != nil {
+			return workflowrun.CleanupRunsResult{DeletedRunIDs: deleted}, err
+		}
+		deleted = append(deleted, run.id)
+	}
+	return workflowrun.CleanupRunsResult{DeletedRunIDs: deleted}, nil
+}
+
+type workflowRunDirectory struct {
+	id      string
+	path    string
+	modTime time.Time
+}
+
+func workflowRunDirectoryActive(path string) bool {
+	state, err := readWorkflowRunState(path)
+	if err != nil {
+		return true
+	}
+	switch domain.ExecutionStatus(strings.TrimSpace(state.Status)) {
+	case domain.ExecutionStatusPending, domain.ExecutionStatusRunning:
+		return true
+	default:
+		return false
+	}
+}
+
 func (a *Activities) ExecuteWorkflowStep(ctx context.Context, request workflowrun.ExecuteStepRequest) (workflowrun.ExecuteStepResult, error) {
 	stepID, err := workflowbundle.NormalizeStepID(request.Step.ID)
 	if err != nil {
@@ -1363,9 +1451,53 @@ func (a *Activities) ExecuteWorkflowStep(ctx context.Context, request workflowru
 		OutputSummary: summary,
 	}
 	if err != nil {
-		return result, err
+		failure := workflowrun.StepFailure{
+			StepID:        stepID,
+			Command:       request.Step.Command,
+			Args:          append([]string(nil), request.Step.Args...),
+			ExitCode:      exitCode,
+			Error:         err.Error(),
+			OutputSummary: summary,
+			StdoutLogPath: stdoutPath,
+			StderrLogPath: stderrPath,
+		}
+		return result, temporal.NewApplicationError(workflowStepFailureMessage(failure), workflowrun.StepFailureErrorType, failure)
 	}
 	return result, nil
+}
+
+func workflowStepFailureMessage(failure workflowrun.StepFailure) string {
+	var builder strings.Builder
+	stepID := strings.TrimSpace(failure.StepID)
+	if stepID == "" {
+		stepID = "unknown"
+	}
+	fmt.Fprintf(&builder, "workflow step %q failed", stepID)
+	if failure.ExitCode != 0 {
+		fmt.Fprintf(&builder, " with exit code %d", failure.ExitCode)
+	}
+	command := strings.TrimSpace(strings.Join(append([]string{failure.Command}, failure.Args...), " "))
+	if command != "" {
+		builder.WriteString("\ncommand: ")
+		builder.WriteString(command)
+	}
+	if err := strings.TrimSpace(failure.Error); err != "" {
+		builder.WriteString("\nerror: ")
+		builder.WriteString(err)
+	}
+	if output := strings.TrimSpace(failure.OutputSummary); output != "" {
+		builder.WriteString("\n")
+		builder.WriteString(output)
+	}
+	if stderrPath := strings.TrimSpace(failure.StderrLogPath); stderrPath != "" {
+		builder.WriteString("\nstderr_log: ")
+		builder.WriteString(stderrPath)
+	}
+	if stdoutPath := strings.TrimSpace(failure.StdoutLogPath); stdoutPath != "" {
+		builder.WriteString("\nstdout_log: ")
+		builder.WriteString(stdoutPath)
+	}
+	return builder.String()
 }
 
 func (a *Activities) CompleteWorkflowRun(ctx context.Context, request workflowrun.CompleteRequest) error {

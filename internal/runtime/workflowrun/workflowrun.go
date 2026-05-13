@@ -11,10 +11,15 @@ import (
 const (
 	WorkflowName = "WorkflowRunWorkflow"
 
-	PrepareActivityName  = "Activities.PrepareWorkflowRun"
-	ExecuteStepName      = "Activities.ExecuteWorkflowStep"
-	CompleteActivityName = "Activities.CompleteWorkflowRun"
-	NotifyFailureName    = "Activities.NotifyWorkflowFailure"
+	DefaultRunRetention = 10
+
+	StepFailureErrorType = "WorkflowStepFailed"
+
+	PrepareActivityName     = "Activities.PrepareWorkflowRun"
+	CleanupRunsActivityName = "Activities.CleanupWorkflowRuns"
+	ExecuteStepName         = "Activities.ExecuteWorkflowStep"
+	CompleteActivityName    = "Activities.CompleteWorkflowRun"
+	NotifyFailureName       = "Activities.NotifyWorkflowFailure"
 )
 
 type Input struct {
@@ -39,6 +44,16 @@ type PrepareResult struct {
 	Manifest workflowbundle.Manifest `json:"manifest"`
 }
 
+type CleanupRunsRequest struct {
+	WorkflowID   string `json:"workflow_id"`
+	CurrentRunID string `json:"current_run_id,omitempty"`
+	KeepLast     int    `json:"keep_last,omitempty"`
+}
+
+type CleanupRunsResult struct {
+	DeletedRunIDs []string `json:"deleted_run_ids,omitempty"`
+}
+
 type ExecuteStepRequest struct {
 	ProjectID  string              `json:"project_id"`
 	WorkflowID string              `json:"workflow_id"`
@@ -55,6 +70,17 @@ type ExecuteStepResult struct {
 	StdoutLogPath string `json:"stdout_log_path,omitempty"`
 	StderrLogPath string `json:"stderr_log_path,omitempty"`
 	OutputSummary string `json:"output_summary,omitempty"`
+}
+
+type StepFailure struct {
+	StepID        string   `json:"step_id"`
+	Command       string   `json:"command"`
+	Args          []string `json:"args,omitempty"`
+	ExitCode      int      `json:"exit_code"`
+	Error         string   `json:"error,omitempty"`
+	OutputSummary string   `json:"output_summary,omitempty"`
+	StdoutLogPath string   `json:"stdout_log_path,omitempty"`
+	StderrLogPath string   `json:"stderr_log_path,omitempty"`
 }
 
 type CompleteRequest struct {

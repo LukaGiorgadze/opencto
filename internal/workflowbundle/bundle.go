@@ -33,28 +33,30 @@ const (
 )
 
 var (
-	ErrWorkflowIDRequired = errors.New("workflow_id is required")
-	ErrStepIDRequired     = errors.New("step id is required")
-	ErrStepCommandMissing = errors.New("step command is required")
+	ErrWorkflowIDRequired   = errors.New("workflow_id is required")
+	ErrWorkflowNameRequired = errors.New("workflow name is required")
+	ErrStepIDRequired       = errors.New("step id is required")
+	ErrStepCommandMissing   = errors.New("step command is required")
+	ErrStepArgsMissing      = errors.New("step args are required for external commands")
 )
 
 type Manifest struct {
 	Version            int                `json:"version" yaml:"version"`
 	Name               string             `json:"name" yaml:"name"`
-	Description        string             `json:"description,omitempty" yaml:"description,omitempty"`
+	Description        string             `json:"description" yaml:"description"`
 	Schedule           Schedule           `json:"schedule" yaml:"schedule"`
 	NotificationPolicy NotificationPolicy `json:"notification_policy" yaml:"notification_policy"`
-	Env                []string           `json:"env,omitempty" yaml:"env,omitempty"`
+	Env                []string           `json:"env" yaml:"env"`
 	Steps              []Step             `json:"steps" yaml:"steps"`
 }
 
 type Schedule struct {
-	Cron           string `json:"cron,omitempty" yaml:"cron,omitempty"`
-	OneShotAt      string `json:"one_shot_at,omitempty" yaml:"one_shot_at,omitempty"`
-	TimeZoneName   string `json:"time_zone_name,omitempty" yaml:"time_zone_name,omitempty"`
-	OverlapPolicy  string `json:"overlap_policy,omitempty" yaml:"overlap_policy,omitempty"`
-	CatchupWindow  string `json:"catchup_window,omitempty" yaml:"catchup_window,omitempty"`
-	PauseOnFailure bool   `json:"pause_on_failure,omitempty" yaml:"pause_on_failure,omitempty"`
+	Cron           string `json:"cron" yaml:"cron"`
+	OneShotAt      string `json:"one_shot_at" yaml:"one_shot_at"`
+	TimeZoneName   string `json:"time_zone_name" yaml:"time_zone_name"`
+	OverlapPolicy  string `json:"overlap_policy" yaml:"overlap_policy"`
+	CatchupWindow  string `json:"catchup_window" yaml:"catchup_window"`
+	PauseOnFailure bool   `json:"pause_on_failure" yaml:"pause_on_failure"`
 }
 
 type NotificationPolicy struct {
@@ -64,18 +66,18 @@ type NotificationPolicy struct {
 type Step struct {
 	ID                     string      `json:"id" yaml:"id"`
 	Command                string      `json:"command" yaml:"command"`
-	Args                   []string    `json:"args,omitempty" yaml:"args,omitempty"`
-	StartToCloseTimeout    string      `json:"start_to_close_timeout,omitempty" yaml:"start_to_close_timeout,omitempty"`
-	ScheduleToCloseTimeout string      `json:"schedule_to_close_timeout,omitempty" yaml:"schedule_to_close_timeout,omitempty"`
-	RetryPolicy            RetryPolicy `json:"retry_policy,omitempty" yaml:"retry_policy,omitempty"`
+	Args                   []string    `json:"args" yaml:"args"`
+	StartToCloseTimeout    string      `json:"start_to_close_timeout" yaml:"start_to_close_timeout"`
+	ScheduleToCloseTimeout string      `json:"schedule_to_close_timeout" yaml:"schedule_to_close_timeout"`
+	RetryPolicy            RetryPolicy `json:"retry_policy" yaml:"retry_policy"`
 }
 
 type RetryPolicy struct {
-	InitialInterval        string   `json:"initial_interval,omitempty" yaml:"initial_interval,omitempty"`
-	BackoffCoefficient     float64  `json:"backoff_coefficient,omitempty" yaml:"backoff_coefficient,omitempty"`
-	MaximumInterval        string   `json:"maximum_interval,omitempty" yaml:"maximum_interval,omitempty"`
-	MaximumAttempts        int32    `json:"maximum_attempts,omitempty" yaml:"maximum_attempts,omitempty"`
-	NonRetryableErrorTypes []string `json:"non_retryable_error_types,omitempty" yaml:"non_retryable_error_types,omitempty"`
+	InitialInterval        string   `json:"initial_interval" yaml:"initial_interval"`
+	BackoffCoefficient     float64  `json:"backoff_coefficient" yaml:"backoff_coefficient"`
+	MaximumInterval        string   `json:"maximum_interval" yaml:"maximum_interval"`
+	MaximumAttempts        int32    `json:"maximum_attempts" yaml:"maximum_attempts"`
+	NonRetryableErrorTypes []string `json:"non_retryable_error_types" yaml:"non_retryable_error_types"`
 }
 
 type File struct {
@@ -85,27 +87,27 @@ type File struct {
 }
 
 func WorkflowDir(workspaceRoot, workflowID string) (string, error) {
-	root := strings.TrimSpace(workspaceRoot)
-	if root == "" {
-		return "", fmt.Errorf("workspace root is required")
+	root, err := OpenCTODir(workspaceRoot)
+	if err != nil {
+		return "", err
 	}
 	id, err := NormalizeWorkflowID(workflowID)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(root, ".opencto", "workflows", id), nil
+	return filepath.Join(root, "workflows", id), nil
 }
 
 func WorkflowRunsDir(workspaceRoot, workflowID string) (string, error) {
-	root := strings.TrimSpace(workspaceRoot)
-	if root == "" {
-		return "", fmt.Errorf("workspace root is required")
+	root, err := OpenCTODir(workspaceRoot)
+	if err != nil {
+		return "", err
 	}
 	id, err := NormalizeWorkflowID(workflowID)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(root, ".opencto", "workflow-runs", id), nil
+	return filepath.Join(root, "workflow-runs", id), nil
 }
 
 func WorkflowRunDir(workspaceRoot, workflowID, runID string) (string, error) {
@@ -126,6 +128,17 @@ func NormalizeWorkflowID(value string) (string, error) {
 		return "", ErrWorkflowIDRequired
 	}
 	return slug, nil
+}
+
+func OpenCTODir(workspaceRoot string) (string, error) {
+	root := strings.TrimSpace(workspaceRoot)
+	if root == "" {
+		return "", fmt.Errorf("workspace root is required")
+	}
+	if filepath.Base(filepath.Clean(root)) == ".opencto" {
+		return root, nil
+	}
+	return filepath.Join(root, ".opencto"), nil
 }
 
 func WriteBundle(ctx context.Context, dir string, manifest Manifest, files []File) error {
@@ -171,14 +184,148 @@ func LoadManifest(dir string) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, err
 	}
+	if err := validateManifestYAMLRequiredFields(data); err != nil {
+		return Manifest{}, err
+	}
 	var manifest Manifest
-	if err := yaml.Unmarshal(data, &manifest); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&manifest); err != nil {
 		return Manifest{}, err
 	}
 	if err := ValidateManifest(manifest); err != nil {
 		return Manifest{}, err
 	}
 	return manifest, nil
+}
+
+func validateManifestYAMLRequiredFields(data []byte) error {
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return err
+	}
+	root, err := yamlDocumentMapping(&document, "workflow manifest")
+	if err != nil {
+		return err
+	}
+	fields, err := yamlMappingFields(root, "workflow manifest")
+	if err != nil {
+		return err
+	}
+	if err := requireYAMLFields(fields, "workflow manifest", []string{
+		"version",
+		"name",
+		"description",
+		"schedule",
+		"notification_policy",
+		"env",
+		"steps",
+	}); err != nil {
+		return err
+	}
+
+	scheduleFields, err := yamlRequiredMappingField(fields, "schedule", "workflow manifest")
+	if err != nil {
+		return err
+	}
+	if err := requireYAMLFields(scheduleFields, "schedule", []string{
+		"cron",
+		"one_shot_at",
+		"time_zone_name",
+		"overlap_policy",
+		"catchup_window",
+		"pause_on_failure",
+	}); err != nil {
+		return err
+	}
+
+	notificationFields, err := yamlRequiredMappingField(fields, "notification_policy", "workflow manifest")
+	if err != nil {
+		return err
+	}
+	if err := requireYAMLFields(notificationFields, "notification_policy", []string{"on_failure"}); err != nil {
+		return err
+	}
+
+	retryRequired := []string{
+		"initial_interval",
+		"backoff_coefficient",
+		"maximum_interval",
+		"maximum_attempts",
+		"non_retryable_error_types",
+	}
+	steps := fields["steps"]
+	if steps.Kind != yaml.SequenceNode {
+		return fmt.Errorf("steps must be a list")
+	}
+	for index, step := range steps.Content {
+		path := fmt.Sprintf("steps[%d]", index)
+		stepFields, err := yamlMappingFields(step, path)
+		if err != nil {
+			return err
+		}
+		if err := requireYAMLFields(stepFields, path, []string{
+			"id",
+			"command",
+			"args",
+			"start_to_close_timeout",
+			"schedule_to_close_timeout",
+			"retry_policy",
+		}); err != nil {
+			return err
+		}
+		retryFields, err := yamlRequiredMappingField(stepFields, "retry_policy", path)
+		if err != nil {
+			return err
+		}
+		if err := requireYAMLFields(retryFields, path+".retry_policy", retryRequired); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func yamlDocumentMapping(document *yaml.Node, path string) (*yaml.Node, error) {
+	if document.Kind == yaml.DocumentNode && len(document.Content) == 1 {
+		return document.Content[0], nil
+	}
+	if document.Kind == yaml.MappingNode {
+		return document, nil
+	}
+	return nil, fmt.Errorf("%s must be a mapping", path)
+}
+
+func yamlMappingFields(node *yaml.Node, path string) (map[string]*yaml.Node, error) {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("%s must be a mapping", path)
+	}
+	fields := make(map[string]*yaml.Node, len(node.Content)/2)
+	for index := 0; index+1 < len(node.Content); index += 2 {
+		key := node.Content[index]
+		value := node.Content[index+1]
+		if key.Kind != yaml.ScalarNode {
+			return nil, fmt.Errorf("%s contains a non-scalar key", path)
+		}
+		fields[key.Value] = value
+	}
+	return fields, nil
+}
+
+func yamlRequiredMappingField(fields map[string]*yaml.Node, name, path string) (map[string]*yaml.Node, error) {
+	node, ok := fields[name]
+	if !ok {
+		return nil, fmt.Errorf("%s.%s is required", path, name)
+	}
+	return yamlMappingFields(node, path+"."+name)
+}
+
+func requireYAMLFields(fields map[string]*yaml.Node, path string, required []string) error {
+	for _, field := range required {
+		if _, ok := fields[field]; !ok {
+			return fmt.Errorf("%s.%s is required", path, field)
+		}
+	}
+	return nil
 }
 
 func WriteBundleFile(dir string, file File) error {
@@ -207,11 +354,29 @@ func EnsureGitRepo(ctx context.Context, dir string) error {
 	return runGit(ctx, dir, "branch", "-M", "main")
 }
 
-func CommitAll(ctx context.Context, dir, message string) (string, error) {
+func CommitBundle(ctx context.Context, dir, message string, files []File) (string, error) {
 	if err := EnsureGitRepo(ctx, dir); err != nil {
 		return "", err
 	}
-	if err := runGit(ctx, dir, "add", "--all"); err != nil {
+	paths := []string{ManifestFilename, ".gitignore"}
+	seen := map[string]bool{}
+	for _, path := range paths {
+		seen[path] = true
+	}
+	for _, file := range files {
+		rel, err := cleanBundleFilePath(file.Path)
+		if err != nil {
+			return "", err
+		}
+		path := filepath.ToSlash(rel)
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		paths = append(paths, path)
+	}
+	args := append([]string{"add", "-f", "--"}, paths...)
+	if err := runGit(ctx, dir, args...); err != nil {
 		return "", err
 	}
 	if strings.TrimSpace(message) == "" {
@@ -299,6 +464,17 @@ func ValidateManifest(manifest Manifest) error {
 	if manifest.Version != 1 {
 		return fmt.Errorf("unsupported workflow manifest version %d", manifest.Version)
 	}
+	if strings.TrimSpace(manifest.Name) == "" {
+		return ErrWorkflowNameRequired
+	}
+	if manifest.Env == nil {
+		return fmt.Errorf("env is required; use [] when the workflow has no required env vars")
+	}
+	for index, envVar := range manifest.Env {
+		if strings.TrimSpace(envVar) == "" {
+			return fmt.Errorf("env[%d] is required", index)
+		}
+	}
 	cron := strings.TrimSpace(manifest.Schedule.Cron)
 	oneShot := strings.TrimSpace(manifest.Schedule.OneShotAt)
 	switch {
@@ -312,8 +488,17 @@ func ValidateManifest(manifest Manifest) error {
 			return fmt.Errorf("parse schedule.one_shot_at as RFC3339: %w", err)
 		}
 	}
+	if strings.TrimSpace(manifest.Schedule.TimeZoneName) == "" {
+		return fmt.Errorf("schedule.time_zone_name is required")
+	}
+	if strings.TrimSpace(manifest.Schedule.CatchupWindow) == "" {
+		return fmt.Errorf("schedule.catchup_window is required")
+	}
 	if _, err := ParseCatchupWindow(manifest.Schedule.CatchupWindow); err != nil {
 		return err
+	}
+	if strings.TrimSpace(manifest.Schedule.OverlapPolicy) == "" {
+		return fmt.Errorf("schedule.overlap_policy is required")
 	}
 	if _, err := NormalizeOverlapPolicy(manifest.Schedule.OverlapPolicy); err != nil {
 		return err
@@ -334,6 +519,20 @@ func ValidateManifest(manifest Manifest) error {
 		if strings.TrimSpace(step.Command) == "" {
 			return fmt.Errorf("%w: %s", ErrStepCommandMissing, id)
 		}
+		if strings.ContainsAny(step.Command, " \t\r\n") {
+			return fmt.Errorf("step %q: command must be one executable path or name; put arguments in args", id)
+		}
+		if step.Args == nil {
+			return fmt.Errorf("step %q: args is required; use [] only for a workflow-local executable that needs no args", id)
+		}
+		if len(cleanStrings(step.Args)) == 0 && !workflowLocalCommand(step.Command) {
+			return fmt.Errorf("step %q: %w: %q needs args such as [\"run\", \"./src/app\"] or [\"src/script.sh\"]", id, ErrStepArgsMissing, step.Command)
+		}
+		for index, arg := range step.Args {
+			if strings.TrimSpace(arg) == "" {
+				return fmt.Errorf("step %q: args[%d] is required", id, index)
+			}
+		}
 		if _, err := ParseRequiredDuration("start_to_close_timeout", step.StartToCloseTimeout); err != nil {
 			return fmt.Errorf("step %q: %w", id, err)
 		}
@@ -346,8 +545,38 @@ func ValidateManifest(manifest Manifest) error {
 		if _, err := ParseOptionalDuration("retry_policy.maximum_interval", step.RetryPolicy.MaximumInterval); err != nil {
 			return fmt.Errorf("step %q: %w", id, err)
 		}
+		if step.RetryPolicy.BackoffCoefficient < 0 || (step.RetryPolicy.BackoffCoefficient > 0 && step.RetryPolicy.BackoffCoefficient < 1) {
+			return fmt.Errorf("step %q: retry_policy.backoff_coefficient must be 0 or at least 1", id)
+		}
+		if step.RetryPolicy.MaximumAttempts < 0 {
+			return fmt.Errorf("step %q: retry_policy.maximum_attempts must not be negative", id)
+		}
+		if step.RetryPolicy.NonRetryableErrorTypes == nil {
+			return fmt.Errorf("step %q: retry_policy.non_retryable_error_types is required; use [] when unset", id)
+		}
+		for index, errorType := range step.RetryPolicy.NonRetryableErrorTypes {
+			if strings.TrimSpace(errorType) == "" {
+				return fmt.Errorf("step %q: retry_policy.non_retryable_error_types[%d] is required", id, index)
+			}
+		}
 	}
 	return nil
+}
+
+func workflowLocalCommand(command string) bool {
+	command = filepath.ToSlash(strings.TrimSpace(command))
+	command = strings.TrimPrefix(command, "./")
+	return command == "src" || strings.HasPrefix(command, "src/")
+}
+
+func cleanStrings(values []string) []string {
+	cleaned := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			cleaned = append(cleaned, value)
+		}
+	}
+	return cleaned
 }
 
 func NormalizeStepID(value string) (string, error) {
@@ -429,11 +658,14 @@ func StepHash(workflowID, commitHash, runID, stepID string) string {
 
 func ensureGitIgnore(dir string) error {
 	path := filepath.Join(dir, ".gitignore")
-	if _, err := os.Stat(path); err == nil {
-		return nil
+	lines := []string{
+		"# Generated by OpenCTO. Do not edit.",
+		"# Workflow git history tracks only the workflow definition and explicit bundle files.",
+		"*",
+		"!.gitignore",
+		"!" + ManifestFilename,
 	}
-	const content = "/tmp/\n/artifacts/\n/runs/\n*.log\n.DS_Store\n"
-	return os.WriteFile(path, []byte(content), 0o644)
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
 }
 
 func cleanBundleFilePath(value string) (string, error) {
@@ -445,10 +677,10 @@ func cleanBundleFilePath(value string) (string, error) {
 	if strings.HasPrefix(rel, "/") || strings.HasPrefix(rel, "../") || rel == ".." || strings.Contains(rel, "/../") {
 		return "", fmt.Errorf("file path %q escapes workflow bundle", value)
 	}
-	if rel == ".gitignore" || strings.HasPrefix(rel, "src/") {
+	if strings.HasPrefix(rel, "src/") {
 		return filepath.FromSlash(rel), nil
 	}
-	return "", fmt.Errorf("file path %q must be .gitignore or under src/", value)
+	return "", fmt.Errorf("file path %q must be under src/", value)
 }
 
 func cleanArchivePath(value string) (string, error) {

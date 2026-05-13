@@ -87,6 +87,7 @@
     },
     "steps": {
       "type": "array",
+      "minItems": 1,
       "description": "Linear durable workflow steps. Logic must live in src/ files; steps only define command boundaries.",
       "items": {
         "type": "object",
@@ -99,12 +100,15 @@
           },
           "command": {
             "type": "string",
-            "description": "Executable command run from the workflow run directory."
+            "minLength": 1,
+            "pattern": "^\\S+$",
+            "description": "Executable command run from the workflow run directory. Use one executable path/name only; put all arguments in args."
           },
           "args": {
             "type": "array",
+            "minItems": 1,
             "items": {"type": "string"},
-            "description": "Command arguments."
+            "description": "Command arguments. For Go code, use command go with args like [\"run\", \"./src/package\"]. For shell scripts, use command sh with args like [\"src/script.sh\"]."
           },
           "start_to_close_timeout": {
             "type": "string",
@@ -120,7 +124,7 @@
             "additionalProperties": false,
             "properties": {
               "initial_interval": {"type": "string"},
-              "backoff_coefficient": {"type": "number"},
+              "backoff_coefficient": {"type": "number", "minimum": 0},
               "maximum_interval": {"type": "string"},
               "maximum_attempts": {"type": "integer", "minimum": 0},
               "non_retryable_error_types": {
@@ -134,13 +138,13 @@
     },
     "files": {
       "type": "array",
-      "description": "Files to create/update in the workflow bundle. Paths must be .gitignore or under src/. The backend generates workflow.yml from structured fields.",
+      "description": "Files to create/update in the workflow bundle. Paths must be under src/. The backend owns workflow.yml and .gitignore.",
       "items": {
         "type": "object",
         "required": ["path", "content", "executable"],
         "additionalProperties": false,
         "properties": {
-          "path": {"type": "string"},
+          "path": {"type": "string", "pattern": "^src/.+"},
           "content": {"type": "string"},
           "executable": {"type": "boolean"}
         }

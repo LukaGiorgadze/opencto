@@ -1,8 +1,11 @@
 package workflows
 
 import (
+	"errors"
 	"fmt"
 	"testing"
+
+	"go.temporal.io/sdk/temporal"
 )
 
 func TestRememberProjectEventIDKeepsRecentWindow(t *testing.T) {
@@ -43,5 +46,23 @@ func TestRememberProjectEventIDIgnoresBlankIDs(t *testing.T) {
 	}
 	if len(state.RecentEventIDs) != 0 {
 		t.Fatalf("blank event id should not be remembered")
+	}
+}
+
+func TestWorkflowFailureMessageUsesApplicationErrorMessage(t *testing.T) {
+	t.Parallel()
+
+	err := temporal.NewApplicationError("actual step stderr", "WorkflowStepFailed")
+	if got := workflowFailureMessage(err); got != "actual step stderr" {
+		t.Fatalf("expected application error message, got %q", got)
+	}
+}
+
+func TestWorkflowFailureMessageFallsBackToErrorString(t *testing.T) {
+	t.Parallel()
+
+	err := errors.New("plain failure")
+	if got := workflowFailureMessage(err); got != "plain failure" {
+		t.Fatalf("expected fallback error string, got %q", got)
 	}
 }

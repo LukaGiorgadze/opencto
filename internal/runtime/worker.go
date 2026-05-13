@@ -31,6 +31,7 @@ func NewWorker(client client.Client, taskQueue string, activities *activities.Ac
 	w.RegisterActivityWithOptions(activities.ReportResponse, activity.RegisterOptions{Name: "Activities.ReportResponse"})
 	w.RegisterActivityWithOptions(activities.EnqueueScheduledEvent, activity.RegisterOptions{Name: "Activities.EnqueueScheduledEvent"})
 	w.RegisterActivityWithOptions(activities.PrepareWorkflowRun, activity.RegisterOptions{Name: "Activities.PrepareWorkflowRun"})
+	w.RegisterActivityWithOptions(activities.CleanupWorkflowRuns, activity.RegisterOptions{Name: "Activities.CleanupWorkflowRuns"})
 	w.RegisterActivityWithOptions(activities.ExecuteWorkflowStep, activity.RegisterOptions{Name: "Activities.ExecuteWorkflowStep"})
 	w.RegisterActivityWithOptions(activities.CompleteWorkflowRun, activity.RegisterOptions{Name: "Activities.CompleteWorkflowRun"})
 	w.RegisterActivityWithOptions(activities.NotifyWorkflowFailure, activity.RegisterOptions{Name: "Activities.NotifyWorkflowFailure"})

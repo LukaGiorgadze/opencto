@@ -15,11 +15,13 @@ import (
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/embedding"
+	"github.com/opencto/opencto/internal/runtime/workflowrun"
 	skillcatalog "github.com/opencto/opencto/internal/skills"
 	"github.com/opencto/opencto/internal/storage"
 	exectool "github.com/opencto/opencto/internal/tools/exec"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	scheduletool "github.com/opencto/opencto/internal/tools/workflowschedule"
+	"github.com/opencto/opencto/internal/workflowbundle"
 )
 
 type stubProjectStore struct {
@@ -3255,6 +3257,125 @@ func TestNextActionStopsProcessWithStopOnFinishScopeAtCompletion(t *testing.T) {
 	}
 	if !strings.Contains(result.NextAction.ResponseMessage, "server is available") || !strings.Contains(result.NextAction.ResponseMessage, "stopped stop-on-finish background process") {
 		t.Fatalf("expected cleanup notice in response, got %q", result.NextAction.ResponseMessage)
+	}
+}
+
+func TestCleanupWorkflowRunsKeepsLatestTenSnapshots(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	workflowID := "finance-check"
+	runsDir, err := workflowbundle.WorkflowRunsDir(workspaceRoot, workflowID)
+	if err != nil {
+		t.Fatalf("workflow runs dir: %v", err)
+	}
+	baseTime := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 12; i++ {
+		runID := fmt.Sprintf("run-%02d", i)
+		runDir := filepath.Join(runsDir, runID)
+		if err := os.MkdirAll(runDir, 0o755); err != nil {
+			t.Fatalf("mkdir run %s: %v", runID, err)
+		}
+		modTime := baseTime.Add(time.Duration(i) * time.Minute)
+		if err := os.Chtimes(runDir, modTime, modTime); err != nil {
+			t.Fatalf("chtimes run %s: %v", runID, err)
+		}
+	}
+
+	result, err := (&Activities{WorkspaceRoot: workspaceRoot}).CleanupWorkflowRuns(context.Background(), workflowrun.CleanupRunsRequest{
+		WorkflowID:   workflowID,
+		CurrentRunID: "run-11",
+		KeepLast:     workflowrun.DefaultRunRetention,
+	})
+	if err != nil {
+		t.Fatalf("cleanup workflow runs: %v", err)
+	}
+	if len(result.DeletedRunIDs) != 2 {
+		t.Fatalf("expected two deleted runs, got %#v", result.DeletedRunIDs)
+	}
+	for _, runID := range []string{"run-00", "run-01"} {
+		if _, err := os.Stat(filepath.Join(runsDir, runID)); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to be deleted, stat err=%v", runID, err)
+		}
+	}
+	for _, runID := range []string{"run-02", "run-11"} {
+		if _, err := os.Stat(filepath.Join(runsDir, runID)); err != nil {
+			t.Fatalf("expected %s to be kept: %v", runID, err)
+		}
+	}
+}
+
+func TestCleanupWorkflowRunsDoesNotDeleteActiveOlderSnapshot(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	workflowID := "finance-check"
+	runsDir, err := workflowbundle.WorkflowRunsDir(workspaceRoot, workflowID)
+	if err != nil {
+		t.Fatalf("workflow runs dir: %v", err)
+	}
+	baseTime := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 12; i++ {
+		runID := fmt.Sprintf("run-%02d", i)
+		runDir := filepath.Join(runsDir, runID)
+		if err := os.MkdirAll(runDir, 0o755); err != nil {
+			t.Fatalf("mkdir run %s: %v", runID, err)
+		}
+		if i == 0 {
+			if err := writeWorkflowRunState(runDir, workflowRunState{
+				SchemaVersion: 1,
+				RunID:         runID,
+				Status:        string(domain.ExecutionStatusRunning),
+			}); err != nil {
+				t.Fatalf("write active run state: %v", err)
+			}
+		}
+		modTime := baseTime.Add(time.Duration(i) * time.Minute)
+		if err := os.Chtimes(runDir, modTime, modTime); err != nil {
+			t.Fatalf("chtimes run %s: %v", runID, err)
+		}
+	}
+
+	result, err := (&Activities{WorkspaceRoot: workspaceRoot}).CleanupWorkflowRuns(context.Background(), workflowrun.CleanupRunsRequest{
+		WorkflowID:   workflowID,
+		CurrentRunID: "run-11",
+		KeepLast:     workflowrun.DefaultRunRetention,
+	})
+	if err != nil {
+		t.Fatalf("cleanup workflow runs: %v", err)
+	}
+	if len(result.DeletedRunIDs) != 1 || result.DeletedRunIDs[0] != "run-01" {
+		t.Fatalf("expected only oldest inactive run to be deleted, got %#v", result.DeletedRunIDs)
+	}
+	if _, err := os.Stat(filepath.Join(runsDir, "run-00")); err != nil {
+		t.Fatalf("expected active old run to be kept: %v", err)
+	}
+}
+
+func TestWorkflowStepFailureMessageIncludesCommandOutputAndLogs(t *testing.T) {
+	t.Parallel()
+
+	message := workflowStepFailureMessage(workflowrun.StepFailure{
+		StepID:        "check_and_append",
+		Command:       "go",
+		Args:          []string{"finance2049"},
+		ExitCode:      2,
+		Error:         "exit status 2",
+		OutputSummary: "stderr:\ngo finance2049: unknown command\n",
+		StdoutLogPath: "/tmp/stdout.log",
+		StderrLogPath: "/tmp/stderr.log",
+	})
+	for _, want := range []string{
+		`workflow step "check_and_append" failed with exit code 2`,
+		"command: go finance2049",
+		"error: exit status 2",
+		"go finance2049: unknown command",
+		"stderr_log: /tmp/stderr.log",
+		"stdout_log: /tmp/stdout.log",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("expected failure message to contain %q, got:\n%s", want, message)
+		}
 	}
 }
 
