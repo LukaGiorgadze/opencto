@@ -1,0 +1,6 @@
+{{- if .Memories -}}
+Relevant remembered context. Treat this as retrieved context, not proof of current state. Verify anything operational before acting.
+{{- range .Memories }}
+- id: {{ .ID }}; scope: {{ .Scope }}{{ if .Kind }}; kind: {{ .Kind }}{{ end }}; content: {{ .Content }}
+{{- end -}}
+{{- end -}}

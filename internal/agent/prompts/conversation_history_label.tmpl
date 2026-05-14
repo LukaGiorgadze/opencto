@@ -1,0 +1,11 @@
+{{- if eq .Role "assistant" -}}
+assistant
+{{- else if eq .Role "tool" -}}
+{{- if .Parts -}}
+tool[{{- range $index, $part := .Parts -}}{{- if $index }} {{ end -}}{{ $part }}{{- end -}}]
+{{- else -}}
+tool
+{{- end -}}
+{{- else -}}
+user
+{{- end -}}

@@ -13,6 +13,9 @@ import (
 	"github.com/opencto/opencto/internal/agent/prompts"
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/textclean"
+	toolregistry "github.com/opencto/opencto/internal/tools"
+	exectool "github.com/opencto/opencto/internal/tools/exec"
+	readtool "github.com/opencto/opencto/internal/tools/read"
 )
 
 type OpenAIConversationCompressor struct {
@@ -89,16 +92,12 @@ func conversationCompressionUserPrompt(input agent.ConversationCompressionInput)
 	if sourceBudget > 60000 {
 		sourceBudget = 60000
 	}
-	var builder strings.Builder
-	builder.WriteString("Project ID: ")
-	builder.WriteString(strings.TrimSpace(input.ProjectID))
-	builder.WriteString("\nScope: ")
-	builder.WriteString(string(input.Scope))
-	builder.WriteString("\nMax summary chars: ")
-	builder.WriteString(fmt.Sprintf("%d", maxSummaryChars))
-	builder.WriteString("\n\nConversation to summarize:\n")
-	builder.WriteString(conversationSummarySource(input.Messages, sourceBudget))
-	return builder.String()
+	return prompts.MustRender("conversation_compression_user.tmpl", map[string]any{
+		"ProjectID":       strings.TrimSpace(input.ProjectID),
+		"Scope":           string(input.Scope),
+		"MaxSummaryChars": maxSummaryChars,
+		"Source":          conversationSummarySource(input.Messages, sourceBudget),
+	})
 }
 
 func conversationSummarySource(messages []domain.ConversationMessage, maxChars int) string {
@@ -156,7 +155,10 @@ func conversationCompressionItemEntry(item conversationHistoryItem, budget int) 
 		bodyBudget = 700
 	}
 	body = truncateTextPlain(body, bodyBudget)
-	return "- " + label + ": " + body
+	return prompts.MustRender("conversation_compression_item_entry.tmpl", map[string]any{
+		"Label": label,
+		"Body":  body,
+	})
 }
 
 func conversationCompressionToolBody(message domain.ConversationMessage) string {
@@ -164,23 +166,23 @@ func conversationCompressionToolBody(message domain.ConversationMessage) string 
 	tool := strings.TrimSpace(message.Metadata["tool"])
 	var parts []string
 	if requested := conversationBodyValue(body, "requested_action"); requested != "" {
-		parts = append(parts, "requested_action: "+requested)
+		appendCompressionValue(&parts, toolregistry.PromptCompressionRequestedAction, requested)
 	}
 	switch tool {
 	case string(domain.ToolTypeRead):
-		appendCompressionValue(&parts, "file", firstNonEmpty(message.Metadata["file_path"], conversationBodyValue(body, "file")))
-		appendCompressionValue(&parts, "lines", firstNonEmpty(readLinesMetadata(message.Metadata), conversationBodyValue(body, "lines")))
-		appendCompressionValue(&parts, "bytes", firstNonEmpty(message.Metadata["bytes_read"], conversationBodyValue(body, "bytes")))
-		appendCompressionValue(&parts, "truncated", firstNonEmpty(message.Metadata["truncated"], conversationBodyValue(body, "truncated")))
-		parts = append(parts, "content: omitted from compression source")
+		appendCompressionValue(&parts, readtool.PromptCompressionFile, firstNonEmpty(message.Metadata["file_path"], conversationBodyValue(body, "file")))
+		appendCompressionValue(&parts, readtool.PromptCompressionLines, firstNonEmpty(readLinesMetadata(message.Metadata), conversationBodyValue(body, "lines")))
+		appendCompressionValue(&parts, readtool.PromptCompressionBytes, firstNonEmpty(message.Metadata["bytes_read"], conversationBodyValue(body, "bytes")))
+		appendCompressionValue(&parts, readtool.PromptCompressionTruncated, firstNonEmpty(message.Metadata["truncated"], conversationBodyValue(body, "truncated")))
+		parts = append(parts, readtool.PromptCompressionContentOmitted())
 	case string(domain.ToolTypeExec):
-		appendCompressionValue(&parts, "result_code", message.Metadata["result_code"])
-		appendCompressionValue(&parts, "stdout_log_path", firstNonEmpty(message.Metadata["stdout_log_path"], conversationBodyValue(body, "stdout_log_path")))
-		appendCompressionValue(&parts, "stderr_log_path", firstNonEmpty(message.Metadata["stderr_log_path"], conversationBodyValue(body, "stderr_log_path")))
-		appendCompressionValue(&parts, "output_truncated", firstNonEmpty(message.Metadata["stdout_truncated"], message.Metadata["stderr_truncated"], conversationBodyValue(body, "output_truncated")))
+		appendCompressionValue(&parts, exectool.PromptCompressionResultCode, message.Metadata["result_code"])
+		appendCompressionValue(&parts, exectool.PromptCompressionStdoutLogPath, firstNonEmpty(message.Metadata["stdout_log_path"], conversationBodyValue(body, "stdout_log_path")))
+		appendCompressionValue(&parts, exectool.PromptCompressionStderrLogPath, firstNonEmpty(message.Metadata["stderr_log_path"], conversationBodyValue(body, "stderr_log_path")))
+		appendCompressionValue(&parts, exectool.PromptCompressionOutputTruncated, firstNonEmpty(message.Metadata["stdout_truncated"], message.Metadata["stderr_truncated"], conversationBodyValue(body, "output_truncated")))
 	default:
 		if observed := conversationBodyValue(body, "observation"); observed != "" {
-			parts = append(parts, "observation: "+truncateTextPlain(observed, 500))
+			appendCompressionValue(&parts, toolregistry.PromptCompressionObservation, truncateTextPlain(observed, 500))
 		}
 	}
 	if len(parts) == 0 {
@@ -189,12 +191,12 @@ func conversationCompressionToolBody(message domain.ConversationMessage) string 
 	return strings.Join(parts, "\n")
 }
 
-func appendCompressionValue(parts *[]string, key string, value string) {
+func appendCompressionValue(parts *[]string, render func(string) string, value string) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return
 	}
-	*parts = append(*parts, key+": "+value)
+	*parts = append(*parts, render(value))
 }
 
 func readLinesMetadata(metadata domain.Metadata) string {

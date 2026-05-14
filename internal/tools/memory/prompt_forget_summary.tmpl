@@ -1,0 +1,9 @@
+{{- if .MemoryIDs -}}
+propose memory forget {{ .MemoryIDs }}
+{{- else if .Tags -}}
+propose memory forget tags {{ .Tags }}
+{{- else if .Scope -}}
+propose memory forget scope {{ .Scope }}
+{{- else -}}
+propose memory forget
+{{- end -}}

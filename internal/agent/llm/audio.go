@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/opencto/opencto/internal/agent"
+	"github.com/opencto/opencto/internal/agent/prompts"
 	"github.com/opencto/opencto/internal/domain"
 )
 
@@ -126,10 +127,16 @@ func (e *OpenAIEngine) enrichInputWithAttachmentTranscripts(ctx context.Context,
 		}
 		transcript, err := e.audioTranscriber.TranscribeAudio(ctx, attachment)
 		if err != nil {
-			transcriptParts = append(transcriptParts, fmt.Sprintf("Audio transcription failed for %s: %v", attachmentDisplayName(attachment), err))
+			transcriptParts = append(transcriptParts, prompts.MustRender("audio_transcription_failed.tmpl", map[string]any{
+				"Name":  attachmentDisplayName(attachment),
+				"Error": err,
+			}))
 			continue
 		}
-		transcriptParts = append(transcriptParts, fmt.Sprintf("Voice message transcript (%s): %s", attachmentDisplayName(attachment), transcript))
+		transcriptParts = append(transcriptParts, prompts.MustRender("voice_message_transcript.tmpl", map[string]any{
+			"Name":       attachmentDisplayName(attachment),
+			"Transcript": transcript,
+		}))
 	}
 	if len(transcriptParts) == 0 {
 		return input, nil
@@ -137,7 +144,7 @@ func (e *OpenAIEngine) enrichInputWithAttachmentTranscripts(ctx context.Context,
 
 	body := strings.TrimSpace(input.Context.Event.Body)
 	transcriptText := strings.Join(transcriptParts, "\n")
-	if body == "" || strings.HasPrefix(body, "Uploaded attachment(s):") {
+	if body == "" || strings.HasPrefix(body, prompts.MustRender("uploaded_attachments.tmpl", map[string]any{"Names": ""})) {
 		input.Context.Event.Body = transcriptText
 		return input, nil
 	}
@@ -150,5 +157,8 @@ func isAudioAttachment(attachment domain.EventAttachment) bool {
 }
 
 func attachmentDisplayName(attachment domain.EventAttachment) string {
-	return firstNonEmpty(attachment.Filename, attachment.SourceID, "audio attachment")
+	return prompts.MustRender("attachment_display_name.tmpl", map[string]any{
+		"Filename": strings.TrimSpace(attachment.Filename),
+		"SourceID": strings.TrimSpace(attachment.SourceID),
+	})
 }

@@ -1,0 +1,9 @@
+{{- if eq .Kind "candidate" -}}
+image candidate limit reached; only the first {{ .Limit }} possible image(s) are checked
+{{- else if eq .Kind "image" -}}
+image limit reached; only the first {{ .Limit }} image(s) are sent
+{{- else if eq .Kind "url_fetch" -}}
+image URL fetch limit reached; only the first {{ .Limit }} image URL(s) are fetched
+{{- else if eq .Kind "total_bytes" -}}
+total image byte limit reached; at most {{ .Limit }} byte(s) are sent
+{{- end -}}

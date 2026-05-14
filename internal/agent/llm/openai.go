@@ -10,6 +10,7 @@ import (
 
 	"github.com/tmc/langchaingo/llms"
 
+	"github.com/opencto/opencto/internal/agent/prompts"
 	"github.com/opencto/opencto/internal/config"
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/media"
@@ -129,18 +130,18 @@ func appendImageParts(ctx context.Context, imageResolver *media.ImageResolver, p
 		imageResolver = defaultImageResolver
 	}
 	if state.candidates >= media.DefaultMaxImageCandidatesPerEvent {
-		return append(parts, llms.TextPart(imageSkipSummary(attachment, fmt.Sprintf("image candidate limit reached; only the first %d possible image(s) are checked", media.DefaultMaxImageCandidatesPerEvent))))
+		return append(parts, llms.TextPart(imageSkipSummary(attachment, imageLimitReason("candidate", media.DefaultMaxImageCandidatesPerEvent))))
 	}
 	state.candidates++
 	if state.images >= media.DefaultMaxImagesPerEvent {
-		return append(parts, llms.TextPart(imageSkipSummary(attachment, fmt.Sprintf("image limit reached; only the first %d image(s) are sent", media.DefaultMaxImagesPerEvent))))
+		return append(parts, llms.TextPart(imageSkipSummary(attachment, imageLimitReason("image", media.DefaultMaxImagesPerEvent))))
 	}
 	if attachmentHasDownloadError(attachment) && strings.TrimSpace(attachment.LocalPath) == "" {
 		return parts
 	}
 	if strings.TrimSpace(attachment.LocalPath) == "" && strings.TrimSpace(attachment.URL) != "" {
 		if state.urlFetches >= media.DefaultMaxImageURLFetchesPerEvent {
-			return append(parts, llms.TextPart(imageSkipSummary(attachment, fmt.Sprintf("image URL fetch limit reached; only the first %d image URL(s) are fetched", media.DefaultMaxImageURLFetchesPerEvent))))
+			return append(parts, llms.TextPart(imageSkipSummary(attachment, imageLimitReason("url_fetch", media.DefaultMaxImageURLFetchesPerEvent))))
 		}
 		state.urlFetches++
 	}
@@ -149,7 +150,7 @@ func appendImageParts(ctx context.Context, imageResolver *media.ImageResolver, p
 	case media.ImageStatusOK:
 		size := int64(len(resolution.Image.Data))
 		if state.totalBytes+size > media.DefaultMaxTotalImageBytes {
-			return append(parts, llms.TextPart(imageSkipSummary(attachment, fmt.Sprintf("total image byte limit reached; at most %d byte(s) are sent", media.DefaultMaxTotalImageBytes))))
+			return append(parts, llms.TextPart(imageSkipSummary(attachment, imageLimitReason("total_bytes", media.DefaultMaxTotalImageBytes))))
 		}
 		state.totalBytes += size
 		state.images++
@@ -165,21 +166,13 @@ func appendImageParts(ctx context.Context, imageResolver *media.ImageResolver, p
 }
 
 func attachmentSummary(attachment domain.EventAttachment) string {
-	name := strings.TrimSpace(attachment.Filename)
-	if name == "" {
-		name = "attachment"
-	}
-	contentType := strings.TrimSpace(attachment.ContentType)
-	if contentType == "" {
-		contentType = "unknown type"
-	}
-	if attachment.LocalPath == "" {
-		if errText := attachment.Metadata["download_error"]; strings.TrimSpace(errText) != "" {
-			return fmt.Sprintf("\nAttachment unavailable: %s (%s): %s", name, contentType, errText)
-		}
-		return fmt.Sprintf("\nAttachment metadata: %s (%s, %d bytes)", name, contentType, attachment.SizeBytes)
-	}
-	return fmt.Sprintf("\nAttachment available locally: %s (%s, %d bytes) at %s", name, contentType, attachment.SizeBytes, attachment.LocalPath)
+	return prompts.MustRender("attachment_summary.tmpl", map[string]any{
+		"Name":          strings.TrimSpace(attachment.Filename),
+		"ContentType":   strings.TrimSpace(attachment.ContentType),
+		"SizeBytes":     attachment.SizeBytes,
+		"LocalPath":     strings.TrimSpace(attachment.LocalPath),
+		"DownloadError": strings.TrimSpace(attachment.Metadata["download_error"]),
+	})
 }
 
 func attachmentHasDownloadError(attachment domain.EventAttachment) bool {
@@ -190,30 +183,43 @@ func attachmentHasDownloadError(attachment domain.EventAttachment) bool {
 }
 
 func inlineImageURLSummary(imageURL string) string {
-	return "\nInline image URL candidate: " + strings.TrimSpace(imageURL)
+	return prompts.MustRender("inline_image_url_summary.tmpl", map[string]any{
+		"URL": strings.TrimSpace(imageURL),
+	})
 }
 
 func imageValidationNote(attachment domain.EventAttachment, image media.ResolvedImage) string {
 	if !image.ContentTypeMismatch {
 		return ""
 	}
-	declared := strings.TrimSpace(image.DeclaredContentType)
-	if declared == "" {
-		declared = "unknown type"
-	}
-	return fmt.Sprintf("\nAttachment content type corrected for %s: declared %s, detected %s", attachmentDisplayLabel(attachment), declared, image.DetectedContentType)
+	return prompts.MustRender("image_content_type_correction.tmpl", map[string]any{
+		"Label":    attachmentDisplayLabel(attachment),
+		"Declared": strings.TrimSpace(image.DeclaredContentType),
+		"Detected": image.DetectedContentType,
+	})
 }
 
 func imageSkipSummary(attachment domain.EventAttachment, reason string) string {
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
-		reason = "image could not be validated"
-	}
-	return fmt.Sprintf("\nImage attachment skipped: %s: %s", attachmentDisplayLabel(attachment), reason)
+	return prompts.MustRender("image_skip_summary.tmpl", map[string]any{
+		"Label":  attachmentDisplayLabel(attachment),
+		"Reason": strings.TrimSpace(reason),
+	})
+}
+
+func imageLimitReason(kind string, limit any) string {
+	return prompts.MustRender("image_limit_reason.tmpl", map[string]any{
+		"Kind":  strings.TrimSpace(kind),
+		"Limit": limit,
+	})
 }
 
 func attachmentDisplayLabel(attachment domain.EventAttachment) string {
-	return firstNonEmpty(attachment.Filename, attachment.SourceID, attachment.URL, attachment.LocalPath, "attachment")
+	return prompts.MustRender("attachment_display_label.tmpl", map[string]any{
+		"Filename":  strings.TrimSpace(attachment.Filename),
+		"SourceID":  strings.TrimSpace(attachment.SourceID),
+		"URL":       strings.TrimSpace(attachment.URL),
+		"LocalPath": strings.TrimSpace(attachment.LocalPath),
+	})
 }
 
 func dataURI(contentType string, data []byte) string {
