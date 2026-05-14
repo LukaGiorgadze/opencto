@@ -17,8 +17,8 @@ import (
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	memorytool "github.com/opencto/opencto/internal/tools/memory"
 	readtool "github.com/opencto/opencto/internal/tools/read"
-	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
 	skilltool "github.com/opencto/opencto/internal/tools/skill"
+	scheduletool "github.com/opencto/opencto/internal/tools/workflowschedule"
 	writetool "github.com/opencto/opencto/internal/tools/write"
 )
 
@@ -135,12 +135,43 @@ func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) 
 			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
 		}
 		return memoryToolChoiceFromInput(definition, call, raw, input, forgetMemorySummary(args), domain.ToolIdempotencyNonIdempotent), nil
-	case domain.ToolTypeSchedule:
-		var args scheduletool.Request
+	case domain.ToolTypeWorkflowCreate:
+		var args scheduletool.CreateRequest
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
 			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
 		}
-		return scheduleToolChoiceFromInput(definition, call, raw, input, args), nil
+		return workflowToolChoiceFromInput(definition, call, raw, input, scheduletool.OperationCreate, args.WorkflowID, args.Name, args.Description, domain.ToolIdempotencyNonIdempotent), nil
+	case domain.ToolTypeWorkflowUpdate:
+		var args scheduletool.UpdateRequest
+		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
+			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
+		}
+		name := ""
+		if args.Name != nil {
+			name = *args.Name
+		}
+		description := ""
+		if args.Description != nil {
+			description = *args.Description
+		}
+		return workflowToolChoiceFromInput(definition, call, raw, input, scheduletool.OperationUpdate, args.WorkflowID, name, description, domain.ToolIdempotencyNonIdempotent), nil
+	case domain.ToolTypeWorkflowDelete:
+		var args scheduletool.DeleteRequest
+		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
+			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
+		}
+		return workflowToolChoiceFromInput(definition, call, raw, input, scheduletool.OperationDelete, args.WorkflowID, "", "", domain.ToolIdempotencyNonIdempotent), nil
+	case domain.ToolTypeWorkflowOperation:
+		var args scheduletool.OperationRequest
+		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
+			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
+		}
+		idempotency := domain.ToolIdempotencyNonIdempotent
+		operation := strings.ToLower(strings.TrimSpace(args.Operation))
+		if operation == scheduletool.OperationList || operation == scheduletool.OperationDescribe {
+			idempotency = domain.ToolIdempotencyReadOnly
+		}
+		return workflowToolChoiceFromInput(definition, call, raw, input, operation, args.WorkflowID, "", "", idempotency), nil
 	case domain.ToolTypeSkill:
 		var args skilltool.Request
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
@@ -261,22 +292,16 @@ func execToolChoiceFromInput(definition toolregistry.Definition, call llms.ToolC
 	}, nil
 }
 
-func scheduleToolChoiceFromInput(definition toolregistry.Definition, call llms.ToolCall, raw json.RawMessage, input agent.ToolSelectionInput, args scheduletool.Request) agent.ToolChoice {
-	operation := strings.TrimSpace(args.Operation)
-	summary := "schedule " + operation
-	if name := strings.TrimSpace(args.Name); name != "" {
+func workflowToolChoiceFromInput(definition toolregistry.Definition, call llms.ToolCall, raw json.RawMessage, input agent.ToolSelectionInput, operation, workflowID, name, description string, idempotency domain.ToolIdempotency) agent.ToolChoice {
+	operation = strings.TrimSpace(operation)
+	summary := "workflow " + operation
+	if name := strings.TrimSpace(name); name != "" {
 		summary += " " + name
-	} else if id := strings.TrimSpace(args.ScheduleID); id != "" {
+	} else if id := strings.TrimSpace(workflowID); id != "" {
 		summary += " " + id
 	}
-	if task := strings.TrimSpace(args.Task); task != "" {
-		summary += ": " + task
-	} else if description := strings.TrimSpace(args.Description); description != "" {
+	if description := strings.TrimSpace(description); description != "" {
 		summary += ": " + description
-	}
-	idempotency := domain.ToolIdempotencyNonIdempotent
-	if operation == scheduletool.OperationList || operation == scheduletool.OperationDescribe {
-		idempotency = domain.ToolIdempotencyReadOnly
 	}
 	return agent.ToolChoice{
 		ToolCallID:   call.ID,
@@ -289,7 +314,7 @@ func scheduleToolChoiceFromInput(definition toolregistry.Definition, call llms.T
 		Idempotency:  idempotency,
 		ProcessScope: domain.ProcessScopeStopOnFinish,
 		InputSummary: firstNonEmpty(summary, strings.TrimSpace(input.Context.Event.Body)),
-		Destructive:  operation == scheduletool.OperationDelete || operation == scheduletool.OperationTrigger,
+		Destructive:  false,
 		Metadata: map[string]string{
 			"model_tool":   definition.Name,
 			"tool_call_id": call.ID,

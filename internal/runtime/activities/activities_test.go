@@ -13,13 +13,16 @@ import (
 	"time"
 
 	"github.com/opencto/opencto/internal/agent"
+	"github.com/opencto/opencto/internal/config"
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/embedding"
+	"github.com/opencto/opencto/internal/runtime/workflowrun"
 	skillcatalog "github.com/opencto/opencto/internal/skills"
 	"github.com/opencto/opencto/internal/storage"
 	exectool "github.com/opencto/opencto/internal/tools/exec"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
-	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
+	scheduletool "github.com/opencto/opencto/internal/tools/workflowschedule"
+	"github.com/opencto/opencto/internal/workflowbundle"
 )
 
 type stubProjectStore struct {
@@ -346,6 +349,30 @@ func (s stubProjectStore) ForgetMemories(_ context.Context, request domain.Memor
 		*s.forgetRequests = append(*s.forgetRequests, request)
 	}
 	return s.forgetResult, nil
+}
+
+func (s stubProjectStore) UpsertScheduledWorkflow(context.Context, domain.ScheduledWorkflow) error {
+	return nil
+}
+
+func (s stubProjectStore) GetScheduledWorkflow(context.Context, string, string) (domain.ScheduledWorkflow, bool, error) {
+	return domain.ScheduledWorkflow{}, false, nil
+}
+
+func (s stubProjectStore) ListScheduledWorkflows(context.Context, storage.ScheduledWorkflowQuery) ([]domain.ScheduledWorkflow, error) {
+	return nil, nil
+}
+
+func (s stubProjectStore) DeleteScheduledWorkflow(context.Context, string, string) error {
+	return nil
+}
+
+func (s stubProjectStore) UpsertScheduledWorkflowRun(context.Context, domain.ScheduledWorkflowRun) error {
+	return nil
+}
+
+func (s stubProjectStore) UpsertScheduledWorkflowStepRun(context.Context, domain.ScheduledWorkflowStepRun) error {
+	return nil
 }
 
 func idsFromConversation(messages []domain.ConversationMessage) []string {
@@ -2492,34 +2519,98 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 
 	scheduleExecutor := &fakeScheduleExecutor{result: scheduletool.Result{
 		Operation:  scheduletool.OperationCreate,
-		ScheduleID: "opencto:project-1:schedule:daily-hello",
+		WorkflowID: "daily-hello",
+		ScheduleID: "opencto:project-1:workflow-schedule:daily-hello",
 		Name:       "daily hello",
-		Kind:       "recurring",
 		TimeZone:   "Asia/Tbilisi",
 		Cron:       "0 9 * * *",
 		Message:    "schedule created",
 	}}
 	activities.Schedule = scheduleExecutor
-	scheduleResult, err := activities.ExecuteTool(ctx, executeRequest(domain.ToolTypeSchedule, "schedule-1", map[string]any{
-		"operation":         "create",
-		"schedule_id":       "",
-		"name":              "daily hello",
-		"description":       "",
-		"task":              "send hello",
-		"one_shot_at":       "",
-		"cron":              "0 9 * * *",
-		"paused":            false,
-		"note":              "",
-		"limit":             0,
-		"include_completed": false,
+	scheduleResult, err := activities.ExecuteTool(ctx, executeRequest(domain.ToolTypeWorkflowCreate, "schedule-1", map[string]any{
+		"workflow_id": "daily-hello",
+		"name":        "daily hello",
+		"description": "",
+		"schedule": map[string]any{
+			"cron":             "0 9 * * *",
+			"one_shot_at":      "",
+			"overlap_policy":   "skip",
+			"catchup_window":   "10m",
+			"pause_on_failure": false,
+		},
+		"notification_policy": map[string]any{"on_failure": true},
+		"env":                 []string{},
+		"steps": []map[string]any{{
+			"id":                        "hello",
+			"command":                   "sh",
+			"args":                      []string{"src/hello.sh"},
+			"start_to_close_timeout":    "1m",
+			"schedule_to_close_timeout": "",
+			"retry_policy": map[string]any{
+				"initial_interval":          "",
+				"backoff_coefficient":       0,
+				"maximum_interval":          "",
+				"maximum_attempts":          1,
+				"non_retryable_error_types": []string{},
+			},
+		}},
+		"files":          []map[string]any{},
+		"commit_message": "",
+		"paused":         false,
+		"note":           "",
 	}))
 	if err != nil {
 		t.Fatalf("schedule tool: %v", err)
 	}
 	if scheduleResult.Status != domain.ExecutionStatusSucceeded ||
-		scheduleResult.Metadata["schedule_id"] != "opencto:project-1:schedule:daily-hello" ||
-		scheduleExecutor.request.SourceEvent.ChannelID != "channel-1" {
-		t.Fatalf("unexpected schedule result: %#v request=%#v", scheduleResult, scheduleExecutor.request)
+		scheduleResult.Metadata["schedule_id"] != "opencto:project-1:workflow-schedule:daily-hello" ||
+		scheduleExecutor.createRequest.SourceEvent.ChannelID != "channel-1" {
+		t.Fatalf("unexpected schedule result: %#v request=%#v", scheduleResult, scheduleExecutor.createRequest)
+	}
+}
+
+func TestWorkflowSourceEditObservationRequiresWorkflowUpdate(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	filePath := filepath.Join(workspaceRoot, ".opencto", "workflows", "daily-check", "src", "check.py")
+	observation, metadata := appendWorkflowUpdateNotice("edited: "+filePath, map[string]string{}, workspaceRoot, filePath)
+	if !strings.Contains(observation, "workflow_update_required: true") ||
+		!strings.Contains(observation, "workflow_id: daily-check") ||
+		!strings.Contains(observation, "call WorkflowUpdate before triggering") {
+		t.Fatalf("expected workflow update notice, got %q", observation)
+	}
+	if metadata["workflow_update_required"] != "true" || metadata["workflow_id"] != "daily-check" {
+		t.Fatalf("expected workflow update metadata, got %#v", metadata)
+	}
+}
+
+func TestWorkflowManifestEditObservationRequiresWorkflowUpdate(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	filePath := filepath.Join(workspaceRoot, ".opencto", "workflows", "daily-check", workflowbundle.ManifestFilename)
+	observation, metadata := appendWorkflowUpdateNotice("edited: "+filePath, map[string]string{}, workspaceRoot, filePath)
+	if !strings.Contains(observation, "workflow_update_required: true") ||
+		!strings.Contains(observation, "workflow_id: daily-check") {
+		t.Fatalf("expected workflow update notice, got %q", observation)
+	}
+	if metadata["workflow_update_required"] != "true" || metadata["workflow_id"] != "daily-check" {
+		t.Fatalf("expected workflow update metadata, got %#v", metadata)
+	}
+}
+
+func TestWorkflowSourceEditObservationIgnoresNonWorkflowSource(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	filePath := filepath.Join(workspaceRoot, "src", "app.py")
+	observation, metadata := appendWorkflowUpdateNotice("edited: "+filePath, map[string]string{}, workspaceRoot, filePath)
+	if strings.Contains(observation, "workflow_update_required") {
+		t.Fatalf("did not expect workflow update notice, got %q", observation)
+	}
+	if _, ok := metadata["workflow_update_required"]; ok {
+		t.Fatalf("did not expect workflow update metadata, got %#v", metadata)
 	}
 }
 
@@ -3060,6 +3151,19 @@ func TestExecuteExecUsesToolChoiceWorkingDir(t *testing.T) {
 	}
 }
 
+func TestWorkflowStepAttemptLogPathsAreAttemptSpecific(t *testing.T) {
+	t.Parallel()
+
+	stepDir := filepath.Join(t.TempDir(), "steps", "download")
+	stdoutPath, stderrPath := workflowStepAttemptLogPaths(stepDir, 2)
+	if !strings.HasSuffix(filepath.ToSlash(stdoutPath), "/steps/download/attempt-2/stdout.log") {
+		t.Fatalf("unexpected stdout path: %s", stdoutPath)
+	}
+	if !strings.HasSuffix(filepath.ToSlash(stderrPath), "/steps/download/attempt-2/stderr.log") {
+		t.Fatalf("unexpected stderr path: %s", stderrPath)
+	}
+}
+
 func TestExecuteExecPromotesLongCommandToProcess(t *testing.T) {
 	if goruntime.GOOS == "windows" {
 		t.Skip("uses POSIX exec fixture")
@@ -3201,6 +3305,310 @@ func TestNextActionStopsProcessWithStopOnFinishScopeAtCompletion(t *testing.T) {
 	}
 }
 
+func TestPrepareWorkflowRunUsesExecutionRunID(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	workspaceRoot := t.TempDir()
+	workflowID := "finance-check"
+	workflowDir, err := workflowbundle.WorkflowDir(workspaceRoot, workflowID)
+	if err != nil {
+		t.Fatalf("workflow dir: %v", err)
+	}
+	manifest := workflowbundle.Manifest{
+		Name:        "finance check",
+		Description: "",
+		Schedule: workflowbundle.Schedule{
+			Cron:          "0 9 * * *",
+			OneShotAt:     "",
+			TimeZoneName:  "UTC",
+			OverlapPolicy: workflowbundle.OverlapPolicySkip,
+			CatchupWindow: "10m",
+		},
+		NotificationPolicy: workflowbundle.NotificationPolicy{OnFailure: true},
+		Env:                []string{},
+		Steps: []workflowbundle.Step{{
+			ID:                  "check",
+			Command:             "sh",
+			Args:                []string{"src/check.sh"},
+			StartToCloseTimeout: "1m",
+			RetryPolicy: workflowbundle.RetryPolicy{
+				NonRetryableErrorTypes: []string{},
+			},
+		}},
+	}
+	files := []workflowbundle.File{{
+		Path:       "src/check.sh",
+		Content:    "echo ok\n",
+		Executable: true,
+	}}
+	if err := workflowbundle.WriteBundle(ctx, workflowDir, manifest, files); err != nil {
+		t.Fatalf("write bundle: %v", err)
+	}
+	commitHash, err := workflowbundle.CommitBundle(ctx, workflowDir, "initial", files)
+	if err != nil {
+		t.Fatalf("commit bundle: %v", err)
+	}
+
+	result, err := (&Activities{WorkspaceRoot: workspaceRoot}).PrepareWorkflowRun(ctx, workflowrun.PrepareRequest{
+		Input: workflowrun.Input{
+			ProjectID:   "project-1",
+			WorkflowID:  workflowID,
+			CommitHash:  commitHash,
+			ScheduledAt: time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC),
+		},
+		TemporalWorkflowID: "workflow-execution-id",
+		TemporalRunID:      "actual-run-id",
+	})
+	if err != nil {
+		t.Fatalf("prepare workflow run: %v", err)
+	}
+	if result.RunID != "actual-run-id" {
+		t.Fatalf("expected run id to use execution run id, got %q", result.RunID)
+	}
+	wantRunPath, err := workflowbundle.WorkflowRunDir(workspaceRoot, workflowID, "actual-run-id")
+	if err != nil {
+		t.Fatalf("workflow run dir: %v", err)
+	}
+	if result.RunPath != wantRunPath {
+		t.Fatalf("expected run path %q, got %q", wantRunPath, result.RunPath)
+	}
+	state, err := readWorkflowRunState(result.RunPath)
+	if err != nil {
+		t.Fatalf("read run state: %v", err)
+	}
+	if state.RunID != "actual-run-id" || state.TemporalRunID != "actual-run-id" || state.TemporalWorkflowID != "workflow-execution-id" {
+		t.Fatalf("unexpected run state ids: %#v", state)
+	}
+}
+
+func TestCleanupWorkflowRunsKeepsLatestTenSnapshots(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	workflowID := "finance-check"
+	runsDir, err := workflowbundle.WorkflowRunsDir(workspaceRoot, workflowID)
+	if err != nil {
+		t.Fatalf("workflow runs dir: %v", err)
+	}
+	baseTime := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 12; i++ {
+		runID := fmt.Sprintf("run-%02d", i)
+		runDir := filepath.Join(runsDir, runID)
+		if err := os.MkdirAll(runDir, 0o755); err != nil {
+			t.Fatalf("mkdir run %s: %v", runID, err)
+		}
+		modTime := baseTime.Add(time.Duration(i) * time.Minute)
+		if err := os.Chtimes(runDir, modTime, modTime); err != nil {
+			t.Fatalf("chtimes run %s: %v", runID, err)
+		}
+	}
+
+	result, err := (&Activities{WorkspaceRoot: workspaceRoot}).CleanupWorkflowRuns(context.Background(), workflowrun.CleanupRunsRequest{
+		WorkflowID:   workflowID,
+		CurrentRunID: "run-11",
+		KeepLast:     workflowrun.DefaultRunRetention,
+	})
+	if err != nil {
+		t.Fatalf("cleanup workflow runs: %v", err)
+	}
+	if len(result.DeletedRunIDs) != 2 {
+		t.Fatalf("expected two deleted runs, got %#v", result.DeletedRunIDs)
+	}
+	for _, runID := range []string{"run-00", "run-01"} {
+		if _, err := os.Stat(filepath.Join(runsDir, runID)); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to be deleted, stat err=%v", runID, err)
+		}
+	}
+	for _, runID := range []string{"run-02", "run-11"} {
+		if _, err := os.Stat(filepath.Join(runsDir, runID)); err != nil {
+			t.Fatalf("expected %s to be kept: %v", runID, err)
+		}
+	}
+}
+
+func TestCleanupWorkflowRunsDoesNotDeleteActiveOlderSnapshot(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	workflowID := "finance-check"
+	runsDir, err := workflowbundle.WorkflowRunsDir(workspaceRoot, workflowID)
+	if err != nil {
+		t.Fatalf("workflow runs dir: %v", err)
+	}
+	baseTime := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 12; i++ {
+		runID := fmt.Sprintf("run-%02d", i)
+		runDir := filepath.Join(runsDir, runID)
+		if err := os.MkdirAll(runDir, 0o755); err != nil {
+			t.Fatalf("mkdir run %s: %v", runID, err)
+		}
+		if i == 0 {
+			if err := writeWorkflowRunState(runDir, workflowRunState{
+				SchemaVersion: 1,
+				RunID:         runID,
+				Status:        string(domain.ExecutionStatusRunning),
+			}); err != nil {
+				t.Fatalf("write active run state: %v", err)
+			}
+		}
+		modTime := baseTime.Add(time.Duration(i) * time.Minute)
+		if err := os.Chtimes(runDir, modTime, modTime); err != nil {
+			t.Fatalf("chtimes run %s: %v", runID, err)
+		}
+	}
+
+	result, err := (&Activities{WorkspaceRoot: workspaceRoot}).CleanupWorkflowRuns(context.Background(), workflowrun.CleanupRunsRequest{
+		WorkflowID:   workflowID,
+		CurrentRunID: "run-11",
+		KeepLast:     workflowrun.DefaultRunRetention,
+	})
+	if err != nil {
+		t.Fatalf("cleanup workflow runs: %v", err)
+	}
+	if len(result.DeletedRunIDs) != 1 || result.DeletedRunIDs[0] != "run-01" {
+		t.Fatalf("expected only oldest inactive run to be deleted, got %#v", result.DeletedRunIDs)
+	}
+	if _, err := os.Stat(filepath.Join(runsDir, "run-00")); err != nil {
+		t.Fatalf("expected active old run to be kept: %v", err)
+	}
+}
+
+func TestWorkflowStepEnvironmentSetsGlobalAssignmentsAndRunPaths(t *testing.T) {
+	runPath := filepath.Join(t.TempDir(), "run-1")
+	stepID := "check"
+	stepDir := filepath.Join(runPath, "steps", stepID)
+	request := workflowrun.ExecuteStepRequest{
+		WorkflowID: "finance-check",
+		RunID:      "run-1",
+		RunPath:    runPath,
+		Env:        []string{"GLOBAL_FLAG=on"},
+	}
+
+	env, err := workflowStepEnvironment("/workspace", request, stepID, stepDir)
+	if err != nil {
+		t.Fatalf("workflow step environment: %v", err)
+	}
+	if got := envValue(env, "GLOBAL_FLAG"); got != "on" {
+		t.Fatalf("expected GLOBAL_FLAG assignment, got %q", got)
+	}
+	if got := envValue(env, config.EnvOpenCTOWorkspace); got != "/workspace" {
+		t.Fatalf("expected workspace env, got %q", got)
+	}
+	for name, want := range map[string]string{
+		"OPENCTO_WORKFLOW_ID": "finance-check",
+		"OPENCTO_RUN_ID":      "run-1",
+		"OPENCTO_RUN_DIR":     runPath,
+		"OPENCTO_STEP_ID":     stepID,
+		"OPENCTO_STEP_DIR":    stepDir,
+	} {
+		if got := envValue(env, name); got != want {
+			t.Fatalf("expected %s=%q, got %q", name, want, got)
+		}
+	}
+}
+
+func TestWorkflowStepEnvironmentRejectsNonAssignmentEnv(t *testing.T) {
+	request := workflowrun.ExecuteStepRequest{Env: []string{"MISSING_TOKEN"}}
+
+	if _, err := workflowStepEnvironment("", request, "step", "/tmp/step"); err == nil {
+		t.Fatal("expected non-assignment env to fail")
+	}
+}
+
+func TestWorkflowStepEnvironmentRejectsTemplateEnv(t *testing.T) {
+	request := workflowrun.ExecuteStepRequest{Env: []string{"PAYLOAD={{steps.check.stdout}}"}}
+
+	if _, err := workflowStepEnvironment("", request, "step", "/tmp/step"); err == nil {
+		t.Fatal("expected template env to fail")
+	}
+}
+
+func TestExecuteWorkflowStepCreatesStepArtifactDirectory(t *testing.T) {
+	t.Parallel()
+
+	runPath := t.TempDir()
+	result, err := (&Activities{WorkspaceRoot: "/workspace"}).ExecuteWorkflowStep(context.Background(), workflowrun.ExecuteStepRequest{
+		ProjectID:  "project-1",
+		WorkflowID: "finance-check",
+		RunID:      "run-1",
+		RunPath:    runPath,
+		Step: workflowbundle.Step{
+			ID:      "check",
+			Command: "sh",
+			Args: []string{
+				"-c",
+				`dir="$OPENCTO_RUN_DIR/artifacts/$OPENCTO_STEP_ID" && test -d "$dir" && printf '{"ok":true}\n' > "$dir/payload.json"`,
+			},
+		},
+		Env: []string{"GLOBAL_FLAG=on"},
+	})
+	if err != nil {
+		t.Fatalf("execute workflow step: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("expected successful step, got %#v", result)
+	}
+	artifactPath := filepath.Join(runPath, "artifacts", "check", "payload.json")
+	data, err := os.ReadFile(artifactPath)
+	if err != nil {
+		t.Fatalf("read step artifact: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != `{"ok":true}` {
+		t.Fatalf("unexpected artifact: %q", string(data))
+	}
+	if _, err := os.Stat(result.StdoutLogPath); err != nil {
+		t.Fatalf("expected attempt stdout log: %v", err)
+	}
+	if _, err := os.Stat(result.StderrLogPath); err != nil {
+		t.Fatalf("expected attempt stderr log: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(runPath, "steps", "check", "stdout.log")); !os.IsNotExist(err) {
+		t.Fatalf("expected no duplicate root stdout log, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(runPath, "steps", "check", "stderr.log")); !os.IsNotExist(err) {
+		t.Fatalf("expected no duplicate root stderr log, stat err=%v", err)
+	}
+}
+
+func envValue(env []string, name string) string {
+	prefix := name + "="
+	value := ""
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			value = strings.TrimPrefix(entry, prefix)
+		}
+	}
+	return value
+}
+
+func TestWorkflowStepFailureMessageIncludesCommandOutputAndLogs(t *testing.T) {
+	t.Parallel()
+
+	message := workflowStepFailureMessage(workflowrun.StepFailure{
+		StepID:        "check_and_append",
+		Command:       "go",
+		Args:          []string{"finance2049"},
+		ExitCode:      2,
+		Error:         "exit status 2",
+		OutputSummary: "stderr:\ngo finance2049: unknown command\n",
+		StdoutLogPath: "/tmp/stdout.log",
+		StderrLogPath: "/tmp/stderr.log",
+	})
+	for _, want := range []string{
+		`workflow step "check_and_append" failed with exit code 2`,
+		"command: go finance2049",
+		"error: exit status 2",
+		"go finance2049: unknown command",
+		"stderr_log: /tmp/stderr.log",
+		"stdout_log: /tmp/stdout.log",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("expected failure message to contain %q, got:\n%s", want, message)
+		}
+	}
+}
+
 func executeRequest(toolType domain.ToolType, callID string, input map[string]any) ExecuteToolRequest {
 	encoded, err := json.Marshal(input)
 	if err != nil {
@@ -3252,12 +3660,30 @@ func (f fakeGrepExecutor) Run(context.Context, greptool.Request) (greptool.Resul
 }
 
 type fakeScheduleExecutor struct {
-	result  scheduletool.Result
-	err     error
-	request scheduletool.Request
+	result           scheduletool.Result
+	err              error
+	createRequest    scheduletool.CreateRequest
+	updateRequest    scheduletool.UpdateRequest
+	deleteRequest    scheduletool.DeleteRequest
+	operationRequest scheduletool.OperationRequest
 }
 
-func (f *fakeScheduleExecutor) Run(_ context.Context, req scheduletool.Request) (scheduletool.Result, error) {
-	f.request = req
+func (f *fakeScheduleExecutor) Create(_ context.Context, req scheduletool.CreateRequest) (scheduletool.Result, error) {
+	f.createRequest = req
+	return f.result, f.err
+}
+
+func (f *fakeScheduleExecutor) Update(_ context.Context, req scheduletool.UpdateRequest) (scheduletool.Result, error) {
+	f.updateRequest = req
+	return f.result, f.err
+}
+
+func (f *fakeScheduleExecutor) Delete(_ context.Context, req scheduletool.DeleteRequest) (scheduletool.Result, error) {
+	f.deleteRequest = req
+	return f.result, f.err
+}
+
+func (f *fakeScheduleExecutor) Operation(_ context.Context, req scheduletool.OperationRequest) (scheduletool.Result, error) {
+	f.operationRequest = req
 	return f.result, f.err
 }

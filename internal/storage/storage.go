@@ -54,6 +54,12 @@ type RuntimeStore interface {
 	DeleteMemoryEmbeddings(context.Context, []string) error
 	ForgetMemory(context.Context, string, string) (bool, error)
 	ForgetMemories(context.Context, domain.MemoryForgetRequest) (domain.MemoryForgetResult, error)
+	UpsertScheduledWorkflow(context.Context, domain.ScheduledWorkflow) error
+	GetScheduledWorkflow(context.Context, string, string) (domain.ScheduledWorkflow, bool, error)
+	ListScheduledWorkflows(context.Context, ScheduledWorkflowQuery) ([]domain.ScheduledWorkflow, error)
+	DeleteScheduledWorkflow(context.Context, string, string) error
+	UpsertScheduledWorkflowRun(context.Context, domain.ScheduledWorkflowRun) error
+	UpsertScheduledWorkflowStepRun(context.Context, domain.ScheduledWorkflowStepRun) error
 }
 
 type ConversationScope string
@@ -104,6 +110,12 @@ type ConversationSummaryQuery struct {
 	Limit           int
 	BeforeCreatedAt time.Time
 	BeforeID        string
+}
+
+type ScheduledWorkflowQuery struct {
+	ProjectID      string
+	IncludeDeleted bool
+	Limit          int
 }
 
 func DefaultDBPath(workspaceRoot string) string {

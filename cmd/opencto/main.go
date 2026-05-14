@@ -25,7 +25,7 @@ import (
 	"github.com/opencto/opencto/internal/runtime"
 	"github.com/opencto/opencto/internal/runtime/activities"
 	"github.com/opencto/opencto/internal/tools/exec"
-	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
+	workflowscheduletool "github.com/opencto/opencto/internal/tools/workflowschedule"
 )
 
 var defaultProject = domain.Project{
@@ -149,7 +149,7 @@ func main() {
 			Store:                       store,
 			Engine:                      engine,
 			Exec:                        exec.NewSafeExecutor(logger),
-			Schedule:                    scheduletool.NewTemporalExecutor(temporalClient.ScheduleClient(), cfg.Temporal.TaskQueue, logger),
+			Schedule:                    workflowscheduletool.NewTemporalExecutor(temporalClient.ScheduleClient(), store, cfg.Temporal.TaskQueue, cfg.General.WorkspaceRoot, logger),
 			Reporter:                    reporter,
 			EventEnqueuer:               dispatcher,
 			MemoryEmbedder:              memoryEmbedder,
@@ -232,7 +232,8 @@ func buildNextActionEngine(cfg config.Config, logger *slog.Logger) agent.Engine 
 		logger.Warn("failed to initialize openai next action engine", slog.String("error", err.Error()))
 		return unavailable(err.Error())
 	}
-	logger.Info("openai next action engine configured",
+	logger.Info(
+		"openai next action engine configured",
 		slog.String("base_url", cfg.LLM.BaseURL),
 		slog.String("model_reasoning", cfg.LLM.ModelReasoning),
 		slog.String("model_fast", cfg.LLM.ModelFast),
@@ -266,7 +267,8 @@ func buildMemoryEmbedder(cfg config.Config, logger *slog.Logger) embedding.Embed
 		logger.Warn("failed to initialize memory embedder", slog.String("error", err.Error()))
 		return nil
 	}
-	logger.Info("memory embedder configured",
+	logger.Info(
+		"memory embedder configured",
 		slog.String("provider", cfg.Memory.Embedding.Provider),
 		slog.String("model", cfg.Memory.Embedding.Model),
 		slog.Int("dimensions", cfg.Memory.Embedding.Dimensions),
@@ -294,7 +296,8 @@ func buildConversationCompressor(cfg config.Config, logger *slog.Logger) agent.C
 		logger.Warn("failed to initialize conversation compressor", slog.String("error", err.Error()))
 		return nil
 	}
-	logger.Info("conversation compressor configured",
+	logger.Info(
+		"conversation compressor configured",
 		slog.String("base_url", cfg.LLM.BaseURL),
 		slog.String("model", cfg.LLM.ModelSummary),
 		slog.String("api_key_source", string(source)),

@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	currentSchemaVersion = 9
+	currentSchemaVersion = 11
 	memoryVectorDims     = 1536
 )
 
@@ -168,6 +168,8 @@ var migrations = []migration{
 	{version: 7, sql: migrationV7, apply: applyMemoryChannelScopeMigration},
 	{version: 8, sql: migrationV8},
 	{version: 9, sql: migrationV9},
+	{version: 10, sql: migrationV10},
+	{version: 11, apply: applyTemporalRunIDMigration},
 }
 
 func applyMigration(ctx context.Context, db *sql.DB, migration migration) error {
@@ -542,6 +544,64 @@ CREATE INDEX IF NOT EXISTS idx_memories_scope_updated ON memories(scope, updated
 	);
 	`
 
+const scheduledWorkflowsSchemaSQL = `
+CREATE TABLE IF NOT EXISTS scheduled_workflows (
+	id TEXT NOT NULL,
+	project_id TEXT NOT NULL,
+	name TEXT NOT NULL DEFAULT '',
+	description TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL DEFAULT 'active',
+	current_commit_hash TEXT NOT NULL DEFAULT '',
+	temporal_schedule_id TEXT NOT NULL DEFAULT '',
+	workflow_path TEXT NOT NULL DEFAULT '',
+	created_by_event_id TEXT NOT NULL DEFAULT '',
+	source_event TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(source_event)),
+	metadata TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata)),
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY(project_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_scheduled_workflows_project_updated ON scheduled_workflows(project_id, updated_at);
+
+CREATE TABLE IF NOT EXISTS scheduled_workflow_runs (
+	id TEXT PRIMARY KEY,
+	project_id TEXT NOT NULL,
+	workflow_id TEXT NOT NULL,
+	commit_hash TEXT NOT NULL DEFAULT '',
+	temporal_workflow_id TEXT NOT NULL DEFAULT '',
+	temporal_run_id TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL,
+	scheduled_at TEXT NOT NULL,
+	started_at TEXT NOT NULL,
+	completed_at TEXT,
+	run_path TEXT NOT NULL DEFAULT '',
+	failure_summary TEXT NOT NULL DEFAULT '',
+	metadata TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata))
+);
+CREATE INDEX IF NOT EXISTS idx_scheduled_workflow_runs_workflow_started ON scheduled_workflow_runs(project_id, workflow_id, started_at);
+
+CREATE TABLE IF NOT EXISTS scheduled_workflow_step_runs (
+	id TEXT PRIMARY KEY,
+	project_id TEXT NOT NULL,
+	run_id TEXT NOT NULL,
+	workflow_id TEXT NOT NULL,
+	step_id TEXT NOT NULL,
+	status TEXT NOT NULL,
+	attempt INTEGER NOT NULL DEFAULT 1,
+	command TEXT NOT NULL DEFAULT '',
+	args TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(args)),
+	started_at TEXT NOT NULL,
+	completed_at TEXT,
+	exit_code INTEGER NOT NULL DEFAULT 0,
+	stdout_log_path TEXT NOT NULL DEFAULT '',
+	stderr_log_path TEXT NOT NULL DEFAULT '',
+	output_summary TEXT NOT NULL DEFAULT '',
+	error_details TEXT NOT NULL DEFAULT '',
+	metadata TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata))
+);
+CREATE INDEX IF NOT EXISTS idx_scheduled_workflow_step_runs_run ON scheduled_workflow_step_runs(run_id, step_id, attempt);
+`
+
 const migrationV2 = `
 	ALTER TABLE events ADD COLUMN thread_id TEXT NOT NULL DEFAULT '';
 
@@ -700,6 +760,31 @@ WHERE lower(trim(kind)) IN ('project', 'user');
 const migrationV9 = `
 DROP TABLE IF EXISTS conversation_threads;
 ` + conversationThreadsSchemaSQL
+
+const migrationV10 = scheduledWorkflowsSchemaSQL
+
+func applyTemporalRunIDMigration(ctx context.Context, db *sql.DB, migration migration) error {
+	hasTemporalRunID, err := tableHasColumn(ctx, db, "scheduled_workflow_runs", "temporal_run_id")
+	if err != nil {
+		return err
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	if !hasTemporalRunID {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE scheduled_workflow_runs ADD COLUMN temporal_run_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)`, migration.version, formatTime(time.Now().UTC())); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
 func (s *Store) EnsureProject(ctx context.Context, project domain.Project) error {
 	project.ID = strings.TrimSpace(project.ID)
@@ -2281,6 +2366,258 @@ WHERE memory_id IN (`+sqlPlaceholders(len(deleteIDs))+`)
 		return domain.MemoryForgetResult{}, err
 	}
 	return domain.MemoryForgetResult{DeletedMemoryIDs: deleteIDs}, nil
+}
+
+func (s *Store) UpsertScheduledWorkflow(ctx context.Context, item domain.ScheduledWorkflow) error {
+	item.ID = strings.TrimSpace(item.ID)
+	item.ProjectID = strings.TrimSpace(item.ProjectID)
+	if item.ID == "" {
+		return fmt.Errorf("scheduled workflow id is required")
+	}
+	if item.ProjectID == "" {
+		return fmt.Errorf("scheduled workflow project id is required")
+	}
+	if item.Status == "" {
+		item.Status = domain.ScheduledWorkflowStatusActive
+	}
+	now := time.Now().UTC()
+	if item.CreatedAt.IsZero() {
+		item.CreatedAt = now
+	}
+	if item.UpdatedAt.IsZero() {
+		item.UpdatedAt = now
+	}
+	sourceEvent, err := encodeJSON(item.SourceEvent, "{}")
+	if err != nil {
+		return err
+	}
+	metadata, err := encodeJSON(item.Metadata, "{}")
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO scheduled_workflows(id, project_id, name, description, status, current_commit_hash, temporal_schedule_id, workflow_path, created_by_event_id, source_event, metadata, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, json(?), json(?), ?, ?)
+ON CONFLICT(project_id, id) DO UPDATE SET
+	name = excluded.name,
+	description = excluded.description,
+	status = excluded.status,
+	current_commit_hash = excluded.current_commit_hash,
+	temporal_schedule_id = excluded.temporal_schedule_id,
+	workflow_path = excluded.workflow_path,
+	created_by_event_id = CASE WHEN excluded.created_by_event_id <> '' THEN excluded.created_by_event_id ELSE scheduled_workflows.created_by_event_id END,
+	source_event = CASE WHEN excluded.source_event <> '{}' THEN excluded.source_event ELSE scheduled_workflows.source_event END,
+	metadata = excluded.metadata,
+	updated_at = excluded.updated_at
+`, item.ID, item.ProjectID, item.Name, item.Description, string(item.Status), item.CurrentCommitHash, item.TemporalScheduleID, item.WorkflowPath, item.CreatedByEventID, sourceEvent, metadata, formatTime(item.CreatedAt), formatTime(item.UpdatedAt))
+	return err
+}
+
+func (s *Store) GetScheduledWorkflow(ctx context.Context, projectID, workflowID string) (domain.ScheduledWorkflow, bool, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT id, project_id, name, description, status, current_commit_hash, temporal_schedule_id, workflow_path, created_by_event_id, source_event, metadata, created_at, updated_at
+FROM scheduled_workflows
+WHERE project_id = ? AND id = ?
+`, strings.TrimSpace(projectID), strings.TrimSpace(workflowID))
+	item, err := scanScheduledWorkflow(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.ScheduledWorkflow{}, false, nil
+	}
+	if err != nil {
+		return domain.ScheduledWorkflow{}, false, err
+	}
+	return item, true, nil
+}
+
+func (s *Store) ListScheduledWorkflows(ctx context.Context, query storage.ScheduledWorkflowQuery) ([]domain.ScheduledWorkflow, error) {
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	where := []string{"project_id = ?"}
+	args := []any{strings.TrimSpace(query.ProjectID)}
+	if !query.IncludeDeleted {
+		where = append(where, "status <> ?")
+		args = append(args, string(domain.ScheduledWorkflowStatusDeleted))
+	}
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, project_id, name, description, status, current_commit_hash, temporal_schedule_id, workflow_path, created_by_event_id, source_event, metadata, created_at, updated_at
+FROM scheduled_workflows
+WHERE `+strings.Join(where, " AND ")+`
+ORDER BY updated_at DESC
+LIMIT ?
+`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []domain.ScheduledWorkflow
+	for rows.Next() {
+		item, err := scanScheduledWorkflow(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) DeleteScheduledWorkflow(ctx context.Context, projectID, workflowID string) error {
+	projectID = strings.TrimSpace(projectID)
+	workflowID = strings.TrimSpace(workflowID)
+	if projectID == "" || workflowID == "" {
+		return fmt.Errorf("scheduled workflow project_id and workflow_id are required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	if _, err := tx.ExecContext(ctx, `
+DELETE FROM scheduled_workflow_step_runs
+WHERE project_id = ? AND workflow_id = ?
+`, projectID, workflowID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+DELETE FROM scheduled_workflow_runs
+WHERE project_id = ? AND workflow_id = ?
+`, projectID, workflowID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+DELETE FROM scheduled_workflows
+WHERE project_id = ? AND id = ?
+`, projectID, workflowID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+type scheduledWorkflowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanScheduledWorkflow(row scheduledWorkflowScanner) (domain.ScheduledWorkflow, error) {
+	var item domain.ScheduledWorkflow
+	var status string
+	var sourceEvent string
+	var metadata string
+	var createdAt string
+	var updatedAt string
+	if err := row.Scan(&item.ID, &item.ProjectID, &item.Name, &item.Description, &status, &item.CurrentCommitHash, &item.TemporalScheduleID, &item.WorkflowPath, &item.CreatedByEventID, &sourceEvent, &metadata, &createdAt, &updatedAt); err != nil {
+		return domain.ScheduledWorkflow{}, err
+	}
+	item.Status = domain.ScheduledWorkflowStatus(status)
+	if err := decodeJSON(sourceEvent, &item.SourceEvent); err != nil {
+		return domain.ScheduledWorkflow{}, err
+	}
+	if err := decodeJSON(metadata, &item.Metadata); err != nil {
+		return domain.ScheduledWorkflow{}, err
+	}
+	item.CreatedAt = parseTime(createdAt)
+	item.UpdatedAt = parseTime(updatedAt)
+	return item, nil
+}
+
+func (s *Store) UpsertScheduledWorkflowRun(ctx context.Context, run domain.ScheduledWorkflowRun) error {
+	run.ID = strings.TrimSpace(run.ID)
+	run.ProjectID = strings.TrimSpace(run.ProjectID)
+	run.WorkflowID = strings.TrimSpace(run.WorkflowID)
+	if run.ID == "" {
+		return fmt.Errorf("scheduled workflow run id is required")
+	}
+	if run.ProjectID == "" || run.WorkflowID == "" {
+		return fmt.Errorf("scheduled workflow run project_id and workflow_id are required")
+	}
+	if run.Status == "" {
+		run.Status = domain.ExecutionStatusRunning
+	}
+	now := time.Now().UTC()
+	if run.StartedAt.IsZero() {
+		run.StartedAt = now
+	}
+	if run.ScheduledAt.IsZero() {
+		run.ScheduledAt = run.StartedAt
+	}
+	metadata, err := encodeJSON(run.Metadata, "{}")
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO scheduled_workflow_runs(id, project_id, workflow_id, commit_hash, temporal_workflow_id, temporal_run_id, status, scheduled_at, started_at, completed_at, run_path, failure_summary, metadata)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, json(?))
+ON CONFLICT(id) DO UPDATE SET
+	project_id = excluded.project_id,
+	workflow_id = excluded.workflow_id,
+	commit_hash = CASE WHEN excluded.commit_hash <> '' THEN excluded.commit_hash ELSE scheduled_workflow_runs.commit_hash END,
+	temporal_workflow_id = CASE WHEN excluded.temporal_workflow_id <> '' THEN excluded.temporal_workflow_id ELSE scheduled_workflow_runs.temporal_workflow_id END,
+	temporal_run_id = CASE WHEN excluded.temporal_run_id <> '' THEN excluded.temporal_run_id ELSE scheduled_workflow_runs.temporal_run_id END,
+	status = excluded.status,
+	scheduled_at = scheduled_workflow_runs.scheduled_at,
+	started_at = scheduled_workflow_runs.started_at,
+	completed_at = excluded.completed_at,
+	run_path = CASE WHEN excluded.run_path <> '' THEN excluded.run_path ELSE scheduled_workflow_runs.run_path END,
+	failure_summary = excluded.failure_summary,
+	metadata = excluded.metadata
+`, run.ID, run.ProjectID, run.WorkflowID, run.CommitHash, run.TemporalWorkflowID, run.TemporalRunID, string(run.Status), formatTime(run.ScheduledAt), formatTime(run.StartedAt), nullableTime(run.CompletedAt), run.RunPath, run.FailureSummary, metadata)
+	return err
+}
+
+func (s *Store) UpsertScheduledWorkflowStepRun(ctx context.Context, step domain.ScheduledWorkflowStepRun) error {
+	step.ID = strings.TrimSpace(step.ID)
+	step.ProjectID = strings.TrimSpace(step.ProjectID)
+	step.RunID = strings.TrimSpace(step.RunID)
+	step.WorkflowID = strings.TrimSpace(step.WorkflowID)
+	step.StepID = strings.TrimSpace(step.StepID)
+	if step.ID == "" {
+		return fmt.Errorf("scheduled workflow step run id is required")
+	}
+	if step.ProjectID == "" || step.RunID == "" || step.WorkflowID == "" || step.StepID == "" {
+		return fmt.Errorf("scheduled workflow step run project_id, run_id, workflow_id and step_id are required")
+	}
+	if step.Status == "" {
+		step.Status = domain.ExecutionStatusRunning
+	}
+	if step.Attempt <= 0 {
+		step.Attempt = 1
+	}
+	if step.StartedAt.IsZero() {
+		step.StartedAt = time.Now().UTC()
+	}
+	args, err := encodeJSON(step.Args, "[]")
+	if err != nil {
+		return err
+	}
+	metadata, err := encodeJSON(step.Metadata, "{}")
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO scheduled_workflow_step_runs(id, project_id, run_id, workflow_id, step_id, status, attempt, command, args, started_at, completed_at, exit_code, stdout_log_path, stderr_log_path, output_summary, error_details, metadata)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, json(?), ?, ?, ?, ?, ?, ?, ?, json(?))
+ON CONFLICT(id) DO UPDATE SET
+	project_id = excluded.project_id,
+	run_id = excluded.run_id,
+	workflow_id = excluded.workflow_id,
+	step_id = excluded.step_id,
+	status = excluded.status,
+	attempt = excluded.attempt,
+	command = excluded.command,
+	args = excluded.args,
+	started_at = excluded.started_at,
+	completed_at = excluded.completed_at,
+	exit_code = excluded.exit_code,
+	stdout_log_path = excluded.stdout_log_path,
+	stderr_log_path = excluded.stderr_log_path,
+	output_summary = excluded.output_summary,
+	error_details = excluded.error_details,
+	metadata = excluded.metadata
+`, step.ID, step.ProjectID, step.RunID, step.WorkflowID, step.StepID, string(step.Status), step.Attempt, step.Command, args, formatTime(step.StartedAt), nullableTime(step.CompletedAt), step.ExitCode, step.StdoutLogPath, step.StderrLogPath, step.OutputSummary, step.ErrorDetails, metadata)
+	return err
 }
 
 func deleteMemoryEmbeddingsTx(ctx context.Context, tx *sql.Tx, memoryIDs []string) error {

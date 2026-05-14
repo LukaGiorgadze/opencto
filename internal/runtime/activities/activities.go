@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	goruntime "runtime"
 	"sort"
@@ -24,6 +25,7 @@ import (
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/embedding"
 	"github.com/opencto/opencto/internal/runtime/scheduled"
+	"github.com/opencto/opencto/internal/runtime/workflowrun"
 	skillcatalog "github.com/opencto/opencto/internal/skills"
 	"github.com/opencto/opencto/internal/storage"
 	"github.com/opencto/opencto/internal/textclean"
@@ -34,9 +36,10 @@ import (
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	memorytool "github.com/opencto/opencto/internal/tools/memory"
 	readtool "github.com/opencto/opencto/internal/tools/read"
-	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
 	skilltool "github.com/opencto/opencto/internal/tools/skill"
+	scheduletool "github.com/opencto/opencto/internal/tools/workflowschedule"
 	writetool "github.com/opencto/opencto/internal/tools/write"
+	"github.com/opencto/opencto/internal/workflowbundle"
 	"github.com/opencto/opencto/internal/workspace"
 )
 
@@ -662,12 +665,14 @@ func (a *Activities) loadConversationSummaries(ctx context.Context, event domain
 	var scopes []summaryScopeQuery
 	if strings.TrimSpace(event.ChannelID) != "" {
 		if strings.TrimSpace(event.ThreadID) != "" {
-			scopes = append(scopes,
+			scopes = append(
+				scopes,
 				summaryScopeQuery{scope: domain.ConversationSummaryScopeThread, limit: 3},
 				summaryScopeQuery{scope: domain.ConversationSummaryScopeChannel, limit: 1},
 			)
 		} else {
-			scopes = append(scopes,
+			scopes = append(
+				scopes,
 				summaryScopeQuery{scope: domain.ConversationSummaryScopeChannel, limit: 3},
 			)
 		}
@@ -779,7 +784,8 @@ func (a *Activities) ResponseSession(ctx context.Context, request ResponseSessio
 	if projectID == "" {
 		projectID = strings.TrimSpace(event.ProjectID)
 	}
-	a.logActivityStep("ResponseSession", "start",
+	a.logActivityStep(
+		"ResponseSession", "start",
 		slog.String("project_id", projectID),
 		slog.String("event_id", event.ID),
 		slog.String("channel_type", string(event.ChannelType)),
@@ -787,7 +793,8 @@ func (a *Activities) ResponseSession(ctx context.Context, request ResponseSessio
 	)
 	reporter, ok := a.Reporter.(TypingReporter)
 	if !ok || reporter == nil {
-		a.logActivityStep("ResponseSession", "skip_no_indicator_reporter",
+		a.logActivityStep(
+			"ResponseSession", "skip_no_indicator_reporter",
 			slog.String("project_id", projectID),
 			slog.String("event_id", event.ID),
 		)
@@ -815,7 +822,8 @@ func (a *Activities) ResponseSession(ctx context.Context, request ResponseSessio
 		typingCtx, cancel := context.WithTimeout(ctx, defaultResponseSessionTimeout)
 		defer cancel()
 		if err := reporter.NotifyTyping(typingCtx, event); err != nil && ctx.Err() == nil {
-			a.logActivityStep("ResponseSession", "indicator_error",
+			a.logActivityStep(
+				"ResponseSession", "indicator_error",
 				slog.String("project_id", projectID),
 				slog.String("event_id", event.ID),
 				slog.String("error", err.Error()),
@@ -832,13 +840,15 @@ func (a *Activities) ResponseSession(ctx context.Context, request ResponseSessio
 	for {
 		select {
 		case <-ctx.Done():
-			a.logActivityStep("ResponseSession", "canceled",
+			a.logActivityStep(
+				"ResponseSession", "canceled",
 				slog.String("project_id", projectID),
 				slog.String("event_id", event.ID),
 			)
 			return nil
 		case <-deadline.C:
-			a.logActivityStep("ResponseSession", "expired",
+			a.logActivityStep(
+				"ResponseSession", "expired",
 				slog.String("project_id", projectID),
 				slog.String("event_id", event.ID),
 				slog.Duration("max_age", maxAge),
@@ -859,7 +869,8 @@ func (a *Activities) ReportResponse(ctx context.Context, request ReportResponseR
 	if report.Empty() || a.Reporter == nil {
 		return ReportResponseResult{}, nil
 	}
-	a.logActivityStep("ReportResponse", "start",
+	a.logActivityStep(
+		"ReportResponse", "start",
 		slog.String("project_id", request.Event.ProjectID),
 		slog.String("event_id", request.Event.ID),
 		slog.String("channel_type", string(request.Event.ChannelType)),
@@ -867,7 +878,8 @@ func (a *Activities) ReportResponse(ctx context.Context, request ReportResponseR
 	)
 	receipts, err := a.Reporter.Report(ctx, request.Event, report)
 	if err != nil {
-		a.logActivityStep("ReportResponse", "error",
+		a.logActivityStep(
+			"ReportResponse", "error",
 			slog.String("project_id", request.Event.ProjectID),
 			slog.String("event_id", request.Event.ID),
 			slog.String("error", err.Error()),
@@ -875,7 +887,8 @@ func (a *Activities) ReportResponse(ctx context.Context, request ReportResponseR
 		return ReportResponseResult{}, err
 	}
 	if err := a.persistReportedConversationMessages(ctx, request.Event, report, receipts); err != nil {
-		a.logActivityStep("ReportResponse", "conversation_error",
+		a.logActivityStep(
+			"ReportResponse", "conversation_error",
 			slog.String("project_id", request.Event.ProjectID),
 			slog.String("event_id", request.Event.ID),
 			slog.String("error", err.Error()),
@@ -883,14 +896,16 @@ func (a *Activities) ReportResponse(ctx context.Context, request ReportResponseR
 		return ReportResponseResult{}, err
 	}
 	if err := a.persistReportedConversationThreads(ctx, request.Event, receipts); err != nil {
-		a.logActivityStep("ReportResponse", "thread_error",
+		a.logActivityStep(
+			"ReportResponse", "thread_error",
 			slog.String("project_id", request.Event.ProjectID),
 			slog.String("event_id", request.Event.ID),
 			slog.String("error", err.Error()),
 		)
 		return ReportResponseResult{}, err
 	}
-	a.logActivityStep("ReportResponse", "done",
+	a.logActivityStep(
+		"ReportResponse", "done",
 		slog.String("project_id", request.Event.ProjectID),
 		slog.String("event_id", request.Event.ID),
 	)
@@ -1111,24 +1126,423 @@ func (a *Activities) EnqueueScheduledEvent(ctx context.Context, request schedule
 	if strings.TrimSpace(event.ID) == "" {
 		return fmt.Errorf("scheduled event id is required")
 	}
-	a.logActivityStep("EnqueueScheduledEvent", "start",
+	a.logActivityStep(
+		"EnqueueScheduledEvent", "start",
 		slog.String("project_id", event.ProjectID),
 		slog.String("event_id", event.ID),
 		slog.String("schedule_id", scheduled.ScheduleID(event)),
 	)
 	if err := a.EventEnqueuer.EnqueueEvent(ctx, event); err != nil {
-		a.logActivityStep("EnqueueScheduledEvent", "error",
+		a.logActivityStep(
+			"EnqueueScheduledEvent", "error",
 			slog.String("project_id", event.ProjectID),
 			slog.String("event_id", event.ID),
 			slog.String("error", err.Error()),
 		)
 		return err
 	}
-	a.logActivityStep("EnqueueScheduledEvent", "done",
+	a.logActivityStep(
+		"EnqueueScheduledEvent", "done",
 		slog.String("project_id", event.ProjectID),
 		slog.String("event_id", event.ID),
 	)
 	return nil
+}
+
+func (a *Activities) PrepareWorkflowRun(ctx context.Context, request workflowrun.PrepareRequest) (workflowrun.PrepareResult, error) {
+	input := request.Input
+	projectID := strings.TrimSpace(input.ProjectID)
+	if projectID == "" {
+		projectID = strings.TrimSpace(a.Project.ID)
+	}
+	workflowID, err := workflowbundle.NormalizeWorkflowID(input.WorkflowID)
+	if err != nil {
+		return workflowrun.PrepareResult{}, err
+	}
+	commitHash := strings.TrimSpace(input.CommitHash)
+	if commitHash == "" {
+		return workflowrun.PrepareResult{}, fmt.Errorf("commit_hash is required")
+	}
+	repoDir, err := workflowbundle.WorkflowDir(a.WorkspaceRoot, workflowID)
+	if err != nil {
+		return workflowrun.PrepareResult{}, err
+	}
+	scheduledAt := input.ScheduledAt
+	if scheduledAt.IsZero() {
+		scheduledAt = time.Now().UTC()
+	}
+	runID := strings.TrimSpace(request.TemporalRunID)
+	if runID == "" {
+		runID = stableActivityID("scheduled-workflow-run", projectID, workflowID, request.TemporalWorkflowID, scheduledAt.UTC().Format(time.RFC3339Nano))
+	}
+	runDir, err := workflowbundle.WorkflowRunDir(a.WorkspaceRoot, workflowID, runID)
+	if err != nil {
+		return workflowrun.PrepareResult{}, err
+	}
+	if err := os.RemoveAll(runDir); err != nil {
+		return workflowrun.PrepareResult{}, err
+	}
+	if err := os.MkdirAll(filepath.Join(runDir, "artifacts"), 0o755); err != nil {
+		return workflowrun.PrepareResult{}, err
+	}
+	if err := workflowbundle.ArchiveCommit(ctx, repoDir, commitHash, runDir); err != nil {
+		return workflowrun.PrepareResult{}, err
+	}
+	manifest, err := workflowbundle.LoadManifest(runDir)
+	if err != nil {
+		return workflowrun.PrepareResult{}, err
+	}
+	startedAt := time.Now().UTC()
+	if err := writeWorkflowRunState(runDir, initialWorkflowRunState(input, manifest, projectID, workflowID, runID, commitHash, request.TemporalWorkflowID, request.TemporalRunID, runDir, scheduledAt.UTC(), startedAt)); err != nil {
+		return workflowrun.PrepareResult{}, err
+	}
+	if a.Store != nil {
+		if err := a.Store.UpsertScheduledWorkflowRun(ctx, domain.ScheduledWorkflowRun{
+			ID:                 runID,
+			ProjectID:          projectID,
+			WorkflowID:         workflowID,
+			CommitHash:         commitHash,
+			TemporalWorkflowID: strings.TrimSpace(request.TemporalWorkflowID),
+			TemporalRunID:      strings.TrimSpace(request.TemporalRunID),
+			Status:             domain.ExecutionStatusRunning,
+			ScheduledAt:        scheduledAt.UTC(),
+			StartedAt:          startedAt,
+			RunPath:            runDir,
+			Metadata: domain.Metadata{
+				"schedule_id": strings.TrimSpace(input.ScheduleID),
+			},
+		}); err != nil {
+			return workflowrun.PrepareResult{}, err
+		}
+	}
+	return workflowrun.PrepareResult{RunID: runID, RunPath: runDir, Manifest: manifest}, nil
+}
+
+func (a *Activities) CleanupWorkflowRuns(ctx context.Context, request workflowrun.CleanupRunsRequest) (workflowrun.CleanupRunsResult, error) {
+	workflowID, err := workflowbundle.NormalizeWorkflowID(request.WorkflowID)
+	if err != nil {
+		return workflowrun.CleanupRunsResult{}, err
+	}
+	keep := request.KeepLast
+	if keep <= 0 {
+		keep = workflowrun.DefaultRunRetention
+	}
+	runsDir, err := workflowbundle.WorkflowRunsDir(a.WorkspaceRoot, workflowID)
+	if err != nil {
+		return workflowrun.CleanupRunsResult{}, err
+	}
+	entries, err := os.ReadDir(runsDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return workflowrun.CleanupRunsResult{}, nil
+	}
+	if err != nil {
+		return workflowrun.CleanupRunsResult{}, err
+	}
+
+	runs := make([]workflowRunDirectory, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return workflowrun.CleanupRunsResult{}, err
+		}
+		runs = append(runs, workflowRunDirectory{
+			id:      entry.Name(),
+			path:    filepath.Join(runsDir, entry.Name()),
+			modTime: info.ModTime(),
+		})
+	}
+	sort.Slice(runs, func(i, j int) bool {
+		if runs[i].modTime.Equal(runs[j].modTime) {
+			return runs[i].id > runs[j].id
+		}
+		return runs[i].modTime.After(runs[j].modTime)
+	})
+
+	keepIDs := make(map[string]bool, keep+1)
+	currentRunID := strings.TrimSpace(request.CurrentRunID)
+	for index, run := range runs {
+		if index < keep || run.id == currentRunID {
+			keepIDs[run.id] = true
+		}
+	}
+	var deleted []string
+	for _, run := range runs {
+		if keepIDs[run.id] {
+			continue
+		}
+		if workflowRunDirectoryActive(run.path) {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return workflowrun.CleanupRunsResult{DeletedRunIDs: deleted}, err
+		}
+		if err := os.RemoveAll(run.path); err != nil {
+			return workflowrun.CleanupRunsResult{DeletedRunIDs: deleted}, err
+		}
+		deleted = append(deleted, run.id)
+	}
+	return workflowrun.CleanupRunsResult{DeletedRunIDs: deleted}, nil
+}
+
+type workflowRunDirectory struct {
+	id      string
+	path    string
+	modTime time.Time
+}
+
+func workflowRunDirectoryActive(path string) bool {
+	state, err := readWorkflowRunState(path)
+	if err != nil {
+		return true
+	}
+	switch domain.ExecutionStatus(strings.TrimSpace(state.Status)) {
+	case domain.ExecutionStatusPending, domain.ExecutionStatusRunning:
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *Activities) ExecuteWorkflowStep(ctx context.Context, request workflowrun.ExecuteStepRequest) (workflowrun.ExecuteStepResult, error) {
+	stepID, err := workflowbundle.NormalizeStepID(request.Step.ID)
+	if err != nil {
+		return workflowrun.ExecuteStepResult{}, err
+	}
+	runPath := strings.TrimSpace(request.RunPath)
+	if runPath == "" {
+		return workflowrun.ExecuteStepResult{}, fmt.Errorf("run_path is required")
+	}
+	stepDir := filepath.Join(runPath, "steps", stepID)
+	if err := os.MkdirAll(stepDir, 0o755); err != nil {
+		return workflowrun.ExecuteStepResult{}, err
+	}
+	stepArtifactsDir := filepath.Join(runPath, "artifacts", stepID)
+	if err := os.MkdirAll(stepArtifactsDir, 0o755); err != nil {
+		return workflowrun.ExecuteStepResult{}, err
+	}
+	startedAt := time.Now().UTC()
+	attempt := activityAttempt(ctx)
+	stdoutPath, stderrPath := workflowStepAttemptLogPaths(stepDir, attempt)
+	if err := os.MkdirAll(filepath.Dir(stdoutPath), 0o755); err != nil {
+		return workflowrun.ExecuteStepResult{}, err
+	}
+	stepRunID := stableActivityID("scheduled-workflow-step", request.RunID, stepID, strconv.Itoa(attempt))
+	if err := upsertWorkflowStepState(runPath, workflowRunStepState{
+		ID:            stepID,
+		Status:        string(domain.ExecutionStatusRunning),
+		Attempt:       attempt,
+		Command:       request.Step.Command,
+		Args:          append([]string(nil), request.Step.Args...),
+		StartedAt:     &startedAt,
+		StdoutLogPath: stdoutPath,
+		StderrLogPath: stderrPath,
+	}); err != nil {
+		return workflowrun.ExecuteStepResult{}, err
+	}
+	if a.Store != nil {
+		_ = a.Store.UpsertScheduledWorkflowStepRun(ctx, domain.ScheduledWorkflowStepRun{
+			ID:            stepRunID,
+			ProjectID:     request.ProjectID,
+			RunID:         request.RunID,
+			WorkflowID:    request.WorkflowID,
+			StepID:        stepID,
+			Status:        domain.ExecutionStatusRunning,
+			Attempt:       attempt,
+			Command:       request.Step.Command,
+			Args:          append([]string(nil), request.Step.Args...),
+			StartedAt:     startedAt,
+			StdoutLogPath: stdoutPath,
+			StderrLogPath: stderrPath,
+		})
+	}
+
+	stdoutFile, err := os.OpenFile(stdoutPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		_ = failWorkflowStepState(runPath, stepID, attempt, request.Step, stdoutPath, stderrPath, startedAt, err)
+		return workflowrun.ExecuteStepResult{}, err
+	}
+	stderrFile, err := os.OpenFile(stderrPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		_ = stdoutFile.Close()
+		_ = failWorkflowStepState(runPath, stepID, attempt, request.Step, stdoutPath, stderrPath, startedAt, err)
+		return workflowrun.ExecuteStepResult{}, err
+	}
+
+	env, err := workflowStepEnvironment(a.WorkspaceRoot, request, stepID, stepDir)
+	if err != nil {
+		_ = stdoutFile.Close()
+		_ = stderrFile.Close()
+		_ = failWorkflowStepState(runPath, stepID, attempt, request.Step, stdoutPath, stderrPath, startedAt, err)
+		return workflowrun.ExecuteStepResult{}, err
+	}
+	cmd := osexec.CommandContext(ctx, request.Step.Command, request.Step.Args...)
+	cmd.Dir = runPath
+	cmd.Env = env
+	cmd.Stdout = stdoutFile
+	cmd.Stderr = stderrFile
+	err = cmd.Run()
+	stdoutCloseErr := stdoutFile.Close()
+	stderrCloseErr := stderrFile.Close()
+	if err == nil {
+		switch {
+		case stdoutCloseErr != nil:
+			err = stdoutCloseErr
+		case stderrCloseErr != nil:
+			err = stderrCloseErr
+		}
+	}
+	completedAt := time.Now().UTC()
+	exitCode := 0
+	if err != nil {
+		exitCode = 1
+		var exitErr *osexec.ExitError
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		}
+	}
+	stdoutTail, stdoutTruncated := tailWorkflowLog(stdoutPath, a.execTailBytes())
+	stderrTail, stderrTruncated := tailWorkflowLog(stderrPath, a.execTailBytes())
+	summary := workflowStepSummary(stdoutTail, stderrTail, stdoutTruncated, stderrTruncated)
+	status := domain.ExecutionStatusSucceeded
+	errorDetails := ""
+	if err != nil {
+		status = domain.ExecutionStatusFailed
+		errorDetails = err.Error()
+	}
+	if a.Store != nil {
+		_ = a.Store.UpsertScheduledWorkflowStepRun(ctx, domain.ScheduledWorkflowStepRun{
+			ID:            stepRunID,
+			ProjectID:     request.ProjectID,
+			RunID:         request.RunID,
+			WorkflowID:    request.WorkflowID,
+			StepID:        stepID,
+			Status:        status,
+			Attempt:       attempt,
+			Command:       request.Step.Command,
+			Args:          append([]string(nil), request.Step.Args...),
+			StartedAt:     startedAt,
+			CompletedAt:   &completedAt,
+			ExitCode:      exitCode,
+			StdoutLogPath: stdoutPath,
+			StderrLogPath: stderrPath,
+			OutputSummary: summary,
+			ErrorDetails:  errorDetails,
+			Metadata: domain.Metadata{
+				"commit_hash": strings.TrimSpace(request.CommitHash),
+			},
+		})
+	}
+	_ = upsertWorkflowStepState(runPath, workflowRunStepState{
+		ID:            stepID,
+		Status:        string(status),
+		Attempt:       attempt,
+		Command:       request.Step.Command,
+		Args:          append([]string(nil), request.Step.Args...),
+		StartedAt:     &startedAt,
+		CompletedAt:   &completedAt,
+		ExitCode:      exitCode,
+		StdoutLogPath: stdoutPath,
+		StderrLogPath: stderrPath,
+		OutputSummary: summary,
+		ErrorDetails:  errorDetails,
+	})
+	result := workflowrun.ExecuteStepResult{
+		StepID:        stepID,
+		ExitCode:      exitCode,
+		StdoutLogPath: stdoutPath,
+		StderrLogPath: stderrPath,
+		OutputSummary: summary,
+	}
+	if err != nil {
+		failure := workflowrun.StepFailure{
+			StepID:        stepID,
+			Command:       request.Step.Command,
+			Args:          append([]string(nil), request.Step.Args...),
+			ExitCode:      exitCode,
+			Error:         err.Error(),
+			OutputSummary: summary,
+			StdoutLogPath: stdoutPath,
+			StderrLogPath: stderrPath,
+		}
+		return result, temporal.NewApplicationError(workflowStepFailureMessage(failure), workflowrun.StepFailureErrorType, failure)
+	}
+	return result, nil
+}
+
+func workflowStepFailureMessage(failure workflowrun.StepFailure) string {
+	var builder strings.Builder
+	stepID := strings.TrimSpace(failure.StepID)
+	if stepID == "" {
+		stepID = "unknown"
+	}
+	fmt.Fprintf(&builder, "workflow step %q failed", stepID)
+	if failure.ExitCode != 0 {
+		fmt.Fprintf(&builder, " with exit code %d", failure.ExitCode)
+	}
+	command := strings.TrimSpace(strings.Join(append([]string{failure.Command}, failure.Args...), " "))
+	if command != "" {
+		builder.WriteString("\ncommand: ")
+		builder.WriteString(command)
+	}
+	if err := strings.TrimSpace(failure.Error); err != "" {
+		builder.WriteString("\nerror: ")
+		builder.WriteString(err)
+	}
+	if output := strings.TrimSpace(failure.OutputSummary); output != "" {
+		builder.WriteString("\n")
+		builder.WriteString(output)
+	}
+	if stderrPath := strings.TrimSpace(failure.StderrLogPath); stderrPath != "" {
+		builder.WriteString("\nstderr_log: ")
+		builder.WriteString(stderrPath)
+	}
+	if stdoutPath := strings.TrimSpace(failure.StdoutLogPath); stdoutPath != "" {
+		builder.WriteString("\nstdout_log: ")
+		builder.WriteString(stdoutPath)
+	}
+	return builder.String()
+}
+
+func (a *Activities) CompleteWorkflowRun(ctx context.Context, request workflowrun.CompleteRequest) error {
+	completedAt := time.Now().UTC()
+	if strings.TrimSpace(request.RunPath) != "" {
+		_ = completeWorkflowRunState(strings.TrimSpace(request.RunPath), request.Status, completedAt, strings.TrimSpace(request.FailureSummary))
+	}
+	if a.Store == nil {
+		return nil
+	}
+	return a.Store.UpsertScheduledWorkflowRun(ctx, domain.ScheduledWorkflowRun{
+		ID:             strings.TrimSpace(request.RunID),
+		ProjectID:      strings.TrimSpace(request.ProjectID),
+		WorkflowID:     strings.TrimSpace(request.WorkflowID),
+		RunPath:        strings.TrimSpace(request.RunPath),
+		Status:         request.Status,
+		StartedAt:      completedAt,
+		ScheduledAt:    completedAt,
+		CompletedAt:    &completedAt,
+		FailureSummary: strings.TrimSpace(request.FailureSummary),
+	})
+}
+
+func (a *Activities) NotifyWorkflowFailure(ctx context.Context, request workflowrun.NotifyFailureRequest) error {
+	if a.Reporter == nil {
+		return nil
+	}
+	message := "Scheduled workflow failed."
+	if name := strings.TrimSpace(request.Input.WorkflowName); name != "" {
+		message = "Scheduled workflow failed: " + name
+	}
+	if runID := strings.TrimSpace(request.RunID); runID != "" {
+		message += "\nrun_id: " + runID
+	}
+	if failure := strings.TrimSpace(request.FailureSummary); failure != "" {
+		message += "\nerror: " + failure
+	}
+	_, err := a.Reporter.Report(ctx, request.Input.SourceEvent, domain.ReportMessage{Text: message})
+	return err
 }
 
 func (a *Activities) PersistEvent(ctx context.Context, request PersistEventRequest) error {
@@ -1140,13 +1554,15 @@ func (a *Activities) PersistEvent(ctx context.Context, request PersistEventReque
 		event.ProjectID = strings.TrimSpace(a.Project.ID)
 	}
 	event = inferDiscordThreadContext(event)
-	a.logActivityStep("PersistEvent", "begin",
+	a.logActivityStep(
+		"PersistEvent", "begin",
 		slog.String("project_id", event.ProjectID),
 		slog.String("event_id", event.ID),
 	)
 	result, err := a.Store.AppendEvent(ctx, event)
 	if err != nil {
-		a.logActivityStep("PersistEvent", "error",
+		a.logActivityStep(
+			"PersistEvent", "error",
 			slog.String("project_id", event.ProjectID),
 			slog.String("event_id", event.ID),
 			slog.String("error", err.Error()),
@@ -1154,7 +1570,8 @@ func (a *Activities) PersistEvent(ctx context.Context, request PersistEventReque
 		return err
 	}
 	if result.Updated && result.Changed {
-		a.activityLogger().Warn("event id already existed with different content; stored event was updated",
+		a.activityLogger().Warn(
+			"event id already existed with different content; stored event was updated",
 			slog.String("project_id", event.ProjectID),
 			slog.String("event_id", event.ID),
 		)
@@ -1173,7 +1590,8 @@ func (a *Activities) PersistEvent(ctx context.Context, request PersistEventReque
 			CreatedAt:   firstNonZeroTime(event.CreatedAt, time.Now().UTC()),
 		}
 		if err := a.Store.UpsertConversationMessage(ctx, message); err != nil {
-			a.logActivityStep("PersistEvent", "conversation_error",
+			a.logActivityStep(
+				"PersistEvent", "conversation_error",
 				slog.String("project_id", event.ProjectID),
 				slog.String("event_id", event.ID),
 				slog.String("error", err.Error()),
@@ -1182,14 +1600,16 @@ func (a *Activities) PersistEvent(ctx context.Context, request PersistEventReque
 		}
 	}
 	if err := a.persistConversationThread(ctx, conversationThreadFromEvent(event)); err != nil {
-		a.logActivityStep("PersistEvent", "thread_error",
+		a.logActivityStep(
+			"PersistEvent", "thread_error",
 			slog.String("project_id", event.ProjectID),
 			slog.String("event_id", event.ID),
 			slog.String("error", err.Error()),
 		)
 		return err
 	}
-	a.logActivityStep("PersistEvent", "done",
+	a.logActivityStep(
+		"PersistEvent", "done",
 		slog.String("project_id", event.ProjectID),
 		slog.String("event_id", event.ID),
 		slog.Bool("inserted", result.Inserted),
@@ -1298,7 +1718,8 @@ func (a *Activities) CompressConversation(ctx context.Context, request CompressC
 	if err := a.Store.UpsertConversationSummary(ctx, summary); err != nil {
 		return CompressConversationResult{}, err
 	}
-	a.logActivityStep("CompressConversation", "done",
+	a.logActivityStep(
+		"CompressConversation", "done",
 		slog.String("project_id", event.ProjectID),
 		slog.String("event_id", event.ID),
 		slog.String("scope", string(summaryScope)),
@@ -1390,14 +1811,16 @@ func (a *Activities) PersistNextAction(ctx context.Context, request PersistNextA
 	if strings.TrimSpace(event.ProjectID) == "" {
 		event.ProjectID = strings.TrimSpace(a.Project.ID)
 	}
-	a.logActivityStep("PersistNextAction", "begin",
+	a.logActivityStep(
+		"PersistNextAction", "begin",
 		slog.String("project_id", event.ProjectID),
 		slog.String("event_id", event.ID),
 		slog.String("status", request.Status),
 		slog.Int("work_items", len(request.NextAction.WorkItems)),
 	)
 	if err := a.persistNextAction(ctx, request.NextAction); err != nil {
-		a.logActivityStep("PersistNextAction", "work_items_error",
+		a.logActivityStep(
+			"PersistNextAction", "work_items_error",
 			slog.String("project_id", event.ProjectID),
 			slog.String("event_id", event.ID),
 			slog.String("error", err.Error()),
@@ -1423,7 +1846,8 @@ func (a *Activities) PersistNextAction(ctx context.Context, request PersistNextA
 				Metadata:    metadata,
 				CreatedAt:   time.Now().UTC(),
 			}); err != nil {
-				a.logActivityStep("PersistNextAction", "conversation_error",
+				a.logActivityStep(
+					"PersistNextAction", "conversation_error",
 					slog.String("project_id", event.ProjectID),
 					slog.String("event_id", event.ID),
 					slog.String("error", err.Error()),
@@ -1432,7 +1856,8 @@ func (a *Activities) PersistNextAction(ctx context.Context, request PersistNextA
 			}
 		}
 	}
-	a.logActivityStep("PersistNextAction", "done",
+	a.logActivityStep(
+		"PersistNextAction", "done",
 		slog.String("project_id", event.ProjectID),
 		slog.String("event_id", event.ID),
 		slog.String("status", request.Status),
@@ -1456,7 +1881,8 @@ func (a *Activities) PersistToolResult(ctx context.Context, request PersistToolR
 	if err != nil {
 		return err
 	}
-	a.logActivityStep("PersistToolResult", "begin",
+	a.logActivityStep(
+		"PersistToolResult", "begin",
 		slog.String("project_id", records.Attempt.ProjectID),
 		slog.String("work_item_id", records.Attempt.WorkItemID),
 		slog.String("tool_call_id", result.ToolCallID),
@@ -1473,7 +1899,8 @@ func (a *Activities) PersistToolResult(ctx context.Context, request PersistToolR
 			return err
 		}
 	}
-	a.logActivityStep("PersistToolResult", "done",
+	a.logActivityStep(
+		"PersistToolResult", "done",
 		slog.String("project_id", records.Attempt.ProjectID),
 		slog.String("work_item_id", records.Attempt.WorkItemID),
 		slog.String("tool_call_id", result.ToolCallID),
@@ -1562,7 +1989,8 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 	if request.Completion != nil {
 		return a.completeTask(ctx, request.ProjectID, request.Event, agent.NextAction{}, *request.Completion, false, false)
 	}
-	a.logActivityStep("NextAction", "start",
+	a.logActivityStep(
+		"NextAction", "start",
 		slog.String("project_id", strings.TrimSpace(request.ProjectID)),
 		slog.String("event_id", request.Event.ID),
 		slog.Int("execution_cycle", request.ExecutionCycle),
@@ -1587,14 +2015,16 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 	}
 	event.ProjectID = projectID
 
-	a.logActivityStep("NextAction", "load_context_begin",
+	a.logActivityStep(
+		"NextAction", "load_context_begin",
 		slog.String("project_id", projectID),
 		slog.String("event_id", event.ID),
 	)
 	conversationEvent := latestConversationContextEvent(event, request.AdditionalEvents)
 	loaded, err := a.loadContext(ctx, event, conversationEvent, request.AdditionalEvents)
 	if err != nil {
-		a.logActivityStep("NextAction", "load_context_error",
+		a.logActivityStep(
+			"NextAction", "load_context_error",
 			slog.String("project_id", projectID),
 			slog.String("event_id", event.ID),
 			slog.String("error", err.Error()),
@@ -1602,7 +2032,8 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		return NextActionResult{}, err
 	}
 	loaded.AdditionalEvents = append([]domain.Event(nil), request.AdditionalEvents...)
-	a.logActivityStep("NextAction", "load_context_done",
+	a.logActivityStep(
+		"NextAction", "load_context_done",
 		slog.String("project_id", projectID),
 		slog.String("event_id", event.ID),
 		slog.Int("active_work_items", len(loaded.ActiveWorkItems)),
@@ -1611,14 +2042,16 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 	now := time.Now().UTC()
 	nextAction := request.NextAction
 	if err := ensureNextAction(&nextAction, projectID, event, now); err != nil {
-		a.logActivityStep("NextAction", "ensure_next_action_error",
+		a.logActivityStep(
+			"NextAction", "ensure_next_action_error",
 			slog.String("project_id", projectID),
 			slog.String("event_id", event.ID),
 			slog.String("error", err.Error()),
 		)
 		return NextActionResult{}, err
 	}
-	a.logActivityStep("NextAction", "ensure_next_action_done",
+	a.logActivityStep(
+		"NextAction", "ensure_next_action_done",
 		slog.String("project_id", projectID),
 		slog.String("event_id", event.ID),
 		slog.Int("work_items", len(nextAction.WorkItems)),
@@ -1627,7 +2060,8 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 	history := append([]agent.ExecutionFeedback(nil), request.ObservationHistory...)
 	var observations []agent.ExecutionFeedback
 	if len(request.LastResults) > 0 || request.LastResult != nil {
-		a.logActivityStep("NextAction", "apply_last_result_begin",
+		a.logActivityStep(
+			"NextAction", "apply_last_result_begin",
 			slog.String("project_id", projectID),
 			slog.String("event_id", event.ID),
 			slog.Int("last_results", len(request.LastResults)),
@@ -1642,7 +2076,8 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 			observations = append(observations, feedback)
 			history = append(history, feedback)
 			if err := applyObservationToNextAction(&nextAction, feedback, now); err != nil {
-				a.logActivityStep("NextAction", "apply_last_result_error",
+				a.logActivityStep(
+					"NextAction", "apply_last_result_error",
 					slog.String("project_id", projectID),
 					slog.String("event_id", event.ID),
 					slog.String("work_item_id", feedback.WorkItemID),
@@ -1652,7 +2087,8 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 				return NextActionResult{}, err
 			}
 		}
-		a.logActivityStep("NextAction", "apply_last_result_done",
+		a.logActivityStep(
+			"NextAction", "apply_last_result_done",
 			slog.String("project_id", projectID),
 			slog.String("event_id", event.ID),
 			slog.Int("applied_results", len(observations)),
@@ -1660,7 +2096,8 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		)
 	}
 
-	a.logActivityStep("NextAction", "engine_next_action_begin",
+	a.logActivityStep(
+		"NextAction", "engine_next_action_begin",
 		slog.String("project_id", projectID),
 		slog.String("event_id", event.ID),
 		slog.Int("execution_cycle", request.ExecutionCycle),
@@ -1679,14 +2116,16 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		ChannelType:        event.ChannelType,
 	})
 	if err != nil {
-		a.logActivityStep("NextAction", "engine_next_action_error",
+		a.logActivityStep(
+			"NextAction", "engine_next_action_error",
 			slog.String("project_id", projectID),
 			slog.String("event_id", event.ID),
 			slog.String("error", err.Error()),
 		)
 		return NextActionResult{}, err
 	}
-	a.logActivityStep("NextAction", "engine_next_action_done",
+	a.logActivityStep(
+		"NextAction", "engine_next_action_done",
 		slog.String("project_id", projectID),
 		slog.String("event_id", event.ID),
 		slog.String("status", engineOutput.Status),
@@ -1697,21 +2136,24 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		nextAction = engineOutput.NextAction
 	}
 	if err := ensureNextAction(&nextAction, projectID, event, now); err != nil {
-		a.logActivityStep("NextAction", "ensure_engine_next_action_error",
+		a.logActivityStep(
+			"NextAction", "ensure_engine_next_action_error",
 			slog.String("project_id", projectID),
 			slog.String("event_id", event.ID),
 			slog.String("error", err.Error()),
 		)
 		return NextActionResult{}, err
 	}
-	a.logActivityStep("NextAction", "ensure_engine_next_action_done",
+	a.logActivityStep(
+		"NextAction", "ensure_engine_next_action_done",
 		slog.String("project_id", projectID),
 		slog.String("event_id", event.ID),
 		slog.Int("work_items", len(nextAction.WorkItems)),
 	)
 
 	if request.ForceFinal {
-		a.logActivityStep("NextAction", "force_final_override_status",
+		a.logActivityStep(
+			"NextAction", "force_final_override_status",
 			slog.String("project_id", projectID),
 			slog.String("event_id", event.ID),
 		)
@@ -1722,7 +2164,8 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		}
 	}
 
-	a.logActivityStep("NextAction", "dispatch_status",
+	a.logActivityStep(
+		"NextAction", "dispatch_status",
 		slog.String("project_id", projectID),
 		slog.String("event_id", event.ID),
 		slog.String("status", engineOutput.Status),
@@ -1773,7 +2216,8 @@ func inferDiscordThreadContext(event domain.Event) domain.Event {
 }
 
 func (a *Activities) prepareToolNextAction(ctx context.Context, nextAction agent.NextAction, observations []agent.ExecutionFeedback, output agent.NextActionOutput, cycle int, now time.Time) (NextActionResult, error) {
-	a.logActivityStep("NextAction", "prepare_tool_begin",
+	a.logActivityStep(
+		"NextAction", "prepare_tool_begin",
 		slog.Int("execution_cycle", cycle),
 		slog.Int("observations", len(observations)),
 		slog.Bool("has_tool_choice", output.ToolChoice != nil),
@@ -1793,31 +2237,36 @@ func (a *Activities) prepareToolNextAction(ctx context.Context, nextAction agent
 	choice := choices[0]
 	workItemID := nextActionToolWorkItemID(nextAction, observation)
 	if strings.TrimSpace(workItemID) == "" {
-		a.logActivityStep("NextAction", "prepare_tool_missing_work_item_id",
+		a.logActivityStep(
+			"NextAction", "prepare_tool_missing_work_item_id",
 			slog.String("tool_call_id", choice.ToolCallID),
 		)
 		return NextActionResult{}, fmt.Errorf("%w: tool choice is missing work item id", agent.ErrInvalidToolChoice)
 	}
-	a.logActivityStep("NextAction", "prepare_tool_work_item_resolved",
+	a.logActivityStep(
+		"NextAction", "prepare_tool_work_item_resolved",
 		slog.String("work_item_id", workItemID),
 		slog.String("tool_type", string(choice.Type)),
 		slog.String("tool_call_id", choice.ToolCallID),
 	)
 	if err := ensureToolWorkItem(&nextAction, workItemID, now); err != nil {
-		a.logActivityStep("NextAction", "prepare_tool_ensure_work_item_error",
+		a.logActivityStep(
+			"NextAction", "prepare_tool_ensure_work_item_error",
 			slog.String("work_item_id", workItemID),
 			slog.String("error", err.Error()),
 		)
 		return NextActionResult{}, err
 	}
 	if err := completePreviousWorkItemForNextAction(&nextAction, workItemID, observation, now); err != nil {
-		a.logActivityStep("NextAction", "prepare_tool_complete_previous_error",
+		a.logActivityStep(
+			"NextAction", "prepare_tool_complete_previous_error",
 			slog.String("work_item_id", workItemID),
 			slog.String("error", err.Error()),
 		)
 		return NextActionResult{}, err
 	}
-	a.logActivityStep("NextAction", "prepare_tool_work_items_ready",
+	a.logActivityStep(
+		"NextAction", "prepare_tool_work_items_ready",
 		slog.String("work_item_id", workItemID),
 		slog.Int("work_items", len(nextAction.WorkItems)),
 	)
@@ -1844,7 +2293,8 @@ func (a *Activities) prepareToolNextAction(ctx context.Context, nextAction agent
 	nextAction.ToolChoice = choice
 	nextAction.ResponseMessage = ""
 
-	a.logActivityStep("NextAction", "prepare_tool_done",
+	a.logActivityStep(
+		"NextAction", "prepare_tool_done",
 		slog.String("work_item_id", workItemID),
 		slog.String("tool_call_id", choice.ToolCallID),
 		slog.String("tool_type", string(choice.Type)),
@@ -1862,7 +2312,8 @@ func (a *Activities) prepareToolNextAction(ctx context.Context, nextAction agent
 }
 
 func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, nextAction agent.NextAction, observation *agent.ExecutionFeedback, observations []agent.ExecutionFeedback, output agent.NextActionOutput, processes []domain.ProcessReference, now time.Time) (NextActionResult, error) {
-	a.logActivityStep("NextAction", "finish_begin",
+	a.logActivityStep(
+		"NextAction", "finish_begin",
 		slog.String("project_id", event.ProjectID),
 		slog.String("event_id", event.ID),
 		slog.String("status", output.Status),
@@ -1871,7 +2322,8 @@ func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, n
 	message := strings.TrimSpace(output.NextAction.ResponseMessage)
 	attachments := append([]domain.ReportAttachment(nil), output.NextAction.ResponseAttachments...)
 	if message == "" && len(attachments) == 0 {
-		a.logActivityStep("NextAction", "finish_missing_response_message",
+		a.logActivityStep(
+			"NextAction", "finish_missing_response_message",
 			slog.String("project_id", event.ProjectID),
 			slog.String("event_id", event.ID),
 			slog.String("status", output.Status),
@@ -1892,7 +2344,8 @@ func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, n
 	}
 	result.Observation = observation
 	result.Observations = observations
-	a.logActivityStep("NextAction", "finish_done",
+	a.logActivityStep(
+		"NextAction", "finish_done",
 		slog.String("project_id", event.ProjectID),
 		slog.String("event_id", event.ID),
 		slog.String("status", result.Status),
@@ -1908,7 +2361,8 @@ func (a *Activities) completeTask(ctx context.Context, projectID string, event d
 	if status == "" {
 		status = NextActionStatusFailed
 	}
-	a.logActivityStep("NextAction", "complete_task_begin",
+	a.logActivityStep(
+		"NextAction", "complete_task_begin",
 		slog.String("project_id", event.ProjectID),
 		slog.String("event_id", event.ID),
 		slog.String("status", status),
@@ -1930,7 +2384,8 @@ func (a *Activities) completeTask(ctx context.Context, projectID string, event d
 	attachments := append([]domain.ReportAttachment(nil), nextAction.ResponseAttachments...)
 	if persist {
 		if err := a.persistNextAction(ctx, nextAction); err != nil {
-			a.logActivityStep("NextAction", "complete_task_persist_error",
+			a.logActivityStep(
+				"NextAction", "complete_task_persist_error",
 				slog.String("project_id", event.ProjectID),
 				slog.String("event_id", event.ID),
 				slog.String("error", err.Error()),
@@ -1940,26 +2395,30 @@ func (a *Activities) completeTask(ctx context.Context, projectID string, event d
 	}
 	reportMessage := domain.ReportMessage{Text: message, Attachments: attachments}
 	if report && status != NextActionStatusIgnored && a.Reporter != nil && !reportMessage.Empty() {
-		a.logActivityStep("NextAction", "complete_task_report_begin",
+		a.logActivityStep(
+			"NextAction", "complete_task_report_begin",
 			slog.String("project_id", event.ProjectID),
 			slog.String("event_id", event.ID),
 			slog.String("status", status),
 		)
 		if _, err := a.Reporter.Report(ctx, event, reportMessage); err != nil {
-			a.logActivityStep("NextAction", "complete_task_report_error",
+			a.logActivityStep(
+				"NextAction", "complete_task_report_error",
 				slog.String("project_id", event.ProjectID),
 				slog.String("event_id", event.ID),
 				slog.String("error", err.Error()),
 			)
 			return NextActionResult{}, err
 		}
-		a.logActivityStep("NextAction", "complete_task_report_done",
+		a.logActivityStep(
+			"NextAction", "complete_task_report_done",
 			slog.String("project_id", event.ProjectID),
 			slog.String("event_id", event.ID),
 			slog.String("status", status),
 		)
 	}
-	a.logActivityStep("NextAction", "complete_task_done",
+	a.logActivityStep(
+		"NextAction", "complete_task_done",
 		slog.String("project_id", event.ProjectID),
 		slog.String("event_id", event.ID),
 		slog.String("status", status),
@@ -2051,7 +2510,8 @@ func processRefs(processes []domain.ProcessReference, running bool) string {
 
 func (a *Activities) persistNextAction(ctx context.Context, nextAction agent.NextAction) error {
 	if a.Store == nil {
-		a.logActivityStep("NextAction", "persist_next_action_skip_no_store",
+		a.logActivityStep(
+			"NextAction", "persist_next_action_skip_no_store",
 			slog.Int("work_items", len(nextAction.WorkItems)),
 		)
 		return nil
@@ -2068,7 +2528,8 @@ func (a *Activities) persistNextAction(ctx context.Context, nextAction agent.Nex
 }
 
 func (a *Activities) ExecuteMemoryTool(ctx context.Context, request ExecuteToolRequest) (ExecuteToolResult, error) {
-	a.logActivityStep("ExecuteMemoryTool", "start",
+	a.logActivityStep(
+		"ExecuteMemoryTool", "start",
 		slog.String("project_id", strings.TrimSpace(request.ProjectID)),
 		slog.String("work_item_id", strings.TrimSpace(request.WorkItemID)),
 		slog.String("tool_type", string(request.ToolChoice.Type)),
@@ -2172,7 +2633,8 @@ func (a *Activities) ExecuteMemoryTool(ctx context.Context, request ExecuteToolR
 		ToolInvocation:   invocation,
 	}
 	result.ToolInvocation.OutputPayload = firstRawMessage(run.Payload, executeToolResultPayload(result))
-	a.logActivityStep("ExecuteMemoryTool", "done",
+	a.logActivityStep(
+		"ExecuteMemoryTool", "done",
 		slog.String("project_id", execution.ProjectID),
 		slog.String("work_item_id", execution.WorkItemID),
 		slog.String("tool_call_id", execution.ToolCallID),
@@ -2185,7 +2647,8 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 	if request.ToolChoice.Type == domain.ToolTypeExec && request.ToolChoice.RunMode == domain.ToolRunModeStartBackground {
 		return a.startExecProcess(ctx, request)
 	}
-	a.logActivityStep("ExecuteTool", "start",
+	a.logActivityStep(
+		"ExecuteTool", "start",
 		slog.String("project_id", strings.TrimSpace(request.ProjectID)),
 		slog.String("work_item_id", strings.TrimSpace(request.WorkItemID)),
 		slog.String("tool_type", string(request.ToolChoice.Type)),
@@ -2196,14 +2659,16 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 	)
 	execution, err := newToolExecutionContext(request)
 	if err != nil {
-		a.logActivityStep("ExecuteTool", "new_execution_context_error",
+		a.logActivityStep(
+			"ExecuteTool", "new_execution_context_error",
 			slog.String("project_id", strings.TrimSpace(request.ProjectID)),
 			slog.String("work_item_id", strings.TrimSpace(request.WorkItemID)),
 			slog.String("error", err.Error()),
 		)
 		return ExecuteToolResult{}, err
 	}
-	a.logActivityStep("ExecuteTool", "new_execution_context_done",
+	a.logActivityStep(
+		"ExecuteTool", "new_execution_context_done",
 		slog.String("project_id", execution.ProjectID),
 		slog.String("work_item_id", execution.WorkItemID),
 		slog.String("tool_call_id", execution.ToolCallID),
@@ -2229,14 +2694,16 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 		},
 	}
 
-	a.logActivityStep("ExecuteTool", "tool_run_begin",
+	a.logActivityStep(
+		"ExecuteTool", "tool_run_begin",
 		slog.String("project_id", execution.ProjectID),
 		slog.String("work_item_id", execution.WorkItemID),
 		slog.String("tool_call_id", execution.ToolCallID),
 		slog.String("tool_type", string(request.ToolChoice.Type)),
 	)
 	toolResult, runErr := a.runChosenTool(ctx, request.ToolChoice, execution)
-	a.logActivityStep("ExecuteTool", "tool_run_done",
+	a.logActivityStep(
+		"ExecuteTool", "tool_run_done",
 		slog.String("project_id", execution.ProjectID),
 		slog.String("work_item_id", execution.WorkItemID),
 		slog.String("tool_call_id", execution.ToolCallID),
@@ -2293,7 +2760,8 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 
 	var errorMessage string
 	if runErr != nil {
-		a.logActivityStep("ExecuteTool", "tool_run_result_error",
+		a.logActivityStep(
+			"ExecuteTool", "tool_run_result_error",
 			slog.String("project_id", execution.ProjectID),
 			slog.String("work_item_id", execution.WorkItemID),
 			slog.String("tool_call_id", execution.ToolCallID),
@@ -2308,7 +2776,8 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 		}
 		errorMessage = runErr.Error()
 	} else {
-		a.logActivityStep("ExecuteTool", "tool_run_result_success",
+		a.logActivityStep(
+			"ExecuteTool", "tool_run_result_success",
 			slog.String("project_id", execution.ProjectID),
 			slog.String("work_item_id", execution.WorkItemID),
 			slog.String("tool_call_id", execution.ToolCallID),
@@ -2317,7 +2786,8 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 		attempt.OutputSummary = firstNonEmpty(toolResult.Observation, "Execution completed.")
 		invocation.OutputSummary = attempt.OutputSummary
 	}
-	a.logActivityStep("ExecuteTool", "done",
+	a.logActivityStep(
+		"ExecuteTool", "done",
 		slog.String("project_id", execution.ProjectID),
 		slog.String("work_item_id", execution.WorkItemID),
 		slog.String("tool_call_id", execution.ToolCallID),
@@ -2494,8 +2964,8 @@ func (a *Activities) runChosenTool(ctx context.Context, choice agent.ToolChoice,
 		return a.runGlobTool(ctx, choice, execution)
 	case domain.ToolTypeGrep:
 		return a.runGrepTool(ctx, choice, execution)
-	case domain.ToolTypeSchedule:
-		return a.runScheduleTool(ctx, choice, execution)
+	case domain.ToolTypeWorkflowCreate, domain.ToolTypeWorkflowUpdate, domain.ToolTypeWorkflowDelete, domain.ToolTypeWorkflowOperation:
+		return a.runWorkflowTool(ctx, choice, execution)
 	case domain.ToolTypeSkill:
 		return a.runSkillTool(ctx, choice)
 	default:
@@ -2590,7 +3060,8 @@ func execObservation(result exectool.Result, err error) string {
 	observation := fullObservation(result.Stdout, result.Stderr, err)
 	var notes []string
 	if result.ManagedProcess != nil {
-		notes = append(notes,
+		notes = append(
+			notes,
 			"status: running",
 			"process_id: "+result.ManagedProcess.ID,
 			"possible_long_running_process: true",
@@ -2651,14 +3122,19 @@ func (a *Activities) runEditTool(ctx context.Context, choice agent.ToolChoice) (
 		executor = edittool.NewTool()
 	}
 	result, err := executor.Run(ctx, req)
+	observation := editObservation(result, err)
+	metadata := map[string]string{
+		"file_path":     result.FilePath,
+		"replacements":  strconv.Itoa(result.Replacements),
+		"bytes_written": strconv.Itoa(result.BytesWritten),
+	}
+	if err == nil {
+		observation, metadata = appendWorkflowUpdateNotice(observation, metadata, a.WorkspaceRoot, result.FilePath)
+	}
 	return toolRunResult{
-		Observation: editObservation(result, err),
+		Observation: observation,
 		ResultCode:  resultCodeForError(err),
-		Metadata: map[string]string{
-			"file_path":     result.FilePath,
-			"replacements":  strconv.Itoa(result.Replacements),
-			"bytes_written": strconv.Itoa(result.BytesWritten),
-		},
+		Metadata:    metadata,
 	}, err
 }
 
@@ -2683,8 +3159,12 @@ func (a *Activities) runWriteTool(ctx context.Context, choice agent.ToolChoice, 
 	if result.Duration > 0 {
 		metadata["duration_ms"] = strconv.FormatInt(result.Duration.Milliseconds(), 10)
 	}
+	observation := writeObservation(result, err)
+	if err == nil {
+		observation, metadata = appendWorkflowUpdateNotice(observation, metadata, a.WorkspaceRoot, result.FilePath)
+	}
 	return toolRunResult{
-		Observation: writeObservation(result, err),
+		Observation: observation,
 		ResultCode:  resultCodeForError(err),
 		Metadata:    metadata,
 	}, err
@@ -2767,29 +3247,70 @@ func (a *Activities) runGrepTool(ctx context.Context, choice agent.ToolChoice, e
 	}, err
 }
 
-func (a *Activities) runScheduleTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
-	var req scheduletool.Request
-	if err := decodeChoiceInput(choice, &req); err != nil {
-		return toolRunResult{ResultCode: "1"}, err
-	}
-	req.ProjectID = execution.ProjectID
-	req.WorkItemID = execution.WorkItemID
-	req.ToolCallID = execution.ToolCallID
-	req.Intent = choice.Intent
-	req.SourceEvent = execution.SourceEvent
-
+func (a *Activities) runWorkflowTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
 	executor := a.Schedule
 	if executor == nil {
-		return toolRunResult{ResultCode: "1"}, fmt.Errorf("schedule executor is not configured")
+		return toolRunResult{ResultCode: "1"}, fmt.Errorf("workflow schedule executor is not configured")
 	}
-	result, err := executor.Run(ctx, req)
+	var result scheduletool.Result
+	var err error
+	switch choice.Type {
+	case domain.ToolTypeWorkflowCreate:
+		var req scheduletool.CreateRequest
+		if decodeErr := decodeChoiceInput(choice, &req); decodeErr != nil {
+			return toolRunResult{ResultCode: "1"}, decodeErr
+		}
+		req.ProjectID = execution.ProjectID
+		req.WorkItemID = execution.WorkItemID
+		req.ToolCallID = execution.ToolCallID
+		req.Intent = choice.Intent
+		req.SourceEvent = execution.SourceEvent
+		result, err = executor.Create(ctx, req)
+	case domain.ToolTypeWorkflowUpdate:
+		var req scheduletool.UpdateRequest
+		if decodeErr := decodeChoiceInput(choice, &req); decodeErr != nil {
+			return toolRunResult{ResultCode: "1"}, decodeErr
+		}
+		req.ProjectID = execution.ProjectID
+		req.WorkItemID = execution.WorkItemID
+		req.ToolCallID = execution.ToolCallID
+		req.Intent = choice.Intent
+		req.SourceEvent = execution.SourceEvent
+		result, err = executor.Update(ctx, req)
+	case domain.ToolTypeWorkflowDelete:
+		var req scheduletool.DeleteRequest
+		if decodeErr := decodeChoiceInput(choice, &req); decodeErr != nil {
+			return toolRunResult{ResultCode: "1"}, decodeErr
+		}
+		req.ProjectID = execution.ProjectID
+		req.WorkItemID = execution.WorkItemID
+		req.ToolCallID = execution.ToolCallID
+		req.Intent = choice.Intent
+		req.SourceEvent = execution.SourceEvent
+		result, err = executor.Delete(ctx, req)
+	case domain.ToolTypeWorkflowOperation:
+		var req scheduletool.OperationRequest
+		if decodeErr := decodeChoiceInput(choice, &req); decodeErr != nil {
+			return toolRunResult{ResultCode: "1"}, decodeErr
+		}
+		req.ProjectID = execution.ProjectID
+		req.WorkItemID = execution.WorkItemID
+		req.ToolCallID = execution.ToolCallID
+		req.Intent = choice.Intent
+		req.SourceEvent = execution.SourceEvent
+		result, err = executor.Operation(ctx, req)
+	default:
+		return toolRunResult{ResultCode: "1"}, fmt.Errorf("unsupported workflow tool type %q", choice.Type)
+	}
 	metadata := map[string]string{
-		"schedule_operation":   result.Operation,
-		"schedule_id":          result.ScheduleID,
-		"schedule_name":        result.Name,
-		"schedule_description": result.Description,
-		"schedule_kind":        result.Kind,
-		"schedule_time_zone":   result.TimeZone,
+		"workflow_schedule_operation": result.Operation,
+		"workflow_id":                 result.WorkflowID,
+		"schedule_id":                 result.ScheduleID,
+		"workflow_name":               result.Name,
+		"workflow_description":        result.Description,
+		"workflow_commit_hash":        result.CommitHash,
+		"workflow_path":               result.WorkflowPath,
+		"schedule_time_zone":          result.TimeZone,
 	}
 	if result.OneShotAt != "" {
 		metadata["one_shot_at"] = result.OneShotAt
@@ -2925,7 +3446,8 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 		query := strings.TrimSpace(req.Query)
 		conversation, _, err := a.loadConversationContext(ctx, sourceEvent)
 		if err != nil {
-			a.logActivityStep("Memory", "tool_search_conversation_context_failed",
+			a.logActivityStep(
+				"Memory", "tool_search_conversation_context_failed",
 				slog.String("project_id", execution.ProjectID),
 				slog.String("tool_call_id", execution.ToolCallID),
 				slog.String("error", err.Error()),
@@ -3171,7 +3693,8 @@ func readObservation(result readtool.Result, err error) string {
 		return fullObservation("", "", err)
 	}
 	var builder strings.Builder
-	_, _ = fmt.Fprintf(&builder, "file: %s\nlines: %d/%d\nbytes: %d\ntruncated: %t",
+	_, _ = fmt.Fprintf(
+		&builder, "file: %s\nlines: %d/%d\nbytes: %d\ntruncated: %t",
 		result.FilePath,
 		result.LinesRead,
 		result.TotalLines,
@@ -3187,7 +3710,8 @@ func readObservation(result readtool.Result, err error) string {
 
 func readBatchObservation(result readtool.Result, err error) string {
 	var builder strings.Builder
-	_, _ = fmt.Fprintf(&builder, "files: %d\nlines: %d/%d\nbytes: %d\ntruncated: %t",
+	_, _ = fmt.Fprintf(
+		&builder, "files: %d\nlines: %d/%d\nbytes: %d\ntruncated: %t",
 		len(result.Actions),
 		result.LinesRead,
 		result.TotalLines,
@@ -3195,7 +3719,8 @@ func readBatchObservation(result readtool.Result, err error) string {
 		result.Truncated,
 	)
 	for _, action := range result.Actions {
-		_, _ = fmt.Fprintf(&builder, "\n\nfile: %s\nlines: %d/%d\nbytes: %d\ntruncated: %t",
+		_, _ = fmt.Fprintf(
+			&builder, "\n\nfile: %s\nlines: %d/%d\nbytes: %d\ntruncated: %t",
 			action.FilePath,
 			action.LinesRead,
 			action.TotalLines,
@@ -3228,6 +3753,48 @@ func writeObservation(result writetool.Result, err error) string {
 	return fmt.Sprintf("wrote: %s\nbytes_written: %d\noverwritten: %t", result.FilePath, result.BytesWritten, result.Overwritten)
 }
 
+func appendWorkflowUpdateNotice(observation string, metadata map[string]string, workspaceRoot, filePath string) (string, map[string]string) {
+	workflowID, ok := workflowSourceWorkflowID(workspaceRoot, filePath)
+	if !ok {
+		return observation, metadata
+	}
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	metadata["workflow_update_required"] = "true"
+	metadata["workflow_id"] = workflowID
+	notice := "workflow_update_required: true\nworkflow_id: " + workflowID + "\nnext_action: call WorkflowUpdate before triggering or running this workflow so Git is committed and the schedule points to the new commit"
+	observation = strings.TrimSpace(observation)
+	if observation == "" {
+		return notice, metadata
+	}
+	return observation + "\n\n" + notice, metadata
+}
+
+func workflowSourceWorkflowID(workspaceRoot, filePath string) (string, bool) {
+	openCTODir, err := workflowbundle.OpenCTODir(workspaceRoot)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(filepath.Join(openCTODir, "workflows"), filepath.Clean(strings.TrimSpace(filePath)))
+	if err != nil || rel == "." {
+		return "", false
+	}
+	rel = filepath.ToSlash(rel)
+	if strings.HasPrefix(rel, "../") || rel == ".." || strings.HasPrefix(rel, "/") {
+		return "", false
+	}
+	parts := strings.Split(rel, "/")
+	if len(parts) < 2 || parts[1] == ".git" {
+		return "", false
+	}
+	workflowID, err := workflowbundle.NormalizeWorkflowID(parts[0])
+	if err != nil {
+		return "", false
+	}
+	return workflowID, true
+}
+
 func globObservation(result globtool.Result, err error) string {
 	if len(result.Actions) > 0 {
 		return globBatchObservation(result, err)
@@ -3238,7 +3805,8 @@ func globObservation(result globtool.Result, err error) string {
 	if len(result.Matches) == 0 {
 		return fmt.Sprintf("pattern: %s\npath: %s\nmatches: 0", result.Pattern, result.Root)
 	}
-	return fmt.Sprintf("pattern: %s\npath: %s\nmatches: %d\n%s",
+	return fmt.Sprintf(
+		"pattern: %s\npath: %s\nmatches: %d\n%s",
 		result.Pattern,
 		result.Root,
 		len(result.Matches),
@@ -3250,7 +3818,8 @@ func globBatchObservation(result globtool.Result, err error) string {
 	var builder strings.Builder
 	_, _ = fmt.Fprintf(&builder, "patterns: %d\nmatches: %d", len(result.Actions), len(result.Matches))
 	for _, action := range result.Actions {
-		_, _ = fmt.Fprintf(&builder, "\n\npattern: %s\npath: %s\nmatches: %d",
+		_, _ = fmt.Fprintf(
+			&builder, "\n\npattern: %s\npath: %s\nmatches: %d",
 			action.Pattern,
 			action.Root,
 			len(action.Matches),
@@ -3281,7 +3850,8 @@ func skillObservation(result skilltool.Result, err error) string {
 	if err != nil {
 		return fullObservation("", "", err)
 	}
-	return fmt.Sprintf("<skill_content name=%q>\n%s\n\nSkill directory: %s\nRelative paths in this skill are relative to the skill directory.\n</skill_content>",
+	return fmt.Sprintf(
+		"<skill_content name=%q>\n%s\n\nSkill directory: %s\nRelative paths in this skill are relative to the skill directory.\n</skill_content>",
 		result.SkillID,
 		strings.TrimSpace(result.Content),
 		filepath.Dir(result.Path),
@@ -3787,6 +4357,281 @@ func workspaceEnvironment(workspaceRoot, openCTORoot string) map[string]string {
 	return env
 }
 
+type workflowRunState struct {
+	SchemaVersion      int                    `json:"schema_version"`
+	ProjectID          string                 `json:"project_id"`
+	WorkflowID         string                 `json:"workflow_id"`
+	WorkflowName       string                 `json:"workflow_name,omitempty"`
+	RunID              string                 `json:"run_id"`
+	RunPath            string                 `json:"run_path"`
+	Status             string                 `json:"status"`
+	CommitHash         string                 `json:"commit_hash"`
+	TemporalWorkflowID string                 `json:"temporal_workflow_id,omitempty"`
+	TemporalRunID      string                 `json:"temporal_run_id,omitempty"`
+	ScheduleID         string                 `json:"schedule_id,omitempty"`
+	SourceEventID      string                 `json:"source_event_id,omitempty"`
+	Env                []string               `json:"env,omitempty"`
+	ScheduledAt        time.Time              `json:"scheduled_at"`
+	StartedAt          time.Time              `json:"started_at"`
+	CompletedAt        *time.Time             `json:"completed_at,omitempty"`
+	FailureSummary     string                 `json:"failure_summary,omitempty"`
+	Steps              []workflowRunStepState `json:"steps"`
+	UpdatedAt          time.Time              `json:"updated_at"`
+}
+
+type workflowRunStepState struct {
+	ID            string     `json:"id"`
+	Status        string     `json:"status"`
+	Attempt       int        `json:"attempt,omitempty"`
+	Command       string     `json:"command,omitempty"`
+	Args          []string   `json:"args,omitempty"`
+	StartedAt     *time.Time `json:"started_at,omitempty"`
+	CompletedAt   *time.Time `json:"completed_at,omitempty"`
+	ExitCode      int        `json:"exit_code,omitempty"`
+	StdoutLogPath string     `json:"stdout_log_path,omitempty"`
+	StderrLogPath string     `json:"stderr_log_path,omitempty"`
+	OutputSummary string     `json:"output_summary,omitempty"`
+	ErrorDetails  string     `json:"error_details,omitempty"`
+}
+
+func initialWorkflowRunState(input workflowrun.Input, manifest workflowbundle.Manifest, projectID, workflowID, runID, commitHash, temporalWorkflowID, temporalRunID, runPath string, scheduledAt, startedAt time.Time) workflowRunState {
+	steps := make([]workflowRunStepState, 0, len(manifest.Steps))
+	for _, step := range manifest.Steps {
+		stepID := strings.TrimSpace(step.ID)
+		if normalized, err := workflowbundle.NormalizeStepID(stepID); err == nil {
+			stepID = normalized
+		}
+		steps = append(steps, workflowRunStepState{
+			ID:      stepID,
+			Status:  string(domain.ExecutionStatusPending),
+			Command: step.Command,
+			Args:    append([]string(nil), step.Args...),
+		})
+	}
+	now := time.Now().UTC()
+	return workflowRunState{
+		SchemaVersion:      1,
+		ProjectID:          strings.TrimSpace(projectID),
+		WorkflowID:         strings.TrimSpace(workflowID),
+		WorkflowName:       strings.TrimSpace(manifest.Name),
+		RunID:              strings.TrimSpace(runID),
+		RunPath:            strings.TrimSpace(runPath),
+		Status:             string(domain.ExecutionStatusRunning),
+		CommitHash:         strings.TrimSpace(commitHash),
+		TemporalWorkflowID: strings.TrimSpace(temporalWorkflowID),
+		TemporalRunID:      strings.TrimSpace(temporalRunID),
+		ScheduleID:         strings.TrimSpace(input.ScheduleID),
+		SourceEventID:      strings.TrimSpace(input.SourceEvent.ID),
+		Env:                append([]string(nil), manifest.Env...),
+		ScheduledAt:        scheduledAt,
+		StartedAt:          startedAt,
+		Steps:              steps,
+		UpdatedAt:          now,
+	}
+}
+
+func upsertWorkflowStepState(runPath string, step workflowRunStepState) error {
+	state, err := readWorkflowRunState(runPath)
+	if err != nil {
+		return err
+	}
+	if state.SchemaVersion == 0 {
+		state.SchemaVersion = 1
+		state.Status = string(domain.ExecutionStatusRunning)
+	}
+	replaced := false
+	for index := range state.Steps {
+		if state.Steps[index].ID == step.ID {
+			state.Steps[index] = step
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		state.Steps = append(state.Steps, step)
+	}
+	state.UpdatedAt = time.Now().UTC()
+	return writeWorkflowRunState(runPath, state)
+}
+
+func failWorkflowStepState(runPath, stepID string, attempt int, step workflowbundle.Step, stdoutPath, stderrPath string, startedAt time.Time, cause error) error {
+	completedAt := time.Now().UTC()
+	errorDetails := ""
+	if cause != nil {
+		errorDetails = cause.Error()
+	}
+	return upsertWorkflowStepState(runPath, workflowRunStepState{
+		ID:            stepID,
+		Status:        string(domain.ExecutionStatusFailed),
+		Attempt:       attempt,
+		Command:       step.Command,
+		Args:          append([]string(nil), step.Args...),
+		StartedAt:     &startedAt,
+		CompletedAt:   &completedAt,
+		ExitCode:      1,
+		StdoutLogPath: stdoutPath,
+		StderrLogPath: stderrPath,
+		ErrorDetails:  errorDetails,
+	})
+}
+
+func completeWorkflowRunState(runPath string, status domain.ExecutionStatus, completedAt time.Time, failureSummary string) error {
+	state, err := readWorkflowRunState(runPath)
+	if err != nil {
+		return err
+	}
+	if state.SchemaVersion == 0 {
+		state.SchemaVersion = 1
+	}
+	state.Status = string(status)
+	state.CompletedAt = &completedAt
+	state.FailureSummary = strings.TrimSpace(failureSummary)
+	state.UpdatedAt = time.Now().UTC()
+	return writeWorkflowRunState(runPath, state)
+}
+
+func readWorkflowRunState(runPath string) (workflowRunState, error) {
+	path := filepath.Join(strings.TrimSpace(runPath), "state.json")
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return workflowRunState{}, nil
+	}
+	if err != nil {
+		return workflowRunState{}, err
+	}
+	var state workflowRunState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return workflowRunState{}, err
+	}
+	return state, nil
+}
+
+func writeWorkflowRunState(runPath string, state workflowRunState) error {
+	runPath = strings.TrimSpace(runPath)
+	if runPath == "" {
+		return fmt.Errorf("run_path is required")
+	}
+	if err := os.MkdirAll(runPath, 0o755); err != nil {
+		return err
+	}
+	state.UpdatedAt = time.Now().UTC()
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	path := filepath.Join(runPath, "state.json")
+	tempPath := path + ".tmp"
+	if err := os.WriteFile(tempPath, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
+}
+
+func activityAttempt(ctx context.Context) int {
+	if activity.IsActivity(ctx) {
+		info := activity.GetInfo(ctx)
+		if info.Attempt > 0 {
+			return int(info.Attempt)
+		}
+	}
+	return 1
+}
+
+func workflowStepAttemptLogPaths(stepDir string, attempt int) (string, string) {
+	if attempt <= 0 {
+		attempt = 1
+	}
+	attemptDir := filepath.Join(stepDir, fmt.Sprintf("attempt-%d", attempt))
+	return filepath.Join(attemptDir, "stdout.log"), filepath.Join(attemptDir, "stderr.log")
+}
+
+func workflowStepEnvironment(workspaceRoot string, request workflowrun.ExecuteStepRequest, stepID, stepDir string) ([]string, error) {
+	env := os.Environ()
+	if workspaceRoot = strings.TrimSpace(workspaceRoot); workspaceRoot != "" {
+		env = upsertEnv(env, config.EnvOpenCTOWorkspace, workspaceRoot)
+	}
+	runPath := strings.TrimSpace(request.RunPath)
+	env = upsertEnv(env, "OPENCTO_WORKFLOW_ID", strings.TrimSpace(request.WorkflowID))
+	env = upsertEnv(env, "OPENCTO_RUN_ID", strings.TrimSpace(request.RunID))
+	env = upsertEnv(env, "OPENCTO_RUN_DIR", runPath)
+	env = upsertEnv(env, "OPENCTO_STEP_ID", strings.TrimSpace(stepID))
+	env = upsertEnv(env, "OPENCTO_STEP_DIR", strings.TrimSpace(stepDir))
+	for _, entry := range request.Env {
+		name, value, err := workflowbundle.ParseEnvAssignment(entry)
+		if err != nil {
+			return nil, err
+		}
+		env = upsertEnv(env, name, value)
+	}
+	return env, nil
+}
+
+func upsertEnv(env []string, name, value string) []string {
+	prefix := name + "="
+	entry := prefix + value
+	for index := range env {
+		if strings.HasPrefix(env[index], prefix) {
+			env[index] = entry
+			return env
+		}
+	}
+	return append(env, entry)
+}
+
+func tailWorkflowLog(path string, limit int64) (string, bool) {
+	if limit <= 0 {
+		limit = defaultExecTailBytes
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", false
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer file.Close()
+	size := info.Size()
+	offset := int64(0)
+	if size > limit {
+		offset = size - limit
+	}
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		return "", false
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return "", false
+	}
+	return string(data), size > limit
+}
+
+func workflowStepSummary(stdout, stderr string, stdoutTruncated, stderrTruncated bool) string {
+	var builder strings.Builder
+	if stdout != "" {
+		builder.WriteString("stdout:\n")
+		builder.WriteString(stdout)
+		if stdoutTruncated {
+			builder.WriteString("\n[stdout truncated]")
+		}
+	}
+	if stderr != "" {
+		if builder.Len() > 0 {
+			builder.WriteString("\n")
+		}
+		builder.WriteString("stderr:\n")
+		builder.WriteString(stderr)
+		if stderrTruncated {
+			builder.WriteString("\n[stderr truncated]")
+		}
+	}
+	if builder.Len() == 0 {
+		return "step produced no output"
+	}
+	return builder.String()
+}
+
 type toolPersistenceRecordSet struct {
 	Attempt      domain.ExecutionAttempt
 	Invocation   domain.ToolInvocation
@@ -4054,7 +4899,8 @@ func (a *Activities) searchMemoriesWithEmbeddingQuery(ctx context.Context, reque
 	if err == nil || len(request.QueryEmbedding) == 0 {
 		return memories, err
 	}
-	a.logActivityStep("Memory", "vector_search_failed",
+	a.logActivityStep(
+		"Memory", "vector_search_failed",
 		slog.String("error", err.Error()),
 		slog.String("embedding_provider", request.EmbeddingProvider),
 		slog.String("embedding_model", request.EmbeddingModel),
@@ -4076,14 +4922,16 @@ func (a *Activities) upsertMemoryEmbedding(ctx context.Context, memory domain.Me
 	}
 	result, err := a.MemoryEmbedder.Embed(ctx, []string{text})
 	if err != nil {
-		a.logActivityStep("Memory", "embed_memory_failed",
+		a.logActivityStep(
+			"Memory", "embed_memory_failed",
 			slog.String("memory_id", strings.TrimSpace(memory.ID)),
 			slog.String("error", err.Error()),
 		)
 		return
 	}
 	if len(result.Embeddings) == 0 || len(result.Embeddings[0]) == 0 {
-		a.logActivityStep("Memory", "embed_memory_empty",
+		a.logActivityStep(
+			"Memory", "embed_memory_empty",
 			slog.String("memory_id", strings.TrimSpace(memory.ID)),
 		)
 		return
@@ -4096,7 +4944,8 @@ func (a *Activities) upsertMemoryEmbedding(ctx context.Context, memory domain.Me
 		ContentHash: embedding.ContentHash(text),
 		Vector:      result.Embeddings[0],
 	}); err != nil {
-		a.logActivityStep("Memory", "upsert_memory_embedding_failed",
+		a.logActivityStep(
+			"Memory", "upsert_memory_embedding_failed",
 			slog.String("memory_id", strings.TrimSpace(memory.ID)),
 			slog.String("error", err.Error()),
 		)
@@ -4180,7 +5029,8 @@ func memoryDetailObservation(title string, memory domain.Memory) string {
 }
 
 func writeMemoryObservationFields(builder *strings.Builder, memory domain.Memory) {
-	_, _ = fmt.Fprintf(builder, "memory_id: %s\nscope: %s\nkind: %s\nconfidence: %.2f\npinned: %t",
+	_, _ = fmt.Fprintf(
+		builder, "memory_id: %s\nscope: %s\nkind: %s\nconfidence: %.2f\npinned: %t",
 		strings.TrimSpace(memory.ID),
 		memory.Scope,
 		firstNonEmpty(memory.Kind, "fact"),

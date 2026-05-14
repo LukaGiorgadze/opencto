@@ -26,8 +26,8 @@ import (
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	memorytool "github.com/opencto/opencto/internal/tools/memory"
 	readtool "github.com/opencto/opencto/internal/tools/read"
-	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
 	skilltool "github.com/opencto/opencto/internal/tools/skill"
+	scheduletool "github.com/opencto/opencto/internal/tools/workflowschedule"
 )
 
 type recordingToolModel struct {
@@ -1828,15 +1828,15 @@ func TestToolChoiceCapturesSkillInput(t *testing.T) {
 	}
 }
 
-func TestToolChoiceCapturesScheduleInput(t *testing.T) {
+func TestToolChoiceCapturesWorkflowCreateInput(t *testing.T) {
 	t.Parallel()
 
 	choice, err := toolChoiceFromToolCall(llms.ToolCall{
 		ID:   "toolu_schedule",
 		Type: "function",
 		FunctionCall: &llms.FunctionCall{
-			Name:      scheduletool.ToolName,
-			Arguments: `{"operation":"create","schedule_id":"","name":"daily hello","description":"","task":"send hello","one_shot_at":"","cron":"0 9 * * *","paused":false,"note":"","limit":0,"include_completed":false}`,
+			Name:      scheduletool.WorkflowCreateToolName,
+			Arguments: `{"workflow_id":"daily-hello","name":"daily hello","description":"","schedule":{"cron":"0 9 * * *","one_shot_at":"","overlap_policy":"skip","catchup_window":"10m","pause_on_failure":false},"notification_policy":{"on_failure":true},"env":[],"steps":[{"id":"hello","command":"sh","args":["src/hello.sh"],"start_to_close_timeout":"1m","schedule_to_close_timeout":"","retry_policy":{"initial_interval":"","backoff_coefficient":0,"maximum_interval":"","maximum_attempts":1,"non_retryable_error_types":[]}}],"files":[{"path":"src/hello.sh","content":"echo hello\n","executable":true}],"commit_message":"","paused":false,"note":""}`,
 		},
 	}, agent.ToolSelectionInput{
 		Context: agent.Context{Event: domain.Event{Body: "every morning send hello"}},
@@ -1845,17 +1845,17 @@ func TestToolChoiceCapturesScheduleInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tool choice: %v", err)
 	}
-	if choice.Type != domain.ToolTypeSchedule {
-		t.Fatalf("expected schedule tool type, got %q", choice.Type)
+	if choice.Type != domain.ToolTypeWorkflowCreate {
+		t.Fatalf("expected workflow create tool type, got %q", choice.Type)
 	}
 	if choice.Idempotency != domain.ToolIdempotencyNonIdempotent || choice.RunMode != domain.ToolRunModeWaitForExit {
-		t.Fatalf("expected schedule execution metadata, got %#v", choice)
+		t.Fatalf("expected workflow execution metadata, got %#v", choice)
 	}
-	if choice.Metadata["model_tool"] != scheduletool.ToolName {
-		t.Fatalf("expected schedule metadata, got %#v", choice.Metadata)
+	if choice.Metadata["model_tool"] != scheduletool.WorkflowCreateToolName {
+		t.Fatalf("expected workflow metadata, got %#v", choice.Metadata)
 	}
 	if !strings.Contains(string(choice.Input), `"cron":"0 9 * * *"`) {
-		t.Fatalf("expected raw schedule input to be preserved, got %s", choice.Input)
+		t.Fatalf("expected raw workflow input to be preserved, got %s", choice.Input)
 	}
 }
 

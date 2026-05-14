@@ -12,8 +12,8 @@ import (
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	memorytool "github.com/opencto/opencto/internal/tools/memory"
 	readtool "github.com/opencto/opencto/internal/tools/read"
-	scheduletool "github.com/opencto/opencto/internal/tools/schedule"
 	skilltool "github.com/opencto/opencto/internal/tools/skill"
+	workflowscheduletool "github.com/opencto/opencto/internal/tools/workflowschedule"
 	writetool "github.com/opencto/opencto/internal/tools/write"
 )
 
@@ -96,10 +96,28 @@ var definitions = []Definition{
 		Schema:      memorytool.ProposeForgetToolSchema(),
 	},
 	{
-		Name:        scheduletool.ToolName,
-		Type:        domain.ToolTypeSchedule,
-		Description: scheduletool.ToolDescription,
-		Schema:      scheduletool.ToolSchema(),
+		Name:        workflowscheduletool.WorkflowCreateToolName,
+		Type:        domain.ToolTypeWorkflowCreate,
+		Description: workflowscheduletool.WorkflowCreateToolDescription,
+		Schema:      workflowscheduletool.WorkflowCreateToolSchema(),
+	},
+	{
+		Name:        workflowscheduletool.WorkflowUpdateToolName,
+		Type:        domain.ToolTypeWorkflowUpdate,
+		Description: workflowscheduletool.WorkflowUpdateToolDescription,
+		Schema:      workflowscheduletool.WorkflowUpdateToolSchema(),
+	},
+	{
+		Name:        workflowscheduletool.WorkflowDeleteToolName,
+		Type:        domain.ToolTypeWorkflowDelete,
+		Description: workflowscheduletool.WorkflowDeleteToolDescription,
+		Schema:      workflowscheduletool.WorkflowDeleteToolSchema(),
+	},
+	{
+		Name:        workflowscheduletool.WorkflowOperationToolName,
+		Type:        domain.ToolTypeWorkflowOperation,
+		Description: workflowscheduletool.WorkflowOperationToolDescription,
+		Schema:      workflowscheduletool.WorkflowOperationToolSchema(),
 	},
 	{
 		Name:        skilltool.SkillToolName,
@@ -130,11 +148,20 @@ func LLMDefinitions() []llms.Tool {
 				Name:        definition.Name,
 				Description: definition.Description,
 				Parameters:  definition.Schema,
-				Strict:      true,
+				Strict:      strictForDefinition(definition),
 			},
 		})
 	}
 	return tools
+}
+
+func strictForDefinition(definition Definition) bool {
+	switch definition.Type {
+	case domain.ToolTypeWorkflowCreate, domain.ToolTypeWorkflowUpdate, domain.ToolTypeWorkflowDelete, domain.ToolTypeWorkflowOperation:
+		return false
+	default:
+		return true
+	}
 }
 
 func DefinitionByName(name string) (Definition, bool) {

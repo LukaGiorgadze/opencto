@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["operation"],
+  "additionalProperties": false,
+  "properties": {
+    "operation": {"type": "string", "enum": ["list", "describe", "trigger", "pause", "resume"]},
+    "workflow_id": {"type": "string"},
+    "note": {"type": "string"},
+    "limit": {"type": "integer", "minimum": 0, "maximum": 100},
+    "include_completed": {"type": "boolean"}
+  }
+}

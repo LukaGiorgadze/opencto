@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["workflow_id"],
+  "additionalProperties": false,
+  "properties": {
+    "workflow_id": {"type": "string", "minLength": 1}
+  }
+}
