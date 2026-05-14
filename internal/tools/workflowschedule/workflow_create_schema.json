@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["workflow_id", "name", "schedule", "steps"],
+  "additionalProperties": false,
+  "properties": {
+    "workflow_id": {"type": "string", "minLength": 1},
+    "name": {"type": "string", "minLength": 1},
+    "description": {"type": "string"},
+    "schedule": {
+      "type": "object",
+      "required": [],
+      "additionalProperties": false,
+      "properties": {
+        "cron": {"type": "string"},
+        "one_shot_at": {"type": "string"},
+        "overlap_policy": {"type": "string", "enum": ["", "skip", "buffer_one", "buffer_all", "cancel_other", "terminate_other", "allow_all"]},
+        "catchup_window": {"type": "string"},
+        "pause_on_failure": {"type": "boolean"}
+      }
+    },
+    "notification_policy": {
+      "type": "object",
+      "required": [],
+      "additionalProperties": false,
+      "properties": {
+        "on_failure": {"type": "boolean"}
+      }
+    },
+    "env": {"type": "array", "items": {"type": "string"}},
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "command", "start_to_close_timeout"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "command": {"type": "string", "minLength": 1, "pattern": "^\\S+$"},
+          "args": {"type": "array", "items": {"type": "string"}},
+          "start_to_close_timeout": {"type": "string"},
+          "schedule_to_close_timeout": {"type": "string"},
+          "retry_policy": {
+            "type": "object",
+            "required": [],
+            "additionalProperties": false,
+            "properties": {
+              "initial_interval": {"type": "string"},
+              "backoff_coefficient": {"type": "number", "minimum": 0},
+              "maximum_interval": {"type": "string"},
+              "maximum_attempts": {"type": "integer", "minimum": 0},
+              "non_retryable_error_types": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        }
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "content"],
+        "additionalProperties": false,
+        "properties": {
+          "path": {"type": "string", "pattern": "^src/.+"},
+          "content": {"type": "string"},
+          "executable": {"type": "boolean"}
+        }
+      }
+    },
+    "commit_message": {"type": "string"},
+    "paused": {"type": "boolean"},
+    "note": {"type": "string"}
+  }
+}

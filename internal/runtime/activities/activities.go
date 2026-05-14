@@ -2962,8 +2962,8 @@ func (a *Activities) runChosenTool(ctx context.Context, choice agent.ToolChoice,
 		return a.runGlobTool(ctx, choice, execution)
 	case domain.ToolTypeGrep:
 		return a.runGrepTool(ctx, choice, execution)
-	case domain.ToolTypeSchedule:
-		return a.runScheduleTool(ctx, choice, execution)
+	case domain.ToolTypeWorkflowCreate, domain.ToolTypeWorkflowUpdate, domain.ToolTypeWorkflowDelete, domain.ToolTypeWorkflowOperation:
+		return a.runWorkflowTool(ctx, choice, execution)
 	case domain.ToolTypeSkill:
 		return a.runSkillTool(ctx, choice)
 	default:
@@ -3236,22 +3236,61 @@ func (a *Activities) runGrepTool(ctx context.Context, choice agent.ToolChoice, e
 	}, err
 }
 
-func (a *Activities) runScheduleTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
-	var req scheduletool.Request
-	if err := decodeChoiceInput(choice, &req); err != nil {
-		return toolRunResult{ResultCode: "1"}, err
-	}
-	req.ProjectID = execution.ProjectID
-	req.WorkItemID = execution.WorkItemID
-	req.ToolCallID = execution.ToolCallID
-	req.Intent = choice.Intent
-	req.SourceEvent = execution.SourceEvent
-
+func (a *Activities) runWorkflowTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
 	executor := a.Schedule
 	if executor == nil {
-		return toolRunResult{ResultCode: "1"}, fmt.Errorf("schedule executor is not configured")
+		return toolRunResult{ResultCode: "1"}, fmt.Errorf("workflow schedule executor is not configured")
 	}
-	result, err := executor.Run(ctx, req)
+	var result scheduletool.Result
+	var err error
+	switch choice.Type {
+	case domain.ToolTypeWorkflowCreate:
+		var req scheduletool.CreateRequest
+		if decodeErr := decodeChoiceInput(choice, &req); decodeErr != nil {
+			return toolRunResult{ResultCode: "1"}, decodeErr
+		}
+		req.ProjectID = execution.ProjectID
+		req.WorkItemID = execution.WorkItemID
+		req.ToolCallID = execution.ToolCallID
+		req.Intent = choice.Intent
+		req.SourceEvent = execution.SourceEvent
+		result, err = executor.Create(ctx, req)
+	case domain.ToolTypeWorkflowUpdate:
+		var req scheduletool.UpdateRequest
+		if decodeErr := decodeChoiceInput(choice, &req); decodeErr != nil {
+			return toolRunResult{ResultCode: "1"}, decodeErr
+		}
+		req.ProjectID = execution.ProjectID
+		req.WorkItemID = execution.WorkItemID
+		req.ToolCallID = execution.ToolCallID
+		req.Intent = choice.Intent
+		req.SourceEvent = execution.SourceEvent
+		result, err = executor.Update(ctx, req)
+	case domain.ToolTypeWorkflowDelete:
+		var req scheduletool.DeleteRequest
+		if decodeErr := decodeChoiceInput(choice, &req); decodeErr != nil {
+			return toolRunResult{ResultCode: "1"}, decodeErr
+		}
+		req.ProjectID = execution.ProjectID
+		req.WorkItemID = execution.WorkItemID
+		req.ToolCallID = execution.ToolCallID
+		req.Intent = choice.Intent
+		req.SourceEvent = execution.SourceEvent
+		result, err = executor.Delete(ctx, req)
+	case domain.ToolTypeWorkflowOperation:
+		var req scheduletool.OperationRequest
+		if decodeErr := decodeChoiceInput(choice, &req); decodeErr != nil {
+			return toolRunResult{ResultCode: "1"}, decodeErr
+		}
+		req.ProjectID = execution.ProjectID
+		req.WorkItemID = execution.WorkItemID
+		req.ToolCallID = execution.ToolCallID
+		req.Intent = choice.Intent
+		req.SourceEvent = execution.SourceEvent
+		result, err = executor.Operation(ctx, req)
+	default:
+		return toolRunResult{ResultCode: "1"}, fmt.Errorf("unsupported workflow tool type %q", choice.Type)
+	}
 	metadata := map[string]string{
 		"workflow_schedule_operation": result.Operation,
 		"workflow_id":                 result.WorkflowID,
@@ -4475,21 +4514,43 @@ func copyWorkflowStepLog(source, target string) error {
 	return closeErr
 }
 
-func workflowStepEnvironment(workspaceRoot string, required []string) ([]string, error) {
+func workflowStepEnvironment(workspaceRoot string, entries []string) ([]string, error) {
 	env := os.Environ()
 	if workspaceRoot = strings.TrimSpace(workspaceRoot); workspaceRoot != "" {
-		env = append(env, config.EnvOpenCTOWorkspace+"="+workspaceRoot)
+		env = upsertEnv(env, config.EnvOpenCTOWorkspace, workspaceRoot)
 	}
-	for _, name := range required {
-		name = strings.TrimSpace(name)
-		if name == "" {
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
 			continue
 		}
-		if os.Getenv(name) == "" {
-			return nil, fmt.Errorf("required env %s is not set", name)
+		if name, value, ok := strings.Cut(entry, "="); ok {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				return nil, fmt.Errorf("env assignment %q is missing name", entry)
+			}
+			env = upsertEnv(env, name, value)
+			continue
 		}
+		value, ok := os.LookupEnv(entry)
+		if !ok || value == "" {
+			return nil, fmt.Errorf("required env %s is not set", entry)
+		}
+		env = upsertEnv(env, entry, value)
 	}
 	return env, nil
+}
+
+func upsertEnv(env []string, name, value string) []string {
+	prefix := name + "="
+	entry := prefix + value
+	for index := range env {
+		if strings.HasPrefix(env[index], prefix) {
+			env[index] = entry
+			return env
+		}
+	}
+	return append(env, entry)
 }
 
 func tailWorkflowLog(path string, limit int64) (string, bool) {

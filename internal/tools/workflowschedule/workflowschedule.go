@@ -10,6 +10,7 @@ import (
 	"time"
 
 	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
 	temporalclient "go.temporal.io/sdk/client"
 
 	"github.com/opencto/opencto/internal/domain"
@@ -38,10 +39,88 @@ var (
 	ErrTaskQueueRequired   = errors.New("task queue is required")
 	ErrOperationRequired   = errors.New("workflow schedule operation is required")
 	ErrWorkflowIDRequired  = errors.New("workflow_id is required")
+	ErrWorkflowExists      = errors.New("workflow already exists")
 	ErrScheduleSpecMissing = errors.New("schedule.cron or schedule.one_shot_at is required")
 	ErrScheduleSpecMixed   = errors.New("schedule.cron and schedule.one_shot_at cannot both be set")
 	ErrPastOneShot         = errors.New("schedule.one_shot_at must be in the future")
 )
+
+type CreateRequest struct {
+	ProjectID   string       `json:"-"`
+	WorkItemID  string       `json:"-"`
+	ToolCallID  string       `json:"-"`
+	Intent      string       `json:"-"`
+	SourceEvent domain.Event `json:"-"`
+
+	WorkflowID         string                            `json:"workflow_id"`
+	Name               string                            `json:"name"`
+	Description        string                            `json:"description"`
+	Schedule           workflowbundle.Schedule           `json:"schedule"`
+	NotificationPolicy workflowbundle.NotificationPolicy `json:"notification_policy"`
+	Env                []string                          `json:"env"`
+	Steps              []workflowbundle.Step             `json:"steps"`
+	Files              []workflowbundle.File             `json:"files"`
+	CommitMessage      string                            `json:"commit_message,omitempty"`
+	Paused             bool                              `json:"paused,omitempty"`
+	Note               string                            `json:"note,omitempty"`
+}
+
+type UpdateRequest struct {
+	ProjectID   string       `json:"-"`
+	WorkItemID  string       `json:"-"`
+	ToolCallID  string       `json:"-"`
+	Intent      string       `json:"-"`
+	SourceEvent domain.Event `json:"-"`
+
+	WorkflowID string `json:"workflow_id"`
+
+	Name               *string                  `json:"name,omitempty"`
+	Description        *string                  `json:"description,omitempty"`
+	Schedule           *SchedulePatch           `json:"schedule,omitempty"`
+	NotificationPolicy *NotificationPolicyPatch `json:"notification_policy,omitempty"`
+	Env                []string                 `json:"env,omitempty"`
+	Steps              []workflowbundle.Step    `json:"steps,omitempty"`
+	Files              []workflowbundle.File    `json:"files,omitempty"`
+	CommitMessage      string                   `json:"commit_message,omitempty"`
+	Paused             *bool                    `json:"paused,omitempty"`
+	Note               string                   `json:"note,omitempty"`
+}
+
+type DeleteRequest struct {
+	ProjectID   string       `json:"-"`
+	WorkItemID  string       `json:"-"`
+	ToolCallID  string       `json:"-"`
+	Intent      string       `json:"-"`
+	SourceEvent domain.Event `json:"-"`
+
+	WorkflowID string `json:"workflow_id"`
+}
+
+type OperationRequest struct {
+	ProjectID   string       `json:"-"`
+	WorkItemID  string       `json:"-"`
+	ToolCallID  string       `json:"-"`
+	Intent      string       `json:"-"`
+	SourceEvent domain.Event `json:"-"`
+
+	Operation        string `json:"operation"`
+	WorkflowID       string `json:"workflow_id,omitempty"`
+	Note             string `json:"note,omitempty"`
+	Limit            int    `json:"limit,omitempty"`
+	IncludeCompleted bool   `json:"include_completed,omitempty"`
+}
+
+type SchedulePatch struct {
+	Cron           *string `json:"cron,omitempty"`
+	OneShotAt      *string `json:"one_shot_at,omitempty"`
+	OverlapPolicy  *string `json:"overlap_policy,omitempty"`
+	CatchupWindow  *string `json:"catchup_window,omitempty"`
+	PauseOnFailure *bool   `json:"pause_on_failure,omitempty"`
+}
+
+type NotificationPolicyPatch struct {
+	OnFailure *bool `json:"on_failure,omitempty"`
+}
 
 type Request struct {
 	ProjectID   string       `json:"-"`
@@ -65,6 +144,14 @@ type Request struct {
 	Note               string                            `json:"note"`
 	Limit              int                               `json:"limit"`
 	IncludeCompleted   bool                              `json:"include_completed"`
+
+	nameSet               bool
+	descriptionSet        bool
+	schedulePatch         *SchedulePatch
+	notificationPolicySet bool
+	envSet                bool
+	stepsSet              bool
+	pausedSet             bool
 }
 
 type Result struct {
@@ -94,7 +181,10 @@ type WorkflowEntry struct {
 }
 
 type Executor interface {
-	Run(context.Context, Request) (Result, error)
+	Create(context.Context, CreateRequest) (Result, error)
+	Update(context.Context, UpdateRequest) (Result, error)
+	Delete(context.Context, DeleteRequest) (Result, error)
+	Operation(context.Context, OperationRequest) (Result, error)
 }
 
 type Client interface {
@@ -129,48 +219,193 @@ func NewTemporalExecutor(client Client, store storage.RuntimeStore, taskQueue, w
 	}
 }
 
-func (e *TemporalExecutor) Run(ctx context.Context, req Request) (Result, error) {
+func (e *TemporalExecutor) Create(ctx context.Context, req CreateRequest) (Result, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if e.Client == nil {
-		return Result{}, ErrClientRequired
+	if err := e.validate(); err != nil {
+		return Result{}, err
 	}
-	if e.Store == nil {
-		return Result{}, ErrStoreRequired
+	return e.create(ctx, requestFromCreate(req))
+}
+
+func (e *TemporalExecutor) Update(ctx context.Context, req UpdateRequest) (Result, error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	if strings.TrimSpace(e.TaskQueue) == "" {
-		return Result{}, ErrTaskQueueRequired
+	if err := e.validate(); err != nil {
+		return Result{}, err
 	}
-	if strings.TrimSpace(e.WorkspaceRoot) == "" {
-		return Result{}, ErrWorkspaceRequired
+	return e.update(ctx, requestFromUpdate(req))
+}
+
+func (e *TemporalExecutor) Delete(ctx context.Context, req DeleteRequest) (Result, error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	operation := normalizeOperation(req.Operation)
-	switch operation {
-	case OperationCreate:
-		return e.create(ctx, req)
-	case OperationUpdate:
-		return e.update(ctx, req)
+	if err := e.validate(); err != nil {
+		return Result{}, err
+	}
+	return e.delete(ctx, requestFromDelete(req))
+}
+
+func (e *TemporalExecutor) Operation(ctx context.Context, req OperationRequest) (Result, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := e.validate(); err != nil {
+		return Result{}, err
+	}
+	request := requestFromOperation(req)
+	switch normalizeOperation(req.Operation) {
 	case OperationList:
-		return e.list(ctx, req)
+		return e.list(ctx, request)
 	case OperationDescribe:
-		return e.describe(ctx, req)
-	case OperationDelete:
-		return e.delete(ctx, req)
+		return e.describe(ctx, request)
 	case OperationPause:
-		return e.pause(ctx, req)
+		return e.pause(ctx, request)
 	case OperationResume:
-		return e.resume(ctx, req)
+		return e.resume(ctx, request)
 	case OperationTrigger:
-		return e.trigger(ctx, req)
+		return e.trigger(ctx, request)
 	case "":
 		return Result{}, ErrOperationRequired
 	default:
-		return Result{}, fmt.Errorf("unsupported workflow schedule operation %q", req.Operation)
+		return Result{}, fmt.Errorf("unsupported workflow operation %q", req.Operation)
+	}
+}
+
+func (e *TemporalExecutor) validate() error {
+	if e == nil {
+		return fmt.Errorf("workflow executor is nil")
+	}
+	if e.Client == nil {
+		return ErrClientRequired
+	}
+	if e.Store == nil {
+		return ErrStoreRequired
+	}
+	if strings.TrimSpace(e.TaskQueue) == "" {
+		return ErrTaskQueueRequired
+	}
+	if strings.TrimSpace(e.WorkspaceRoot) == "" {
+		return ErrWorkspaceRequired
+	}
+	return nil
+}
+
+func requestFromCreate(req CreateRequest) Request {
+	return Request{
+		ProjectID:          req.ProjectID,
+		WorkItemID:         req.WorkItemID,
+		ToolCallID:         req.ToolCallID,
+		Intent:             req.Intent,
+		SourceEvent:        req.SourceEvent,
+		Operation:          OperationCreate,
+		WorkflowID:         req.WorkflowID,
+		Name:               req.Name,
+		Description:        req.Description,
+		Schedule:           req.Schedule,
+		NotificationPolicy: req.NotificationPolicy,
+		Env:                req.Env,
+		Steps:              req.Steps,
+		Files:              req.Files,
+		CommitMessage:      req.CommitMessage,
+		Paused:             req.Paused,
+		Note:               req.Note,
+	}
+}
+
+func requestFromUpdate(req UpdateRequest) Request {
+	request := Request{
+		ProjectID:     req.ProjectID,
+		WorkItemID:    req.WorkItemID,
+		ToolCallID:    req.ToolCallID,
+		Intent:        req.Intent,
+		SourceEvent:   req.SourceEvent,
+		Operation:     OperationUpdate,
+		WorkflowID:    req.WorkflowID,
+		Files:         req.Files,
+		CommitMessage: req.CommitMessage,
+		Note:          req.Note,
+		schedulePatch: req.Schedule,
+		envSet:        req.Env != nil,
+		stepsSet:      req.Steps != nil,
+	}
+	if req.Name != nil {
+		request.Name = *req.Name
+		request.nameSet = true
+	}
+	if req.Description != nil {
+		request.Description = *req.Description
+		request.descriptionSet = true
+	}
+	if req.NotificationPolicy != nil && req.NotificationPolicy.OnFailure != nil {
+		request.notificationPolicySet = true
+		request.NotificationPolicy.OnFailure = *req.NotificationPolicy.OnFailure
+	}
+	if req.Env != nil {
+		request.Env = req.Env
+	}
+	if req.Steps != nil {
+		request.Steps = req.Steps
+	}
+	if req.Paused != nil {
+		request.Paused = *req.Paused
+		request.pausedSet = true
+	}
+	return request
+}
+
+func requestFromDelete(req DeleteRequest) Request {
+	return Request{
+		ProjectID:   req.ProjectID,
+		WorkItemID:  req.WorkItemID,
+		ToolCallID:  req.ToolCallID,
+		Intent:      req.Intent,
+		SourceEvent: req.SourceEvent,
+		Operation:   OperationDelete,
+		WorkflowID:  req.WorkflowID,
+	}
+}
+
+func requestFromOperation(req OperationRequest) Request {
+	return Request{
+		ProjectID:        req.ProjectID,
+		WorkItemID:       req.WorkItemID,
+		ToolCallID:       req.ToolCallID,
+		Intent:           req.Intent,
+		SourceEvent:      req.SourceEvent,
+		Operation:        req.Operation,
+		WorkflowID:       req.WorkflowID,
+		Note:             req.Note,
+		Limit:            req.Limit,
+		IncludeCompleted: req.IncludeCompleted,
 	}
 }
 
 func (e *TemporalExecutor) create(ctx context.Context, req Request) (Result, error) {
+	workflowID, err := workflowbundle.NormalizeWorkflowID(req.WorkflowID)
+	if err != nil {
+		return Result{}, ErrWorkflowIDRequired
+	}
+	workflowPath, err := workflowbundle.WorkflowDir(e.WorkspaceRoot, workflowID)
+	if err != nil {
+		return Result{}, err
+	}
+	hadLocalBundle, err := pathExists(workflowPath)
+	if err != nil {
+		return Result{}, err
+	}
+	exists, err := e.workflowExists(ctx, req.ProjectID, workflowID, workflowPath)
+	if err != nil {
+		return Result{}, err
+	}
+	if exists {
+		return Result{}, ErrWorkflowExists
+	}
+	req.WorkflowID = workflowID
+
 	workflowID, manifest, workflowPath, commitHash, err := e.prepareBundle(ctx, req, false)
 	if err != nil {
 		return Result{}, err
@@ -182,10 +417,13 @@ func (e *TemporalExecutor) create(ctx context.Context, req Request) (Result, err
 	}
 	handle, err := e.Client.Create(ctx, options)
 	if err != nil {
+		e.cleanupCreateFailure(workflowPath, !hadLocalBundle)
 		return Result{}, err
 	}
 	scheduleID = handle.GetID()
 	if err := e.Store.UpsertScheduledWorkflow(ctx, e.workflowRecord(req, workflowID, manifest, workflowPath, commitHash, scheduleID, domain.ScheduledWorkflowStatusActive)); err != nil {
+		_ = e.Client.GetHandle(ctx, scheduleID).Delete(ctx)
+		e.cleanupCreateFailure(workflowPath, !hadLocalBundle)
 		return Result{}, err
 	}
 	e.log("created", workflowID, scheduleID)
@@ -204,8 +442,24 @@ func (e *TemporalExecutor) update(ctx context.Context, req Request) (Result, err
 	}
 	handle := e.Client.GetHandle(ctx, scheduleID)
 	err = handle.Update(ctx, temporalclient.ScheduleUpdateOptions{
-		DoUpdate: func(temporalclient.ScheduleUpdateInput) (*temporalclient.ScheduleUpdate, error) {
+		DoUpdate: func(input temporalclient.ScheduleUpdateInput) (*temporalclient.ScheduleUpdate, error) {
 			remaining := options.RemainingActions
+			state := &temporalclient.ScheduleState{
+				Note:             options.Note,
+				Paused:           options.Paused,
+				LimitedActions:   remaining > 0,
+				RemainingActions: remaining,
+			}
+			if input.Description.Schedule.State != nil {
+				existingState := *input.Description.Schedule.State
+				state = &existingState
+				state.Note = options.Note
+				if req.pausedSet {
+					state.Paused = options.Paused
+				}
+				state.LimitedActions = remaining > 0
+				state.RemainingActions = remaining
+			}
 			return &temporalclient.ScheduleUpdate{
 				Schedule: &temporalclient.Schedule{
 					Action: options.Action,
@@ -215,12 +469,7 @@ func (e *TemporalExecutor) update(ctx context.Context, req Request) (Result, err
 						CatchupWindow:  options.CatchupWindow,
 						PauseOnFailure: options.PauseOnFailure,
 					},
-					State: &temporalclient.ScheduleState{
-						Note:             options.Note,
-						Paused:           options.Paused,
-						LimitedActions:   remaining > 0,
-						RemainingActions: remaining,
-					},
+					State: state,
 				},
 			}, nil
 		},
@@ -228,7 +477,15 @@ func (e *TemporalExecutor) update(ctx context.Context, req Request) (Result, err
 	if err != nil {
 		return Result{}, err
 	}
-	if err := e.Store.UpsertScheduledWorkflow(ctx, e.workflowRecord(req, workflowID, manifest, workflowPath, commitHash, scheduleID, statusFromPaused(req.Paused))); err != nil {
+	status := statusFromPaused(req.Paused)
+	if !req.pausedSet {
+		if item, ok, err := e.Store.GetScheduledWorkflow(ctx, strings.TrimSpace(req.ProjectID), workflowID); err != nil {
+			return Result{}, err
+		} else if ok {
+			status = item.Status
+		}
+	}
+	if err := e.Store.UpsertScheduledWorkflow(ctx, e.workflowRecord(req, workflowID, manifest, workflowPath, commitHash, scheduleID, status)); err != nil {
 		return Result{}, err
 	}
 	e.log("updated", workflowID, scheduleID)
@@ -294,13 +551,30 @@ func (e *TemporalExecutor) delete(ctx context.Context, req Request) (Result, err
 		return Result{}, err
 	}
 	scheduleID := workflowrun.ScheduleID(req.ProjectID, workflowID)
-	if err := e.Client.GetHandle(ctx, scheduleID).Delete(ctx); err != nil {
+	if item, ok, err := e.Store.GetScheduledWorkflow(ctx, strings.TrimSpace(req.ProjectID), workflowID); err != nil {
+		return Result{}, err
+	} else if ok && strings.TrimSpace(item.TemporalScheduleID) != "" {
+		scheduleID = strings.TrimSpace(item.TemporalScheduleID)
+	}
+	if err := e.Client.GetHandle(ctx, scheduleID).Delete(ctx); err != nil && !isNotFound(err) {
 		return Result{}, err
 	}
-	if item, ok, err := e.Store.GetScheduledWorkflow(ctx, strings.TrimSpace(req.ProjectID), workflowID); err == nil && ok {
-		item.Status = domain.ScheduledWorkflowStatusDeleted
-		item.UpdatedAt = time.Now().UTC()
-		_ = e.Store.UpsertScheduledWorkflow(ctx, item)
+	if err := e.Store.DeleteScheduledWorkflow(ctx, strings.TrimSpace(req.ProjectID), workflowID); err != nil {
+		return Result{}, err
+	}
+	workflowPath, err := workflowbundle.WorkflowDir(e.WorkspaceRoot, workflowID)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := os.RemoveAll(workflowPath); err != nil {
+		return Result{}, err
+	}
+	runsPath, err := workflowbundle.WorkflowRunsDir(e.WorkspaceRoot, workflowID)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := os.RemoveAll(runsPath); err != nil {
+		return Result{}, err
 	}
 	return Result{Operation: OperationDelete, WorkflowID: workflowID, ScheduleID: scheduleID, Message: "workflow schedule deleted"}, nil
 }
@@ -379,15 +653,12 @@ func (e *TemporalExecutor) prepareBundle(ctx context.Context, req Request, useEx
 }
 
 func (e *TemporalExecutor) manifest(req Request, workflowPath string, useExisting bool) (workflowbundle.Manifest, error) {
-	if useExisting && !requestHasCompleteManifest(req) {
+	if useExisting {
 		existing, err := workflowbundle.LoadManifest(workflowPath)
-		switch {
-		case err == nil:
-			return e.mergeManifest(existing, req)
-		case errors.Is(err, os.ErrNotExist):
-		default:
+		if err != nil {
 			return workflowbundle.Manifest{}, err
 		}
+		return e.mergeManifest(existing, req)
 	}
 	return e.manifestFromRequest(req)
 }
@@ -426,23 +697,25 @@ func (e *TemporalExecutor) manifestFromRequest(req Request) (workflowbundle.Mani
 
 func (e *TemporalExecutor) mergeManifest(existing workflowbundle.Manifest, req Request) (workflowbundle.Manifest, error) {
 	manifest := existing
-	if strings.TrimSpace(req.Name) != "" {
+	if req.nameSet {
 		manifest.Name = strings.TrimSpace(req.Name)
 	}
-	if strings.TrimSpace(req.Description) != "" {
+	if req.descriptionSet {
 		manifest.Description = strings.TrimSpace(req.Description)
 	}
-	manifest.Schedule = mergeSchedule(manifest.Schedule, req.Schedule)
-	if req.NotificationPolicy.OnFailure {
-		manifest.NotificationPolicy.OnFailure = true
+	if req.schedulePatch != nil {
+		manifest.Schedule = mergeSchedulePatch(manifest.Schedule, req.schedulePatch)
 	}
-	if len(req.Env) > 0 {
+	if req.notificationPolicySet {
+		manifest.NotificationPolicy.OnFailure = req.NotificationPolicy.OnFailure
+	}
+	if req.envSet {
 		manifest.Env = cleanStrings(req.Env)
 		if manifest.Env == nil {
 			manifest.Env = []string{}
 		}
 	}
-	if len(req.Steps) > 0 {
+	if req.stepsSet {
 		manifest.Steps = normalizeSteps(req.Steps)
 	}
 	if err := workflowbundle.ValidateManifest(manifest); err != nil {
@@ -451,32 +724,33 @@ func (e *TemporalExecutor) mergeManifest(existing workflowbundle.Manifest, req R
 	return manifest, nil
 }
 
-func mergeSchedule(existing, update workflowbundle.Schedule) workflowbundle.Schedule {
+func mergeSchedulePatch(existing workflowbundle.Schedule, update *SchedulePatch) workflowbundle.Schedule {
 	schedule := existing
-	if strings.TrimSpace(update.Cron) != "" {
-		schedule.Cron = strings.TrimSpace(update.Cron)
-		schedule.OneShotAt = strings.TrimSpace(update.OneShotAt)
+	if update == nil {
+		return schedule
 	}
-	if strings.TrimSpace(update.OneShotAt) != "" {
-		schedule.OneShotAt = strings.TrimSpace(update.OneShotAt)
-		schedule.Cron = strings.TrimSpace(update.Cron)
+	if update.Cron != nil {
+		schedule.Cron = strings.TrimSpace(*update.Cron)
+		if schedule.Cron != "" && update.OneShotAt == nil {
+			schedule.OneShotAt = ""
+		}
 	}
-	if strings.TrimSpace(update.OverlapPolicy) != "" {
-		schedule.OverlapPolicy = strings.TrimSpace(update.OverlapPolicy)
+	if update.OneShotAt != nil {
+		schedule.OneShotAt = strings.TrimSpace(*update.OneShotAt)
+		if schedule.OneShotAt != "" && update.Cron == nil {
+			schedule.Cron = ""
+		}
 	}
-	if strings.TrimSpace(update.CatchupWindow) != "" {
-		schedule.CatchupWindow = strings.TrimSpace(update.CatchupWindow)
+	if update.OverlapPolicy != nil {
+		schedule.OverlapPolicy = strings.TrimSpace(*update.OverlapPolicy)
 	}
-	if update.PauseOnFailure {
-		schedule.PauseOnFailure = true
+	if update.CatchupWindow != nil {
+		schedule.CatchupWindow = strings.TrimSpace(*update.CatchupWindow)
+	}
+	if update.PauseOnFailure != nil {
+		schedule.PauseOnFailure = *update.PauseOnFailure
 	}
 	return schedule
-}
-
-func requestHasCompleteManifest(req Request) bool {
-	return strings.TrimSpace(req.Name) != "" &&
-		(strings.TrimSpace(req.Schedule.Cron) != "" || strings.TrimSpace(req.Schedule.OneShotAt) != "") &&
-		len(req.Steps) > 0
 }
 
 func normalizeSteps(steps []workflowbundle.Step) []workflowbundle.Step {
@@ -490,6 +764,43 @@ func normalizeSteps(steps []workflowbundle.Step) []workflowbundle.Step {
 		}
 	}
 	return next
+}
+
+func (e *TemporalExecutor) workflowExists(ctx context.Context, projectID, workflowID, _ string) (bool, error) {
+	if _, ok, err := e.Store.GetScheduledWorkflow(ctx, strings.TrimSpace(projectID), workflowID); err != nil {
+		return false, err
+	} else if ok {
+		return true, nil
+	}
+	return false, nil
+}
+
+func (e *TemporalExecutor) cleanupCreateFailure(workflowPath string, removeBundle bool) {
+	if !removeBundle {
+		return
+	}
+	if err := os.RemoveAll(workflowPath); err != nil {
+		logger := e.Logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Warn("failed to remove workflow bundle after create failure", slog.String("workflow_path", workflowPath), slog.String("error", err.Error()))
+	}
+}
+
+func pathExists(path string) (bool, error) {
+	if _, err := os.Stat(path); err == nil {
+		return true, nil
+	} else if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else {
+		return false, err
+	}
+}
+
+func isNotFound(err error) bool {
+	var notFound *serviceerror.NotFound
+	return errors.As(err, &notFound)
 }
 
 func (e *TemporalExecutor) scheduleOptions(req Request, workflowID, scheduleID, commitHash string, manifest workflowbundle.Manifest) (temporalclient.ScheduleOptions, error) {

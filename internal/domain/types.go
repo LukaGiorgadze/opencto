@@ -100,7 +100,10 @@ const (
 	ToolTypeMemoryProposeUpdate ToolType = "MemoryProposeUpdate"
 	ToolTypeMemorySearch        ToolType = "MemorySearch"
 	ToolTypeRead                ToolType = "Read"
-	ToolTypeSchedule            ToolType = "WorkflowSchedule"
+	ToolTypeWorkflowCreate      ToolType = "WorkflowCreate"
+	ToolTypeWorkflowUpdate      ToolType = "WorkflowUpdate"
+	ToolTypeWorkflowDelete      ToolType = "WorkflowDelete"
+	ToolTypeWorkflowOperation   ToolType = "WorkflowOperation"
 	ToolTypeSkill               ToolType = "Skill"
 	ToolTypeWrite               ToolType = "Write"
 )

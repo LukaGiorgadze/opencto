@@ -57,6 +57,7 @@ type RuntimeStore interface {
 	UpsertScheduledWorkflow(context.Context, domain.ScheduledWorkflow) error
 	GetScheduledWorkflow(context.Context, string, string) (domain.ScheduledWorkflow, bool, error)
 	ListScheduledWorkflows(context.Context, ScheduledWorkflowQuery) ([]domain.ScheduledWorkflow, error)
+	DeleteScheduledWorkflow(context.Context, string, string) error
 	UpsertScheduledWorkflowRun(context.Context, domain.ScheduledWorkflowRun) error
 	UpsertScheduledWorkflowStepRun(context.Context, domain.ScheduledWorkflowStepRun) error
 }

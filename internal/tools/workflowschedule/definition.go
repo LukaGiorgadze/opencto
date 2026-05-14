@@ -6,36 +6,68 @@ import (
 )
 
 const (
-	ToolName        = "WorkflowSchedule"
-	ToolDescription = `Create and manage Git-backed workflow schedules.
+	WorkflowCreateToolName    = "WorkflowCreate"
+	WorkflowUpdateToolName    = "WorkflowUpdate"
+	WorkflowDeleteToolName    = "WorkflowDelete"
+	WorkflowOperationToolName = "WorkflowOperation"
 
-Use this tool when the user asks OpenCTO to run a workflow later, once, or repeatedly.
+	WorkflowCreateToolDescription = `Create a new Git-backed scheduled workflow.
 
-Workflow schedules are deterministic by default.
-The tool creates or updates a workflow bundle under the OpenCTO data directory at workflows/{workflow_id}, commits it to the bundle's Git repo, and registers a schedule that runs the approved commit_hash.
-Do not schedule free-form AI instructions.
+Use this tool only for new workflows. Provide enough fields to write a valid workflow.yml, and include implementation files under src/ when the workflow needs workflow-owned code. It fails if the workflow is already registered.
 
-The model must convert natural-language time into structured input before calling this tool:
-- For one-shot schedules, set schedule.one_shot_at to an RFC3339 timestamp with offset, for example "2026-05-07T09:00:00+04:00".
-- For recurring schedules, set schedule.cron to a cron expression, for example "0 9 * * *" or "@every 24h".
-- Use host timezone only. Do not set a user-provided timezone; the backend resolves the host IANA timezone.
+The manifest defines durable step boundaries only. Implementation files are ordinary runnable programs, scripts, or binaries invoked by step command and args. Keep each step focused on one responsibility, split distinct operations into separate steps and entrypoints, and do not write schedulers, workers, queues, daemons, or orchestration framework code inside src/.
 
-Workflow logic must live in files under src/. The manifest only defines durable step boundaries. Use command and args arrays for each step; do not combine executable and arguments in command.
-Each step must run plain, single-responsibility code for that step only. When the requested workflow has multiple distinct operations, create separate steps and separate entrypoints instead of one large command.
-Do not write scheduler, worker, workflow, activity, queue, daemon, or framework orchestration code inside src/. The code in src/ should be normal runnable programs or scripts invoked by the step command.
-Edit and Write may be used to author or modify files under workflows/{workflow_id}/src. After any Edit or Write to a workflow bundle, call WorkflowSchedule update for that workflow_id so the backend validates workflow.yml, commits dirty source changes, and repoints the schedule to the new commit_hash.
-Do not run git commit manually for workflow bundles.
-The backend owns workflow.yml and .gitignore when this tool writes a bundle. Provide implementation files only under src/.
-Use snake_case fields such as start_to_close_timeout, schedule_to_close_timeout, retry_policy.maximum_attempts, and schedule.overlap_policy.
+Use command for the executable only and args for its arguments. Do not repeat the executable in args.
+Global env entries apply to every step. Use NAME to require and pass through a host environment variable, or NAME=value to set a workflow-owned value.`
 
-For new workflows, provide a complete manifest and implementation files under src/.
-For existing workflow bundles, files may be empty and the current workflow.yml plus dirty src changes will be validated, committed, and scheduled.
-For a code-only finalization after Edit/Write, call update with the workflow_id, files: [], steps: [], env: [], schedule: {"cron":"","one_shot_at":"","overlap_policy":"","catchup_window":"","pause_on_failure":false}, and notification_policy: {"on_failure": false}; the backend will preserve the existing manifest fields.`
+	WorkflowUpdateToolDescription = `Update an existing Git-backed scheduled workflow.
+
+Use this tool after Edit or Write modifies files under workflows/{workflow_id}/src. It loads the existing workflow.yml, applies any provided manifest fields, validates the bundle, commits dirty src changes, and repoints the schedule to the new commit_hash.
+
+The manifest defines durable step boundaries only. Implementation files are ordinary runnable programs, scripts, or binaries invoked by step command and args. Keep each step focused on one responsibility, split distinct operations into separate steps and entrypoints, and do not write schedulers, workers, queues, daemons, or orchestration framework code inside src/.
+
+Use command for the executable only and args for its arguments. Do not repeat the executable in args.
+Global env entries apply to every step. Use NAME to require and pass through a host environment variable, or NAME=value to set a workflow-owned value.
+
+Fields are optional unless the schema marks them required. Omitted fields preserve the existing manifest value. If a field is present, it is applied and validated. Do not run git commit manually for workflow bundles.`
+
+	WorkflowDeleteToolDescription = `Hard-delete an existing scheduled workflow.
+
+Deletes the schedule, workflow record, workflow bundle directory, and workflow run snapshots for the workflow_id.`
+
+	WorkflowOperationToolDescription = `Run control and read operations for scheduled workflows.
+
+Supported operations: list, describe, trigger, pause, resume. Use WorkflowUpdate for code or manifest changes, not this tool.`
 )
 
-//go:embed schema.json
-var toolSchema json.RawMessage
+//go:embed workflow_create_schema.json
+var workflowCreateToolSchema json.RawMessage
 
-func ToolSchema() json.RawMessage {
-	return append(json.RawMessage(nil), toolSchema...)
+//go:embed workflow_update_schema.json
+var workflowUpdateToolSchema json.RawMessage
+
+//go:embed workflow_delete_schema.json
+var workflowDeleteToolSchema json.RawMessage
+
+//go:embed workflow_operation_schema.json
+var workflowOperationToolSchema json.RawMessage
+
+func WorkflowCreateToolSchema() json.RawMessage {
+	return cloneSchema(workflowCreateToolSchema)
+}
+
+func WorkflowUpdateToolSchema() json.RawMessage {
+	return cloneSchema(workflowUpdateToolSchema)
+}
+
+func WorkflowDeleteToolSchema() json.RawMessage {
+	return cloneSchema(workflowDeleteToolSchema)
+}
+
+func WorkflowOperationToolSchema() json.RawMessage {
+	return cloneSchema(workflowOperationToolSchema)
+}
+
+func cloneSchema(schema json.RawMessage) json.RawMessage {
+	return append(json.RawMessage(nil), schema...)
 }

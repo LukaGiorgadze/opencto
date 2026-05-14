@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/opencto/opencto/internal/agent"
+	"github.com/opencto/opencto/internal/config"
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/embedding"
 	"github.com/opencto/opencto/internal/runtime/workflowrun"
@@ -360,6 +361,10 @@ func (s stubProjectStore) GetScheduledWorkflow(context.Context, string, string) 
 
 func (s stubProjectStore) ListScheduledWorkflows(context.Context, storage.ScheduledWorkflowQuery) ([]domain.ScheduledWorkflow, error) {
 	return nil, nil
+}
+
+func (s stubProjectStore) DeleteScheduledWorkflow(context.Context, string, string) error {
+	return nil
 }
 
 func (s stubProjectStore) UpsertScheduledWorkflowRun(context.Context, domain.ScheduledWorkflowRun) error {
@@ -2522,15 +2527,13 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 		Message:    "schedule created",
 	}}
 	activities.Schedule = scheduleExecutor
-	scheduleResult, err := activities.ExecuteTool(ctx, executeRequest(domain.ToolTypeSchedule, "schedule-1", map[string]any{
-		"operation":   "create",
+	scheduleResult, err := activities.ExecuteTool(ctx, executeRequest(domain.ToolTypeWorkflowCreate, "schedule-1", map[string]any{
 		"workflow_id": "daily-hello",
 		"name":        "daily hello",
 		"description": "",
 		"schedule": map[string]any{
 			"cron":             "0 9 * * *",
 			"one_shot_at":      "",
-			"time_zone_name":   "",
 			"overlap_policy":   "skip",
 			"catchup_window":   "10m",
 			"pause_on_failure": false,
@@ -2551,21 +2554,18 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 				"non_retryable_error_types": []string{},
 			},
 		}},
-		"files":             []map[string]any{},
-		"commit_message":    "",
-		"commit_hash":       "",
-		"paused":            false,
-		"note":              "",
-		"limit":             0,
-		"include_completed": false,
+		"files":          []map[string]any{},
+		"commit_message": "",
+		"paused":         false,
+		"note":           "",
 	}))
 	if err != nil {
 		t.Fatalf("schedule tool: %v", err)
 	}
 	if scheduleResult.Status != domain.ExecutionStatusSucceeded ||
 		scheduleResult.Metadata["schedule_id"] != "opencto:project-1:workflow-schedule:daily-hello" ||
-		scheduleExecutor.request.SourceEvent.ChannelID != "channel-1" {
-		t.Fatalf("unexpected schedule result: %#v request=%#v", scheduleResult, scheduleExecutor.request)
+		scheduleExecutor.createRequest.SourceEvent.ChannelID != "channel-1" {
+		t.Fatalf("unexpected schedule result: %#v request=%#v", scheduleResult, scheduleExecutor.createRequest)
 	}
 }
 
@@ -3429,6 +3429,50 @@ func TestCleanupWorkflowRunsDoesNotDeleteActiveOlderSnapshot(t *testing.T) {
 	}
 }
 
+func TestWorkflowStepEnvironmentSetsGlobalAssignments(t *testing.T) {
+	t.Setenv("REQUIRED_TOKEN", "secret")
+
+	env, err := workflowStepEnvironment("/workspace", []string{
+		"REPORT_PATH=/tmp/report.log",
+		"PAYLOAD={{steps.check-http.stdout}}",
+		"REQUIRED_TOKEN",
+	})
+	if err != nil {
+		t.Fatalf("workflow step environment: %v", err)
+	}
+	if got := envValue(env, "REPORT_PATH"); got != "/tmp/report.log" {
+		t.Fatalf("expected REPORT_PATH assignment, got %q", got)
+	}
+	if got := envValue(env, "PAYLOAD"); got != "{{steps.check-http.stdout}}" {
+		t.Fatalf("expected PAYLOAD assignment, got %q", got)
+	}
+	if got := envValue(env, "REQUIRED_TOKEN"); got != "secret" {
+		t.Fatalf("expected REQUIRED_TOKEN passthrough, got %q", got)
+	}
+	if got := envValue(env, config.EnvOpenCTOWorkspace); got != "/workspace" {
+		t.Fatalf("expected workspace env, got %q", got)
+	}
+}
+
+func TestWorkflowStepEnvironmentStillRequiresPassthroughEnv(t *testing.T) {
+	t.Setenv("MISSING_TOKEN", "")
+
+	if _, err := workflowStepEnvironment("", []string{"MISSING_TOKEN"}); err == nil {
+		t.Fatal("expected missing passthrough env to fail")
+	}
+}
+
+func envValue(env []string, name string) string {
+	prefix := name + "="
+	value := ""
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			value = strings.TrimPrefix(entry, prefix)
+		}
+	}
+	return value
+}
+
 func TestWorkflowStepFailureMessageIncludesCommandOutputAndLogs(t *testing.T) {
 	t.Parallel()
 
@@ -3507,12 +3551,30 @@ func (f fakeGrepExecutor) Run(context.Context, greptool.Request) (greptool.Resul
 }
 
 type fakeScheduleExecutor struct {
-	result  scheduletool.Result
-	err     error
-	request scheduletool.Request
+	result           scheduletool.Result
+	err              error
+	createRequest    scheduletool.CreateRequest
+	updateRequest    scheduletool.UpdateRequest
+	deleteRequest    scheduletool.DeleteRequest
+	operationRequest scheduletool.OperationRequest
 }
 
-func (f *fakeScheduleExecutor) Run(_ context.Context, req scheduletool.Request) (scheduletool.Result, error) {
-	f.request = req
+func (f *fakeScheduleExecutor) Create(_ context.Context, req scheduletool.CreateRequest) (scheduletool.Result, error) {
+	f.createRequest = req
+	return f.result, f.err
+}
+
+func (f *fakeScheduleExecutor) Update(_ context.Context, req scheduletool.UpdateRequest) (scheduletool.Result, error) {
+	f.updateRequest = req
+	return f.result, f.err
+}
+
+func (f *fakeScheduleExecutor) Delete(_ context.Context, req scheduletool.DeleteRequest) (scheduletool.Result, error) {
+	f.deleteRequest = req
+	return f.result, f.err
+}
+
+func (f *fakeScheduleExecutor) Operation(_ context.Context, req scheduletool.OperationRequest) (scheduletool.Result, error) {
+	f.operationRequest = req
 	return f.result, f.err
 }

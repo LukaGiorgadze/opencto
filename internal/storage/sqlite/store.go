@@ -2463,6 +2463,40 @@ LIMIT ?
 	return items, rows.Err()
 }
 
+func (s *Store) DeleteScheduledWorkflow(ctx context.Context, projectID, workflowID string) error {
+	projectID = strings.TrimSpace(projectID)
+	workflowID = strings.TrimSpace(workflowID)
+	if projectID == "" || workflowID == "" {
+		return fmt.Errorf("scheduled workflow project_id and workflow_id are required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	if _, err := tx.ExecContext(ctx, `
+DELETE FROM scheduled_workflow_step_runs
+WHERE project_id = ? AND workflow_id = ?
+`, projectID, workflowID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+DELETE FROM scheduled_workflow_runs
+WHERE project_id = ? AND workflow_id = ?
+`, projectID, workflowID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+DELETE FROM scheduled_workflows
+WHERE project_id = ? AND id = ?
+`, projectID, workflowID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 type scheduledWorkflowScanner interface {
 	Scan(dest ...any) error
 }

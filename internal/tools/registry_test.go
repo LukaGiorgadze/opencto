@@ -14,8 +14,8 @@ func TestDefinitionsIncludeDedicatedTools(t *testing.T) {
 	t.Parallel()
 
 	definitions := Definitions()
-	if len(definitions) != 13 {
-		t.Fatalf("expected thirteen tool definitions, got %d", len(definitions))
+	if len(definitions) != 16 {
+		t.Fatalf("expected sixteen tool definitions, got %d", len(definitions))
 	}
 
 	definition := definitions[0]
@@ -51,12 +51,18 @@ func TestDefinitionsIncludeDedicatedTools(t *testing.T) {
 		domain.ToolTypeMemoryList,
 		domain.ToolTypeMemoryProposeUpdate,
 		domain.ToolTypeMemoryProposeForget,
-		domain.ToolTypeSchedule,
+		domain.ToolTypeWorkflowCreate,
+		domain.ToolTypeWorkflowUpdate,
+		domain.ToolTypeWorkflowDelete,
+		domain.ToolTypeWorkflowOperation,
 		domain.ToolTypeSkill,
 	} {
 		if !seen[toolType] {
 			t.Fatalf("missing tool type %q in registry", toolType)
 		}
+	}
+	if _, ok := DefinitionByName("WorkflowSchedule"); ok {
+		t.Fatalf("WorkflowSchedule should not be exposed as a model tool")
 	}
 }
 
@@ -64,8 +70,8 @@ func TestLLMDefinitionsUseCommandNameAndDescription(t *testing.T) {
 	t.Parallel()
 
 	definitions := LLMDefinitions()
-	if len(definitions) != 13 || definitions[0].Function == nil {
-		t.Fatalf("expected thirteen function definitions, got %#v", definitions)
+	if len(definitions) != 16 || definitions[0].Function == nil {
+		t.Fatalf("expected sixteen function definitions, got %#v", definitions)
 	}
 
 	function := definitions[0].Function
@@ -156,15 +162,17 @@ func TestLLMDefinitionSchemasAreStrictToolCompatible(t *testing.T) {
 		for _, field := range schema.Required {
 			required[field] = true
 		}
-		var missing []string
-		for field := range schema.Properties {
-			if !required[field] {
-				missing = append(missing, field)
+		if definition.Function.Strict {
+			var missing []string
+			for field := range schema.Properties {
+				if !required[field] {
+					missing = append(missing, field)
+				}
 			}
-		}
-		sort.Strings(missing)
-		if len(missing) > 0 {
-			t.Fatalf("%s schema required array is missing properties: %s", definition.Function.Name, strings.Join(missing, ", "))
+			sort.Strings(missing)
+			if len(missing) > 0 {
+				t.Fatalf("%s schema required array is missing properties: %s", definition.Function.Name, strings.Join(missing, ", "))
+			}
 		}
 		if _, ok := schema.Properties["work_item_id"]; ok {
 			t.Fatalf("%s schema should not expose internal work item ids", definition.Function.Name)
@@ -178,6 +186,31 @@ func TestLLMDefinitionSchemasAreStrictToolCompatible(t *testing.T) {
 		sort.Strings(extra)
 		if len(extra) > 0 {
 			t.Fatalf("%s schema required array includes unknown properties: %s", definition.Function.Name, strings.Join(extra, ", "))
+		}
+	}
+}
+
+func TestWorkflowLLMDefinitionsAreOptionalFieldTools(t *testing.T) {
+	t.Parallel()
+
+	workflowTools := map[string]bool{
+		"WorkflowCreate":    false,
+		"WorkflowUpdate":    false,
+		"WorkflowDelete":    false,
+		"WorkflowOperation": false,
+	}
+	for _, definition := range LLMDefinitions() {
+		if _, ok := workflowTools[definition.Function.Name]; !ok {
+			continue
+		}
+		workflowTools[definition.Function.Name] = true
+		if definition.Function.Strict {
+			t.Fatalf("%s should not use strict schemas; update fields must be optional", definition.Function.Name)
+		}
+	}
+	for name, seen := range workflowTools {
+		if !seen {
+			t.Fatalf("missing workflow LLM tool %s", name)
 		}
 	}
 }
