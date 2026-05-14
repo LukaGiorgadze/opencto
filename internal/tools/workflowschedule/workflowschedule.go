@@ -405,6 +405,12 @@ func (e *TemporalExecutor) create(ctx context.Context, req Request) (Result, err
 	if exists {
 		return Result{}, ErrWorkflowExists
 	}
+	if hadLocalBundle {
+		if err := os.RemoveAll(workflowPath); err != nil {
+			return Result{}, err
+		}
+		hadLocalBundle = false
+	}
 	req.WorkflowID = workflowID
 
 	workflowID, manifest, workflowPath, commitHash, err := e.prepareBundle(ctx, req, false)

@@ -1403,8 +1403,6 @@ func (a *Activities) ExecuteWorkflowStep(ctx context.Context, request workflowru
 			exitCode = exitErr.ExitCode()
 		}
 	}
-	_ = copyWorkflowStepLog(stdoutPath, filepath.Join(stepDir, "stdout.log"))
-	_ = copyWorkflowStepLog(stderrPath, filepath.Join(stepDir, "stderr.log"))
 	stdoutTail, stdoutTruncated := tailWorkflowLog(stdoutPath, a.execTailBytes())
 	stderrTail, stderrTruncated := tailWorkflowLog(stderrPath, a.execTailBytes())
 	summary := workflowStepSummary(stdoutTail, stderrTail, stdoutTruncated, stderrTruncated)
@@ -3787,7 +3785,7 @@ func workflowSourceWorkflowID(workspaceRoot, filePath string) (string, bool) {
 		return "", false
 	}
 	parts := strings.Split(rel, "/")
-	if len(parts) < 3 || parts[1] != "src" {
+	if len(parts) < 2 || parts[1] == ".git" {
 		return "", false
 	}
 	workflowID, err := workflowbundle.NormalizeWorkflowID(parts[0])
@@ -4546,27 +4544,6 @@ func workflowStepAttemptLogPaths(stepDir string, attempt int) (string, string) {
 	}
 	attemptDir := filepath.Join(stepDir, fmt.Sprintf("attempt-%d", attempt))
 	return filepath.Join(attemptDir, "stdout.log"), filepath.Join(attemptDir, "stderr.log")
-}
-
-func copyWorkflowStepLog(source, target string) error {
-	input, err := os.Open(source)
-	if err != nil {
-		return err
-	}
-	defer input.Close()
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return err
-	}
-	output, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		return err
-	}
-	_, copyErr := io.Copy(output, input)
-	closeErr := output.Close()
-	if copyErr != nil {
-		return copyErr
-	}
-	return closeErr
 }
 
 func workflowStepEnvironment(workspaceRoot string, request workflowrun.ExecuteStepRequest, stepID, stepDir string) ([]string, error) {

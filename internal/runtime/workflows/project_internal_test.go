@@ -97,3 +97,15 @@ func TestWorkflowStepRetryPolicyPreservesConfiguredMaximumAttempts(t *testing.T)
 		t.Fatalf("unexpected retry intervals: %#v", retryPolicy)
 	}
 }
+
+func TestWorkflowStepRetryPolicyPreservesNonRetryableErrorTypes(t *testing.T) {
+	t.Parallel()
+
+	step := workflowbundle.Step{RetryPolicy: workflowbundle.RetryPolicy{
+		NonRetryableErrorTypes: []string{workflowbundle.StepFailureErrorType},
+	}}
+	retryPolicy := workflowStepRetryPolicy(step, 0, 0)
+	if len(retryPolicy.NonRetryableErrorTypes) != 1 || retryPolicy.NonRetryableErrorTypes[0] != workflowbundle.StepFailureErrorType {
+		t.Fatalf("expected supported non-retryable error type, got %#v", retryPolicy.NonRetryableErrorTypes)
+	}
+}

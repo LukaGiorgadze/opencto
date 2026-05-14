@@ -355,6 +355,13 @@ func TestWorkflowCreateIgnoresUnregisteredLocalBundle(t *testing.T) {
 	if result.CommitHash == "" || len(client.created) != 1 {
 		t.Fatalf("expected workflow to be created, result=%#v created=%d", result, len(client.created))
 	}
+	snapshot := t.TempDir()
+	if err := workflowbundle.ArchiveCommit(ctx, workflowPath, result.CommitHash, snapshot); err != nil {
+		t.Fatalf("archive created workflow: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(snapshot, "src", "old.py")); !os.IsNotExist(err) {
+		t.Fatalf("expected stale source file to be absent from created workflow archive, stat err=%v", err)
+	}
 }
 
 func TestWorkflowUpdateCanClearOptionalManifestFields(t *testing.T) {

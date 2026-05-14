@@ -13,7 +13,7 @@ const (
 
 	DefaultRunRetention = 10
 
-	StepFailureErrorType = "WorkflowStepFailed"
+	StepFailureErrorType = workflowbundle.StepFailureErrorType
 
 	PrepareActivityName     = "Activities.PrepareWorkflowRun"
 	CleanupRunsActivityName = "Activities.CleanupWorkflowRuns"

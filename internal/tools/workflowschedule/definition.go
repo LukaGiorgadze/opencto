@@ -23,7 +23,7 @@ Write files produced by a step under OPENCTO_RUN_DIR/artifacts/{step_id}/filenam
 
 	WorkflowUpdateToolDescription = `Update an existing Git-backed scheduled workflow.
 
-Use this tool after Edit or Write modifies files under workflows/{workflow_id}/src. It loads the existing workflow.yml, applies any provided manifest fields, validates the bundle, commits dirty src changes, and repoints the schedule to the new commit_hash.
+Use this tool after Edit or Write modifies files under workflows/{workflow_id}. It loads the existing workflow.yml, applies any provided manifest fields, validates the bundle, commits dirty workflow changes, and repoints the schedule to the new commit_hash.
 
 The manifest defines durable step boundaries only. Implementation files are ordinary runnable programs, scripts, or binaries invoked by step command and args. Keep each step focused on one responsibility, split distinct operations into separate steps and entrypoints, and do not write schedulers, workers, queues, daemons, or orchestration framework code inside src/.
 

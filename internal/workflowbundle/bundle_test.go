@@ -121,6 +121,30 @@ func TestValidateManifestRejectsEnvTemplates(t *testing.T) {
 	}
 }
 
+func TestValidateManifestRejectsUnsupportedNonRetryableErrorType(t *testing.T) {
+	t.Parallel()
+
+	manifest := testManifest()
+	manifest.Steps[0].RetryPolicy.NonRetryableErrorTypes = []string{"4xx"}
+	err := ValidateManifest(manifest)
+	if err == nil {
+		t.Fatal("expected unsupported non-retryable error type to fail")
+	}
+	if !strings.Contains(err.Error(), StepFailureErrorType) {
+		t.Fatalf("expected supported error type in error, got %v", err)
+	}
+}
+
+func TestValidateManifestAcceptsWorkflowStepFailedNonRetryableErrorType(t *testing.T) {
+	t.Parallel()
+
+	manifest := testManifest()
+	manifest.Steps[0].RetryPolicy.NonRetryableErrorTypes = []string{StepFailureErrorType}
+	if err := ValidateManifest(manifest); err != nil {
+		t.Fatalf("expected supported non-retryable error type to pass: %v", err)
+	}
+}
+
 func TestLoadManifestRejectsUnknownYAMLFields(t *testing.T) {
 	t.Parallel()
 

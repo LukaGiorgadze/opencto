@@ -54,7 +54,11 @@
               "backoff_coefficient": {"type": "number", "minimum": 0},
               "maximum_interval": {"type": "string"},
               "maximum_attempts": {"type": "integer", "minimum": 0},
-              "non_retryable_error_types": {"type": "array", "items": {"type": "string"}}
+              "non_retryable_error_types": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["WorkflowStepFailed"]},
+                "description": "Use [\"WorkflowStepFailed\"] to make command failures non-retryable, or [] to use retry attempts."
+              }
             }
           }
         }

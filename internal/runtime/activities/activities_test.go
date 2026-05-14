@@ -2585,6 +2585,21 @@ func TestWorkflowSourceEditObservationRequiresWorkflowUpdate(t *testing.T) {
 	}
 }
 
+func TestWorkflowManifestEditObservationRequiresWorkflowUpdate(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	filePath := filepath.Join(workspaceRoot, ".opencto", "workflows", "daily-check", workflowbundle.ManifestFilename)
+	observation, metadata := appendWorkflowUpdateNotice("edited: "+filePath, map[string]string{}, workspaceRoot, filePath)
+	if !strings.Contains(observation, "workflow_update_required: true") ||
+		!strings.Contains(observation, "workflow_id: daily-check") {
+		t.Fatalf("expected workflow update notice, got %q", observation)
+	}
+	if metadata["workflow_update_required"] != "true" || metadata["workflow_id"] != "daily-check" {
+		t.Fatalf("expected workflow update metadata, got %#v", metadata)
+	}
+}
+
 func TestWorkflowSourceEditObservationIgnoresNonWorkflowSource(t *testing.T) {
 	t.Parallel()
 
@@ -3541,6 +3556,18 @@ func TestExecuteWorkflowStepCreatesStepArtifactDirectory(t *testing.T) {
 	}
 	if strings.TrimSpace(string(data)) != `{"ok":true}` {
 		t.Fatalf("unexpected artifact: %q", string(data))
+	}
+	if _, err := os.Stat(result.StdoutLogPath); err != nil {
+		t.Fatalf("expected attempt stdout log: %v", err)
+	}
+	if _, err := os.Stat(result.StderrLogPath); err != nil {
+		t.Fatalf("expected attempt stderr log: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(runPath, "steps", "check", "stdout.log")); !os.IsNotExist(err) {
+		t.Fatalf("expected no duplicate root stdout log, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(runPath, "steps", "check", "stderr.log")); !os.IsNotExist(err) {
+		t.Fatalf("expected no duplicate root stderr log, stat err=%v", err)
 	}
 }
 

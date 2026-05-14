@@ -25,6 +25,8 @@ const (
 
 	DefaultCatchupWindow = 10 * time.Minute
 
+	StepFailureErrorType = "WorkflowStepFailed"
+
 	OverlapPolicySkip           = "skip"
 	OverlapPolicyBufferOne      = "buffer_one"
 	OverlapPolicyBufferAll      = "buffer_all"
@@ -556,8 +558,8 @@ func ValidateManifest(manifest Manifest) error {
 			return fmt.Errorf("step %q: retry_policy.non_retryable_error_types is required; use [] when unset", id)
 		}
 		for index, errorType := range step.RetryPolicy.NonRetryableErrorTypes {
-			if strings.TrimSpace(errorType) == "" {
-				return fmt.Errorf("step %q: retry_policy.non_retryable_error_types[%d] is required", id, index)
+			if errorType != StepFailureErrorType {
+				return fmt.Errorf("step %q: retry_policy.non_retryable_error_types[%d] must be %q", id, index, StepFailureErrorType)
 			}
 		}
 	}
