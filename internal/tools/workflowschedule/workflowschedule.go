@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -626,11 +627,51 @@ func (e *TemporalExecutor) trigger(ctx context.Context, req Request) (Result, er
 	if err != nil {
 		return Result{}, err
 	}
-	scheduleID := workflowrun.ScheduleID(req.ProjectID, workflowID)
+	item, scheduleID, err := e.validateTriggerReady(ctx, strings.TrimSpace(req.ProjectID), workflowID)
+	if err != nil {
+		return Result{}, err
+	}
 	if err := e.Client.GetHandle(ctx, scheduleID).Trigger(ctx, temporalclient.ScheduleTriggerOptions{}); err != nil {
 		return Result{}, err
 	}
-	return Result{Operation: OperationTrigger, WorkflowID: workflowID, ScheduleID: scheduleID, Message: "workflow schedule triggered"}, nil
+	return Result{Operation: OperationTrigger, WorkflowID: workflowID, ScheduleID: scheduleID, Name: item.Name, CommitHash: item.CurrentCommitHash, WorkflowPath: item.WorkflowPath, Message: "workflow schedule triggered"}, nil
+}
+
+func (e *TemporalExecutor) validateTriggerReady(ctx context.Context, projectID, workflowID string) (domain.ScheduledWorkflow, string, error) {
+	item, ok, err := e.Store.GetScheduledWorkflow(ctx, projectID, workflowID)
+	if err != nil {
+		return domain.ScheduledWorkflow{}, "", err
+	}
+	if !ok {
+		return domain.ScheduledWorkflow{}, "", fmt.Errorf("workflow %q not found", workflowID)
+	}
+	scheduleID := strings.TrimSpace(item.TemporalScheduleID)
+	if scheduleID == "" {
+		scheduleID = workflowrun.ScheduleID(projectID, workflowID)
+	}
+	workflowPath := strings.TrimSpace(item.WorkflowPath)
+	if workflowPath == "" {
+		workflowPath, err = workflowbundle.WorkflowDir(e.WorkspaceRoot, workflowID)
+		if err != nil {
+			return domain.ScheduledWorkflow{}, "", err
+		}
+	}
+	status, err := gitOutput(ctx, workflowPath, "status", "--porcelain")
+	if err != nil {
+		return domain.ScheduledWorkflow{}, "", err
+	}
+	if strings.TrimSpace(status) != "" {
+		return domain.ScheduledWorkflow{}, "", fmt.Errorf("workflow %q has uncommitted changes; run WorkflowUpdate before triggering", workflowID)
+	}
+	head, err := gitOutput(ctx, workflowPath, "rev-parse", "HEAD")
+	if err != nil {
+		return domain.ScheduledWorkflow{}, "", err
+	}
+	head = strings.TrimSpace(head)
+	if !strings.EqualFold(head, strings.TrimSpace(item.CurrentCommitHash)) {
+		return domain.ScheduledWorkflow{}, "", fmt.Errorf("workflow %q has unpublished commit %s; run WorkflowUpdate before triggering", workflowID, head)
+	}
+	return item, scheduleID, nil
 }
 
 func (e *TemporalExecutor) prepareBundle(ctx context.Context, req Request, useExisting bool) (string, workflowbundle.Manifest, string, string, error) {
@@ -1036,6 +1077,24 @@ func cleanStrings(values []string) []string {
 		}
 	}
 	return out
+}
+
+func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	output, err := cmd.Output()
+	if err != nil {
+		return "", gitCommandError(cmd, err)
+	}
+	return string(output), nil
+}
+
+func gitCommandError(cmd *exec.Cmd, err error) error {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return fmt.Errorf("%s: %w: %s", strings.Join(cmd.Args, " "), err, strings.TrimSpace(string(exitErr.Stderr)))
+	}
+	return fmt.Errorf("%s: %w", strings.Join(cmd.Args, " "), err)
 }
 
 func firstNonEmpty(values ...string) string {

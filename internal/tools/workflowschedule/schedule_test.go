@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -540,6 +541,27 @@ func TestWorkflowOperationDispatchesControlActions(t *testing.T) {
 
 	ctx := context.Background()
 	executor, _, client := newWorkflowTestExecutor(t, t.TempDir())
+	if _, err := executor.Create(ctx, CreateRequest{
+		ProjectID:  "project-1",
+		WorkflowID: "finance2049",
+		Name:       "finance2049 availability",
+		Schedule: workflowbundle.Schedule{
+			Cron:          "* * * * *",
+			OverlapPolicy: workflowbundle.OverlapPolicySkip,
+			CatchupWindow: "5m",
+		},
+		Env: []string{},
+		Steps: []workflowbundle.Step{{
+			ID:                  "check",
+			Command:             "python3",
+			Args:                []string{"src/check_site.py"},
+			StartToCloseTimeout: "30s",
+			RetryPolicy:         workflowbundle.RetryPolicy{MaximumAttempts: 1},
+		}},
+		Files: []workflowbundle.File{{Path: "src/check_site.py", Content: "print('ok')\n"}},
+	}); err != nil {
+		t.Fatalf("create workflow: %v", err)
+	}
 	if _, err := executor.Operation(ctx, OperationRequest{ProjectID: "project-1", Operation: OperationTrigger, WorkflowID: "finance2049"}); err != nil {
 		t.Fatalf("trigger workflow: %v", err)
 	}
@@ -554,6 +576,97 @@ func TestWorkflowOperationDispatchesControlActions(t *testing.T) {
 	}
 	if client.handle.lastTriggerOptions.Overlap != enumspb.SCHEDULE_OVERLAP_POLICY_UNSPECIFIED {
 		t.Fatalf("expected trigger to use schedule overlap policy, got %s", client.handle.lastTriggerOptions.Overlap)
+	}
+}
+
+func TestWorkflowTriggerRejectsDirtyWorkflowRepo(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	workspaceRoot := t.TempDir()
+	executor, _, client := newWorkflowTestExecutor(t, workspaceRoot)
+	if _, err := executor.Create(ctx, CreateRequest{
+		ProjectID:  "project-1",
+		WorkflowID: "finance2049",
+		Name:       "finance2049 availability",
+		Schedule: workflowbundle.Schedule{
+			Cron:          "* * * * *",
+			OverlapPolicy: workflowbundle.OverlapPolicySkip,
+			CatchupWindow: "5m",
+		},
+		Env: []string{},
+		Steps: []workflowbundle.Step{{
+			ID:                  "check",
+			Command:             "python3",
+			Args:                []string{"src/check_site.py"},
+			StartToCloseTimeout: "30s",
+			RetryPolicy:         workflowbundle.RetryPolicy{MaximumAttempts: 1},
+		}},
+		Files: []workflowbundle.File{{Path: "src/check_site.py", Content: "print('old')\n"}},
+	}); err != nil {
+		t.Fatalf("create workflow: %v", err)
+	}
+	workflowPath, err := workflowbundle.WorkflowDir(workspaceRoot, "finance2049")
+	if err != nil {
+		t.Fatalf("workflow dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workflowPath, "src", "check_site.py"), []byte("print('dirty')\n"), 0o644); err != nil {
+		t.Fatalf("dirty workflow source: %v", err)
+	}
+
+	_, err = executor.Operation(ctx, OperationRequest{ProjectID: "project-1", Operation: OperationTrigger, WorkflowID: "finance2049"})
+	if err == nil || !strings.Contains(err.Error(), "uncommitted changes") {
+		t.Fatalf("expected dirty workflow error, got %v", err)
+	}
+	if client.handle.triggered != 0 {
+		t.Fatalf("trigger should not be called for dirty workflow, got %d", client.handle.triggered)
+	}
+}
+
+func TestWorkflowTriggerRejectsUnpublishedCommit(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	workspaceRoot := t.TempDir()
+	executor, _, client := newWorkflowTestExecutor(t, workspaceRoot)
+	if _, err := executor.Create(ctx, CreateRequest{
+		ProjectID:  "project-1",
+		WorkflowID: "finance2049",
+		Name:       "finance2049 availability",
+		Schedule: workflowbundle.Schedule{
+			Cron:          "* * * * *",
+			OverlapPolicy: workflowbundle.OverlapPolicySkip,
+			CatchupWindow: "5m",
+		},
+		Env: []string{},
+		Steps: []workflowbundle.Step{{
+			ID:                  "check",
+			Command:             "python3",
+			Args:                []string{"src/check_site.py"},
+			StartToCloseTimeout: "30s",
+			RetryPolicy:         workflowbundle.RetryPolicy{MaximumAttempts: 1},
+		}},
+		Files: []workflowbundle.File{{Path: "src/check_site.py", Content: "print('old')\n"}},
+	}); err != nil {
+		t.Fatalf("create workflow: %v", err)
+	}
+	workflowPath, err := workflowbundle.WorkflowDir(workspaceRoot, "finance2049")
+	if err != nil {
+		t.Fatalf("workflow dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workflowPath, "src", "check_site.py"), []byte("print('new')\n"), 0o644); err != nil {
+		t.Fatalf("edit workflow source: %v", err)
+	}
+	if _, err := workflowbundle.CommitBundle(ctx, workflowPath, "manual unpublished commit", nil); err != nil {
+		t.Fatalf("commit workflow source: %v", err)
+	}
+
+	_, err = executor.Operation(ctx, OperationRequest{ProjectID: "project-1", Operation: OperationTrigger, WorkflowID: "finance2049"})
+	if err == nil || !strings.Contains(err.Error(), "unpublished commit") {
+		t.Fatalf("expected unpublished commit error, got %v", err)
+	}
+	if client.handle.triggered != 0 {
+		t.Fatalf("trigger should not be called for unpublished workflow, got %d", client.handle.triggered)
 	}
 }
 

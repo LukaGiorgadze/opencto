@@ -2569,6 +2569,36 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 	}
 }
 
+func TestWorkflowSourceEditObservationRequiresWorkflowUpdate(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	filePath := filepath.Join(workspaceRoot, ".opencto", "workflows", "daily-check", "src", "check.py")
+	observation, metadata := appendWorkflowUpdateNotice("edited: "+filePath, map[string]string{}, workspaceRoot, filePath)
+	if !strings.Contains(observation, "workflow_update_required: true") ||
+		!strings.Contains(observation, "workflow_id: daily-check") ||
+		!strings.Contains(observation, "call WorkflowUpdate before triggering") {
+		t.Fatalf("expected workflow update notice, got %q", observation)
+	}
+	if metadata["workflow_update_required"] != "true" || metadata["workflow_id"] != "daily-check" {
+		t.Fatalf("expected workflow update metadata, got %#v", metadata)
+	}
+}
+
+func TestWorkflowSourceEditObservationIgnoresNonWorkflowSource(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	filePath := filepath.Join(workspaceRoot, "src", "app.py")
+	observation, metadata := appendWorkflowUpdateNotice("edited: "+filePath, map[string]string{}, workspaceRoot, filePath)
+	if strings.Contains(observation, "workflow_update_required") {
+		t.Fatalf("did not expect workflow update notice, got %q", observation)
+	}
+	if _, ok := metadata["workflow_update_required"]; ok {
+		t.Fatalf("did not expect workflow update metadata, got %#v", metadata)
+	}
+}
+
 func TestExecuteToolLoadsWorkspaceSkillBeforeBuiltInSkill(t *testing.T) {
 	t.Parallel()
 

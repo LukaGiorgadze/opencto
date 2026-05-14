@@ -3124,14 +3124,19 @@ func (a *Activities) runEditTool(ctx context.Context, choice agent.ToolChoice) (
 		executor = edittool.NewTool()
 	}
 	result, err := executor.Run(ctx, req)
+	observation := editObservation(result, err)
+	metadata := map[string]string{
+		"file_path":     result.FilePath,
+		"replacements":  strconv.Itoa(result.Replacements),
+		"bytes_written": strconv.Itoa(result.BytesWritten),
+	}
+	if err == nil {
+		observation, metadata = appendWorkflowUpdateNotice(observation, metadata, a.WorkspaceRoot, result.FilePath)
+	}
 	return toolRunResult{
-		Observation: editObservation(result, err),
+		Observation: observation,
 		ResultCode:  resultCodeForError(err),
-		Metadata: map[string]string{
-			"file_path":     result.FilePath,
-			"replacements":  strconv.Itoa(result.Replacements),
-			"bytes_written": strconv.Itoa(result.BytesWritten),
-		},
+		Metadata:    metadata,
 	}, err
 }
 
@@ -3156,8 +3161,12 @@ func (a *Activities) runWriteTool(ctx context.Context, choice agent.ToolChoice, 
 	if result.Duration > 0 {
 		metadata["duration_ms"] = strconv.FormatInt(result.Duration.Milliseconds(), 10)
 	}
+	observation := writeObservation(result, err)
+	if err == nil {
+		observation, metadata = appendWorkflowUpdateNotice(observation, metadata, a.WorkspaceRoot, result.FilePath)
+	}
 	return toolRunResult{
-		Observation: writeObservation(result, err),
+		Observation: observation,
 		ResultCode:  resultCodeForError(err),
 		Metadata:    metadata,
 	}, err
@@ -3744,6 +3753,48 @@ func writeObservation(result writetool.Result, err error) string {
 		return fullObservation("", "", err)
 	}
 	return fmt.Sprintf("wrote: %s\nbytes_written: %d\noverwritten: %t", result.FilePath, result.BytesWritten, result.Overwritten)
+}
+
+func appendWorkflowUpdateNotice(observation string, metadata map[string]string, workspaceRoot, filePath string) (string, map[string]string) {
+	workflowID, ok := workflowSourceWorkflowID(workspaceRoot, filePath)
+	if !ok {
+		return observation, metadata
+	}
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	metadata["workflow_update_required"] = "true"
+	metadata["workflow_id"] = workflowID
+	notice := "workflow_update_required: true\nworkflow_id: " + workflowID + "\nnext_action: call WorkflowUpdate before triggering or running this workflow so Git is committed and the schedule points to the new commit"
+	observation = strings.TrimSpace(observation)
+	if observation == "" {
+		return notice, metadata
+	}
+	return observation + "\n\n" + notice, metadata
+}
+
+func workflowSourceWorkflowID(workspaceRoot, filePath string) (string, bool) {
+	openCTODir, err := workflowbundle.OpenCTODir(workspaceRoot)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(filepath.Join(openCTODir, "workflows"), filepath.Clean(strings.TrimSpace(filePath)))
+	if err != nil || rel == "." {
+		return "", false
+	}
+	rel = filepath.ToSlash(rel)
+	if strings.HasPrefix(rel, "../") || rel == ".." || strings.HasPrefix(rel, "/") {
+		return "", false
+	}
+	parts := strings.Split(rel, "/")
+	if len(parts) < 3 || parts[1] != "src" {
+		return "", false
+	}
+	workflowID, err := workflowbundle.NormalizeWorkflowID(parts[0])
+	if err != nil {
+		return "", false
+	}
+	return workflowID, true
 }
 
 func globObservation(result globtool.Result, err error) string {
