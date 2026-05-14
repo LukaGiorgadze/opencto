@@ -3271,7 +3271,6 @@ func TestPrepareWorkflowRunUsesExecutionRunID(t *testing.T) {
 		t.Fatalf("workflow dir: %v", err)
 	}
 	manifest := workflowbundle.Manifest{
-		Version:     1,
 		Name:        "finance check",
 		Description: "",
 		Schedule: workflowbundle.Schedule{

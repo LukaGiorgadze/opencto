@@ -27,7 +27,7 @@
     },
     "workflow_id": {
       "type": "string",
-      "description": "Short stable workflow slug. Required for all operations except list."
+      "description": "Short stable workflow slug. Use empty string only for list."
     },
     "name": {
       "type": "string",
@@ -83,8 +83,8 @@
     },
     "steps": {
       "type": "array",
-      "minItems": 1,
-      "description": "Linear durable workflow steps. Each step is one single-responsibility command boundary. Split multi-stage work into separate steps, e.g. download, transform, then load. Logic must live in src/ files.",
+      "minItems": 0,
+      "description": "Linear durable workflow steps. Each step is one single-responsibility command boundary. Logic must live in src/ files. Required for create; optional for update when reusing the existing workflow.yml.",
       "items": {
         "type": "object",
         "required": ["id", "command", "args", "start_to_close_timeout", "schedule_to_close_timeout", "retry_policy"],
@@ -102,9 +102,9 @@
           },
           "args": {
             "type": "array",
-            "minItems": 1,
+            "minItems": 0,
             "items": {"type": "string"},
-            "description": "Command arguments. For Go code, use command go with args like [\"run\", \"./src/package\"]. For shell scripts, use command sh with args like [\"src/script.sh\"]."
+            "description": "Command arguments only. Do not repeat command as args[0]. Example: command python3 with args [\"src/check_site.py\"], not [\"python3\", \"src/check_site.py\"]."
           },
           "start_to_close_timeout": {
             "type": "string",
@@ -134,7 +134,7 @@
     },
     "files": {
       "type": "array",
-      "description": "Files to create/update in the workflow bundle. Paths must be under src/. Write normal runnable programs or scripts for individual steps only. Do not write scheduler, workflow, worker, activity, queue, daemon, or framework orchestration code. The backend owns workflow.yml and .gitignore.",
+      "description": "Files to create/update in the workflow bundle. Paths must be under src/. Write normal runnable programs or scripts for individual steps only. Do not write scheduler, workflow, worker, activity, queue, daemon, or framework orchestration code. For update after using Edit/Write, pass [] and the backend will commit dirty src changes.",
       "items": {
         "type": "object",
         "required": ["path", "content", "executable"],

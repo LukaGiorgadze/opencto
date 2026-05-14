@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -170,7 +171,7 @@ func (e *TemporalExecutor) Run(ctx context.Context, req Request) (Result, error)
 }
 
 func (e *TemporalExecutor) create(ctx context.Context, req Request) (Result, error) {
-	workflowID, manifest, workflowPath, commitHash, err := e.prepareBundle(ctx, req)
+	workflowID, manifest, workflowPath, commitHash, err := e.prepareBundle(ctx, req, false)
 	if err != nil {
 		return Result{}, err
 	}
@@ -192,7 +193,7 @@ func (e *TemporalExecutor) create(ctx context.Context, req Request) (Result, err
 }
 
 func (e *TemporalExecutor) update(ctx context.Context, req Request) (Result, error) {
-	workflowID, manifest, workflowPath, commitHash, err := e.prepareBundle(ctx, req)
+	workflowID, manifest, workflowPath, commitHash, err := e.prepareBundle(ctx, req, true)
 	if err != nil {
 		return Result{}, err
 	}
@@ -353,16 +354,16 @@ func (e *TemporalExecutor) trigger(ctx context.Context, req Request) (Result, er
 	return Result{Operation: OperationTrigger, WorkflowID: workflowID, ScheduleID: scheduleID, Message: "workflow schedule triggered"}, nil
 }
 
-func (e *TemporalExecutor) prepareBundle(ctx context.Context, req Request) (string, workflowbundle.Manifest, string, string, error) {
+func (e *TemporalExecutor) prepareBundle(ctx context.Context, req Request, useExisting bool) (string, workflowbundle.Manifest, string, string, error) {
 	workflowID, err := workflowbundle.NormalizeWorkflowID(req.WorkflowID)
 	if err != nil {
 		return "", workflowbundle.Manifest{}, "", "", ErrWorkflowIDRequired
 	}
-	manifest, err := e.manifest(req)
+	workflowPath, err := workflowbundle.WorkflowDir(e.WorkspaceRoot, workflowID)
 	if err != nil {
 		return "", workflowbundle.Manifest{}, "", "", err
 	}
-	workflowPath, err := workflowbundle.WorkflowDir(e.WorkspaceRoot, workflowID)
+	manifest, err := e.manifest(req, workflowPath, useExisting)
 	if err != nil {
 		return "", workflowbundle.Manifest{}, "", "", err
 	}
@@ -377,7 +378,21 @@ func (e *TemporalExecutor) prepareBundle(ctx context.Context, req Request) (stri
 	return workflowID, manifest, workflowPath, commitHash, nil
 }
 
-func (e *TemporalExecutor) manifest(req Request) (workflowbundle.Manifest, error) {
+func (e *TemporalExecutor) manifest(req Request, workflowPath string, useExisting bool) (workflowbundle.Manifest, error) {
+	if useExisting && !requestHasCompleteManifest(req) {
+		existing, err := workflowbundle.LoadManifest(workflowPath)
+		switch {
+		case err == nil:
+			return e.mergeManifest(existing, req)
+		case errors.Is(err, os.ErrNotExist):
+		default:
+			return workflowbundle.Manifest{}, err
+		}
+	}
+	return e.manifestFromRequest(req)
+}
+
+func (e *TemporalExecutor) manifestFromRequest(req Request) (workflowbundle.Manifest, error) {
 	_, timeZoneName, err := e.resolveTimeZone()
 	if err != nil {
 		return workflowbundle.Manifest{}, err
@@ -395,28 +410,86 @@ func (e *TemporalExecutor) manifest(req Request) (workflowbundle.Manifest, error
 	if env == nil {
 		env = []string{}
 	}
-	steps := append([]workflowbundle.Step(nil), req.Steps...)
-	for index := range steps {
-		if steps[index].Args == nil {
-			steps[index].Args = []string{}
-		}
-		if steps[index].RetryPolicy.NonRetryableErrorTypes == nil {
-			steps[index].RetryPolicy.NonRetryableErrorTypes = []string{}
-		}
-	}
 	manifest := workflowbundle.Manifest{
-		Version:            1,
 		Name:               firstNonEmpty(req.Name, req.WorkflowID),
 		Description:        strings.TrimSpace(req.Description),
 		Schedule:           schedule,
 		NotificationPolicy: notification,
 		Env:                env,
-		Steps:              steps,
+		Steps:              normalizeSteps(req.Steps),
 	}
 	if err := workflowbundle.ValidateManifest(manifest); err != nil {
 		return workflowbundle.Manifest{}, err
 	}
 	return manifest, nil
+}
+
+func (e *TemporalExecutor) mergeManifest(existing workflowbundle.Manifest, req Request) (workflowbundle.Manifest, error) {
+	manifest := existing
+	if strings.TrimSpace(req.Name) != "" {
+		manifest.Name = strings.TrimSpace(req.Name)
+	}
+	if strings.TrimSpace(req.Description) != "" {
+		manifest.Description = strings.TrimSpace(req.Description)
+	}
+	manifest.Schedule = mergeSchedule(manifest.Schedule, req.Schedule)
+	if req.NotificationPolicy.OnFailure {
+		manifest.NotificationPolicy.OnFailure = true
+	}
+	if len(req.Env) > 0 {
+		manifest.Env = cleanStrings(req.Env)
+		if manifest.Env == nil {
+			manifest.Env = []string{}
+		}
+	}
+	if len(req.Steps) > 0 {
+		manifest.Steps = normalizeSteps(req.Steps)
+	}
+	if err := workflowbundle.ValidateManifest(manifest); err != nil {
+		return workflowbundle.Manifest{}, err
+	}
+	return manifest, nil
+}
+
+func mergeSchedule(existing, update workflowbundle.Schedule) workflowbundle.Schedule {
+	schedule := existing
+	if strings.TrimSpace(update.Cron) != "" {
+		schedule.Cron = strings.TrimSpace(update.Cron)
+		schedule.OneShotAt = strings.TrimSpace(update.OneShotAt)
+	}
+	if strings.TrimSpace(update.OneShotAt) != "" {
+		schedule.OneShotAt = strings.TrimSpace(update.OneShotAt)
+		schedule.Cron = strings.TrimSpace(update.Cron)
+	}
+	if strings.TrimSpace(update.OverlapPolicy) != "" {
+		schedule.OverlapPolicy = strings.TrimSpace(update.OverlapPolicy)
+	}
+	if strings.TrimSpace(update.CatchupWindow) != "" {
+		schedule.CatchupWindow = strings.TrimSpace(update.CatchupWindow)
+	}
+	if update.PauseOnFailure {
+		schedule.PauseOnFailure = true
+	}
+	return schedule
+}
+
+func requestHasCompleteManifest(req Request) bool {
+	return strings.TrimSpace(req.Name) != "" &&
+		(strings.TrimSpace(req.Schedule.Cron) != "" || strings.TrimSpace(req.Schedule.OneShotAt) != "") &&
+		len(req.Steps) > 0
+}
+
+func normalizeSteps(steps []workflowbundle.Step) []workflowbundle.Step {
+	next := append([]workflowbundle.Step(nil), steps...)
+	for index := range next {
+		if next[index].Args == nil {
+			next[index].Args = []string{}
+		}
+		if next[index].RetryPolicy.NonRetryableErrorTypes == nil {
+			next[index].RetryPolicy.NonRetryableErrorTypes = []string{}
+		}
+	}
+	return next
 }
 
 func (e *TemporalExecutor) scheduleOptions(req Request, workflowID, scheduleID, commitHash string, manifest workflowbundle.Manifest) (temporalclient.ScheduleOptions, error) {
@@ -555,7 +628,8 @@ func (e *TemporalExecutor) log(action, workflowID, scheduleID string) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	logger.Info("temporal workflow schedule "+action,
+	logger.Info(
+		"temporal workflow schedule "+action,
 		slog.String("workflow_id", workflowID),
 		slog.String("schedule_id", scheduleID),
 	)

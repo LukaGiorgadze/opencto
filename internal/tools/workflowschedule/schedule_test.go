@@ -2,6 +2,7 @@ package workflowschedule
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -108,6 +109,127 @@ func TestCreateWorkflowScheduleCommitsBundleAndCreatesTemporalSchedule(t *testin
 	}
 }
 
+func TestUpdateWorkflowScheduleCommitsDirtyWorkflowFiles(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	workspaceRoot := t.TempDir()
+	store, err := sqlitestore.Open(ctx, filepath.Join(workspaceRoot, "opencto.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	client := &fakeScheduleClient{}
+	executor := &TemporalExecutor{
+		Client:        client,
+		Store:         store,
+		TaskQueue:     "opencto",
+		WorkspaceRoot: workspaceRoot,
+		Now: func() time.Time {
+			return time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC)
+		},
+		ResolveTimeZone: func() (*time.Location, string, error) {
+			return time.FixedZone("Asia/Tbilisi", 4*60*60), "Asia/Tbilisi", nil
+		},
+	}
+
+	created, err := executor.Run(ctx, Request{
+		ProjectID:   "project-1",
+		Operation:   OperationCreate,
+		WorkflowID:  "finance2049",
+		Name:        "finance2049 availability",
+		Description: "checks website availability",
+		Schedule: workflowbundle.Schedule{
+			Cron:          "* * * * *",
+			OverlapPolicy: workflowbundle.OverlapPolicySkip,
+			CatchupWindow: "5m",
+		},
+		NotificationPolicy: workflowbundle.NotificationPolicy{OnFailure: true},
+		Env:                []string{"CHECK_TOKEN"},
+		Steps: []workflowbundle.Step{{
+			ID:                  "check",
+			Command:             "python3",
+			Args:                []string{"src/check_site.py"},
+			StartToCloseTimeout: "30s",
+			RetryPolicy: workflowbundle.RetryPolicy{
+				MaximumAttempts: 2,
+			},
+		}},
+		Files: []workflowbundle.File{{
+			Path:    "src/check_site.py",
+			Content: "print('old')\n",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create workflow schedule: %v", err)
+	}
+	workflowPath, err := workflowbundle.WorkflowDir(workspaceRoot, "finance2049")
+	if err != nil {
+		t.Fatalf("workflow dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workflowPath, "src", "check_site.py"), []byte("print('new')\n"), 0o644); err != nil {
+		t.Fatalf("edit workflow source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workflowPath, "src", "helper.py"), []byte("print('helper')\n"), 0o644); err != nil {
+		t.Fatalf("write workflow helper: %v", err)
+	}
+
+	updated, err := executor.Run(ctx, Request{
+		ProjectID:     "project-1",
+		Operation:     OperationUpdate,
+		WorkflowID:    "finance2049",
+		CommitMessage: "update finance2049 workflow code",
+	})
+	if err != nil {
+		t.Fatalf("update workflow schedule: %v", err)
+	}
+	if updated.CommitHash == "" || updated.CommitHash == created.CommitHash {
+		t.Fatalf("expected new commit hash, created=%q updated=%q", created.CommitHash, updated.CommitHash)
+	}
+	if client.handle == nil || client.handle.updated != 1 || client.handle.lastUpdate == nil {
+		t.Fatalf("expected one schedule update, handle=%#v", client.handle)
+	}
+	action, ok := client.handle.lastUpdate.Schedule.Action.(*temporalclient.ScheduleWorkflowAction)
+	if !ok {
+		t.Fatalf("expected workflow action, got %T", client.handle.lastUpdate.Schedule.Action)
+	}
+	input, ok := action.Args[0].(workflowrun.Input)
+	if !ok {
+		t.Fatalf("expected workflow input, got %T", action.Args[0])
+	}
+	if input.CommitHash != updated.CommitHash {
+		t.Fatalf("expected updated commit hash in schedule input, got %#v", input)
+	}
+	snapshot := t.TempDir()
+	if err := workflowbundle.ArchiveCommit(ctx, workflowPath, updated.CommitHash, snapshot); err != nil {
+		t.Fatalf("archive updated commit: %v", err)
+	}
+	manifest, err := workflowbundle.LoadManifest(snapshot)
+	if err != nil {
+		t.Fatalf("load archived manifest: %v", err)
+	}
+	if len(manifest.Env) != 1 || manifest.Env[0] != "CHECK_TOKEN" {
+		t.Fatalf("expected sparse update to preserve env, got %#v", manifest.Env)
+	}
+	source, err := os.ReadFile(filepath.Join(snapshot, "src", "check_site.py"))
+	if err != nil {
+		t.Fatalf("read archived source: %v", err)
+	}
+	if string(source) != "print('new')\n" {
+		t.Fatalf("expected edited source in commit, got %q", string(source))
+	}
+	helper, err := os.ReadFile(filepath.Join(snapshot, "src", "helper.py"))
+	if err != nil {
+		t.Fatalf("read archived helper: %v", err)
+	}
+	if string(helper) != "print('helper')\n" {
+		t.Fatalf("expected new helper in commit, got %q", string(helper))
+	}
+}
+
 type fakeScheduleClient struct {
 	created []temporalclient.ScheduleOptions
 	handle  *fakeScheduleHandle
@@ -140,12 +262,13 @@ func (f *fakeScheduleClient) GetHandle(_ context.Context, id string) temporalcli
 }
 
 type fakeScheduleHandle struct {
-	id        string
-	deleted   int
-	updated   int
-	triggered int
-	paused    int
-	unpaused  int
+	id         string
+	deleted    int
+	updated    int
+	triggered  int
+	paused     int
+	unpaused   int
+	lastUpdate *temporalclient.ScheduleUpdate
 }
 
 func (f *fakeScheduleHandle) GetID() string {
@@ -164,7 +287,8 @@ func (f *fakeScheduleHandle) Backfill(context.Context, temporalclient.ScheduleBa
 func (f *fakeScheduleHandle) Update(_ context.Context, options temporalclient.ScheduleUpdateOptions) error {
 	f.updated++
 	if options.DoUpdate != nil {
-		_, err := options.DoUpdate(temporalclient.ScheduleUpdateInput{})
+		update, err := options.DoUpdate(temporalclient.ScheduleUpdateInput{})
+		f.lastUpdate = update
 		return err
 	}
 	return nil
