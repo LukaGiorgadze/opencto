@@ -97,8 +97,7 @@ func TestLoadManifestRejectsUnknownYAMLFields(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	data := []byte(`version: 1
-name: test workflow
+	data := []byte(`name: test workflow
 description: ""
 schedule:
   cron: "0 9 * * *"
@@ -132,12 +131,52 @@ unknown: true
 	}
 }
 
+func TestLoadManifestDoesNotRequireVersion(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	data := []byte(`name: test workflow
+description: ""
+schedule:
+  cron: "0 9 * * *"
+  one_shot_at: ""
+  time_zone_name: UTC
+  overlap_policy: skip
+  catchup_window: 10m
+  pause_on_failure: false
+notification_policy:
+  on_failure: true
+env: []
+steps:
+  - id: step
+    command: echo
+    args: ["ok"]
+    start_to_close_timeout: 1m
+    schedule_to_close_timeout: ""
+    retry_policy:
+      initial_interval: ""
+      backoff_coefficient: 0
+      maximum_interval: ""
+      maximum_attempts: 1
+      non_retryable_error_types: []
+`)
+	if err := os.WriteFile(filepath.Join(dir, ManifestFilename), data, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	manifest, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatalf("load manifest without version: %v", err)
+	}
+	if manifest.Name != "test workflow" {
+		t.Fatalf("unexpected manifest: %#v", manifest)
+	}
+}
+
 func TestLoadManifestRejectsMissingRequiredYAMLFields(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	data := []byte(`version: 1
-name: test workflow
+	data := []byte(`name: test workflow
 description: ""
 schedule:
   cron: "0 9 * * *"

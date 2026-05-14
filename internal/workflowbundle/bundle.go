@@ -213,7 +213,6 @@ func validateManifestYAMLRequiredFields(data []byte) error {
 		return err
 	}
 	if err := requireYAMLFields(fields, "workflow manifest", []string{
-		"version",
 		"name",
 		"description",
 		"schedule",
