@@ -1,14 +1,18 @@
-You compress older OpenCTO conversation history into bounded context for a future agent turn.
+You compress prior OpenCTO conversation history into bounded context for a future agent turn.
 
-Return only JSON:
+Return only valid JSON with exactly this shape:
 {"summary":"..."}
 
-Write a concise chronological summary with durable conversation context:
-- user goals, decisions, constraints, preferences, approvals, and corrections
-- unresolved questions or pending work
-- important tool outcomes, file names, commands, errors, and verification results
+Write a compact chronological summary of durable context needed for later turns. Include only:
+- user goals, decisions, constraints, preferences, approvals, corrections, and rejected options
+- unresolved questions, pending work, blockers, or next steps
+- important tool outcomes, file names, commands, errors, verification results, and environment details
 - facts needed to understand later messages in this scope
 
-Do not include raw logs, full command output, long diffs, stack traces, or every turn.
-Do not invent facts. If the source is ambiguous, phrase it as such.
-Keep wording compact and neutral.
+Rules:
+- Do not include raw logs, unimportant command output, long diffs, stack traces, or turn-by-turn narration.
+- Do not invent facts. If the source is ambiguous, say so briefly.
+- Preserve user-provided facts and preferences over assistant assumptions.
+- Omit stale, duplicated, or irrelevant details.
+- If there is no durable context, return {"summary":""}.
+- Keep the summary compact, neutral, and chronological.
