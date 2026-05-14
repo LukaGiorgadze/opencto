@@ -421,7 +421,7 @@ func (e *TemporalExecutor) create(ctx context.Context, req Request) (Result, err
 		return Result{}, err
 	}
 	scheduleID = handle.GetID()
-	if err := e.Store.UpsertScheduledWorkflow(ctx, e.workflowRecord(req, workflowID, manifest, workflowPath, commitHash, scheduleID, domain.ScheduledWorkflowStatusActive)); err != nil {
+	if err := e.Store.UpsertScheduledWorkflow(ctx, e.workflowRecord(req, workflowID, manifest, workflowPath, commitHash, scheduleID, statusFromPaused(req.Paused))); err != nil {
 		_ = e.Client.GetHandle(ctx, scheduleID).Delete(ctx)
 		e.cleanupCreateFailure(workflowPath, !hadLocalBundle)
 		return Result{}, err
@@ -602,10 +602,15 @@ func (e *TemporalExecutor) pauseState(ctx context.Context, req Request, paused b
 		return Result{}, err
 	}
 	item, ok, err := e.Store.GetScheduledWorkflow(ctx, strings.TrimSpace(req.ProjectID), workflowID)
-	if err == nil && ok {
+	if err != nil {
+		return Result{}, err
+	}
+	if ok {
 		item.Status = statusFromPaused(paused)
 		item.UpdatedAt = time.Now().UTC()
-		_ = e.Store.UpsertScheduledWorkflow(ctx, item)
+		if err := e.Store.UpsertScheduledWorkflow(ctx, item); err != nil {
+			return Result{}, err
+		}
 	}
 	op := OperationResume
 	msg := "workflow schedule resumed"
@@ -622,7 +627,7 @@ func (e *TemporalExecutor) trigger(ctx context.Context, req Request) (Result, er
 		return Result{}, err
 	}
 	scheduleID := workflowrun.ScheduleID(req.ProjectID, workflowID)
-	if err := e.Client.GetHandle(ctx, scheduleID).Trigger(ctx, temporalclient.ScheduleTriggerOptions{Overlap: enumspb.SCHEDULE_OVERLAP_POLICY_SKIP}); err != nil {
+	if err := e.Client.GetHandle(ctx, scheduleID).Trigger(ctx, temporalclient.ScheduleTriggerOptions{}); err != nil {
 		return Result{}, err
 	}
 	return Result{Operation: OperationTrigger, WorkflowID: workflowID, ScheduleID: scheduleID, Message: "workflow schedule triggered"}, nil

@@ -13,6 +13,8 @@ import (
 	"github.com/opencto/opencto/internal/workflowbundle"
 )
 
+const defaultWorkflowStepMaximumAttempts int32 = 3
+
 func WorkflowRunWorkflow(ctx workflow.Context, input workflowrun.Input) error {
 	if input.ScheduledAt.IsZero() {
 		input.ScheduledAt = workflow.Now(ctx)
@@ -82,19 +84,7 @@ func workflowStepContext(ctx workflow.Context, step workflowbundle.Step) (workfl
 	if err != nil {
 		return nil, err
 	}
-	retryPolicy := &temporal.RetryPolicy{
-		InitialInterval:        initialInterval,
-		BackoffCoefficient:     step.RetryPolicy.BackoffCoefficient,
-		MaximumInterval:        maximumInterval,
-		MaximumAttempts:        step.RetryPolicy.MaximumAttempts,
-		NonRetryableErrorTypes: step.RetryPolicy.NonRetryableErrorTypes,
-	}
-	if retryPolicy.InitialInterval <= 0 {
-		retryPolicy.InitialInterval = time.Second
-	}
-	if retryPolicy.BackoffCoefficient <= 0 {
-		retryPolicy.BackoffCoefficient = 2
-	}
+	retryPolicy := workflowStepRetryPolicy(step, initialInterval, maximumInterval)
 	options := workflow.ActivityOptions{
 		StartToCloseTimeout: startToClose,
 		RetryPolicy:         retryPolicy,
@@ -103,6 +93,27 @@ func workflowStepContext(ctx workflow.Context, step workflowbundle.Step) (workfl
 		options.ScheduleToCloseTimeout = scheduleToClose
 	}
 	return workflow.WithActivityOptions(ctx, options), nil
+}
+
+func workflowStepRetryPolicy(step workflowbundle.Step, initialInterval, maximumInterval time.Duration) *temporal.RetryPolicy {
+	maximumAttempts := step.RetryPolicy.MaximumAttempts
+	if maximumAttempts <= 0 {
+		maximumAttempts = defaultWorkflowStepMaximumAttempts
+	}
+	retryPolicy := &temporal.RetryPolicy{
+		InitialInterval:        initialInterval,
+		BackoffCoefficient:     step.RetryPolicy.BackoffCoefficient,
+		MaximumInterval:        maximumInterval,
+		MaximumAttempts:        maximumAttempts,
+		NonRetryableErrorTypes: step.RetryPolicy.NonRetryableErrorTypes,
+	}
+	if retryPolicy.InitialInterval <= 0 {
+		retryPolicy.InitialInterval = time.Second
+	}
+	if retryPolicy.BackoffCoefficient <= 0 {
+		retryPolicy.BackoffCoefficient = 2
+	}
+	return retryPolicy
 }
 
 func cleanupOldWorkflowRuns(ctx workflow.Context, workflowID, currentRunID string) {

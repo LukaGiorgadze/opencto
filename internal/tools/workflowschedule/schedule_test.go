@@ -109,6 +109,45 @@ func TestWorkflowCreateCommitsBundleAndCreatesTemporalSchedule(t *testing.T) {
 	}
 }
 
+func TestWorkflowCreateStoresPausedStatus(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	executor, store, client := newWorkflowTestExecutor(t, t.TempDir())
+	if _, err := executor.Create(ctx, CreateRequest{
+		ProjectID:  "project-1",
+		WorkflowID: "paused-workflow",
+		Name:       "paused workflow",
+		Schedule: workflowbundle.Schedule{
+			Cron:          "0 2 * * *",
+			OverlapPolicy: workflowbundle.OverlapPolicySkip,
+			CatchupWindow: "5m",
+		},
+		Env: []string{},
+		Steps: []workflowbundle.Step{{
+			ID:                  "check",
+			Command:             "python3",
+			Args:                []string{"src/check.py"},
+			StartToCloseTimeout: "30s",
+			RetryPolicy:         workflowbundle.RetryPolicy{MaximumAttempts: 1},
+		}},
+		Files:  []workflowbundle.File{{Path: "src/check.py", Content: "print('ok')\n"}},
+		Paused: true,
+	}); err != nil {
+		t.Fatalf("create paused workflow: %v", err)
+	}
+	if len(client.created) != 1 || !client.created[0].Paused {
+		t.Fatalf("expected paused Temporal schedule, got %#v", client.created)
+	}
+	workflow, ok, err := store.GetScheduledWorkflow(ctx, "project-1", "paused-workflow")
+	if err != nil || !ok {
+		t.Fatalf("stored workflow: ok=%t err=%v", ok, err)
+	}
+	if workflow.Status != domain.ScheduledWorkflowStatusPaused {
+		t.Fatalf("expected stored paused status, got %q", workflow.Status)
+	}
+}
+
 func TestWorkflowUpdateCommitsDirtyWorkflowFiles(t *testing.T) {
 	t.Parallel()
 
@@ -513,6 +552,22 @@ func TestWorkflowOperationDispatchesControlActions(t *testing.T) {
 	if client.handle == nil || client.handle.triggered != 1 || client.handle.paused != 1 || client.handle.unpaused != 1 {
 		t.Fatalf("unexpected control calls: %#v", client.handle)
 	}
+	if client.handle.lastTriggerOptions.Overlap != enumspb.SCHEDULE_OVERLAP_POLICY_UNSPECIFIED {
+		t.Fatalf("expected trigger to use schedule overlap policy, got %s", client.handle.lastTriggerOptions.Overlap)
+	}
+}
+
+func TestWorkflowPauseReturnsStoreErrors(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	executor, store, _ := newWorkflowTestExecutor(t, t.TempDir())
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	if _, err := executor.Operation(ctx, OperationRequest{ProjectID: "project-1", Operation: OperationPause, WorkflowID: "finance2049"}); err == nil {
+		t.Fatal("expected pause to return store error")
+	}
 }
 
 type fakeScheduleClient struct {
@@ -576,14 +631,15 @@ func (f *fakeScheduleClient) GetHandle(_ context.Context, id string) temporalcli
 }
 
 type fakeScheduleHandle struct {
-	id         string
-	deleted    int
-	deleteErr  error
-	updated    int
-	triggered  int
-	paused     int
-	unpaused   int
-	lastUpdate *temporalclient.ScheduleUpdate
+	id                 string
+	deleted            int
+	deleteErr          error
+	updated            int
+	triggered          int
+	paused             int
+	unpaused           int
+	lastUpdate         *temporalclient.ScheduleUpdate
+	lastTriggerOptions temporalclient.ScheduleTriggerOptions
 }
 
 func (f *fakeScheduleHandle) GetID() string {
@@ -613,8 +669,9 @@ func (f *fakeScheduleHandle) Describe(context.Context) (*temporalclient.Schedule
 	return &temporalclient.ScheduleDescription{}, nil
 }
 
-func (f *fakeScheduleHandle) Trigger(context.Context, temporalclient.ScheduleTriggerOptions) error {
+func (f *fakeScheduleHandle) Trigger(_ context.Context, options temporalclient.ScheduleTriggerOptions) error {
 	f.triggered++
+	f.lastTriggerOptions = options
 	return nil
 }
 
