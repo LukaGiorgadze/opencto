@@ -55,7 +55,7 @@ func TestWorkflowCreateCommitsBundleAndCreatesTemporalSchedule(t *testing.T) {
 			CatchupWindow: "5m",
 		},
 		NotificationPolicy: workflowbundle.NotificationPolicy{OnFailure: true},
-		Env:                []string{"GITHUB_TOKEN"},
+		Env:                []string{"GITHUB_TOKEN=dummy"},
 		Steps: []workflowbundle.Step{{
 			ID:                  "download",
 			Command:             "python",
@@ -147,7 +147,7 @@ func TestWorkflowUpdateCommitsDirtyWorkflowFiles(t *testing.T) {
 			CatchupWindow: "5m",
 		},
 		NotificationPolicy: workflowbundle.NotificationPolicy{OnFailure: true},
-		Env:                []string{"CHECK_TOKEN"},
+		Env:                []string{"CHECK_TOKEN=dummy"},
 		Steps: []workflowbundle.Step{{
 			ID:                  "check",
 			Command:             "python3",
@@ -209,7 +209,7 @@ func TestWorkflowUpdateCommitsDirtyWorkflowFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load archived manifest: %v", err)
 	}
-	if len(manifest.Env) != 1 || manifest.Env[0] != "CHECK_TOKEN" {
+	if len(manifest.Env) != 1 || manifest.Env[0] != "CHECK_TOKEN=dummy" {
 		t.Fatalf("expected sparse update to preserve env, got %#v", manifest.Env)
 	}
 	source, err := os.ReadFile(filepath.Join(snapshot, "src", "check_site.py"))
@@ -334,7 +334,7 @@ func TestWorkflowUpdateCanClearOptionalManifestFields(t *testing.T) {
 			CatchupWindow: "5m",
 		},
 		NotificationPolicy: workflowbundle.NotificationPolicy{OnFailure: true},
-		Env:                []string{"CHECK_TOKEN"},
+		Env:                []string{"CHECK_TOKEN=dummy"},
 		Steps: []workflowbundle.Step{{
 			ID:                  "check",
 			Command:             "python3",

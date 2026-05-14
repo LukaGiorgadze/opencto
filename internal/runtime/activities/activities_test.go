@@ -3429,36 +3429,88 @@ func TestCleanupWorkflowRunsDoesNotDeleteActiveOlderSnapshot(t *testing.T) {
 	}
 }
 
-func TestWorkflowStepEnvironmentSetsGlobalAssignments(t *testing.T) {
-	t.Setenv("REQUIRED_TOKEN", "secret")
+func TestWorkflowStepEnvironmentSetsGlobalAssignmentsAndRunPaths(t *testing.T) {
+	runPath := filepath.Join(t.TempDir(), "run-1")
+	stepID := "check"
+	stepDir := filepath.Join(runPath, "steps", stepID)
+	request := workflowrun.ExecuteStepRequest{
+		WorkflowID: "finance-check",
+		RunID:      "run-1",
+		RunPath:    runPath,
+		Env:        []string{"GLOBAL_FLAG=on"},
+	}
 
-	env, err := workflowStepEnvironment("/workspace", []string{
-		"REPORT_PATH=/tmp/report.log",
-		"PAYLOAD={{steps.check-http.stdout}}",
-		"REQUIRED_TOKEN",
-	})
+	env, err := workflowStepEnvironment("/workspace", request, stepID, stepDir)
 	if err != nil {
 		t.Fatalf("workflow step environment: %v", err)
 	}
-	if got := envValue(env, "REPORT_PATH"); got != "/tmp/report.log" {
-		t.Fatalf("expected REPORT_PATH assignment, got %q", got)
-	}
-	if got := envValue(env, "PAYLOAD"); got != "{{steps.check-http.stdout}}" {
-		t.Fatalf("expected PAYLOAD assignment, got %q", got)
-	}
-	if got := envValue(env, "REQUIRED_TOKEN"); got != "secret" {
-		t.Fatalf("expected REQUIRED_TOKEN passthrough, got %q", got)
+	if got := envValue(env, "GLOBAL_FLAG"); got != "on" {
+		t.Fatalf("expected GLOBAL_FLAG assignment, got %q", got)
 	}
 	if got := envValue(env, config.EnvOpenCTOWorkspace); got != "/workspace" {
 		t.Fatalf("expected workspace env, got %q", got)
 	}
+	for name, want := range map[string]string{
+		"OPENCTO_WORKFLOW_ID": "finance-check",
+		"OPENCTO_RUN_ID":      "run-1",
+		"OPENCTO_RUN_DIR":     runPath,
+		"OPENCTO_STEP_ID":     stepID,
+		"OPENCTO_STEP_DIR":    stepDir,
+	} {
+		if got := envValue(env, name); got != want {
+			t.Fatalf("expected %s=%q, got %q", name, want, got)
+		}
+	}
 }
 
-func TestWorkflowStepEnvironmentStillRequiresPassthroughEnv(t *testing.T) {
-	t.Setenv("MISSING_TOKEN", "")
+func TestWorkflowStepEnvironmentRejectsNonAssignmentEnv(t *testing.T) {
+	request := workflowrun.ExecuteStepRequest{Env: []string{"MISSING_TOKEN"}}
 
-	if _, err := workflowStepEnvironment("", []string{"MISSING_TOKEN"}); err == nil {
-		t.Fatal("expected missing passthrough env to fail")
+	if _, err := workflowStepEnvironment("", request, "step", "/tmp/step"); err == nil {
+		t.Fatal("expected non-assignment env to fail")
+	}
+}
+
+func TestWorkflowStepEnvironmentRejectsTemplateEnv(t *testing.T) {
+	request := workflowrun.ExecuteStepRequest{Env: []string{"PAYLOAD={{steps.check.stdout}}"}}
+
+	if _, err := workflowStepEnvironment("", request, "step", "/tmp/step"); err == nil {
+		t.Fatal("expected template env to fail")
+	}
+}
+
+func TestExecuteWorkflowStepCreatesStepArtifactDirectory(t *testing.T) {
+	t.Parallel()
+
+	runPath := t.TempDir()
+	result, err := (&Activities{WorkspaceRoot: "/workspace"}).ExecuteWorkflowStep(context.Background(), workflowrun.ExecuteStepRequest{
+		ProjectID:  "project-1",
+		WorkflowID: "finance-check",
+		RunID:      "run-1",
+		RunPath:    runPath,
+		Step: workflowbundle.Step{
+			ID:      "check",
+			Command: "sh",
+			Args: []string{
+				"-c",
+				`dir="$OPENCTO_RUN_DIR/artifacts/$OPENCTO_STEP_ID" && test -d "$dir" && printf '{"ok":true}\n' > "$dir/payload.json"`,
+			},
+		},
+		Env: []string{"GLOBAL_FLAG=on"},
+	})
+	if err != nil {
+		t.Fatalf("execute workflow step: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("expected successful step, got %#v", result)
+	}
+	artifactPath := filepath.Join(runPath, "artifacts", "check", "payload.json")
+	data, err := os.ReadFile(artifactPath)
+	if err != nil {
+		t.Fatalf("read step artifact: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != `{"ok":true}` {
+		t.Fatalf("unexpected artifact: %q", string(data))
 	}
 }
 

@@ -93,6 +93,34 @@ func TestValidateManifestRejectsRepeatedExecutableArgument(t *testing.T) {
 	}
 }
 
+func TestValidateManifestRequiresEnvAssignments(t *testing.T) {
+	t.Parallel()
+
+	manifest := testManifest()
+	manifest.Env = []string{"API_TOKEN"}
+	err := ValidateManifest(manifest)
+	if err == nil {
+		t.Fatal("expected env entry without assignment to be rejected")
+	}
+	if !strings.Contains(err.Error(), "must be NAME=value") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateManifestRejectsEnvTemplates(t *testing.T) {
+	t.Parallel()
+
+	manifest := testManifest()
+	manifest.Env = []string{"PAYLOAD={{steps.check.stdout}}"}
+	err := ValidateManifest(manifest)
+	if err == nil {
+		t.Fatal("expected env template syntax to be rejected")
+	}
+	if !strings.Contains(err.Error(), "template syntax") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestLoadManifestRejectsUnknownYAMLFields(t *testing.T) {
 	t.Parallel()
 

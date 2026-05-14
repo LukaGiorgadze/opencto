@@ -18,7 +18,8 @@ Use this tool only for new workflows. Provide enough fields to write a valid wor
 The manifest defines durable step boundaries only. Implementation files are ordinary runnable programs, scripts, or binaries invoked by step command and args. Keep each step focused on one responsibility, split distinct operations into separate steps and entrypoints, and do not write schedulers, workers, queues, daemons, or orchestration framework code inside src/.
 
 Use command for the executable only and args for its arguments. Do not repeat the executable in args.
-Global env entries apply to every step. Use NAME to require and pass through a host environment variable, or NAME=value to set a workflow-owned value.`
+Global env entries apply to every step and must be literal NAME=value assignments. Do not use template syntax in env. Runtime-owned OPENCTO_* names are reserved.
+Write files produced by a step under OPENCTO_RUN_DIR/artifacts/{step_id}/filename.json, using OPENCTO_STEP_ID for the current step id. Later steps can read those files from the same run directory.`
 
 	WorkflowUpdateToolDescription = `Update an existing Git-backed scheduled workflow.
 
@@ -27,7 +28,8 @@ Use this tool after Edit or Write modifies files under workflows/{workflow_id}/s
 The manifest defines durable step boundaries only. Implementation files are ordinary runnable programs, scripts, or binaries invoked by step command and args. Keep each step focused on one responsibility, split distinct operations into separate steps and entrypoints, and do not write schedulers, workers, queues, daemons, or orchestration framework code inside src/.
 
 Use command for the executable only and args for its arguments. Do not repeat the executable in args.
-Global env entries apply to every step. Use NAME to require and pass through a host environment variable, or NAME=value to set a workflow-owned value.
+Global env entries apply to every step and must be literal NAME=value assignments. Do not use template syntax in env. Runtime-owned OPENCTO_* names are reserved.
+Write files produced by a step under OPENCTO_RUN_DIR/artifacts/{step_id}/filename.json, using OPENCTO_STEP_ID for the current step id. Later steps can read those files from the same run directory.
 
 Fields are optional unless the schema marks them required. Omitted fields preserve the existing manifest value. If a field is present, it is applied and validated. Do not run git commit manually for workflow bundles.`
 

@@ -1319,6 +1319,10 @@ func (a *Activities) ExecuteWorkflowStep(ctx context.Context, request workflowru
 	if err := os.MkdirAll(stepDir, 0o755); err != nil {
 		return workflowrun.ExecuteStepResult{}, err
 	}
+	stepArtifactsDir := filepath.Join(runPath, "artifacts", stepID)
+	if err := os.MkdirAll(stepArtifactsDir, 0o755); err != nil {
+		return workflowrun.ExecuteStepResult{}, err
+	}
 	startedAt := time.Now().UTC()
 	attempt := activityAttempt(ctx)
 	stdoutPath, stderrPath := workflowStepAttemptLogPaths(stepDir, attempt)
@@ -1367,7 +1371,7 @@ func (a *Activities) ExecuteWorkflowStep(ctx context.Context, request workflowru
 		return workflowrun.ExecuteStepResult{}, err
 	}
 
-	env, err := workflowStepEnvironment(a.WorkspaceRoot, request.Env)
+	env, err := workflowStepEnvironment(a.WorkspaceRoot, request, stepID, stepDir)
 	if err != nil {
 		_ = stdoutFile.Close()
 		_ = stderrFile.Close()
@@ -4514,29 +4518,23 @@ func copyWorkflowStepLog(source, target string) error {
 	return closeErr
 }
 
-func workflowStepEnvironment(workspaceRoot string, entries []string) ([]string, error) {
+func workflowStepEnvironment(workspaceRoot string, request workflowrun.ExecuteStepRequest, stepID, stepDir string) ([]string, error) {
 	env := os.Environ()
 	if workspaceRoot = strings.TrimSpace(workspaceRoot); workspaceRoot != "" {
 		env = upsertEnv(env, config.EnvOpenCTOWorkspace, workspaceRoot)
 	}
-	for _, entry := range entries {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
+	runPath := strings.TrimSpace(request.RunPath)
+	env = upsertEnv(env, "OPENCTO_WORKFLOW_ID", strings.TrimSpace(request.WorkflowID))
+	env = upsertEnv(env, "OPENCTO_RUN_ID", strings.TrimSpace(request.RunID))
+	env = upsertEnv(env, "OPENCTO_RUN_DIR", runPath)
+	env = upsertEnv(env, "OPENCTO_STEP_ID", strings.TrimSpace(stepID))
+	env = upsertEnv(env, "OPENCTO_STEP_DIR", strings.TrimSpace(stepDir))
+	for _, entry := range request.Env {
+		name, value, err := workflowbundle.ParseEnvAssignment(entry)
+		if err != nil {
+			return nil, err
 		}
-		if name, value, ok := strings.Cut(entry, "="); ok {
-			name = strings.TrimSpace(name)
-			if name == "" {
-				return nil, fmt.Errorf("env assignment %q is missing name", entry)
-			}
-			env = upsertEnv(env, name, value)
-			continue
-		}
-		value, ok := os.LookupEnv(entry)
-		if !ok || value == "" {
-			return nil, fmt.Errorf("required env %s is not set", entry)
-		}
-		env = upsertEnv(env, entry, value)
+		env = upsertEnv(env, name, value)
 	}
 	return env, nil
 }

@@ -25,7 +25,14 @@
         "on_failure": {"type": "boolean"}
       }
     },
-    "env": {"type": "array", "items": {"type": "string"}},
+    "env": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*=.*$",
+        "description": "Global env assignment NAME=value applied to every step. Runtime-owned OPENCTO_* names are reserved."
+      }
+    },
     "steps": {
       "type": "array",
       "items": {
