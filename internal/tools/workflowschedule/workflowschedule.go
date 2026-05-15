@@ -716,12 +716,10 @@ func (e *TemporalExecutor) manifest(req Request, workflowPath string, useExistin
 }
 
 func (e *TemporalExecutor) manifestFromRequest(req Request) (workflowbundle.Manifest, error) {
-	_, timeZoneName, err := e.resolveTimeZone()
-	if err != nil {
+	if _, _, err := e.resolveTimeZone(); err != nil {
 		return workflowbundle.Manifest{}, err
 	}
 	schedule := req.Schedule
-	schedule.TimeZoneName = timeZoneName
 	if strings.TrimSpace(schedule.OverlapPolicy) == "" {
 		schedule.OverlapPolicy = workflowbundle.OverlapPolicySkip
 	}
@@ -1038,7 +1036,6 @@ func resultFromManifest(operation, workflowID, scheduleID, workflowPath, commitH
 		Message:      message,
 		CommitHash:   commitHash,
 		WorkflowPath: workflowPath,
-		TimeZone:     manifest.Schedule.TimeZoneName,
 		Cron:         manifest.Schedule.Cron,
 		OneShotAt:    manifest.Schedule.OneShotAt,
 	}

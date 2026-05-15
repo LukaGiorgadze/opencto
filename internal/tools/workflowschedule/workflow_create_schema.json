@@ -32,7 +32,7 @@
       "items": {
         "type": "string",
         "pattern": "^[A-Za-z_][A-Za-z0-9_]*=.*$",
-        "description": "Global env assignment NAME=value applied to every step. Runtime-owned OPENCTO_* names are reserved; steps receive OPENCTO_WORKFLOWS_DIR, OPENCTO_WORKFLOW_RUN_DIR, and OPENCTO_WORKFLOW_DATA_DIR."
+        "description": "Optional global env entries injected into every step. Must be literal NAME=value assignments. OPENCTO_* names are reserved — do not override them. Steps also receive OPENCTO_WORKFLOWS_DIR, OPENCTO_WORKFLOW_RUN_DIR, OPENCTO_WORKFLOW_DATA_DIR, and system environment variables automatically."
       }
     },
     "steps": {

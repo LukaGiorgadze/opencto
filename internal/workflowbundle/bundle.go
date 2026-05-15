@@ -55,7 +55,7 @@ type Manifest struct {
 type Schedule struct {
 	Cron           string `json:"cron" yaml:"cron"`
 	OneShotAt      string `json:"one_shot_at" yaml:"one_shot_at"`
-	TimeZoneName   string `json:"time_zone_name" yaml:"time_zone_name"`
+	TimeZoneName   string `json:"time_zone_name,omitempty" yaml:"time_zone_name,omitempty"`
 	OverlapPolicy  string `json:"overlap_policy" yaml:"overlap_policy"`
 	CatchupWindow  string `json:"catchup_window" yaml:"catchup_window"`
 	PauseOnFailure bool   `json:"pause_on_failure" yaml:"pause_on_failure"`
@@ -184,6 +184,7 @@ func WriteBundle(ctx context.Context, dir string, manifest Manifest, files []Fil
 }
 
 func WriteManifest(dir string, manifest Manifest) error {
+	manifest = normalizeManifestDefaults(manifest)
 	data, err := yaml.Marshal(manifest)
 	if err != nil {
 		return err
@@ -221,6 +222,7 @@ func (r RetryPolicy) IsZero() bool {
 }
 
 func normalizeManifestDefaults(manifest Manifest) Manifest {
+	manifest.Schedule.TimeZoneName = ""
 	for index := range manifest.Steps {
 		if manifest.Steps[index].Args == nil {
 			manifest.Steps[index].Args = []string{}
@@ -263,7 +265,6 @@ func validateManifestYAMLRequiredFields(data []byte) error {
 	if err := requireYAMLFields(scheduleFields, "schedule", []string{
 		"cron",
 		"one_shot_at",
-		"time_zone_name",
 		"overlap_policy",
 		"catchup_window",
 		"pause_on_failure",
@@ -484,9 +485,6 @@ func ValidateManifest(manifest Manifest) error {
 		if _, err := time.Parse(time.RFC3339, oneShot); err != nil {
 			return fmt.Errorf("parse schedule.one_shot_at as RFC3339: %w", err)
 		}
-	}
-	if strings.TrimSpace(manifest.Schedule.TimeZoneName) == "" {
-		return fmt.Errorf("schedule.time_zone_name is required")
 	}
 	if strings.TrimSpace(manifest.Schedule.CatchupWindow) == "" {
 		return fmt.Errorf("schedule.catchup_window is required")

@@ -66,7 +66,7 @@ OPENCTO_WORKFLOW_DATA_DIR — persistent data directory at OPENCTO_WORKFLOWS_DIR
                             Git-ignored and writable at step runtime.
                             Use for state or outputs that future scheduled runs must read.
 ```
-Custom environment variables can be defined in `workflow.yml` under `env` as literal `NAME=value` entries and are injected into every step alongside the runtime variables above.
+Optional custom environment variables can be defined in `workflow.yml` under `env` as literal `NAME=value` entries and are injected into every step alongside the runtime variables above.
 
 ## Before Any Workflow Action
 
@@ -186,7 +186,6 @@ description: fetch new stargazers and append visible emails
 schedule:
   cron: "*/3 * * * *"
   one_shot_at: ""
-  time_zone_name: UTC
   overlap_policy: skip
   catchup_window: 10m
   pause_on_failure: false
@@ -252,7 +251,6 @@ description: fetch and append stargazers
 schedule:
   cron: "*/3 * * * *"
   one_shot_at: ""
-  time_zone_name: UTC
   overlap_policy: allow_all
   catchup_window: 10m
   pause_on_failure: false

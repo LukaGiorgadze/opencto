@@ -3354,7 +3354,6 @@ func TestPrepareWorkflowRunUsesExecutionRunID(t *testing.T) {
 		Schedule: workflowbundle.Schedule{
 			Cron:          "0 9 * * *",
 			OneShotAt:     "",
-			TimeZoneName:  "UTC",
 			OverlapPolicy: workflowbundle.OverlapPolicySkip,
 			CatchupWindow: "10m",
 		},

@@ -188,7 +188,6 @@ description: ""
 schedule:
   cron: "0 9 * * *"
   one_shot_at: ""
-  time_zone_name: UTC
   overlap_policy: skip
   catchup_window: 10m
   pause_on_failure: false
@@ -226,7 +225,6 @@ description: ""
 schedule:
   cron: "0 9 * * *"
   one_shot_at: ""
-  time_zone_name: UTC
   overlap_policy: skip
   catchup_window: 10m
   pause_on_failure: false
@@ -267,7 +265,6 @@ description: ""
 schedule:
   cron: "0 9 * * *"
   one_shot_at: ""
-  time_zone_name: UTC
   overlap_policy: skip
   catchup_window: 10m
   pause_on_failure: false
@@ -307,7 +304,6 @@ description: ""
 schedule:
   cron: "0 9 * * *"
   one_shot_at: ""
-  time_zone_name: UTC
   overlap_policy: skip
   catchup_window: 10m
   pause_on_failure: false
@@ -340,7 +336,6 @@ description: ""
 schedule:
   cron: "0 9 * * *"
   one_shot_at: ""
-  time_zone_name: UTC
   overlap_policy: skip
   catchup_window: 10m
   pause_on_failure: false
@@ -527,7 +522,6 @@ func testManifest() Manifest {
 		Env:  []string{},
 		Schedule: Schedule{
 			Cron:          "0 9 * * *",
-			TimeZoneName:  "UTC",
 			OverlapPolicy: OverlapPolicySkip,
 			CatchupWindow: "10m",
 		},
