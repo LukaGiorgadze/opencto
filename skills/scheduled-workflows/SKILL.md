@@ -125,11 +125,12 @@ A later step reads from the same directory:
 cat "$OPENCTO_WORKFLOW_RUN_DIR/artifacts/payload.json"
 ```
 
-**Across runs** — write to `OPENCTO_WORKFLOW_DATA_DIR/`. Use only for state future scheduled runs must read.
+**Across runs** — each scheduled run starts with fresh process state and does
+not know previous runs automatically. If the user's request requires memory
+across runs, read and write that state under `OPENCTO_WORKFLOW_DATA_DIR/`. Use
+this only for state future scheduled runs must read.
 
 Use clear artifact contracts: stable filenames, documented schemas or simple text formats, and explicit behavior for missing or invalid artifacts.
-
-Do not use template syntax such as `{{steps.check.stdout}}` in `env` or manifest fields.
 
 ## Editing and Updating
 
