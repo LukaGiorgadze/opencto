@@ -1,0 +1,5 @@
+{{- if .Kind -}}
+list {{ .Scope }} memory kind {{ .Kind }}
+{{- else -}}
+list {{ .Scope }} memory
+{{- end -}}

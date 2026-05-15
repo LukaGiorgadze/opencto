@@ -72,51 +72,45 @@ func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) 
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
 			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
 		}
-		return structuredToolChoiceFromInput(definition, call, raw, input, "read "+strings.TrimSpace(args.FilePath)), nil
+		return structuredToolChoiceFromInput(definition, call, raw, input, readtool.PromptSummary(args.FilePath)), nil
 	case domain.ToolTypeEdit:
 		var args edittool.Request
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
 			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
 		}
-		return structuredToolChoiceFromInput(definition, call, raw, input, "edit "+strings.TrimSpace(args.FilePath)), nil
+		return structuredToolChoiceFromInput(definition, call, raw, input, edittool.PromptSummary(args.FilePath)), nil
 	case domain.ToolTypeWrite:
 		var args writetool.Request
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
 			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
 		}
-		return structuredToolChoiceFromInput(definition, call, raw, input, "write "+strings.TrimSpace(args.FilePath)), nil
+		return structuredToolChoiceFromInput(definition, call, raw, input, writetool.PromptSummary(args.FilePath)), nil
 	case domain.ToolTypeGlob:
 		var args globtool.Request
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
 			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
 		}
-		summary := "glob " + strings.TrimSpace(args.Pattern)
-		if path := strings.TrimSpace(args.Path); path != "" {
-			summary += " in " + path
-		}
+		summary := globtool.PromptSummary(args.Pattern, args.Path)
 		return structuredToolChoiceFromInputWithWorkingDir(definition, call, raw, input, summary, toolWorkingDir(args.Cwd, input.Runtime.WorkspaceRoot)), nil
 	case domain.ToolTypeGrep:
 		var args greptool.Request
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
 			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
 		}
-		summary := "grep " + strings.TrimSpace(args.Pattern)
-		if path := strings.TrimSpace(args.Path); path != "" {
-			summary += " in " + path
-		}
+		summary := greptool.PromptSummary(args.Pattern, args.Path)
 		return structuredToolChoiceFromInput(definition, call, raw, input, summary), nil
 	case domain.ToolTypeMemoryProposeAdd:
 		var args memorytool.ProposeAddRequest
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
 			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
 		}
-		return memoryToolChoiceFromInput(definition, call, raw, input, "propose memory add "+strings.TrimSpace(args.Content), domain.ToolIdempotencyNonIdempotent), nil
+		return memoryToolChoiceFromInput(definition, call, raw, input, memorytool.PromptAddSummary(args.Content), domain.ToolIdempotencyNonIdempotent), nil
 	case domain.ToolTypeMemorySearch:
 		var args memorytool.SearchRequest
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
 			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
 		}
-		return memoryToolChoiceFromInput(definition, call, raw, input, "search memory "+strings.TrimSpace(args.Query), domain.ToolIdempotencyReadOnly), nil
+		return memoryToolChoiceFromInput(definition, call, raw, input, memorytool.PromptSearchSummary(args.Query), domain.ToolIdempotencyReadOnly), nil
 	case domain.ToolTypeMemoryList:
 		var args memorytool.ListRequest
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
@@ -128,7 +122,7 @@ func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) 
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
 			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
 		}
-		return memoryToolChoiceFromInput(definition, call, raw, input, "propose memory update "+strings.TrimSpace(args.MemoryID), domain.ToolIdempotencyNonIdempotent), nil
+		return memoryToolChoiceFromInput(definition, call, raw, input, memorytool.PromptUpdateSummary(args.MemoryID), domain.ToolIdempotencyNonIdempotent), nil
 	case domain.ToolTypeMemoryProposeForget:
 		var args memorytool.ProposeForgetRequest
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
@@ -177,7 +171,7 @@ func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) 
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
 			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
 		}
-		return structuredToolChoiceFromInput(definition, call, raw, input, "load skill "+strings.TrimSpace(args.SkillID)), nil
+		return structuredToolChoiceFromInput(definition, call, raw, input, skilltool.PromptSummary(args.SkillID)), nil
 	default:
 		return agent.ToolChoice{}, fmt.Errorf("unsupported tool type %q for call %q", definition.Type, call.FunctionCall.Name)
 	}
@@ -194,16 +188,20 @@ func memoryToolChoiceFromInput(definition toolregistry.Definition, call llms.Too
 func forgetMemorySummary(args memorytool.ProposeForgetRequest) string {
 	ids := trimStringList(args.MemoryIDs, 20)
 	if len(ids) > 0 {
-		return "propose memory forget " + strings.Join(ids, ", ")
+		return memoryForgetSummary(strings.Join(ids, ", "), "", "")
 	}
 	tags := trimStringList(args.Tags, 20)
 	if len(tags) > 0 {
-		return "propose memory forget tags " + strings.Join(tags, ", ")
+		return memoryForgetSummary("", strings.Join(tags, ", "), "")
 	}
 	if scope := strings.TrimSpace(args.Scope); scope != "" {
-		return "propose memory forget scope " + scope
+		return memoryForgetSummary("", "", scope)
 	}
-	return "propose memory forget"
+	return memoryForgetSummary("", "", "")
+}
+
+func memoryForgetSummary(memoryIDs, tags, scope string) string {
+	return memorytool.PromptForgetSummary(memoryIDs, tags, scope)
 }
 
 func listMemorySummary(args memorytool.ListRequest) string {
@@ -212,10 +210,7 @@ func listMemorySummary(args memorytool.ListRequest) string {
 		scope = memorytool.ScopeAll
 	}
 	kind := strings.TrimSpace(args.Kind)
-	if kind != "" {
-		return "list " + scope + " memory kind " + kind
-	}
-	return "list " + scope + " memory"
+	return memorytool.PromptListSummary(scope, kind)
 }
 
 func decodeToolArguments(toolName string, raw json.RawMessage, target any) error {
@@ -294,15 +289,7 @@ func execToolChoiceFromInput(definition toolregistry.Definition, call llms.ToolC
 
 func workflowToolChoiceFromInput(definition toolregistry.Definition, call llms.ToolCall, raw json.RawMessage, input agent.ToolSelectionInput, operation, workflowID, name, description string, idempotency domain.ToolIdempotency) agent.ToolChoice {
 	operation = strings.TrimSpace(operation)
-	summary := "workflow " + operation
-	if name := strings.TrimSpace(name); name != "" {
-		summary += " " + name
-	} else if id := strings.TrimSpace(workflowID); id != "" {
-		summary += " " + id
-	}
-	if description := strings.TrimSpace(description); description != "" {
-		summary += ": " + description
-	}
+	summary := scheduletool.PromptSummary(operation, workflowID, name, description)
 	return agent.ToolChoice{
 		ToolCallID:   call.ID,
 		Type:         definition.Type,
@@ -327,7 +314,7 @@ func structuredToolChoiceFromInput(definition toolregistry.Definition, call llms
 }
 
 func structuredToolChoiceFromInputWithWorkingDir(definition toolregistry.Definition, call llms.ToolCall, raw json.RawMessage, input agent.ToolSelectionInput, summary, workingDir string) agent.ToolChoice {
-	summary = firstNonEmpty(summary, definition.Name+" tool call", strings.TrimSpace(input.Context.Event.Body))
+	summary = firstNonEmpty(summary, toolregistry.PromptDefaultSummary(definition.Name), strings.TrimSpace(input.Context.Event.Body))
 	return agent.ToolChoice{
 		ToolCallID:   call.ID,
 		Type:         definition.Type,

@@ -1,0 +1,5 @@
+{{- if .Declared }}
+Attachment content type corrected for {{ .Label }}: declared {{ .Declared }}, detected {{ .Detected -}}
+{{- else }}
+Attachment content type corrected for {{ .Label }}: declared unknown type, detected {{ .Detected -}}
+{{- end -}}

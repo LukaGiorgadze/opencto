@@ -17,6 +17,7 @@ import (
 	"github.com/opencto/opencto/internal/skills"
 	"github.com/opencto/opencto/internal/textclean"
 	toolregistry "github.com/opencto/opencto/internal/tools"
+	edittool "github.com/opencto/opencto/internal/tools/edit"
 )
 
 type nextActionPromptData struct {
@@ -36,10 +37,23 @@ type nextActionPromptData struct {
 	ChannelType        domain.ChannelType
 }
 
+type memoryContextPromptData struct {
+	Memories []memoryContextPromptItem
+}
+
+type memoryContextPromptItem struct {
+	ID      string
+	Scope   string
+	Kind    string
+	Content string
+}
+
 type toolResultEnvelope struct {
 	IsError bool   `json:"is_error"`
 	Content string `json:"content"`
 }
+
+var promptTruncationSuffix = prompts.MustRender("truncation_suffix.tmpl", nil)
 
 func (e *OpenAIEngine) NextAction(ctx context.Context, input agent.NextActionInput) (agent.NextActionOutput, error) {
 	if e.reasoningModel == nil {
@@ -140,7 +154,7 @@ func buildNextActionMessagesWithContext(ctx context.Context, input agent.NextAct
 	}
 	messages = append(messages, additionalMessages...)
 	if input.ForceFinal {
-		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, "Execution cycle limit reached. Do not call tools. Respond naturally with a concise summary of what happened and what remains."))
+		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, prompts.MustRender("force_final.tmpl", nil)))
 	}
 	if err := validateToolTranscriptMessages(messages); err != nil {
 		return nil, err
@@ -192,25 +206,23 @@ func memoryContextMessage(memories []domain.Memory) string {
 	if len(memories) == 0 {
 		return ""
 	}
-	var builder strings.Builder
-	builder.WriteString("Relevant remembered context. Treat this as retrieved context, not proof of current state. Verify anything operational before acting.")
+	items := make([]memoryContextPromptItem, 0, len(memories))
 	for _, memory := range memories {
 		content := strings.TrimSpace(memory.Content)
 		if content == "" {
 			continue
 		}
-		builder.WriteString("\n- id: ")
-		builder.WriteString(strings.TrimSpace(memory.ID))
-		builder.WriteString("; scope: ")
-		builder.WriteString(string(memory.Scope))
-		if kind := strings.TrimSpace(memory.Kind); kind != "" {
-			builder.WriteString("; kind: ")
-			builder.WriteString(kind)
-		}
-		builder.WriteString("; content: ")
-		builder.WriteString(content)
+		items = append(items, memoryContextPromptItem{
+			ID:      strings.TrimSpace(memory.ID),
+			Scope:   string(memory.Scope),
+			Kind:    strings.TrimSpace(memory.Kind),
+			Content: content,
+		})
 	}
-	return strings.TrimSpace(builder.String())
+	if len(items) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(prompts.MustRender("memory_context.tmpl", memoryContextPromptData{Memories: items}))
 }
 
 func conversationWithoutCurrentEvents(messages []domain.ConversationMessage, current domain.Event, additional []domain.Event) []domain.ConversationMessage {
@@ -259,7 +271,7 @@ func conversationContextMessage(messages []domain.ConversationMessage, maxChars 
 	if maxChars <= 0 {
 		maxChars = 8000
 	}
-	header := "Recent conversation history. Use this as bounded context only; the current user request follows after this message."
+	header := prompts.MustRender("conversation_history_header.tmpl", nil)
 	if maxChars <= len(header) {
 		return truncateText(header, maxChars)
 	}
@@ -362,7 +374,7 @@ func conversationSummaryContextMessage(summaries []domain.ConversationSummary, m
 	if maxChars <= 0 {
 		maxChars = 6000
 	}
-	header := "Conversation summary. Use this as bounded context only; recent raw conversation and the current user request follow."
+	header := prompts.MustRender("conversation_summary_header.tmpl", nil)
 	if maxChars <= len(header) {
 		return truncateText(header, maxChars)
 	}
@@ -432,12 +444,17 @@ func conversationSummaryEntry(summary domain.ConversationSummary, budget int) st
 	if body == "" {
 		return ""
 	}
-	label := "summary[" + string(summary.Scope) + "]"
+	label := prompts.MustRender("conversation_summary_label.tmpl", map[string]any{
+		"Scope": string(summary.Scope),
+	})
 	bodyBudget := budget - len(label) - 4
 	if bodyBudget <= 0 {
 		return ""
 	}
-	return "- " + label + ": " + truncateText(body, bodyBudget)
+	return prompts.MustRender("conversation_context_entry.tmpl", map[string]any{
+		"Label": label,
+		"Body":  truncateText(body, bodyBudget),
+	})
 }
 
 type conversationHistoryItem struct {
@@ -519,30 +536,28 @@ func conversationHistoryItemEntry(item conversationHistoryItem, budget int) stri
 		bodyBudget = 1200
 	}
 	body = truncateText(body, bodyBudget)
-	return "- " + label + ": " + body
+	return prompts.MustRender("conversation_context_entry.tmpl", map[string]any{
+		"Label": label,
+		"Body":  body,
+	})
 }
 
 func conversationHistoryLabel(message domain.ConversationMessage) string {
-	switch message.Role {
-	case domain.ConversationRoleAssistant:
-		return "assistant"
-	case domain.ConversationRoleTool:
+	var parts []string
+	if message.Role == domain.ConversationRoleTool {
 		tool := strings.TrimSpace(message.Metadata["tool"])
 		status := strings.TrimSpace(message.Metadata["status"])
-		var parts []string
 		if tool != "" {
 			parts = append(parts, tool)
 		}
 		if status != "" {
 			parts = append(parts, status)
 		}
-		if len(parts) == 0 {
-			return "tool"
-		}
-		return "tool[" + strings.Join(parts, " ") + "]"
-	default:
-		return "user"
 	}
+	return prompts.MustRender("conversation_history_label.tmpl", map[string]any{
+		"Role":  string(message.Role),
+		"Parts": parts,
+	})
 }
 
 type compactEditToolInfo struct {
@@ -575,7 +590,7 @@ func compactEditToolHistory(messages []domain.ConversationMessage) (conversation
 	}
 	return conversationHistoryItem{
 		Role:     domain.ConversationRoleTool,
-		Label:    first.Label + " x" + strconv.Itoa(len(infos)),
+		Label:    countLabel(first.Label, len(infos)),
 		Body:     compactEditToolBody(infos),
 		ThreadID: strings.TrimSpace(messages[0].ThreadID),
 	}, len(infos), true
@@ -609,7 +624,6 @@ func compactEditToolInfoFromMessage(message domain.ConversationMessage) (compact
 }
 
 func compactEditToolBody(infos []compactEditToolInfo) string {
-	parts := []string{"edited: " + infos[0].FilePath}
 	replacements := make([]int, 0, len(infos))
 	bytesWritten := make([]int, 0, len(infos))
 	for _, info := range infos {
@@ -620,13 +634,7 @@ func compactEditToolBody(infos []compactEditToolInfo) string {
 			bytesWritten = append(bytesWritten, info.BytesWritten)
 		}
 	}
-	if value := compactIntValues(replacements); value != "" {
-		parts = append(parts, "replacements: "+value)
-	}
-	if value := compactIntValues(bytesWritten); value != "" {
-		parts = append(parts, "bytes_written: "+value)
-	}
-	return strings.Join(parts, "; ")
+	return edittool.PromptCompactHistoryBody(infos[0].FilePath, compactIntValues(replacements), compactIntValues(bytesWritten))
 }
 
 func compactExactToolHistory(messages []domain.ConversationMessage) (conversationHistoryItem, int, bool) {
@@ -645,8 +653,15 @@ func compactExactToolHistory(messages []domain.ConversationMessage) (conversatio
 	if count < 2 {
 		return conversationHistoryItem{}, 0, false
 	}
-	first.Label += " x" + strconv.Itoa(count)
+	first.Label = countLabel(first.Label, count)
 	return first, count, true
+}
+
+func countLabel(label string, count int) string {
+	return prompts.MustRender("conversation_count_label.tmpl", map[string]any{
+		"Label": label,
+		"Count": count,
+	})
 }
 
 func compactableSuccessfulToolMessage(message domain.ConversationMessage) bool {
@@ -710,7 +725,7 @@ func truncateText(text string, limit int) string {
 	if len(text) <= limit {
 		return text
 	}
-	const suffix = " [truncated]"
+	suffix := promptTruncationSuffix
 	if limit <= len(suffix) {
 		runes := []rune(text)
 		if len(runes) <= limit {
@@ -1095,13 +1110,13 @@ func formatToolResultContent(feedback agent.ExecutionFeedback) string {
 func formatToolResultDetails(feedback agent.ExecutionFeedback) string {
 	lines := make([]string, 0, 3)
 	if code := strings.TrimSpace(feedback.Metadata["result_code"]); code != "" {
-		lines = append(lines, "exit_code: "+code)
+		lines = append(lines, toolregistry.PromptResultExitCode(code))
 	}
 	if observation := strings.TrimSpace(feedback.Observation); observation != "" {
-		lines = append(lines, "output:\n"+observation)
+		lines = append(lines, toolregistry.PromptResultOutput(observation))
 	}
 	if errMsg := strings.TrimSpace(feedback.Error); errMsg != "" {
-		lines = append(lines, "error:\n"+errMsg)
+		lines = append(lines, toolregistry.PromptResultError(errMsg))
 	}
 	return strings.Join(lines, "\n")
 }

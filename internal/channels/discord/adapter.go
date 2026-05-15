@@ -14,6 +14,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
+	"github.com/opencto/opencto/internal/agent/prompts"
 	"github.com/opencto/opencto/internal/channels"
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/runtime"
@@ -602,7 +603,9 @@ func bodyWithAttachmentFallback(body string, attachments []domain.EventAttachmen
 		}
 		names = append(names, name)
 	}
-	return "Uploaded attachment(s): " + strings.Join(names, ", ")
+	return prompts.MustRender("uploaded_attachments.tmpl", map[string]any{
+		"Names": strings.Join(names, ", "),
+	})
 }
 
 func safeAttachmentFilename(sourceID, filename string) string {
