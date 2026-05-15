@@ -150,13 +150,11 @@ func TestBuildNextActionMessagesUsesOpenAIToolTranscript(t *testing.T) {
 		"Architecture: arm64",
 		"Exec: /bin/zsh",
 		"`$OPENCTO_ROOT`: /home/luka/projects/opencto",
-		"OpenCTO repository root, where the Go code, skills, references, and helper scripts live.",
-		"Use `$OPENCTO_ROOT` only to read OpenCTO internals",
-		"It is not the default working directory for user project work.",
+		"OpenCTO internals: Go source, skills, references, and helper scripts.",
+		"Not the working directory for user project work.",
 		"`$OPENCTO_WORKSPACE`: /tmp/opencto",
-		"Meaning: Stores projects, artifacts, data, screenshots, logs, and related files.",
-		"Exec and runtime tool commands operate from `$OPENCTO_WORKSPACE` by default.",
-		"Treat this as the current project workspace for user work",
+		"Projects, workflows, artifacts, data/db, screenshots, logs, and related files.",
+		"Default working directory for all user project work",
 		"PATH: /usr/bin:/bin",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -487,7 +485,7 @@ func TestBuildNextActionMessagesIncludesMemoryCrudPolicy(t *testing.T) {
 	}
 	systemPrompt := messageText(messages[0])
 	for _, expected := range []string{
-		"Search memory before proposing changes",
+		"Search memory using `MemorySearch` before proposing changes",
 		"Use `MemoryProposeUpdate` when an existing memory's content, scope, tags, pinning, or confidence should change",
 		"Use `MemoryProposeAdd` for new durable facts",
 		"Use `MemoryProposeForget` only when the user asks to forget/delete memory",
@@ -528,10 +526,10 @@ func TestBuildNextActionMessagesIncludesCollaborationGuidance(t *testing.T) {
 	}
 	prompt := messageText(messages[0])
 	for _, expected := range []string{
-		"Collaboration",
-		"inspect with read-only tools first",
-		"ask one concise question in your response",
-		"continue with the necessary work and verify it",
+		"For non-trivial work, use read-only tools first",
+		"ask one concise question",
+		"continue with the necessary work and verify before reporting success",
+		"Before any scheduled workflow action, load the `scheduled-workflows` skill",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("prompt missing collaboration text %q:\n%s", expected, prompt)
@@ -609,7 +607,7 @@ func TestBuildNextActionMessagesAddsMemoryAsUserContextBeforeCurrentRequest(t *t
 		t.Fatalf("expected system, memory context, and user messages, got %d", len(messages))
 	}
 	memory := messageText(messages[1])
-	if !strings.Contains(memory, "Relevant remembered context") || !strings.Contains(memory, "memory-1") || !strings.Contains(memory, "Use SQLite for local storage.") {
+	if !strings.Contains(memory, "Remembered context") || !strings.Contains(memory, "memory-1") || !strings.Contains(memory, "Use SQLite for local storage.") {
 		t.Fatalf("unexpected memory context message:\n%s", memory)
 	}
 	if got := messageText(messages[2]); got != "what database should we use?" {
@@ -805,7 +803,7 @@ func TestConversationSummaryContextPrioritizesNewestSummaryWithinScope(t *testin
 		},
 	}, 180)
 
-	if !strings.Contains(summary, "NEWEST-THREAD-SUMMARY") {
+	if !strings.Contains(summary, "summary[thread]: NEWE") {
 		t.Fatalf("expected newest thread summary to be prioritized:\n%s", summary)
 	}
 	if strings.Contains(summary, "OLD-THREAD") {
