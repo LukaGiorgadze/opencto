@@ -34,13 +34,7 @@ func (WorkflowBundlePostProcessor) ProcessToolResult(_ context.Context, req post
 	result.Metadata["workflow_id"] = workflowID
 	result.Metadata["required_next_tool"] = WorkflowUpdateToolName
 
-	note := strings.Join([]string{
-		"workflow_bundle_changed: true",
-		"workflow_id: " + workflowID,
-		"required_next_tool: " + WorkflowUpdateToolName,
-		"reason: workflow bundle files changed; publish the bundle before triggering it",
-	}, "\n")
-	result.Observation = postprocess.AppendObservationNote(result.Observation, note)
+	result.Observation = postprocess.AppendObservationNote(result.Observation, PromptWorkflowBundleChanged(workflowID))
 	return result
 }
 

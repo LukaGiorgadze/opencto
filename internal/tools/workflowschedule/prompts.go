@@ -18,3 +18,10 @@ func PromptSummary(operation, workflowID, name, description string) string {
 		"Description": strings.TrimSpace(description),
 	})
 }
+
+func PromptWorkflowBundleChanged(workflowID string) string {
+	return prompttemplate.MustRenderFS(promptFS, "prompt_workflow_bundle_changed.tmpl", map[string]any{
+		"WorkflowID":       strings.TrimSpace(workflowID),
+		"RequiredNextTool": WorkflowUpdateToolName,
+	})
+}
