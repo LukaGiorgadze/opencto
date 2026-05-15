@@ -16,7 +16,7 @@ func TestWorkflowBundlePostProcessorAnnotatesWorkflowSourceChange(t *testing.T) 
 	t.Parallel()
 
 	workspaceRoot := t.TempDir()
-	filePath := filepath.Join(workspaceRoot, ".opencto", "workflows", "daily-check", "src", "check.py")
+	filePath := filepath.Join(workspaceRoot, "workflows", "daily-check", "src", "check.py")
 	result := NewWorkflowBundlePostProcessor().ProcessToolResult(context.Background(), postprocess.Request{
 		WorkspaceRoot: workspaceRoot,
 		Tool:          domain.ToolTypeEdit,
@@ -42,7 +42,7 @@ func TestWorkflowBundlePostProcessorAnnotatesWorkflowManifestChangeFromInput(t *
 	t.Parallel()
 
 	workspaceRoot := t.TempDir()
-	filePath := filepath.Join(workspaceRoot, ".opencto", "workflows", "daily-check", workflowbundle.ManifestFilename)
+	filePath := filepath.Join(workspaceRoot, "workflows", "daily-check", workflowbundle.ManifestFilename)
 	input, err := json.Marshal(map[string]string{"file_path": filePath})
 	if err != nil {
 		t.Fatalf("marshal input: %v", err)
@@ -83,11 +83,55 @@ func TestWorkflowBundlePostProcessorIgnoresNonWorkflowFile(t *testing.T) {
 	}
 }
 
+func TestWorkflowBundlePostProcessorIgnoresWorkflowDataFile(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	filePath := filepath.Join(workspaceRoot, "workflows", "daily-check", "data", "cursor.json")
+	result := NewWorkflowBundlePostProcessor().ProcessToolResult(context.Background(), postprocess.Request{
+		WorkspaceRoot: workspaceRoot,
+		Tool:          domain.ToolTypeEdit,
+		Status:        domain.ExecutionStatusSucceeded,
+	}, postprocess.Result{
+		Observation: "edited: " + filePath,
+		Metadata:    map[string]string{"file_path": filePath},
+	})
+
+	if strings.Contains(result.Observation, "workflow_bundle_changed") {
+		t.Fatalf("did not expect workflow data to mark bundle dirty, got %q", result.Observation)
+	}
+	if _, ok := result.Metadata["workflow_bundle_changed"]; ok {
+		t.Fatalf("did not expect workflow bundle metadata, got %#v", result.Metadata)
+	}
+}
+
+func TestWorkflowBundlePostProcessorIgnoresNestedIgnoredPath(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	filePath := filepath.Join(workspaceRoot, "workflows", "daily-check", "src", "node_modules", "dependency.js")
+	result := NewWorkflowBundlePostProcessor().ProcessToolResult(context.Background(), postprocess.Request{
+		WorkspaceRoot: workspaceRoot,
+		Tool:          domain.ToolTypeEdit,
+		Status:        domain.ExecutionStatusSucceeded,
+	}, postprocess.Result{
+		Observation: "edited: " + filePath,
+		Metadata:    map[string]string{"file_path": filePath},
+	})
+
+	if strings.Contains(result.Observation, "workflow_bundle_changed") {
+		t.Fatalf("did not expect ignored nested path to mark bundle dirty, got %q", result.Observation)
+	}
+	if _, ok := result.Metadata["workflow_bundle_changed"]; ok {
+		t.Fatalf("did not expect workflow bundle metadata, got %#v", result.Metadata)
+	}
+}
+
 func TestWorkflowBundlePostProcessorDoesNotMarkFailedMutationDirty(t *testing.T) {
 	t.Parallel()
 
 	workspaceRoot := t.TempDir()
-	filePath := filepath.Join(workspaceRoot, ".opencto", "workflows", "daily-check", "src", "check.py")
+	filePath := filepath.Join(workspaceRoot, "workflows", "daily-check", "src", "check.py")
 	result := NewWorkflowBundlePostProcessor().ProcessToolResult(context.Background(), postprocess.Request{
 		WorkspaceRoot: workspaceRoot,
 		Tool:          domain.ToolTypeEdit,
@@ -110,7 +154,7 @@ func TestWorkflowIDFromBundlePathIgnoresGitInternals(t *testing.T) {
 	t.Parallel()
 
 	workspaceRoot := t.TempDir()
-	filePath := filepath.Join(workspaceRoot, ".opencto", "workflows", "daily-check", ".git", "HEAD")
+	filePath := filepath.Join(workspaceRoot, "workflows", "daily-check", ".git", "HEAD")
 	if workflowID, ok := WorkflowIDFromBundlePath(workspaceRoot, filePath); ok {
 		t.Fatalf("did not expect git internals to resolve as workflow files, got %q", workflowID)
 	}

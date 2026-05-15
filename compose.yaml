@@ -124,8 +124,6 @@ services:
     image: maximhq/bifrost:latest
     container_name: opencto-bifrost
     restart: unless-stopped
-    profiles:
-      - bifrost
     depends_on:
       postgresql:
         condition: service_healthy

@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/opencto/opencto/internal/config"
 	"github.com/opencto/opencto/internal/domain"
@@ -12,6 +15,10 @@ import (
 )
 
 func runBootstrap(ctx context.Context, cfg config.Config, project domain.Project, logger *slog.Logger) error {
+	if err := ensureWorkspaceDirs(cfg.General.WorkspaceRoot); err != nil {
+		return err
+	}
+
 	store, dbPath, err := openRuntimeStore(ctx, cfg)
 	if err != nil {
 		return err
@@ -19,6 +26,21 @@ func runBootstrap(ctx context.Context, cfg config.Config, project domain.Project
 	defer store.Close()
 
 	return bootstrapRuntimeStore(ctx, store, dbPath, project, logger)
+}
+
+func ensureWorkspaceDirs(workspaceRoot string) error {
+	workspaceRoot = strings.TrimSpace(workspaceRoot)
+	if workspaceRoot == "" {
+		return fmt.Errorf("workspace root is required")
+	}
+
+	for _, name := range []string{".state", ".db", "workflows", "workflow-runs"} {
+		path := filepath.Join(workspaceRoot, name)
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			return fmt.Errorf("create workspace directory %s: %w", path, err)
+		}
+	}
+	return nil
 }
 
 func openRuntimeStore(ctx context.Context, cfg config.Config) (*sqlitestore.Store, string, error) {

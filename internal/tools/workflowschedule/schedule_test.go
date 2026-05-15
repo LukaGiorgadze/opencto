@@ -87,6 +87,20 @@ func TestWorkflowCreateCommitsBundleAndCreatesTemporalSchedule(t *testing.T) {
 		options.CatchupWindow != 5*time.Minute {
 		t.Fatalf("unexpected schedule options: %#v", options)
 	}
+	if options.Spec.TimeZoneName != "Asia/Tbilisi" {
+		t.Fatalf("expected runtime timezone in Temporal schedule, got %#v", options.Spec)
+	}
+	workflowPath, err := workflowbundle.WorkflowDir(workspaceRoot, "daily-etl")
+	if err != nil {
+		t.Fatalf("workflow dir: %v", err)
+	}
+	manifestData, err := os.ReadFile(filepath.Join(workflowPath, workflowbundle.ManifestFilename))
+	if err != nil {
+		t.Fatalf("read workflow manifest: %v", err)
+	}
+	if strings.Contains(string(manifestData), "time_zone_name") {
+		t.Fatalf("workflow manifest should not persist time_zone_name:\n%s", string(manifestData))
+	}
 	action, ok := options.Action.(*temporalclient.ScheduleWorkflowAction)
 	if !ok {
 		t.Fatalf("expected workflow action, got %T", options.Action)

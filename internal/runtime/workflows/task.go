@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	maxExecutionCycles           = 20
+	maxExecutionCycles           = 50
 	nextActionActivityTimeout    = 2 * time.Minute
 	toolActivityTimeout          = 10 * time.Minute
 	toolActivityHeartbeatTimeout = 2 * time.Minute

@@ -46,6 +46,7 @@ type PrepareResult struct {
 }
 
 type CleanupRunsRequest struct {
+	ProjectID    string `json:"project_id,omitempty"`
 	WorkflowID   string `json:"workflow_id"`
 	CurrentRunID string `json:"current_run_id,omitempty"`
 	KeepLast     int    `json:"keep_last,omitempty"`

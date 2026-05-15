@@ -58,6 +58,7 @@ type RuntimeStore interface {
 	GetScheduledWorkflow(context.Context, string, string) (domain.ScheduledWorkflow, bool, error)
 	ListScheduledWorkflows(context.Context, ScheduledWorkflowQuery) ([]domain.ScheduledWorkflow, error)
 	DeleteScheduledWorkflow(context.Context, string, string) error
+	GetScheduledWorkflowRun(context.Context, string, string) (domain.ScheduledWorkflowRun, bool, error)
 	UpsertScheduledWorkflowRun(context.Context, domain.ScheduledWorkflowRun) error
 	UpsertScheduledWorkflowStepRun(context.Context, domain.ScheduledWorkflowStepRun) error
 }
@@ -121,9 +122,9 @@ type ScheduledWorkflowQuery struct {
 func DefaultDBPath(workspaceRoot string) string {
 	workspaceRoot = strings.TrimSpace(workspaceRoot)
 	if workspaceRoot == "" {
-		return filepath.Join("db", "opencto.db")
+		return filepath.Join(".db", "opencto.db")
 	}
-	return filepath.Join(workspaceRoot, "db", "opencto.db")
+	return filepath.Join(workspaceRoot, ".db", "opencto.db")
 }
 
 func DefaultAutoContextLimit(limit int) int {

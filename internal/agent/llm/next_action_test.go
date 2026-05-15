@@ -153,7 +153,7 @@ func TestBuildNextActionMessagesUsesOpenAIToolTranscript(t *testing.T) {
 		"OpenCTO internals: Go source, skills, references, and helper scripts.",
 		"Not the working directory for user project work.",
 		"`$OPENCTO_WORKSPACE`: /tmp/opencto",
-		"Projects, workflows, artifacts, data/db, screenshots, logs, and related files.",
+		"Projects, scheduled workflow source and run snapshots, artifacts, data/db, screenshots, logs, and related files.",
 		"Default working directory for all user project work",
 		"PATH: /usr/bin:/bin",
 	} {
@@ -530,6 +530,8 @@ func TestBuildNextActionMessagesIncludesCollaborationGuidance(t *testing.T) {
 		"ask one concise question",
 		"continue with the necessary work and verify before reporting success",
 		"Before any scheduled workflow action, load the `scheduled-workflows` skill",
+		"`workflows/`: scheduled workflow source repositories",
+		"`workflow-runs/`: per-run workflow snapshots",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("prompt missing collaboration text %q:\n%s", expected, prompt)

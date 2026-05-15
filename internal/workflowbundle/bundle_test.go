@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestWorkflowDirDoesNotNestOpenCTODirectory(t *testing.T) {
+func TestWorkflowDirUsesProvidedWorkspaceRoot(t *testing.T) {
 	t.Parallel()
 
 	root := filepath.Join(t.TempDir(), ".opencto")
@@ -22,7 +22,7 @@ func TestWorkflowDirDoesNotNestOpenCTODirectory(t *testing.T) {
 	}
 }
 
-func TestWorkflowDirUsesOpenCTODirectoryUnderProjectRoot(t *testing.T) {
+func TestWorkflowDirUsesWorkflowsDirectoryUnderWorkspaceRoot(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
@@ -30,7 +30,7 @@ func TestWorkflowDirUsesOpenCTODirectoryUnderProjectRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("workflow dir: %v", err)
 	}
-	want := filepath.Join(root, ".opencto", "workflows", "daily")
+	want := filepath.Join(root, "workflows", "daily")
 	if got != want {
 		t.Fatalf("expected workflow dir %q, got %q", want, got)
 	}
@@ -46,7 +46,41 @@ func TestWriteBundleRejectsManifestFile(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected workflow.yml file write to be rejected")
 	}
-	if !strings.Contains(err.Error(), "under src") {
+	if !strings.Contains(err.Error(), "reserved for OpenCTO workflow runtime or metadata") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestWriteBundleAllowsWorkflowOwnedFilesOutsideSrc(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := WriteBundle(context.Background(), dir, testManifest(), []File{{
+		Path:    "README.md",
+		Content: "workflow notes\n",
+	}}); err != nil {
+		t.Fatalf("write bundle: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "README.md"))
+	if err != nil {
+		t.Fatalf("read workflow-owned file: %v", err)
+	}
+	if string(data) != "workflow notes\n" {
+		t.Fatalf("unexpected workflow-owned file content: %q", string(data))
+	}
+}
+
+func TestWriteBundleRejectsIgnoredNestedPath(t *testing.T) {
+	t.Parallel()
+
+	err := WriteBundle(context.Background(), t.TempDir(), testManifest(), []File{{
+		Path:    "src/node_modules/helper.js",
+		Content: "console.log('ignored')\n",
+	}})
+	if err == nil {
+		t.Fatal("expected nested ignored path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "reserved for OpenCTO workflow runtime or metadata") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -154,7 +188,6 @@ description: ""
 schedule:
   cron: "0 9 * * *"
   one_shot_at: ""
-  time_zone_name: UTC
   overlap_policy: skip
   catchup_window: 10m
   pause_on_failure: false
@@ -192,7 +225,6 @@ description: ""
 schedule:
   cron: "0 9 * * *"
   one_shot_at: ""
-  time_zone_name: UTC
   overlap_policy: skip
   catchup_window: 10m
   pause_on_failure: false
@@ -224,6 +256,77 @@ steps:
 	}
 }
 
+func TestLoadManifestDefaultsOptionalStepFields(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	data := []byte(`name: test workflow
+description: ""
+schedule:
+  cron: "0 9 * * *"
+  one_shot_at: ""
+  overlap_policy: skip
+  catchup_window: 10m
+  pause_on_failure: false
+notification_policy:
+  on_failure: true
+env: []
+steps:
+  - id: step
+    command: src/check.sh
+    start_to_close_timeout: 1m
+`)
+	if err := os.WriteFile(filepath.Join(dir, ManifestFilename), data, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	manifest, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatalf("load manifest with optional step fields omitted: %v", err)
+	}
+	step := manifest.Steps[0]
+	if step.Args == nil || len(step.Args) != 0 {
+		t.Fatalf("expected omitted args to default to empty slice, got %#v", step.Args)
+	}
+	if step.ScheduleToCloseTimeout != "" {
+		t.Fatalf("expected empty schedule_to_close_timeout, got %q", step.ScheduleToCloseTimeout)
+	}
+	if step.RetryPolicy.NonRetryableErrorTypes == nil || len(step.RetryPolicy.NonRetryableErrorTypes) != 0 {
+		t.Fatalf("expected omitted non_retryable_error_types to default to empty slice, got %#v", step.RetryPolicy.NonRetryableErrorTypes)
+	}
+}
+
+func TestLoadManifestRejectsExternalCommandWithOmittedArgs(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	data := []byte(`name: test workflow
+description: ""
+schedule:
+  cron: "0 9 * * *"
+  one_shot_at: ""
+  overlap_policy: skip
+  catchup_window: 10m
+  pause_on_failure: false
+notification_policy:
+  on_failure: true
+env: []
+steps:
+  - id: step
+    command: python3
+    start_to_close_timeout: 1m
+`)
+	if err := os.WriteFile(filepath.Join(dir, ManifestFilename), data, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	_, err := LoadManifest(dir)
+	if err == nil {
+		t.Fatal("expected external command with omitted args to fail")
+	}
+	if !strings.Contains(err.Error(), ErrStepArgsMissing.Error()) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestLoadManifestRejectsMissingRequiredYAMLFields(t *testing.T) {
 	t.Parallel()
 
@@ -233,7 +336,6 @@ description: ""
 schedule:
   cron: "0 9 * * *"
   one_shot_at: ""
-  time_zone_name: UTC
   overlap_policy: skip
   catchup_window: 10m
   pause_on_failure: false
@@ -264,7 +366,34 @@ steps:
 	}
 }
 
-func TestCommitBundleRespectsGitIgnoreForGeneratedSourceFiles(t *testing.T) {
+func TestWriteBundleOmitsEmptyOptionalStepFields(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dir := t.TempDir()
+	manifest := testManifest()
+	manifest.Steps = []Step{{
+		ID:                  "step",
+		Command:             "src/check.sh",
+		StartToCloseTimeout: "1m",
+	}}
+	files := []File{{Path: "src/check.sh", Content: "echo ok\n", Executable: true}}
+	if err := WriteBundle(ctx, dir, manifest, files); err != nil {
+		t.Fatalf("write bundle: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, ManifestFilename))
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	text := string(data)
+	for _, omitted := range []string{"args:", "schedule_to_close_timeout:", "retry_policy:"} {
+		if strings.Contains(text, omitted) {
+			t.Fatalf("expected %s to be omitted from manifest:\n%s", omitted, text)
+		}
+	}
+}
+
+func TestCommitBundleRespectsGitIgnoreForGeneratedFiles(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -305,7 +434,7 @@ func TestCommitBundleRespectsGitIgnoreForGeneratedSourceFiles(t *testing.T) {
 	}
 }
 
-func TestCommitBundleTracksExistingSourceFileUpdates(t *testing.T) {
+func TestCommitBundleTracksExistingWorkflowFileUpdates(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -340,7 +469,7 @@ func TestCommitBundleTracksExistingSourceFileUpdates(t *testing.T) {
 	}
 }
 
-func TestCommitBundleTracksNewSourceFiles(t *testing.T) {
+func TestCommitBundleTracksNewWorkflowFiles(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -355,9 +484,12 @@ func TestCommitBundleTracksNewSourceFiles(t *testing.T) {
 	if _, err := CommitBundle(ctx, dir, "initial", files); err != nil {
 		t.Fatalf("commit bundle: %v", err)
 	}
-	helperPath := filepath.Join(dir, "src", "helper.sh")
+	helperPath := filepath.Join(dir, "lib", "helper.sh")
+	if err := os.MkdirAll(filepath.Dir(helperPath), 0o755); err != nil {
+		t.Fatalf("mkdir new workflow file: %v", err)
+	}
 	if err := os.WriteFile(helperPath, []byte("echo helper\n"), 0o644); err != nil {
-		t.Fatalf("write new source: %v", err)
+		t.Fatalf("write new workflow file: %v", err)
 	}
 	hash, err := CommitBundle(ctx, dir, "add helper", nil)
 	if err != nil {
@@ -367,7 +499,7 @@ func TestCommitBundleTracksNewSourceFiles(t *testing.T) {
 	if err := ArchiveCommit(ctx, dir, hash, snapshot); err != nil {
 		t.Fatalf("archive commit: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(snapshot, "src", "helper.sh"))
+	data, err := os.ReadFile(filepath.Join(snapshot, "lib", "helper.sh"))
 	if err != nil {
 		t.Fatalf("read archived helper: %v", err)
 	}
@@ -390,7 +522,6 @@ func testManifest() Manifest {
 		Env:  []string{},
 		Schedule: Schedule{
 			Cron:          "0 9 * * *",
-			TimeZoneName:  "UTC",
 			OverlapPolicy: OverlapPolicySkip,
 			CatchupWindow: "10m",
 		},

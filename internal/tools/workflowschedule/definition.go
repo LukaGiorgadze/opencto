@@ -11,35 +11,60 @@ const (
 	WorkflowDeleteToolName    = "WorkflowDelete"
 	WorkflowOperationToolName = "WorkflowOperation"
 
-	WorkflowCreateToolDescription = `Create a new Git-backed scheduled workflow.
+	WorkflowCreateToolDescription = `Create a new scheduled workflow.
 
-Use this tool only for new workflows. Provide enough fields to write a valid workflow.yml, and include implementation files under src/ when the workflow needs workflow-owned code. It fails if the workflow is already registered.
+Only for new workflows. Fails if workflow_id is already registered.
+Creates $OPENCTO_WORKSPACE/workflows/{workflow_id}/ as a workflow-local Git repository with workflow.yml, .gitignore, src/, and data/.
 
-The manifest defines durable step boundaries only. Implementation files are ordinary runnable programs, scripts, or binaries invoked by step command and args. Keep each step focused on one responsibility, split distinct operations into separate steps and entrypoints, and do not write schedulers, workers, queues, daemons, or orchestration framework code inside src/.
+Provide enough fields for a valid workflow.yml. Include files[] when the workflow needs implementation code.
 
-Use command for the executable only and args for its arguments. Do not repeat the executable in args.
-Global env entries apply to every step and must be literal NAME=value assignments. Do not use template syntax in env. Runtime-owned OPENCTO_* names are reserved.
-Write files produced by a step under OPENCTO_RUN_DIR/artifacts/{step_id}/filename.json, using OPENCTO_STEP_ID for the current step id. Later steps can read those files from the same run directory.`
+Constraints:
+- command: executable only. args is optional, but external commands such as python3 usually need args. Never repeat the executable in args.
+- env: literal NAME=value entries only. No template syntax. OPENCTO_* names are reserved.
+- files[].path: relative to workflows/{workflow_id}/. Must not target reserved or ignored paths.
+- Do not write schedulers, workers, queues, daemons, or orchestration code in workflow source.
 
-	WorkflowUpdateToolDescription = `Update an existing Git-backed scheduled workflow.
+Runtime environment variables set by OpenCTO for each step:
+- OPENCTO_WORKFLOWS_DIR: root directory containing workflow source repositories. A workflow source repo is at OPENCTO_WORKFLOWS_DIR/{workflow_id}. Do not edit workflow source during a run.
+- OPENCTO_WORKFLOW_RUN_DIR: current run snapshot directory and step working directory. Use OPENCTO_WORKFLOW_RUN_DIR/artifacts for files shared between steps in the same run. These files are not available to future runs.
+- OPENCTO_WORKFLOW_DATA_DIR: persistent data directory for this workflow at OPENCTO_WORKFLOWS_DIR/{workflow_id}/data. It is ignored by Git and writable at step runtime. Use it only for state or outputs future runs must read.
 
-Use this tool after Edit or Write modifies files under workflows/{workflow_id}. It loads the existing workflow.yml, applies any provided manifest fields, validates the bundle, commits dirty workflow changes, and repoints the schedule to the new commit_hash.
+Do not use removed runtime names such as OPENCTO_RUN_DIR, OPENCTO_STEP_ID, OPENCTO_STEP_DIR, OPENCTO_WORKFLOW_ID, or OPENCTO_RUN_ID.`
 
-The manifest defines durable step boundaries only. Implementation files are ordinary runnable programs, scripts, or binaries invoked by step command and args. Keep each step focused on one responsibility, split distinct operations into separate steps and entrypoints, and do not write schedulers, workers, queues, daemons, or orchestration framework code inside src/.
+	WorkflowUpdateToolDescription = `Update an existing scheduled workflow.
 
-Use command for the executable only and args for its arguments. Do not repeat the executable in args.
-Global env entries apply to every step and must be literal NAME=value assignments. Do not use template syntax in env. Runtime-owned OPENCTO_* names are reserved.
-Write files produced by a step under OPENCTO_RUN_DIR/artifacts/{step_id}/filename.json, using OPENCTO_STEP_ID for the current step id. Later steps can read those files from the same run directory.
+Loads the current workflow.yml, applies provided fields, validates the bundle, commits dirty changes under $OPENCTO_WORKSPACE/workflows/{workflow_id}/, and repoints the schedule to the new commit hash.
 
-Fields are optional unless the schema marks them required. Omitted fields preserve the existing manifest value. If a field is present, it is applied and validated. Do not run git commit manually for workflow bundles.`
+Call this after any Edit or Write to files under $OPENCTO_WORKSPACE/workflows/{workflow_id}/, or to update manifest fields directly. Do not run git commit manually for workflow bundles.
+
+Constraints:
+- All fields are optional. Omitted fields preserve the existing manifest value.
+- command: executable only. args is optional, but external commands such as python3 usually need args. Never repeat the executable in args.
+- env: literal NAME=value entries only. No template syntax. OPENCTO_* names are reserved.
+- files[].path: relative to workflows/{workflow_id}/. Must not target reserved or ignored paths.
+- Do not write schedulers, workers, queues, daemons, or orchestration code in workflow source.
+
+Runtime environment variables set by OpenCTO for each step:
+- OPENCTO_WORKFLOWS_DIR: root directory containing workflow source repositories. A workflow source repo is at OPENCTO_WORKFLOWS_DIR/{workflow_id}. Do not edit workflow source during a run.
+- OPENCTO_WORKFLOW_RUN_DIR: current run snapshot directory and step working directory. Use OPENCTO_WORKFLOW_RUN_DIR/artifacts for files shared between steps in the same run. These files are not available to future runs.
+- OPENCTO_WORKFLOW_DATA_DIR: persistent data directory for this workflow at OPENCTO_WORKFLOWS_DIR/{workflow_id}/data. It is ignored by Git and writable at step runtime. Use it only for state or outputs future runs must read.
+
+Do not use removed runtime names such as OPENCTO_RUN_DIR, OPENCTO_STEP_ID, OPENCTO_STEP_DIR, OPENCTO_WORKFLOW_ID, or OPENCTO_RUN_ID.`
 
 	WorkflowDeleteToolDescription = `Hard-delete an existing scheduled workflow.
 
-Deletes the schedule, workflow record, workflow bundle directory, and workflow run snapshots for the workflow_id.`
+Removes the schedule, workflow record, {OPENCTO_WORKFLOWS_DIR}/{workflow_id}/, and all run snapshots under $OPENCTO_WORKSPACE/workflow-runs/{workflow_id}/, including the workflow's data/ directory. This is irreversible.`
 
-	WorkflowOperationToolDescription = `Run control and read operations for scheduled workflows.
+	WorkflowOperationToolDescription = `Run control and read operations on scheduled workflows.
 
-Supported operations: list, describe, trigger, pause, resume. Use WorkflowUpdate for code or manifest changes, not this tool.`
+Operations:
+- list              — list all registered workflows
+- describe          — full status, source path, and schedule state for a workflow
+- trigger           — manually run a workflow; requires a clean committed bundle (call WorkflowUpdate first if dirty)
+- pause / resume    — suspend or re-enable the schedule
+
+Use describe before any action that changes schedule state when current workflow status is not already known in this turn.
+Use WorkflowUpdate for code or manifest changes — not this tool.`
 )
 
 //go:embed workflow_create_schema.json
