@@ -21,6 +21,7 @@ import (
 	"github.com/opencto/opencto/internal/storage"
 	exectool "github.com/opencto/opencto/internal/tools/exec"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
+	"github.com/opencto/opencto/internal/tools/postprocess"
 	scheduletool "github.com/opencto/opencto/internal/tools/workflowschedule"
 	"github.com/opencto/opencto/internal/workflowbundle"
 )
@@ -2569,48 +2570,45 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 	}
 }
 
-func TestWorkflowSourceEditObservationRequiresWorkflowUpdate(t *testing.T) {
+func TestExecuteToolPostProcessorsRunForFailedToolResult(t *testing.T) {
 	t.Parallel()
 
-	workspaceRoot := t.TempDir()
-	filePath := filepath.Join(workspaceRoot, ".opencto", "workflows", "daily-check", "src", "check.py")
-	observation, metadata := appendWorkflowUpdateNotice("edited: "+filePath, map[string]string{}, workspaceRoot, filePath)
-	if !strings.Contains(observation, "workflow_update_required: true") ||
-		!strings.Contains(observation, "workflow_id: daily-check") ||
-		!strings.Contains(observation, "call WorkflowUpdate before triggering") {
-		t.Fatalf("expected workflow update notice, got %q", observation)
+	ctx := context.Background()
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "example.txt")
+	if err := os.WriteFile(filePath, []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
 	}
-	if metadata["workflow_update_required"] != "true" || metadata["workflow_id"] != "daily-check" {
-		t.Fatalf("expected workflow update metadata, got %#v", metadata)
+	var sawFailure bool
+	activities := Activities{
+		WorkspaceRoot: dir,
+		ToolResultProcessors: []postprocess.Processor{
+			postprocess.ProcessorFunc(func(_ context.Context, req postprocess.Request, result postprocess.Result) postprocess.Result {
+				if req.Tool == domain.ToolTypeEdit && req.Status == domain.ExecutionStatusFailed && strings.Contains(req.Error, "old_string") {
+					sawFailure = true
+				}
+				result.Metadata = postprocess.EnsureMetadata(result.Metadata)
+				result.Metadata["post_processed"] = "true"
+				result.Observation = postprocess.AppendObservationNote(result.Observation, "post_processed: true")
+				return result
+			}),
+		},
 	}
-}
 
-func TestWorkflowManifestEditObservationRequiresWorkflowUpdate(t *testing.T) {
-	t.Parallel()
-
-	workspaceRoot := t.TempDir()
-	filePath := filepath.Join(workspaceRoot, ".opencto", "workflows", "daily-check", workflowbundle.ManifestFilename)
-	observation, metadata := appendWorkflowUpdateNotice("edited: "+filePath, map[string]string{}, workspaceRoot, filePath)
-	if !strings.Contains(observation, "workflow_update_required: true") ||
-		!strings.Contains(observation, "workflow_id: daily-check") {
-		t.Fatalf("expected workflow update notice, got %q", observation)
+	result, err := activities.ExecuteTool(ctx, executeRequest(domain.ToolTypeEdit, "edit-fail-1", map[string]any{
+		"file_path":   filePath,
+		"old_string":  "missing",
+		"new_string":  "hi",
+		"replace_all": false,
+	}))
+	if err != nil {
+		t.Fatalf("execute tool: %v", err)
 	}
-	if metadata["workflow_update_required"] != "true" || metadata["workflow_id"] != "daily-check" {
-		t.Fatalf("expected workflow update metadata, got %#v", metadata)
+	if result.Status != domain.ExecutionStatusFailed || !sawFailure {
+		t.Fatalf("expected failed edit to be post-processed, got result=%#v sawFailure=%t", result, sawFailure)
 	}
-}
-
-func TestWorkflowSourceEditObservationIgnoresNonWorkflowSource(t *testing.T) {
-	t.Parallel()
-
-	workspaceRoot := t.TempDir()
-	filePath := filepath.Join(workspaceRoot, "src", "app.py")
-	observation, metadata := appendWorkflowUpdateNotice("edited: "+filePath, map[string]string{}, workspaceRoot, filePath)
-	if strings.Contains(observation, "workflow_update_required") {
-		t.Fatalf("did not expect workflow update notice, got %q", observation)
-	}
-	if _, ok := metadata["workflow_update_required"]; ok {
-		t.Fatalf("did not expect workflow update metadata, got %#v", metadata)
+	if result.Metadata["post_processed"] != "true" || !strings.Contains(result.Observation, "post_processed: true") {
+		t.Fatalf("expected post-processed result, got %#v", result)
 	}
 }
 
@@ -2983,6 +2981,16 @@ func TestExecuteToolReturnsManagedProcessMetadata(t *testing.T) {
 	activities := Activities{
 		WorkspaceRoot: dir,
 		StateDir:      stateDir,
+		ToolResultProcessors: []postprocess.Processor{
+			postprocess.ProcessorFunc(func(_ context.Context, req postprocess.Request, result postprocess.Result) postprocess.Result {
+				if req.Tool == domain.ToolTypeExec && req.Status == domain.ExecutionStatusSucceeded {
+					result.Metadata = postprocess.EnsureMetadata(result.Metadata)
+					result.Metadata["post_processed"] = "true"
+					result.Observation = postprocess.AppendObservationNote(result.Observation, "post_processed: true")
+				}
+				return result
+			}),
+		},
 	}
 	request := ExecuteToolRequest{
 		ProjectID:  "project-1",
@@ -3026,6 +3034,9 @@ func TestExecuteToolReturnsManagedProcessMetadata(t *testing.T) {
 	if len(result.Processes) != 1 || result.Processes[0].ID != processID || result.Processes[0].Scope != domain.ProcessScopeStopOnFinish {
 		t.Fatalf("expected process reference, got %#v", result.Processes)
 	}
+	if result.Metadata["post_processed"] != "true" || !strings.Contains(result.Observation, "post_processed: true") {
+		t.Fatalf("expected background exec result to be post-processed, got %#v", result)
+	}
 	manager := exectool.NewProcessManager(nil)
 	defer func() {
 		_, _ = manager.Stop(context.Background(), stateDir, processID)
@@ -3066,9 +3077,20 @@ func TestExecuteToolStartBackgroundFailureIncludesProcessOutput(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
+	var sawFailure bool
 	activities := Activities{
 		WorkspaceRoot: dir,
 		StateDir:      t.TempDir(),
+		ToolResultProcessors: []postprocess.Processor{
+			postprocess.ProcessorFunc(func(_ context.Context, req postprocess.Request, result postprocess.Result) postprocess.Result {
+				if req.Tool == domain.ToolTypeExec && req.Status == domain.ExecutionStatusFailed && strings.TrimSpace(req.Error) != "" {
+					sawFailure = true
+					result.Metadata = postprocess.EnsureMetadata(result.Metadata)
+					result.Metadata["post_processed_failure"] = "true"
+				}
+				return result
+			}),
+		},
 	}
 	result, err := activities.ExecuteTool(context.Background(), ExecuteToolRequest{
 		ProjectID:  "project-1",
@@ -3106,6 +3128,9 @@ func TestExecuteToolStartBackgroundFailureIncludesProcessOutput(t *testing.T) {
 	}
 	if result.Error == "" {
 		t.Fatalf("expected error details, got %#v", result)
+	}
+	if !sawFailure || result.Metadata["post_processed_failure"] != "true" {
+		t.Fatalf("expected failed background exec to be post-processed, got result=%#v sawFailure=%t", result, sawFailure)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	memorytool "github.com/opencto/opencto/internal/tools/memory"
+	"github.com/opencto/opencto/internal/tools/postprocess"
 	readtool "github.com/opencto/opencto/internal/tools/read"
 	skilltool "github.com/opencto/opencto/internal/tools/skill"
 	workflowscheduletool "github.com/opencto/opencto/internal/tools/workflowschedule"
@@ -136,6 +137,12 @@ func Definitions() []Definition {
 		}
 	}
 	return cloned
+}
+
+func ToolResultProcessors() []postprocess.Processor {
+	return []postprocess.Processor{
+		workflowscheduletool.NewWorkflowBundlePostProcessor(),
+	}
 }
 
 func LLMDefinitions() []llms.Tool {

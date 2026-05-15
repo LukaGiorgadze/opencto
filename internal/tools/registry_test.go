@@ -121,6 +121,15 @@ func TestDefinitionsDeepCopySchema(t *testing.T) {
 	}
 }
 
+func TestToolResultProcessorsIncludesWorkflowBundleProcessor(t *testing.T) {
+	t.Parallel()
+
+	processors := ToolResultProcessors()
+	if len(processors) != 1 {
+		t.Fatalf("expected one tool result processor, got %d", len(processors))
+	}
+}
+
 func TestDefinitionSchemasDoNotUseNullDefaults(t *testing.T) {
 	t.Parallel()
 

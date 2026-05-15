@@ -35,6 +35,7 @@ import (
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	memorytool "github.com/opencto/opencto/internal/tools/memory"
+	"github.com/opencto/opencto/internal/tools/postprocess"
 	readtool "github.com/opencto/opencto/internal/tools/read"
 	skilltool "github.com/opencto/opencto/internal/tools/skill"
 	scheduletool "github.com/opencto/opencto/internal/tools/workflowschedule"
@@ -66,6 +67,7 @@ type Activities struct {
 	Schedule                    scheduletool.Executor
 	Skill                       skilltool.Executor
 	Write                       writetool.Executor
+	ToolResultProcessors        []postprocess.Processor
 	Reporter                    Reporter
 	EventEnqueuer               EventEnqueuer
 	MemoryEmbedder              embedding.Embedder
@@ -2739,6 +2741,16 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 	if len(strings.TrimSpace(string(toolResult.Input))) > 0 {
 		resultInput = cloneRawMessage(toolResult.Input)
 	}
+	resultStatus := domain.ExecutionStatusSucceeded
+	var errorMessage string
+	if runErr != nil {
+		resultStatus = domain.ExecutionStatusFailed
+		errorMessage = runErr.Error()
+		toolResult.Observation = firstNonEmpty(toolResult.Observation, "Tool execution failed.")
+	} else {
+		toolResult.Observation = firstNonEmpty(toolResult.Observation, "Execution completed.")
+	}
+	toolResult, metadata = a.applyToolResultPostProcessors(ctx, request.ToolChoice, execution, resultInput, resultStatus, errorMessage, toolResult, metadata)
 
 	invocation := domain.ToolInvocation{
 		ID:                 execution.InvocationID,
@@ -2758,7 +2770,6 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 		Metadata:           metadata,
 	}
 
-	var errorMessage string
 	if runErr != nil {
 		a.logActivityStep(
 			"ExecuteTool", "tool_run_result_error",
@@ -2768,13 +2779,12 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 			slog.String("error", runErr.Error()),
 		)
 		attempt.Status = domain.ExecutionStatusFailed
-		attempt.OutputSummary = firstNonEmpty(toolResult.Observation, "Tool execution failed.")
+		attempt.OutputSummary = toolResult.Observation
 		invocation.ErrorDetails = runErr.Error()
 		invocation.OutputSummary = attempt.OutputSummary
 		if invocation.ResultCode == "" || invocation.ResultCode == "0" {
 			invocation.ResultCode = "1"
 		}
-		errorMessage = runErr.Error()
 	} else {
 		a.logActivityStep(
 			"ExecuteTool", "tool_run_result_success",
@@ -2783,7 +2793,7 @@ func (a *Activities) ExecuteTool(ctx context.Context, request ExecuteToolRequest
 			slog.String("tool_call_id", execution.ToolCallID),
 		)
 		attempt.Status = domain.ExecutionStatusSucceeded
-		attempt.OutputSummary = firstNonEmpty(toolResult.Observation, "Execution completed.")
+		attempt.OutputSummary = toolResult.Observation
 		invocation.OutputSummary = attempt.OutputSummary
 	}
 	a.logActivityStep(
@@ -2896,6 +2906,19 @@ func (a *Activities) startExecProcess(ctx context.Context, request ExecuteToolRe
 		errorMessage = runErr.Error()
 		observation = backgroundStartFailureObservation(ctx, manager, stateDir, process, runErr)
 	}
+	toolResult := toolRunResult{
+		Observation:      firstNonEmpty(observation, "Execution completed."),
+		ResultCode:       resultCode,
+		Input:            cloneRawMessage(choice.Input),
+		WorkingDirectory: process.WorkingDirectory,
+		Metadata:         metadata,
+	}
+	if status == domain.ExecutionStatusFailed {
+		toolResult.Observation = firstNonEmpty(observation, "Tool execution failed.")
+	}
+	toolResult, metadata = a.applyToolResultPostProcessors(ctx, choice, execution, choice.Input, status, errorMessage, toolResult, metadata)
+	observation = toolResult.Observation
+
 	completedAt := time.Now().UTC()
 	attempt.Status = status
 	attempt.OutputSummary = observation
@@ -2971,6 +2994,34 @@ func (a *Activities) runChosenTool(ctx context.Context, choice agent.ToolChoice,
 	default:
 		return toolRunResult{ResultCode: "1"}, fmt.Errorf("unsupported tool type %q", choice.Type)
 	}
+}
+
+func (a *Activities) applyToolResultPostProcessors(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext, input json.RawMessage, status domain.ExecutionStatus, errorMessage string, result toolRunResult, metadata map[string]string) (toolRunResult, map[string]string) {
+	processors := a.ToolResultProcessors
+	if processors == nil {
+		processors = toolregistry.ToolResultProcessors()
+	}
+	resultCode := firstNonEmpty(result.ResultCode, "0")
+	if status == domain.ExecutionStatusFailed && resultCode == "0" {
+		resultCode = "1"
+	}
+	processed := postprocess.Apply(ctx, processors, postprocess.Request{
+		ProjectID:        execution.ProjectID,
+		WorkItemID:       execution.WorkItemID,
+		ToolCallID:       execution.ToolCallID,
+		WorkspaceRoot:    a.WorkspaceRoot,
+		Tool:             choice.Type,
+		Status:           status,
+		Input:            cloneRawMessage(input),
+		Error:            errorMessage,
+		ResultCode:       resultCode,
+		WorkingDirectory: firstNonEmpty(result.WorkingDirectory, choice.WorkingDir),
+	}, postprocess.Result{
+		Observation: result.Observation,
+		Metadata:    metadata,
+	})
+	result.Observation = processed.Observation
+	return result, processed.Metadata
 }
 
 func (a *Activities) runExecTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
@@ -3128,9 +3179,6 @@ func (a *Activities) runEditTool(ctx context.Context, choice agent.ToolChoice) (
 		"replacements":  strconv.Itoa(result.Replacements),
 		"bytes_written": strconv.Itoa(result.BytesWritten),
 	}
-	if err == nil {
-		observation, metadata = appendWorkflowUpdateNotice(observation, metadata, a.WorkspaceRoot, result.FilePath)
-	}
 	return toolRunResult{
 		Observation: observation,
 		ResultCode:  resultCodeForError(err),
@@ -3160,9 +3208,6 @@ func (a *Activities) runWriteTool(ctx context.Context, choice agent.ToolChoice, 
 		metadata["duration_ms"] = strconv.FormatInt(result.Duration.Milliseconds(), 10)
 	}
 	observation := writeObservation(result, err)
-	if err == nil {
-		observation, metadata = appendWorkflowUpdateNotice(observation, metadata, a.WorkspaceRoot, result.FilePath)
-	}
 	return toolRunResult{
 		Observation: observation,
 		ResultCode:  resultCodeForError(err),
@@ -3751,48 +3796,6 @@ func writeObservation(result writetool.Result, err error) string {
 		return fullObservation("", "", err)
 	}
 	return fmt.Sprintf("wrote: %s\nbytes_written: %d\noverwritten: %t", result.FilePath, result.BytesWritten, result.Overwritten)
-}
-
-func appendWorkflowUpdateNotice(observation string, metadata map[string]string, workspaceRoot, filePath string) (string, map[string]string) {
-	workflowID, ok := workflowSourceWorkflowID(workspaceRoot, filePath)
-	if !ok {
-		return observation, metadata
-	}
-	if metadata == nil {
-		metadata = map[string]string{}
-	}
-	metadata["workflow_update_required"] = "true"
-	metadata["workflow_id"] = workflowID
-	notice := "workflow_update_required: true\nworkflow_id: " + workflowID + "\nnext_action: call WorkflowUpdate before triggering or running this workflow so Git is committed and the schedule points to the new commit"
-	observation = strings.TrimSpace(observation)
-	if observation == "" {
-		return notice, metadata
-	}
-	return observation + "\n\n" + notice, metadata
-}
-
-func workflowSourceWorkflowID(workspaceRoot, filePath string) (string, bool) {
-	openCTODir, err := workflowbundle.OpenCTODir(workspaceRoot)
-	if err != nil {
-		return "", false
-	}
-	rel, err := filepath.Rel(filepath.Join(openCTODir, "workflows"), filepath.Clean(strings.TrimSpace(filePath)))
-	if err != nil || rel == "." {
-		return "", false
-	}
-	rel = filepath.ToSlash(rel)
-	if strings.HasPrefix(rel, "../") || rel == ".." || strings.HasPrefix(rel, "/") {
-		return "", false
-	}
-	parts := strings.Split(rel, "/")
-	if len(parts) < 2 || parts[1] == ".git" {
-		return "", false
-	}
-	workflowID, err := workflowbundle.NormalizeWorkflowID(parts[0])
-	if err != nil {
-		return "", false
-	}
-	return workflowID, true
 }
 
 func globObservation(result globtool.Result, err error) string {
