@@ -36,7 +36,7 @@ func WorkflowRunWorkflow(ctx workflow.Context, input workflowrun.Input) error {
 		return err
 	}
 
-	cleanupOldWorkflowRuns(ctx, input.WorkflowID, prepared.RunID)
+	cleanupOldWorkflowRuns(ctx, input.ProjectID, input.WorkflowID, prepared.RunID)
 
 	for _, step := range prepared.Manifest.Steps {
 		stepCtx, err := workflowStepContext(ctx, step)
@@ -116,7 +116,7 @@ func workflowStepRetryPolicy(step workflowbundle.Step, initialInterval, maximumI
 	return retryPolicy
 }
 
-func cleanupOldWorkflowRuns(ctx workflow.Context, workflowID, currentRunID string) {
+func cleanupOldWorkflowRuns(ctx workflow.Context, projectID, workflowID, currentRunID string) {
 	cleanupCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
@@ -125,6 +125,7 @@ func cleanupOldWorkflowRuns(ctx workflow.Context, workflowID, currentRunID strin
 	})
 	var result workflowrun.CleanupRunsResult
 	err := workflow.ExecuteActivity(cleanupCtx, workflowrun.CleanupRunsActivityName, workflowrun.CleanupRunsRequest{
+		ProjectID:    projectID,
 		WorkflowID:   workflowID,
 		CurrentRunID: currentRunID,
 		KeepLast:     workflowrun.DefaultRunRetention,

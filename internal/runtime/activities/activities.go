@@ -1181,13 +1181,20 @@ func (a *Activities) PrepareWorkflowRun(ctx context.Context, request workflowrun
 	if err != nil {
 		return workflowrun.PrepareResult{}, err
 	}
+	dataDir, err := workflowbundle.WorkflowDataDir(a.WorkspaceRoot, workflowID)
+	if err != nil {
+		return workflowrun.PrepareResult{}, err
+	}
 	if err := os.RemoveAll(runDir); err != nil {
 		return workflowrun.PrepareResult{}, err
 	}
-	if err := os.MkdirAll(filepath.Join(runDir, "artifacts"), 0o755); err != nil {
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return workflowrun.PrepareResult{}, err
 	}
 	if err := workflowbundle.ArchiveCommit(ctx, repoDir, commitHash, runDir); err != nil {
+		return workflowrun.PrepareResult{}, err
+	}
+	if err := os.MkdirAll(filepath.Join(runDir, "artifacts"), 0o755); err != nil {
 		return workflowrun.PrepareResult{}, err
 	}
 	manifest, err := workflowbundle.LoadManifest(runDir)
@@ -1195,9 +1202,6 @@ func (a *Activities) PrepareWorkflowRun(ctx context.Context, request workflowrun
 		return workflowrun.PrepareResult{}, err
 	}
 	startedAt := time.Now().UTC()
-	if err := writeWorkflowRunState(runDir, initialWorkflowRunState(input, manifest, projectID, workflowID, runID, commitHash, request.TemporalWorkflowID, request.TemporalRunID, runDir, scheduledAt.UTC(), startedAt)); err != nil {
-		return workflowrun.PrepareResult{}, err
-	}
 	if a.Store != nil {
 		if err := a.Store.UpsertScheduledWorkflowRun(ctx, domain.ScheduledWorkflowRun{
 			ID:                 runID,
@@ -1224,6 +1228,10 @@ func (a *Activities) CleanupWorkflowRuns(ctx context.Context, request workflowru
 	workflowID, err := workflowbundle.NormalizeWorkflowID(request.WorkflowID)
 	if err != nil {
 		return workflowrun.CleanupRunsResult{}, err
+	}
+	projectID := strings.TrimSpace(request.ProjectID)
+	if projectID == "" {
+		projectID = strings.TrimSpace(a.Project.ID)
 	}
 	keep := request.KeepLast
 	if keep <= 0 {
@@ -1275,7 +1283,11 @@ func (a *Activities) CleanupWorkflowRuns(ctx context.Context, request workflowru
 		if keepIDs[run.id] {
 			continue
 		}
-		if workflowRunDirectoryActive(run.path) {
+		active, err := a.scheduledWorkflowRunActive(ctx, projectID, run.id)
+		if err != nil {
+			return workflowrun.CleanupRunsResult{DeletedRunIDs: deleted}, err
+		}
+		if active {
 			continue
 		}
 		if err := ctx.Err(); err != nil {
@@ -1289,23 +1301,26 @@ func (a *Activities) CleanupWorkflowRuns(ctx context.Context, request workflowru
 	return workflowrun.CleanupRunsResult{DeletedRunIDs: deleted}, nil
 }
 
+func (a *Activities) scheduledWorkflowRunActive(ctx context.Context, projectID, runID string) (bool, error) {
+	if a.Store == nil || strings.TrimSpace(projectID) == "" || strings.TrimSpace(runID) == "" {
+		return false, nil
+	}
+	run, ok, err := a.Store.GetScheduledWorkflowRun(ctx, projectID, runID)
+	if err != nil || !ok {
+		return false, err
+	}
+	switch run.Status {
+	case domain.ExecutionStatusPending, domain.ExecutionStatusRunning:
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
 type workflowRunDirectory struct {
 	id      string
 	path    string
 	modTime time.Time
-}
-
-func workflowRunDirectoryActive(path string) bool {
-	state, err := readWorkflowRunState(path)
-	if err != nil {
-		return true
-	}
-	switch domain.ExecutionStatus(strings.TrimSpace(state.Status)) {
-	case domain.ExecutionStatusPending, domain.ExecutionStatusRunning:
-		return true
-	default:
-		return false
-	}
 }
 
 func (a *Activities) ExecuteWorkflowStep(ctx context.Context, request workflowrun.ExecuteStepRequest) (workflowrun.ExecuteStepResult, error) {
@@ -1317,33 +1332,23 @@ func (a *Activities) ExecuteWorkflowStep(ctx context.Context, request workflowru
 	if runPath == "" {
 		return workflowrun.ExecuteStepResult{}, fmt.Errorf("run_path is required")
 	}
-	stepDir := filepath.Join(runPath, "steps", stepID)
-	if err := os.MkdirAll(stepDir, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(runPath, "artifacts"), 0o755); err != nil {
 		return workflowrun.ExecuteStepResult{}, err
 	}
-	stepArtifactsDir := filepath.Join(runPath, "artifacts", stepID)
-	if err := os.MkdirAll(stepArtifactsDir, 0o755); err != nil {
+	dataDir, err := workflowbundle.WorkflowDataDir(a.WorkspaceRoot, request.WorkflowID)
+	if err != nil {
+		return workflowrun.ExecuteStepResult{}, err
+	}
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return workflowrun.ExecuteStepResult{}, err
 	}
 	startedAt := time.Now().UTC()
 	attempt := activityAttempt(ctx)
-	stdoutPath, stderrPath := workflowStepAttemptLogPaths(stepDir, attempt)
+	stdoutPath, stderrPath := workflowStepAttemptLogPaths(a.runtimeStateDir(), request.WorkflowID, request.RunID, stepID, attempt)
 	if err := os.MkdirAll(filepath.Dir(stdoutPath), 0o755); err != nil {
 		return workflowrun.ExecuteStepResult{}, err
 	}
 	stepRunID := stableActivityID("scheduled-workflow-step", request.RunID, stepID, strconv.Itoa(attempt))
-	if err := upsertWorkflowStepState(runPath, workflowRunStepState{
-		ID:            stepID,
-		Status:        string(domain.ExecutionStatusRunning),
-		Attempt:       attempt,
-		Command:       request.Step.Command,
-		Args:          append([]string(nil), request.Step.Args...),
-		StartedAt:     &startedAt,
-		StdoutLogPath: stdoutPath,
-		StderrLogPath: stderrPath,
-	}); err != nil {
-		return workflowrun.ExecuteStepResult{}, err
-	}
 	if a.Store != nil {
 		_ = a.Store.UpsertScheduledWorkflowStepRun(ctx, domain.ScheduledWorkflowStepRun{
 			ID:            stepRunID,
@@ -1363,21 +1368,18 @@ func (a *Activities) ExecuteWorkflowStep(ctx context.Context, request workflowru
 
 	stdoutFile, err := os.OpenFile(stdoutPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
-		_ = failWorkflowStepState(runPath, stepID, attempt, request.Step, stdoutPath, stderrPath, startedAt, err)
 		return workflowrun.ExecuteStepResult{}, err
 	}
 	stderrFile, err := os.OpenFile(stderrPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		_ = stdoutFile.Close()
-		_ = failWorkflowStepState(runPath, stepID, attempt, request.Step, stdoutPath, stderrPath, startedAt, err)
 		return workflowrun.ExecuteStepResult{}, err
 	}
 
-	env, err := workflowStepEnvironment(a.WorkspaceRoot, request, stepID, stepDir)
+	env, err := workflowStepEnvironment(a.WorkspaceRoot, request)
 	if err != nil {
 		_ = stdoutFile.Close()
 		_ = stderrFile.Close()
-		_ = failWorkflowStepState(runPath, stepID, attempt, request.Step, stdoutPath, stderrPath, startedAt, err)
 		return workflowrun.ExecuteStepResult{}, err
 	}
 	cmd := osexec.CommandContext(ctx, request.Step.Command, request.Step.Args...)
@@ -1437,20 +1439,6 @@ func (a *Activities) ExecuteWorkflowStep(ctx context.Context, request workflowru
 			},
 		})
 	}
-	_ = upsertWorkflowStepState(runPath, workflowRunStepState{
-		ID:            stepID,
-		Status:        string(status),
-		Attempt:       attempt,
-		Command:       request.Step.Command,
-		Args:          append([]string(nil), request.Step.Args...),
-		StartedAt:     &startedAt,
-		CompletedAt:   &completedAt,
-		ExitCode:      exitCode,
-		StdoutLogPath: stdoutPath,
-		StderrLogPath: stderrPath,
-		OutputSummary: summary,
-		ErrorDetails:  errorDetails,
-	})
 	result := workflowrun.ExecuteStepResult{
 		StepID:        stepID,
 		ExitCode:      exitCode,
@@ -1510,9 +1498,6 @@ func workflowStepFailureMessage(failure workflowrun.StepFailure) string {
 
 func (a *Activities) CompleteWorkflowRun(ctx context.Context, request workflowrun.CompleteRequest) error {
 	completedAt := time.Now().UTC()
-	if strings.TrimSpace(request.RunPath) != "" {
-		_ = completeWorkflowRunState(strings.TrimSpace(request.RunPath), request.Status, completedAt, strings.TrimSpace(request.FailureSummary))
-	}
 	if a.Store == nil {
 		return nil
 	}
@@ -4360,177 +4345,6 @@ func workspaceEnvironment(workspaceRoot, openCTORoot string) map[string]string {
 	return env
 }
 
-type workflowRunState struct {
-	SchemaVersion      int                    `json:"schema_version"`
-	ProjectID          string                 `json:"project_id"`
-	WorkflowID         string                 `json:"workflow_id"`
-	WorkflowName       string                 `json:"workflow_name,omitempty"`
-	RunID              string                 `json:"run_id"`
-	RunPath            string                 `json:"run_path"`
-	Status             string                 `json:"status"`
-	CommitHash         string                 `json:"commit_hash"`
-	TemporalWorkflowID string                 `json:"temporal_workflow_id,omitempty"`
-	TemporalRunID      string                 `json:"temporal_run_id,omitempty"`
-	ScheduleID         string                 `json:"schedule_id,omitempty"`
-	SourceEventID      string                 `json:"source_event_id,omitempty"`
-	Env                []string               `json:"env,omitempty"`
-	ScheduledAt        time.Time              `json:"scheduled_at"`
-	StartedAt          time.Time              `json:"started_at"`
-	CompletedAt        *time.Time             `json:"completed_at,omitempty"`
-	FailureSummary     string                 `json:"failure_summary,omitempty"`
-	Steps              []workflowRunStepState `json:"steps"`
-	UpdatedAt          time.Time              `json:"updated_at"`
-}
-
-type workflowRunStepState struct {
-	ID            string     `json:"id"`
-	Status        string     `json:"status"`
-	Attempt       int        `json:"attempt,omitempty"`
-	Command       string     `json:"command,omitempty"`
-	Args          []string   `json:"args,omitempty"`
-	StartedAt     *time.Time `json:"started_at,omitempty"`
-	CompletedAt   *time.Time `json:"completed_at,omitempty"`
-	ExitCode      int        `json:"exit_code,omitempty"`
-	StdoutLogPath string     `json:"stdout_log_path,omitempty"`
-	StderrLogPath string     `json:"stderr_log_path,omitempty"`
-	OutputSummary string     `json:"output_summary,omitempty"`
-	ErrorDetails  string     `json:"error_details,omitempty"`
-}
-
-func initialWorkflowRunState(input workflowrun.Input, manifest workflowbundle.Manifest, projectID, workflowID, runID, commitHash, temporalWorkflowID, temporalRunID, runPath string, scheduledAt, startedAt time.Time) workflowRunState {
-	steps := make([]workflowRunStepState, 0, len(manifest.Steps))
-	for _, step := range manifest.Steps {
-		stepID := strings.TrimSpace(step.ID)
-		if normalized, err := workflowbundle.NormalizeStepID(stepID); err == nil {
-			stepID = normalized
-		}
-		steps = append(steps, workflowRunStepState{
-			ID:      stepID,
-			Status:  string(domain.ExecutionStatusPending),
-			Command: step.Command,
-			Args:    append([]string(nil), step.Args...),
-		})
-	}
-	now := time.Now().UTC()
-	return workflowRunState{
-		SchemaVersion:      1,
-		ProjectID:          strings.TrimSpace(projectID),
-		WorkflowID:         strings.TrimSpace(workflowID),
-		WorkflowName:       strings.TrimSpace(manifest.Name),
-		RunID:              strings.TrimSpace(runID),
-		RunPath:            strings.TrimSpace(runPath),
-		Status:             string(domain.ExecutionStatusRunning),
-		CommitHash:         strings.TrimSpace(commitHash),
-		TemporalWorkflowID: strings.TrimSpace(temporalWorkflowID),
-		TemporalRunID:      strings.TrimSpace(temporalRunID),
-		ScheduleID:         strings.TrimSpace(input.ScheduleID),
-		SourceEventID:      strings.TrimSpace(input.SourceEvent.ID),
-		Env:                append([]string(nil), manifest.Env...),
-		ScheduledAt:        scheduledAt,
-		StartedAt:          startedAt,
-		Steps:              steps,
-		UpdatedAt:          now,
-	}
-}
-
-func upsertWorkflowStepState(runPath string, step workflowRunStepState) error {
-	state, err := readWorkflowRunState(runPath)
-	if err != nil {
-		return err
-	}
-	if state.SchemaVersion == 0 {
-		state.SchemaVersion = 1
-		state.Status = string(domain.ExecutionStatusRunning)
-	}
-	replaced := false
-	for index := range state.Steps {
-		if state.Steps[index].ID == step.ID {
-			state.Steps[index] = step
-			replaced = true
-			break
-		}
-	}
-	if !replaced {
-		state.Steps = append(state.Steps, step)
-	}
-	state.UpdatedAt = time.Now().UTC()
-	return writeWorkflowRunState(runPath, state)
-}
-
-func failWorkflowStepState(runPath, stepID string, attempt int, step workflowbundle.Step, stdoutPath, stderrPath string, startedAt time.Time, cause error) error {
-	completedAt := time.Now().UTC()
-	errorDetails := ""
-	if cause != nil {
-		errorDetails = cause.Error()
-	}
-	return upsertWorkflowStepState(runPath, workflowRunStepState{
-		ID:            stepID,
-		Status:        string(domain.ExecutionStatusFailed),
-		Attempt:       attempt,
-		Command:       step.Command,
-		Args:          append([]string(nil), step.Args...),
-		StartedAt:     &startedAt,
-		CompletedAt:   &completedAt,
-		ExitCode:      1,
-		StdoutLogPath: stdoutPath,
-		StderrLogPath: stderrPath,
-		ErrorDetails:  errorDetails,
-	})
-}
-
-func completeWorkflowRunState(runPath string, status domain.ExecutionStatus, completedAt time.Time, failureSummary string) error {
-	state, err := readWorkflowRunState(runPath)
-	if err != nil {
-		return err
-	}
-	if state.SchemaVersion == 0 {
-		state.SchemaVersion = 1
-	}
-	state.Status = string(status)
-	state.CompletedAt = &completedAt
-	state.FailureSummary = strings.TrimSpace(failureSummary)
-	state.UpdatedAt = time.Now().UTC()
-	return writeWorkflowRunState(runPath, state)
-}
-
-func readWorkflowRunState(runPath string) (workflowRunState, error) {
-	path := filepath.Join(strings.TrimSpace(runPath), "state.json")
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return workflowRunState{}, nil
-	}
-	if err != nil {
-		return workflowRunState{}, err
-	}
-	var state workflowRunState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return workflowRunState{}, err
-	}
-	return state, nil
-}
-
-func writeWorkflowRunState(runPath string, state workflowRunState) error {
-	runPath = strings.TrimSpace(runPath)
-	if runPath == "" {
-		return fmt.Errorf("run_path is required")
-	}
-	if err := os.MkdirAll(runPath, 0o755); err != nil {
-		return err
-	}
-	state.UpdatedAt = time.Now().UTC()
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	path := filepath.Join(runPath, "state.json")
-	tempPath := path + ".tmp"
-	if err := os.WriteFile(tempPath, data, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tempPath, path)
-}
-
 func activityAttempt(ctx context.Context) int {
 	if activity.IsActivity(ctx) {
 		info := activity.GetInfo(ctx)
@@ -4541,25 +4355,33 @@ func activityAttempt(ctx context.Context) int {
 	return 1
 }
 
-func workflowStepAttemptLogPaths(stepDir string, attempt int) (string, string) {
+func workflowStepAttemptLogPaths(stateDir, workflowID, runID, stepID string, attempt int) (string, string) {
 	if attempt <= 0 {
 		attempt = 1
 	}
-	attemptDir := filepath.Join(stepDir, fmt.Sprintf("attempt-%d", attempt))
+	stateDir = strings.TrimSpace(stateDir)
+	if stateDir == "" {
+		stateDir = os.TempDir()
+	}
+	attemptDir := filepath.Join(stateDir, "workflow-logs", strings.TrimSpace(workflowID), strings.TrimSpace(runID), strings.TrimSpace(stepID), fmt.Sprintf("attempt-%d", attempt))
 	return filepath.Join(attemptDir, "stdout.log"), filepath.Join(attemptDir, "stderr.log")
 }
 
-func workflowStepEnvironment(workspaceRoot string, request workflowrun.ExecuteStepRequest, stepID, stepDir string) ([]string, error) {
-	env := os.Environ()
-	if workspaceRoot = strings.TrimSpace(workspaceRoot); workspaceRoot != "" {
-		env = upsertEnv(env, config.EnvOpenCTOWorkspace, workspaceRoot)
+func workflowStepEnvironment(workspaceRoot string, request workflowrun.ExecuteStepRequest) ([]string, error) {
+	env := withoutEnvPrefix(os.Environ(), "OPENCTO_")
+	workspaceRoot = strings.TrimSpace(workspaceRoot)
+	workflowsDir, err := workflowbundle.WorkflowsDir(workspaceRoot)
+	if err != nil {
+		return nil, err
+	}
+	dataDir, err := workflowbundle.WorkflowDataDir(workspaceRoot, request.WorkflowID)
+	if err != nil {
+		return nil, err
 	}
 	runPath := strings.TrimSpace(request.RunPath)
-	env = upsertEnv(env, "OPENCTO_WORKFLOW_ID", strings.TrimSpace(request.WorkflowID))
-	env = upsertEnv(env, "OPENCTO_RUN_ID", strings.TrimSpace(request.RunID))
-	env = upsertEnv(env, "OPENCTO_RUN_DIR", runPath)
-	env = upsertEnv(env, "OPENCTO_STEP_ID", strings.TrimSpace(stepID))
-	env = upsertEnv(env, "OPENCTO_STEP_DIR", strings.TrimSpace(stepDir))
+	env = upsertEnv(env, "OPENCTO_WORKFLOWS_DIR", workflowsDir)
+	env = upsertEnv(env, "OPENCTO_WORKFLOW_RUN_DIR", runPath)
+	env = upsertEnv(env, "OPENCTO_WORKFLOW_DATA_DIR", dataDir)
 	for _, entry := range request.Env {
 		name, value, err := workflowbundle.ParseEnvAssignment(entry)
 		if err != nil {
@@ -4568,6 +4390,17 @@ func workflowStepEnvironment(workspaceRoot string, request workflowrun.ExecuteSt
 		env = upsertEnv(env, name, value)
 	}
 	return env, nil
+}
+
+func withoutEnvPrefix(env []string, prefix string) []string {
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
 }
 
 func upsertEnv(env []string, name, value string) []string {

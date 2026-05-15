@@ -2523,6 +2523,54 @@ func scanScheduledWorkflow(row scheduledWorkflowScanner) (domain.ScheduledWorkfl
 	return item, nil
 }
 
+func (s *Store) GetScheduledWorkflowRun(ctx context.Context, projectID, runID string) (domain.ScheduledWorkflowRun, bool, error) {
+	projectID = strings.TrimSpace(projectID)
+	runID = strings.TrimSpace(runID)
+	if projectID == "" || runID == "" {
+		return domain.ScheduledWorkflowRun{}, false, nil
+	}
+	row := s.db.QueryRowContext(ctx, `
+SELECT id, project_id, workflow_id, commit_hash, temporal_workflow_id, temporal_run_id, status, scheduled_at, started_at, completed_at, run_path, failure_summary, metadata
+FROM scheduled_workflow_runs
+WHERE project_id = ? AND id = ?
+`, projectID, runID)
+	item, err := scanScheduledWorkflowRun(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.ScheduledWorkflowRun{}, false, nil
+	}
+	if err != nil {
+		return domain.ScheduledWorkflowRun{}, false, err
+	}
+	return item, true, nil
+}
+
+type scheduledWorkflowRunScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanScheduledWorkflowRun(row scheduledWorkflowRunScanner) (domain.ScheduledWorkflowRun, error) {
+	var item domain.ScheduledWorkflowRun
+	var status string
+	var scheduledAt string
+	var startedAt string
+	var completedAt sql.NullString
+	var metadata string
+	if err := row.Scan(&item.ID, &item.ProjectID, &item.WorkflowID, &item.CommitHash, &item.TemporalWorkflowID, &item.TemporalRunID, &status, &scheduledAt, &startedAt, &completedAt, &item.RunPath, &item.FailureSummary, &metadata); err != nil {
+		return domain.ScheduledWorkflowRun{}, err
+	}
+	item.Status = domain.ExecutionStatus(status)
+	item.ScheduledAt = parseTime(scheduledAt)
+	item.StartedAt = parseTime(startedAt)
+	if completedAt.Valid && strings.TrimSpace(completedAt.String) != "" {
+		parsed := parseTime(completedAt.String)
+		item.CompletedAt = &parsed
+	}
+	if err := decodeJSON(metadata, &item.Metadata); err != nil {
+		return domain.ScheduledWorkflowRun{}, err
+	}
+	return item, nil
+}
+
 func (s *Store) UpsertScheduledWorkflowRun(ctx context.Context, run domain.ScheduledWorkflowRun) error {
 	run.ID = strings.TrimSpace(run.ID)
 	run.ProjectID = strings.TrimSpace(run.ProjectID)

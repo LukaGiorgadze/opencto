@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/opencto/opencto/internal/agent"
-	"github.com/opencto/opencto/internal/config"
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/embedding"
 	"github.com/opencto/opencto/internal/runtime/workflowrun"
@@ -43,6 +42,7 @@ type stubProjectStore struct {
 	conversationThreads  map[string]domain.ConversationThread
 	threadQueries        *[]storage.ConversationThreadQuery
 	rootMessages         map[string]domain.ConversationMessage
+	workflowRuns         map[string]domain.ScheduledWorkflowRun
 	summariesByScope     map[domain.ConversationSummaryScope][]domain.ConversationSummary
 	summaryQueries       *[]storage.ConversationSummaryQuery
 	upsertedSummaries    *[]domain.ConversationSummary
@@ -366,6 +366,14 @@ func (s stubProjectStore) ListScheduledWorkflows(context.Context, storage.Schedu
 
 func (s stubProjectStore) DeleteScheduledWorkflow(context.Context, string, string) error {
 	return nil
+}
+
+func (s stubProjectStore) GetScheduledWorkflowRun(_ context.Context, projectID, runID string) (domain.ScheduledWorkflowRun, bool, error) {
+	if s.workflowRuns == nil {
+		return domain.ScheduledWorkflowRun{}, false, nil
+	}
+	run, ok := s.workflowRuns[projectID+"/"+runID]
+	return run, ok, nil
 }
 
 func (s stubProjectStore) UpsertScheduledWorkflowRun(context.Context, domain.ScheduledWorkflowRun) error {
@@ -3179,12 +3187,12 @@ func TestExecuteExecUsesToolChoiceWorkingDir(t *testing.T) {
 func TestWorkflowStepAttemptLogPathsAreAttemptSpecific(t *testing.T) {
 	t.Parallel()
 
-	stepDir := filepath.Join(t.TempDir(), "steps", "download")
-	stdoutPath, stderrPath := workflowStepAttemptLogPaths(stepDir, 2)
-	if !strings.HasSuffix(filepath.ToSlash(stdoutPath), "/steps/download/attempt-2/stdout.log") {
+	stateDir := t.TempDir()
+	stdoutPath, stderrPath := workflowStepAttemptLogPaths(stateDir, "finance-check", "run-1", "download", 2)
+	if !strings.HasSuffix(filepath.ToSlash(stdoutPath), "/workflow-logs/finance-check/run-1/download/attempt-2/stdout.log") {
 		t.Fatalf("unexpected stdout path: %s", stdoutPath)
 	}
-	if !strings.HasSuffix(filepath.ToSlash(stderrPath), "/steps/download/attempt-2/stderr.log") {
+	if !strings.HasSuffix(filepath.ToSlash(stderrPath), "/workflow-logs/finance-check/run-1/download/attempt-2/stderr.log") {
 		t.Fatalf("unexpected stderr path: %s", stderrPath)
 	}
 }
@@ -3398,12 +3406,21 @@ func TestPrepareWorkflowRunUsesExecutionRunID(t *testing.T) {
 	if result.RunPath != wantRunPath {
 		t.Fatalf("expected run path %q, got %q", wantRunPath, result.RunPath)
 	}
-	state, err := readWorkflowRunState(result.RunPath)
-	if err != nil {
-		t.Fatalf("read run state: %v", err)
+	if _, err := os.Stat(filepath.Join(result.RunPath, workflowbundle.ManifestFilename)); err != nil {
+		t.Fatalf("expected archived manifest: %v", err)
 	}
-	if state.RunID != "actual-run-id" || state.TemporalRunID != "actual-run-id" || state.TemporalWorkflowID != "workflow-execution-id" {
-		t.Fatalf("unexpected run state ids: %#v", state)
+	if _, err := os.Stat(filepath.Join(result.RunPath, "src", "check.sh")); err != nil {
+		t.Fatalf("expected archived source: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(result.RunPath, "artifacts")); err != nil {
+		t.Fatalf("expected artifacts directory: %v", err)
+	}
+	dataDir, err := workflowbundle.WorkflowDataDir(workspaceRoot, workflowID)
+	if err != nil {
+		t.Fatalf("workflow data dir: %v", err)
+	}
+	if _, err := os.Stat(dataDir); err != nil {
+		t.Fatalf("expected workflow data directory: %v", err)
 	}
 }
 
@@ -3468,22 +3485,22 @@ func TestCleanupWorkflowRunsDoesNotDeleteActiveOlderSnapshot(t *testing.T) {
 		if err := os.MkdirAll(runDir, 0o755); err != nil {
 			t.Fatalf("mkdir run %s: %v", runID, err)
 		}
-		if i == 0 {
-			if err := writeWorkflowRunState(runDir, workflowRunState{
-				SchemaVersion: 1,
-				RunID:         runID,
-				Status:        string(domain.ExecutionStatusRunning),
-			}); err != nil {
-				t.Fatalf("write active run state: %v", err)
-			}
-		}
 		modTime := baseTime.Add(time.Duration(i) * time.Minute)
 		if err := os.Chtimes(runDir, modTime, modTime); err != nil {
 			t.Fatalf("chtimes run %s: %v", runID, err)
 		}
 	}
 
-	result, err := (&Activities{WorkspaceRoot: workspaceRoot}).CleanupWorkflowRuns(context.Background(), workflowrun.CleanupRunsRequest{
+	store := stubProjectStore{workflowRuns: map[string]domain.ScheduledWorkflowRun{
+		"project-1/run-00": {
+			ID:         "run-00",
+			ProjectID:  "project-1",
+			WorkflowID: workflowID,
+			Status:     domain.ExecutionStatusRunning,
+		},
+	}}
+	result, err := (&Activities{WorkspaceRoot: workspaceRoot, Store: store}).CleanupWorkflowRuns(context.Background(), workflowrun.CleanupRunsRequest{
+		ProjectID:    "project-1",
 		WorkflowID:   workflowID,
 		CurrentRunID: "run-11",
 		KeepLast:     workflowrun.DefaultRunRetention,
@@ -3500,9 +3517,10 @@ func TestCleanupWorkflowRunsDoesNotDeleteActiveOlderSnapshot(t *testing.T) {
 }
 
 func TestWorkflowStepEnvironmentSetsGlobalAssignmentsAndRunPaths(t *testing.T) {
+	t.Setenv("OPENCTO_WORKSPACE", "/inherited")
+	t.Setenv("OPENCTO_RUN_DIR", "/old-run")
+
 	runPath := filepath.Join(t.TempDir(), "run-1")
-	stepID := "check"
-	stepDir := filepath.Join(runPath, "steps", stepID)
 	request := workflowrun.ExecuteStepRequest{
 		WorkflowID: "finance-check",
 		RunID:      "run-1",
@@ -3510,41 +3528,41 @@ func TestWorkflowStepEnvironmentSetsGlobalAssignmentsAndRunPaths(t *testing.T) {
 		Env:        []string{"GLOBAL_FLAG=on"},
 	}
 
-	env, err := workflowStepEnvironment("/workspace", request, stepID, stepDir)
+	env, err := workflowStepEnvironment("/workspace", request)
 	if err != nil {
 		t.Fatalf("workflow step environment: %v", err)
 	}
 	if got := envValue(env, "GLOBAL_FLAG"); got != "on" {
 		t.Fatalf("expected GLOBAL_FLAG assignment, got %q", got)
 	}
-	if got := envValue(env, config.EnvOpenCTOWorkspace); got != "/workspace" {
-		t.Fatalf("expected workspace env, got %q", got)
-	}
 	for name, want := range map[string]string{
-		"OPENCTO_WORKFLOW_ID": "finance-check",
-		"OPENCTO_RUN_ID":      "run-1",
-		"OPENCTO_RUN_DIR":     runPath,
-		"OPENCTO_STEP_ID":     stepID,
-		"OPENCTO_STEP_DIR":    stepDir,
+		"OPENCTO_WORKFLOWS_DIR":     filepath.Join("/workspace", "workflows"),
+		"OPENCTO_WORKFLOW_RUN_DIR":  runPath,
+		"OPENCTO_WORKFLOW_DATA_DIR": filepath.Join("/workspace", "workflows", "finance-check", "data"),
 	} {
 		if got := envValue(env, name); got != want {
 			t.Fatalf("expected %s=%q, got %q", name, want, got)
 		}
 	}
+	for _, name := range []string{"OPENCTO_WORKSPACE", "OPENCTO_RUN_DIR"} {
+		if got := envValue(env, name); got != "" {
+			t.Fatalf("expected %s to be stripped, got %q", name, got)
+		}
+	}
 }
 
 func TestWorkflowStepEnvironmentRejectsNonAssignmentEnv(t *testing.T) {
-	request := workflowrun.ExecuteStepRequest{Env: []string{"MISSING_TOKEN"}}
+	request := workflowrun.ExecuteStepRequest{WorkflowID: "finance-check", RunPath: "/tmp/run", Env: []string{"MISSING_TOKEN"}}
 
-	if _, err := workflowStepEnvironment("", request, "step", "/tmp/step"); err == nil {
+	if _, err := workflowStepEnvironment("/workspace", request); err == nil {
 		t.Fatal("expected non-assignment env to fail")
 	}
 }
 
 func TestWorkflowStepEnvironmentRejectsTemplateEnv(t *testing.T) {
-	request := workflowrun.ExecuteStepRequest{Env: []string{"PAYLOAD={{steps.check.stdout}}"}}
+	request := workflowrun.ExecuteStepRequest{WorkflowID: "finance-check", RunPath: "/tmp/run", Env: []string{"PAYLOAD={{steps.check.stdout}}"}}
 
-	if _, err := workflowStepEnvironment("", request, "step", "/tmp/step"); err == nil {
+	if _, err := workflowStepEnvironment("/workspace", request); err == nil {
 		t.Fatal("expected template env to fail")
 	}
 }
@@ -3552,8 +3570,9 @@ func TestWorkflowStepEnvironmentRejectsTemplateEnv(t *testing.T) {
 func TestExecuteWorkflowStepCreatesStepArtifactDirectory(t *testing.T) {
 	t.Parallel()
 
-	runPath := t.TempDir()
-	result, err := (&Activities{WorkspaceRoot: "/workspace"}).ExecuteWorkflowStep(context.Background(), workflowrun.ExecuteStepRequest{
+	workspaceRoot := t.TempDir()
+	runPath := filepath.Join(workspaceRoot, "workflow-runs", "finance-check", "run-1")
+	result, err := (&Activities{WorkspaceRoot: workspaceRoot}).ExecuteWorkflowStep(context.Background(), workflowrun.ExecuteStepRequest{
 		ProjectID:  "project-1",
 		WorkflowID: "finance-check",
 		RunID:      "run-1",
@@ -3563,7 +3582,7 @@ func TestExecuteWorkflowStepCreatesStepArtifactDirectory(t *testing.T) {
 			Command: "sh",
 			Args: []string{
 				"-c",
-				`dir="$OPENCTO_RUN_DIR/artifacts/$OPENCTO_STEP_ID" && test -d "$dir" && printf '{"ok":true}\n' > "$dir/payload.json"`,
+				`dir="$OPENCTO_WORKFLOW_RUN_DIR/artifacts" && test -d "$dir" && printf '{"ok":true}\n' > "$dir/payload.json"`,
 			},
 		},
 		Env: []string{"GLOBAL_FLAG=on"},
@@ -3574,7 +3593,7 @@ func TestExecuteWorkflowStepCreatesStepArtifactDirectory(t *testing.T) {
 	if result.ExitCode != 0 {
 		t.Fatalf("expected successful step, got %#v", result)
 	}
-	artifactPath := filepath.Join(runPath, "artifacts", "check", "payload.json")
+	artifactPath := filepath.Join(runPath, "artifacts", "payload.json")
 	data, err := os.ReadFile(artifactPath)
 	if err != nil {
 		t.Fatalf("read step artifact: %v", err)
@@ -3588,11 +3607,8 @@ func TestExecuteWorkflowStepCreatesStepArtifactDirectory(t *testing.T) {
 	if _, err := os.Stat(result.StderrLogPath); err != nil {
 		t.Fatalf("expected attempt stderr log: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(runPath, "steps", "check", "stdout.log")); !os.IsNotExist(err) {
-		t.Fatalf("expected no duplicate root stdout log, stat err=%v", err)
-	}
-	if _, err := os.Stat(filepath.Join(runPath, "steps", "check", "stderr.log")); !os.IsNotExist(err) {
-		t.Fatalf("expected no duplicate root stderr log, stat err=%v", err)
+	if _, err := os.Stat(filepath.Join(runPath, "steps")); !os.IsNotExist(err) {
+		t.Fatalf("expected no step directory, stat err=%v", err)
 	}
 }
 
