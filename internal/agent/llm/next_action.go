@@ -119,6 +119,9 @@ func buildNextActionMessagesWithContext(ctx context.Context, input agent.NextAct
 	if memory := memoryContextMessage(input.Context.Memory); memory != "" {
 		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, memory))
 	}
+	if summary := subAgentRunSummaryMessage(input.SubAgent); summary != "" {
+		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, summary))
+	}
 	summaryBudget, historyBudget := conversationContextBudgets(input.Context.ConversationMaxContextChars, len(input.Context.ConversationSummaries) > 0)
 	if summaries := conversationSummaryContextMessage(input.Context.ConversationSummaries, summaryBudget); summaries != "" {
 		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, summaries))
@@ -198,6 +201,19 @@ func renderNextActionPrompt(input agent.NextActionInput) (string, error) {
 	}
 
 	return prompts.Render("next_action.tmpl", data)
+}
+
+func subAgentRunSummaryMessage(context *agent.SubAgentContext) string {
+	if context == nil {
+		return ""
+	}
+	summary := strings.TrimSpace(context.RunSummary)
+	if summary == "" {
+		return ""
+	}
+	return prompts.MustRender("sub_agent_run_summary.tmpl", map[string]any{
+		"Summary": summary,
+	})
 }
 
 func toolTypeNames(values []domain.ToolType) []string {

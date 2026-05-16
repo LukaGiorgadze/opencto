@@ -31,7 +31,6 @@ import (
 	"github.com/opencto/opencto/internal/storage"
 	"github.com/opencto/opencto/internal/textclean"
 	toolregistry "github.com/opencto/opencto/internal/tools"
-	agenttool "github.com/opencto/opencto/internal/tools/agenttool"
 	edittool "github.com/opencto/opencto/internal/tools/edit"
 	exectool "github.com/opencto/opencto/internal/tools/exec"
 	globtool "github.com/opencto/opencto/internal/tools/glob"
@@ -74,6 +73,7 @@ type Activities struct {
 	EventEnqueuer               EventEnqueuer
 	MemoryEmbedder              embedding.Embedder
 	ConversationCompressor      agent.ConversationCompressor
+	AgentObservationCompressor  agent.AgentObservationCompressor
 	Project                     domain.Project
 	WorkspaceRoot               string
 	OpenCTORoot                 string
@@ -107,6 +107,9 @@ type NextActionRequest struct {
 	ForceFinal         bool                      `json:"force_final,omitempty"`
 	ResumedFromPause   bool                      `json:"resumed_from_pause,omitempty"`
 	Completion         *TaskCompletionRequest    `json:"completion,omitempty"`
+	SubAgent           *agent.SubAgentContext    `json:"sub_agent,omitempty"`
+	ToolAllowlist      []domain.ToolType         `json:"tool_allowlist,omitempty"`
+	RestrictTools      bool                      `json:"restrict_tools,omitempty"`
 }
 
 type NextActionResult struct {
@@ -167,14 +170,32 @@ type CompressConversationResult struct {
 }
 
 type PersistNextActionRequest struct {
-	Event      domain.Event     `json:"event"`
-	NextAction agent.NextAction `json:"next_action"`
-	Status     string           `json:"status,omitempty"`
+	Event            domain.Event     `json:"event"`
+	NextAction       agent.NextAction `json:"next_action"`
+	Status           string           `json:"status,omitempty"`
+	SkipConversation bool             `json:"skip_conversation,omitempty"`
 }
 
 type PersistToolResultRequest struct {
-	Event  domain.Event      `json:"event"`
-	Result ExecuteToolResult `json:"result"`
+	Event            domain.Event      `json:"event"`
+	Result           ExecuteToolResult `json:"result"`
+	SkipConversation bool              `json:"skip_conversation,omitempty"`
+}
+
+type CompressAgentObservationsRequest struct {
+	ProjectID       string                    `json:"project_id"`
+	Goal            string                    `json:"goal,omitempty"`
+	PreviousSummary string                    `json:"previous_summary,omitempty"`
+	Observations    []agent.ExecutionFeedback `json:"observations,omitempty"`
+}
+
+type CompressAgentObservationsResult struct {
+	Summarized             bool                      `json:"summarized"`
+	Summary                string                    `json:"summary,omitempty"`
+	RemainingObservations  []agent.ExecutionFeedback `json:"remaining_observations,omitempty"`
+	MessageCount           int                       `json:"message_count,omitempty"`
+	SourceChars            int                       `json:"source_chars,omitempty"`
+	CompressionUnavailable bool                      `json:"compression_unavailable,omitempty"`
 }
 
 type ExecuteToolResult struct {
@@ -294,6 +315,42 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event, conver
 		Memory:                      memories,
 		Conversation:                conversation,
 		ConversationSummaries:       conversationSummaries,
+		ConversationMaxContextChars: storage.DefaultConversationMaxContextChars(a.ConversationMaxContextChars),
+		Skills:                      availableSkills,
+	}, nil
+}
+
+func (a *Activities) loadSubAgentContext(ctx context.Context, sourceEvent domain.Event, subAgent agent.SubAgentContext, allowedTools []domain.ToolType) (agent.Context, error) {
+	projectID := strings.TrimSpace(sourceEvent.ProjectID)
+	if projectID == "" {
+		projectID = strings.TrimSpace(a.Project.ID)
+	}
+	project := a.Project
+	if strings.TrimSpace(project.ID) == "" {
+		project.ID = projectID
+	}
+	var availableSkills []skillcatalog.Summary
+	if toolTypeInList(domain.ToolTypeSkill, allowedTools) {
+		var err error
+		availableSkills, err = skillcatalog.Discover(ctx, a.skillsRoots()...)
+		if err != nil {
+			return agent.Context{}, err
+		}
+	}
+	event := sourceEvent
+	event.ID = stableActivityID("sub-agent-event", projectID, sourceEvent.ID, subAgent.RunID, subAgent.Goal, subAgent.Prompt)
+	event.ProjectID = projectID
+	event.Kind = domain.EventKindSystem
+	event.Body = strings.TrimSpace(prompts.MustRender("sub_agent_user.tmpl", map[string]any{
+		"Goal":   subAgent.Goal,
+		"Prompt": subAgent.Prompt,
+	}))
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = time.Now().UTC()
+	}
+	return agent.Context{
+		Event:                       event,
+		Project:                     project,
 		ConversationMaxContextChars: storage.DefaultConversationMaxContextChars(a.ConversationMaxContextChars),
 		Skills:                      availableSkills,
 	}, nil
@@ -938,15 +995,16 @@ func (a *Activities) persistReportedConversationMessages(ctx context.Context, ev
 		if target.MessageID != "" {
 			metadata["message_id"] = target.MessageID
 		}
+		body := firstNonEmpty(target.Body, report.Text)
 		message := domain.ConversationMessage{
-			ID:          stableActivityID("conversation-assistant-report", projectID, event.ID, strconv.Itoa(index), target.MessageID, target.ChannelID, target.ThreadID, report.Text),
+			ID:          stableActivityID("conversation-assistant-report", projectID, event.ID, strconv.Itoa(index), target.MessageID, target.ChannelID, target.ThreadID, body),
 			ProjectID:   projectID,
 			EventID:     event.ID,
 			Role:        domain.ConversationRoleAssistant,
 			ChannelType: event.ChannelType,
 			ChannelID:   target.ChannelID,
 			ThreadID:    target.ThreadID,
-			Body:        strings.TrimSpace(report.Text),
+			Body:        body,
 			Metadata:    metadata,
 			CreatedAt:   time.Now().UTC(),
 		}
@@ -969,6 +1027,7 @@ type reportedConversationTarget struct {
 	MessageID string
 	ChannelID string
 	ThreadID  string
+	Body      string
 }
 
 func reportedConversationTargets(event domain.Event, receipts []domain.ReportReceipt) []reportedConversationTarget {
@@ -978,10 +1037,11 @@ func reportedConversationTargets(event domain.Event, receipts []domain.ReportRec
 		target.MessageID = strings.TrimSpace(target.MessageID)
 		target.ChannelID = strings.TrimSpace(target.ChannelID)
 		target.ThreadID = strings.TrimSpace(target.ThreadID)
+		target.Body = strings.TrimSpace(target.Body)
 		if target.ChannelID == "" {
 			return
 		}
-		key := target.MessageID + "\x00" + target.ChannelID + "\x00" + target.ThreadID
+		key := target.MessageID + "\x00" + target.ChannelID + "\x00" + target.ThreadID + "\x00" + target.Body
 		if seen[key] {
 			return
 		}
@@ -996,12 +1056,14 @@ func reportedConversationTargets(event domain.Event, receipts []domain.ReportRec
 			MessageID: messageID,
 			ChannelID: channelID,
 			ThreadID:  threadID,
+			Body:      receipt.Body,
 		})
 		if event.ChannelType == domain.ChannelTypeDiscord && threadID == "" && messageID != "" {
 			add(reportedConversationTarget{
 				MessageID: messageID,
 				ChannelID: channelID,
 				ThreadID:  messageID,
+				Body:      receipt.Body,
 			})
 		}
 	}
@@ -1725,6 +1787,90 @@ func (a *Activities) CompressConversation(ctx context.Context, request CompressC
 	}, nil
 }
 
+func (a *Activities) CompressAgentObservations(ctx context.Context, request CompressAgentObservationsRequest) (CompressAgentObservationsResult, error) {
+	observations := append([]agent.ExecutionFeedback(nil), request.Observations...)
+	result := CompressAgentObservationsResult{
+		Summary:               strings.TrimSpace(request.PreviousSummary),
+		RemainingObservations: observations,
+		MessageCount:          len(observations),
+		SourceChars:           agentObservationSourceChars(observations) + len(strings.TrimSpace(request.PreviousSummary)),
+	}
+	if len(observations) == 0 {
+		return result, nil
+	}
+	recent := storage.DefaultConversationSummaryRecentMessages(a.ConversationSummaryRecent)
+	if recent < 1 {
+		recent = 1
+	}
+	if len(observations) <= recent {
+		return result, nil
+	}
+	trigger := storage.DefaultConversationSummaryTriggerChars(a.ConversationSummaryTrigger)
+	if result.SourceChars < trigger {
+		return result, nil
+	}
+
+	candidates := observations[:len(observations)-recent]
+	remaining := append([]agent.ExecutionFeedback(nil), observations[len(observations)-recent:]...)
+	candidateChars := agentObservationSourceChars(candidates) + len(strings.TrimSpace(request.PreviousSummary))
+	maxContextChars := storage.DefaultConversationMaxContextChars(a.ConversationMaxContextChars)
+	if a.AgentObservationCompressor == nil {
+		result.CompressionUnavailable = true
+		if candidateChars > maxContextChars {
+			return result, fmt.Errorf("agent observation compressor is not configured and raw agent history exceeds context budget")
+		}
+		return result, nil
+	}
+
+	output, err := a.AgentObservationCompressor.CompressAgentObservations(ctx, agent.AgentObservationCompressionInput{
+		ProjectID:       strings.TrimSpace(request.ProjectID),
+		Goal:            strings.TrimSpace(request.Goal),
+		PreviousSummary: strings.TrimSpace(request.PreviousSummary),
+		Observations:    candidates,
+		MaxSummaryChars: storage.DefaultConversationSummaryMaxChars(a.ConversationSummaryMaxChars),
+	})
+	if err != nil {
+		if candidateChars > maxContextChars {
+			return result, fmt.Errorf("compress agent observations: %w", err)
+		}
+		return result, nil
+	}
+	summary := strings.TrimSpace(output.Summary)
+	if summary == "" {
+		if candidateChars > maxContextChars {
+			return result, fmt.Errorf("agent observation compressor returned an empty summary and raw agent history exceeds context budget")
+		}
+		return result, nil
+	}
+	result.Summarized = true
+	result.Summary = summary
+	result.RemainingObservations = remaining
+	result.MessageCount = len(candidates)
+	result.SourceChars = candidateChars
+	return result, nil
+}
+
+func agentObservationSourceChars(observations []agent.ExecutionFeedback) int {
+	total := 0
+	for _, observation := range observations {
+		total += len(strings.TrimSpace(string(observation.Tool)))
+		total += len(strings.TrimSpace(observation.Status))
+		total += len(strings.TrimSpace(observation.RequestedAction))
+		total += len(strings.TrimSpace(observation.Command))
+		for _, arg := range observation.Args {
+			total += len(strings.TrimSpace(arg))
+		}
+		total += len(strings.TrimSpace(string(observation.Input)))
+		total += len(strings.TrimSpace(observation.Observation))
+		total += len(strings.TrimSpace(observation.Error))
+		for key, value := range observation.Metadata {
+			total += len(strings.TrimSpace(key))
+			total += len(strings.TrimSpace(value))
+		}
+	}
+	return total
+}
+
 func (a *Activities) compressionRootMessage(ctx context.Context, event domain.Event, scope domain.ConversationSummaryScope) (domain.ConversationMessage, bool, error) {
 	if scope != domain.ConversationSummaryScopeThread || strings.TrimSpace(event.ThreadID) == "" {
 		return domain.ConversationMessage{}, false, nil
@@ -1816,7 +1962,7 @@ func (a *Activities) PersistNextAction(ctx context.Context, request PersistNextA
 		)
 		return err
 	}
-	if shouldPersistNextActionConversation(request.Status) {
+	if !request.SkipConversation && shouldPersistNextActionConversation(request.Status) {
 		message := strings.TrimSpace(request.NextAction.ResponseMessage)
 		if message != "" || len(request.NextAction.ResponseAttachments) > 0 {
 			metadata := domain.Metadata{"status": strings.TrimSpace(request.Status)}
@@ -1883,7 +2029,7 @@ func (a *Activities) PersistToolResult(ctx context.Context, request PersistToolR
 	if err := a.Store.UpsertToolInvocation(ctx, records.Invocation); err != nil {
 		return err
 	}
-	if strings.TrimSpace(records.Conversation.Body) != "" {
+	if !request.SkipConversation && strings.TrimSpace(records.Conversation.Body) != "" {
 		if err := a.Store.UpsertConversationMessage(ctx, records.Conversation); err != nil {
 			return err
 		}
@@ -2009,8 +2155,14 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		slog.String("project_id", projectID),
 		slog.String("event_id", event.ID),
 	)
-	conversationEvent := latestConversationContextEvent(event, request.AdditionalEvents)
-	loaded, err := a.loadContext(ctx, event, conversationEvent, request.AdditionalEvents)
+	var loaded agent.Context
+	var err error
+	if request.SubAgent != nil {
+		loaded, err = a.loadSubAgentContext(ctx, event, *request.SubAgent, request.ToolAllowlist)
+	} else {
+		conversationEvent := latestConversationContextEvent(event, request.AdditionalEvents)
+		loaded, err = a.loadContext(ctx, event, conversationEvent, request.AdditionalEvents)
+	}
 	if err != nil {
 		a.logActivityStep(
 			"NextAction", "load_context_error",
@@ -2021,6 +2173,10 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		return NextActionResult{}, err
 	}
 	loaded.AdditionalEvents = append([]domain.Event(nil), request.AdditionalEvents...)
+	nextActionEvent := event
+	if request.SubAgent != nil {
+		nextActionEvent = loaded.Event
+	}
 	a.logActivityStep(
 		"NextAction", "load_context_done",
 		slog.String("project_id", projectID),
@@ -2030,7 +2186,7 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 
 	now := time.Now().UTC()
 	nextAction := request.NextAction
-	if err := ensureNextAction(&nextAction, projectID, event, now); err != nil {
+	if err := ensureNextAction(&nextAction, projectID, nextActionEvent, now); err != nil {
 		a.logActivityStep(
 			"NextAction", "ensure_next_action_error",
 			slog.String("project_id", projectID),
@@ -2103,6 +2259,9 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		LastObservation:    lastObservation(observations),
 		ObservationHistory: history,
 		ChannelType:        event.ChannelType,
+		SubAgent:           request.SubAgent,
+		ToolAllowlist:      request.ToolAllowlist,
+		RestrictTools:      request.RestrictTools,
 	})
 	if err != nil {
 		a.logActivityStep(
@@ -2124,7 +2283,7 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 	if len(engineOutput.NextAction.WorkItems) > 0 || !engineOutput.NextAction.ToolChoice.IsZero() || strings.TrimSpace(engineOutput.NextAction.ResponseMessage) != "" || len(engineOutput.NextAction.ResponseAttachments) > 0 {
 		nextAction = engineOutput.NextAction
 	}
-	if err := ensureNextAction(&nextAction, projectID, event, now); err != nil {
+	if err := ensureNextAction(&nextAction, projectID, nextActionEvent, now); err != nil {
 		a.logActivityStep(
 			"NextAction", "ensure_engine_next_action_error",
 			slog.String("project_id", projectID),
@@ -2962,8 +3121,6 @@ func (a *Activities) startExecProcess(ctx context.Context, request ExecuteToolRe
 
 func (a *Activities) runChosenTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
 	switch choice.Type {
-	case domain.ToolTypeAgent:
-		return a.runAgentTool(ctx, choice, execution)
 	case domain.ToolTypeExec:
 		return a.runExecTool(ctx, choice, execution)
 	case domain.ToolTypeRead:
@@ -2985,298 +3142,6 @@ func (a *Activities) runChosenTool(ctx context.Context, choice agent.ToolChoice,
 	}
 }
 
-func (a *Activities) runAgentTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
-	if a.Engine == nil {
-		return toolRunResult{ResultCode: "1"}, fmt.Errorf("next action engine is not configured")
-	}
-	var req agenttool.Request
-	if err := decodeChoiceInput(choice, &req); err != nil {
-		return toolRunResult{ResultCode: "1"}, err
-	}
-	req.Goal = strings.TrimSpace(req.Goal)
-	req.Prompt = strings.TrimSpace(req.Prompt)
-	if req.Goal == "" {
-		return toolRunResult{ResultCode: "1"}, fmt.Errorf("agent goal is required")
-	}
-	if req.Prompt == "" {
-		return toolRunResult{ResultCode: "1"}, fmt.Errorf("agent prompt is required")
-	}
-
-	allowedTools, err := a.agentAllowedTools(req)
-	if err != nil {
-		return toolRunResult{ResultCode: "1"}, err
-	}
-	maxTurns := agenttool.NormalizeMaxTurns(req.MaxTurns)
-	subContext, err := a.subAgentContext(ctx, req, execution, allowedTools)
-	if err != nil {
-		return toolRunResult{ResultCode: "1"}, err
-	}
-
-	run, err := a.runSubAgentLoop(ctx, subAgentRunRequest{
-		Execution:    execution,
-		Context:      subContext,
-		AllowedTools: allowedTools,
-		MaxTurns:     maxTurns,
-		Goal:         req.Goal,
-	})
-	if err != nil {
-		return toolRunResult{ResultCode: "1"}, err
-	}
-	metadata := map[string]string{
-		"agent_goal":       req.Goal,
-		"agent_turn_count": strconv.Itoa(run.TurnCount),
-	}
-	if len(run.ToolsUsed) > 0 {
-		metadata["agent_tools_used"] = strings.Join(toolTypeStrings(run.ToolsUsed), ",")
-	}
-	if len(run.FilesTouched) > 0 {
-		metadata["agent_files_touched"] = strings.Join(run.FilesTouched, "\n")
-	}
-	return toolRunResult{
-		Observation: agentObservation(run),
-		ResultCode:  "0",
-		Metadata:    metadata,
-		Processes:   run.Processes,
-	}, nil
-}
-
-type subAgentRunRequest struct {
-	Execution    toolExecutionContext
-	Context      agent.Context
-	AllowedTools []domain.ToolType
-	MaxTurns     int
-	Goal         string
-}
-
-type subAgentRunResult struct {
-	agenttool.Result
-	Processes []domain.ProcessReference
-}
-
-func (a *Activities) runSubAgentLoop(ctx context.Context, req subAgentRunRequest) (subAgentRunResult, error) {
-	now := time.Now().UTC()
-	currentAction := agent.NextAction{}
-	if err := ensureNextAction(&currentAction, req.Execution.ProjectID, req.Context.Event, now); err != nil {
-		return subAgentRunResult{}, err
-	}
-
-	var history []agent.ExecutionFeedback
-	var lastResults []ExecuteToolResult
-	var processes []domain.ProcessReference
-	var toolsUsed []domain.ToolType
-	var filesTouched []string
-
-	for turn := 1; turn <= req.MaxTurns; turn++ {
-		var observations []agent.ExecutionFeedback
-		if len(lastResults) > 0 {
-			currentAction.ToolChoice = agent.ToolChoice{}
-			for _, result := range lastResults {
-				feedback := executionFeedback(result)
-				observations = append(observations, feedback)
-				history = append(history, feedback)
-				if err := applyObservationToNextAction(&currentAction, feedback, time.Now().UTC()); err != nil {
-					return subAgentRunResult{}, err
-				}
-			}
-			lastResults = nil
-		}
-
-		output, err := a.Engine.NextAction(ctx, agent.NextActionInput{
-			ProjectID:          req.Execution.ProjectID,
-			Context:            req.Context,
-			NextAction:         currentAction,
-			Runtime:            buildRuntimeContext(a.WorkspaceRoot, a.OpenCTORoot),
-			ExecutionCycle:     turn,
-			LastObservation:    lastObservation(observations),
-			ObservationHistory: history,
-			ChannelType:        req.Context.Event.ChannelType,
-			SubAgent:           &agent.SubAgentContext{Goal: req.Goal},
-			ToolAllowlist:      req.AllowedTools,
-			RestrictTools:      true,
-		})
-		if err != nil {
-			return subAgentRunResult{}, err
-		}
-		if nextActionHasOutput(output.NextAction) {
-			currentAction = output.NextAction
-		}
-		if err := ensureNextAction(&currentAction, req.Execution.ProjectID, req.Context.Event, time.Now().UTC()); err != nil {
-			return subAgentRunResult{}, err
-		}
-
-		if output.Status != NextActionStatusTool {
-			return subAgentRunResult{
-				Result: agenttool.Result{
-					Message:      strings.TrimSpace(output.NextAction.ResponseMessage),
-					TurnCount:    turn,
-					FilesTouched: filesTouched,
-					ToolsUsed:    toolsUsed,
-				},
-				Processes: processes,
-			}, nil
-		}
-
-		choices := append([]agent.ToolChoice(nil), output.ToolChoices...)
-		if len(choices) == 0 && output.ToolChoice != nil {
-			choices = []agent.ToolChoice{*output.ToolChoice}
-		}
-		if len(choices) == 0 {
-			return subAgentRunResult{}, fmt.Errorf("sub-agent returned tool status without a tool choice")
-		}
-		workItemID := nextActionToolWorkItemID(currentAction, lastObservation(observations))
-		if strings.TrimSpace(workItemID) == "" {
-			return subAgentRunResult{}, fmt.Errorf("sub-agent tool choice is missing work item id")
-		}
-		if err := ensureToolWorkItem(&currentAction, workItemID, time.Now().UTC()); err != nil {
-			return subAgentRunResult{}, err
-		}
-		if err := completePreviousWorkItemForNextAction(&currentAction, workItemID, lastObservation(observations), time.Now().UTC()); err != nil {
-			return subAgentRunResult{}, err
-		}
-
-		toolCallIDs := make([]string, 0, len(choices))
-		for _, child := range choices {
-			toolCallIDs = append(toolCallIDs, strings.TrimSpace(child.ToolCallID))
-		}
-		assistantText := strings.TrimSpace(output.AssistantText)
-		if assistantText == "" {
-			assistantText = strings.TrimSpace(choices[0].Intent)
-		}
-		for index := range choices {
-			if choices[index].Type == domain.ToolTypeAgent {
-				return subAgentRunResult{}, fmt.Errorf("Agent tool recursion is not allowed")
-			}
-			if !toolTypeInList(choices[index].Type, req.AllowedTools) {
-				return subAgentRunResult{}, fmt.Errorf("tool %q is not allowed in this agent context", choices[index].Type)
-			}
-			ensureToolChoiceMetadata(&choices[index], workItemID, turn, assistantText)
-			choices[index].Metadata["tool_call_ids"] = strings.Join(toolCallIDs, ",")
-		}
-
-		lastResults = nil
-		for _, child := range choices {
-			result, err := a.executeSubAgentTool(ctx, req.Execution.ProjectID, workItemID, req.Context.Event, child)
-			if err != nil && strings.TrimSpace(result.ToolCallID) == "" {
-				result = failedSubAgentToolResult(req.Execution.ProjectID, workItemID, child, turn, err)
-			}
-			lastResults = append(lastResults, result)
-			toolsUsed = appendUniqueToolType(toolsUsed, result.Tool)
-			filesTouched = appendUniqueStrings(filesTouched, changedFilesFromToolResult(result)...)
-			mergeProcessReferences(&processes, result.Processes)
-		}
-	}
-
-	if len(lastResults) > 0 {
-		currentAction.ToolChoice = agent.ToolChoice{}
-		for _, result := range lastResults {
-			feedback := executionFeedback(result)
-			history = append(history, feedback)
-			if err := applyObservationToNextAction(&currentAction, feedback, time.Now().UTC()); err != nil {
-				return subAgentRunResult{}, err
-			}
-		}
-	}
-
-	output, err := a.Engine.NextAction(ctx, agent.NextActionInput{
-		ProjectID:          req.Execution.ProjectID,
-		Context:            req.Context,
-		NextAction:         currentAction,
-		Runtime:            buildRuntimeContext(a.WorkspaceRoot, a.OpenCTORoot),
-		ExecutionCycle:     req.MaxTurns + 1,
-		ForceFinal:         true,
-		ObservationHistory: history,
-		ChannelType:        req.Context.Event.ChannelType,
-		SubAgent:           &agent.SubAgentContext{Goal: req.Goal},
-		ToolAllowlist:      req.AllowedTools,
-		RestrictTools:      true,
-	})
-	if err != nil {
-		return subAgentRunResult{}, err
-	}
-	if output.Status == NextActionStatusTool {
-		output.Status = NextActionStatusBlocked
-		output.ToolChoice = nil
-		output.ToolChoices = nil
-		if strings.TrimSpace(output.NextAction.ResponseMessage) == "" {
-			output.NextAction.ResponseMessage = cycleLimitResponseMessage(history)
-		}
-	}
-	message := strings.TrimSpace(output.NextAction.ResponseMessage)
-	if message == "" {
-		message = cycleLimitResponseMessage(history)
-	}
-	return subAgentRunResult{
-		Result: agenttool.Result{
-			Message:      message,
-			TurnCount:    req.MaxTurns + 1,
-			FilesTouched: filesTouched,
-			ToolsUsed:    toolsUsed,
-		},
-		Processes: processes,
-	}, nil
-}
-
-func (a *Activities) agentAllowedTools(req agenttool.Request) ([]domain.ToolType, error) {
-	if req.AllowedTools == nil {
-		return toolregistry.ModelToolTypes(false), nil
-	}
-	return agenttool.ValidateAllowedTools(*req.AllowedTools, func(toolType domain.ToolType) bool {
-		return toolregistry.SupportsToolType(toolType) && toolType != domain.ToolTypeAgent
-	})
-}
-
-func (a *Activities) subAgentContext(ctx context.Context, req agenttool.Request, execution toolExecutionContext, allowedTools []domain.ToolType) (agent.Context, error) {
-	project := a.Project
-	if strings.TrimSpace(project.ID) == "" {
-		project.ID = execution.ProjectID
-	}
-	var availableSkills []skillcatalog.Summary
-	if toolTypeInList(domain.ToolTypeSkill, allowedTools) {
-		var err error
-		availableSkills, err = skillcatalog.Discover(ctx, a.skillsRoots()...)
-		if err != nil {
-			return agent.Context{}, err
-		}
-	}
-	event := execution.SourceEvent
-	event.ID = stableActivityID("sub-agent-event", execution.ProjectID, execution.WorkItemID, execution.ToolCallID)
-	event.ProjectID = execution.ProjectID
-	event.Kind = domain.EventKindSystem
-	event.Body = strings.TrimSpace(prompts.MustRender("sub_agent_user.tmpl", map[string]any{
-		"Goal":   req.Goal,
-		"Prompt": req.Prompt,
-	}))
-	if event.CreatedAt.IsZero() {
-		event.CreatedAt = time.Now().UTC()
-	}
-	return agent.Context{
-		Event:                       event,
-		Project:                     project,
-		ConversationMaxContextChars: storage.DefaultConversationMaxContextChars(a.ConversationMaxContextChars),
-		Skills:                      availableSkills,
-	}, nil
-}
-
-func (a *Activities) executeSubAgentTool(ctx context.Context, projectID, workItemID string, event domain.Event, choice agent.ToolChoice) (ExecuteToolResult, error) {
-	request := ExecuteToolRequest{
-		ProjectID:  projectID,
-		WorkItemID: workItemID,
-		Event:      event,
-		ToolChoice: choice,
-	}
-	if subAgentMemoryTool(choice.Type) {
-		return a.ExecuteMemoryTool(ctx, request)
-	}
-	return a.ExecuteTool(ctx, request)
-}
-
-func nextActionHasOutput(nextAction agent.NextAction) bool {
-	return len(nextAction.WorkItems) > 0 ||
-		!nextAction.ToolChoice.IsZero() ||
-		strings.TrimSpace(nextAction.ResponseMessage) != "" ||
-		len(nextAction.ResponseAttachments) > 0
-}
-
 func toolTypeInList(toolType domain.ToolType, values []domain.ToolType) bool {
 	for _, value := range values {
 		if value == toolType {
@@ -3284,144 +3149,6 @@ func toolTypeInList(toolType domain.ToolType, values []domain.ToolType) bool {
 		}
 	}
 	return false
-}
-
-func subAgentMemoryTool(toolType domain.ToolType) bool {
-	switch toolType {
-	case domain.ToolTypeMemoryProposeAdd, domain.ToolTypeMemorySearch, domain.ToolTypeMemoryList, domain.ToolTypeMemoryProposeUpdate, domain.ToolTypeMemoryProposeForget:
-		return true
-	default:
-		return false
-	}
-}
-
-func failedSubAgentToolResult(projectID, workItemID string, choice agent.ToolChoice, cycle int, err error) ExecuteToolResult {
-	message := ""
-	if err != nil {
-		message = err.Error()
-	}
-	return ExecuteToolResult{
-		Cycle:           cycle,
-		WorkItemID:      workItemID,
-		ToolCallID:      firstNonEmpty(choice.ToolCallID, choice.Metadata["tool_call_id"]),
-		Tool:            choice.Type,
-		Status:          domain.ExecutionStatusFailed,
-		RequestedAction: choice.Intent,
-		Command:         choice.Command,
-		Args:            append([]string(nil), choice.Args...),
-		Input:           cloneRawMessage(choice.Input),
-		Observation:     firstNonEmpty(message, "Tool execution failed."),
-		Error:           message,
-		ResultCode:      "1",
-		Metadata: map[string]string{
-			"tool_call_id":     firstNonEmpty(choice.ToolCallID, choice.Metadata["tool_call_id"]),
-			"work_item_id":     workItemID,
-			"execution_cycle":  strconv.Itoa(cycle),
-			"sub_agent_failed": "true",
-			"project_id":       projectID,
-		},
-	}
-}
-
-func changedFilesFromToolResult(result ExecuteToolResult) []string {
-	switch result.Tool {
-	case domain.ToolTypeEdit, domain.ToolTypeWrite:
-		if filePath := strings.TrimSpace(result.Metadata["file_path"]); filePath != "" {
-			return []string{filePath}
-		}
-	default:
-		return nil
-	}
-	return nil
-}
-
-func appendUniqueToolType(values []domain.ToolType, value domain.ToolType) []domain.ToolType {
-	if value == "" {
-		return values
-	}
-	for _, existing := range values {
-		if existing == value {
-			return values
-		}
-	}
-	return append(values, value)
-}
-
-func appendUniqueStrings(values []string, additions ...string) []string {
-	for _, addition := range additions {
-		addition = strings.TrimSpace(addition)
-		if addition == "" {
-			continue
-		}
-		exists := false
-		for _, existing := range values {
-			if existing == addition {
-				exists = true
-				break
-			}
-		}
-		if !exists {
-			values = append(values, addition)
-		}
-	}
-	return values
-}
-
-func mergeProcessReferences(target *[]domain.ProcessReference, additions []domain.ProcessReference) {
-	if len(additions) == 0 {
-		return
-	}
-	for _, addition := range additions {
-		id := strings.TrimSpace(addition.ID)
-		if id == "" {
-			continue
-		}
-		replaced := false
-		for index := range *target {
-			if strings.TrimSpace((*target)[index].ID) == id {
-				(*target)[index] = addition
-				replaced = true
-				break
-			}
-		}
-		if !replaced {
-			*target = append(*target, addition)
-		}
-	}
-}
-
-func toolTypeStrings(values []domain.ToolType) []string {
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		if strings.TrimSpace(string(value)) != "" {
-			out = append(out, string(value))
-		}
-	}
-	return out
-}
-
-func agentObservation(result subAgentRunResult) string {
-	var builder strings.Builder
-	builder.WriteString("Agent completed.")
-	builder.WriteString("\nturn_count: ")
-	builder.WriteString(strconv.Itoa(result.TurnCount))
-	if len(result.ToolsUsed) > 0 {
-		builder.WriteString("\ntools_used: ")
-		builder.WriteString(strings.Join(toolTypeStrings(result.ToolsUsed), ", "))
-	}
-	if len(result.FilesTouched) > 0 {
-		builder.WriteString("\nfiles_touched:")
-		for _, filePath := range result.FilesTouched {
-			builder.WriteString("\n- ")
-			builder.WriteString(filePath)
-		}
-	}
-	message := strings.TrimSpace(result.Message)
-	if message != "" {
-		builder.WriteString("\n\nmessage:\n")
-		builder.WriteString(message)
-	}
-	return builder.String()
 }
 
 func (a *Activities) applyToolResultPostProcessors(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext, input json.RawMessage, status domain.ExecutionStatus, errorMessage string, result toolRunResult, metadata map[string]string) (toolRunResult, map[string]string) {

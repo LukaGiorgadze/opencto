@@ -102,6 +102,7 @@ func main() {
 	engine := buildNextActionEngine(cfg, logger)
 	memoryEmbedder := buildMemoryEmbedder(cfg, logger)
 	conversationCompressor := buildConversationCompressor(cfg, logger)
+	agentObservationCompressor := buildAgentObservationCompressor(cfg, logger)
 
 	if *mode == "worker" || *mode == "serve" {
 		store, dbPath, err := openRuntimeStore(ctx, cfg)
@@ -154,6 +155,7 @@ func main() {
 			EventEnqueuer:               dispatcher,
 			MemoryEmbedder:              memoryEmbedder,
 			ConversationCompressor:      conversationCompressor,
+			AgentObservationCompressor:  agentObservationCompressor,
 			Project:                     defaultProject,
 			WorkspaceRoot:               cfg.General.WorkspaceRoot,
 			OpenCTORoot:                 openCTORoot,
@@ -298,6 +300,34 @@ func buildConversationCompressor(cfg config.Config, logger *slog.Logger) agent.C
 	}
 	logger.Info(
 		"conversation compressor configured",
+		slog.String("base_url", cfg.LLM.BaseURL),
+		slog.String("model", cfg.LLM.ModelSummary),
+		slog.String("api_key_source", string(source)),
+		slog.Bool("bifrost_enabled", cfg.LLM.Bifrost.Enabled),
+	)
+	return compressor
+}
+
+func buildAgentObservationCompressor(cfg config.Config, logger *slog.Logger) agent.AgentObservationCompressor {
+	if !cfg.Conversation.Enabled || !cfg.Conversation.SummaryEnabled {
+		return nil
+	}
+	if cfg.LLM.Provider != "" && cfg.LLM.Provider != "openai" {
+		logger.Warn("unsupported agent observation compression llm provider configured", slog.String("provider", cfg.LLM.Provider))
+		return nil
+	}
+	apiKey, source, err := agentllm.ResolveOpenAIAPIKey(cfg.LLM)
+	if err != nil {
+		logger.Warn("openai agent observation compression api key is not configured", slog.String("error", err.Error()))
+		return nil
+	}
+	compressor, err := agentllm.NewOpenAIAgentObservationCompressor(apiKey, cfg.LLM.BaseURL, cfg.LLM.ModelSummary)
+	if err != nil {
+		logger.Warn("failed to initialize agent observation compressor", slog.String("error", err.Error()))
+		return nil
+	}
+	logger.Info(
+		"agent observation compressor configured",
 		slog.String("base_url", cfg.LLM.BaseURL),
 		slog.String("model", cfg.LLM.ModelSummary),
 		slog.String("api_key_source", string(source)),

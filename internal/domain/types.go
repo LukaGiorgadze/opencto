@@ -194,6 +194,7 @@ type ReportReceipt struct {
 	ChannelID string `json:"channel_id,omitempty"`
 	ContextID string `json:"context_id,omitempty"`
 	ThreadID  string `json:"thread_id,omitempty"`
+	Body      string `json:"body,omitempty"`
 }
 
 type WorkItem struct {

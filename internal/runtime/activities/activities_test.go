@@ -18,7 +18,6 @@ import (
 	"github.com/opencto/opencto/internal/runtime/workflowrun"
 	skillcatalog "github.com/opencto/opencto/internal/skills"
 	"github.com/opencto/opencto/internal/storage"
-	agenttool "github.com/opencto/opencto/internal/tools/agenttool"
 	exectool "github.com/opencto/opencto/internal/tools/exec"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	"github.com/opencto/opencto/internal/tools/postprocess"
@@ -86,6 +85,19 @@ type stubConversationCompressor struct {
 }
 
 func (c stubConversationCompressor) CompressConversation(_ context.Context, input agent.ConversationCompressionInput) (agent.ConversationCompressionOutput, error) {
+	if c.input != nil {
+		*c.input = input
+	}
+	return c.output, c.err
+}
+
+type stubAgentObservationCompressor struct {
+	output agent.AgentObservationCompressionOutput
+	err    error
+	input  *agent.AgentObservationCompressionInput
+}
+
+func (c stubAgentObservationCompressor) CompressAgentObservations(_ context.Context, input agent.AgentObservationCompressionInput) (agent.AgentObservationCompressionOutput, error) {
 	if c.input != nil {
 		*c.input = input
 	}
@@ -555,6 +567,46 @@ func TestReportResponsePersistsNormalDiscordReportForFutureThread(t *testing.T) 
 		upsertedThreads[0].ThreadID != "bot-message-1" ||
 		upsertedThreads[0].RootMessageID != "bot-message-1" {
 		t.Fatalf("expected future Discord thread ownership, got %#v", upsertedThreads)
+	}
+}
+
+func TestReportResponsePersistsReceiptBodiesForSplitDiscordReport(t *testing.T) {
+	t.Parallel()
+
+	upserted := []domain.ConversationMessage{}
+	reporter := &captureReporter{
+		receipts: []domain.ReportReceipt{
+			{MessageID: "bot-message-1", ChannelID: "channel-1", ContextID: "guild-1", Body: "first chunk"},
+			{MessageID: "bot-message-2", ChannelID: "channel-1", ContextID: "guild-1", Body: "second chunk"},
+		},
+	}
+	activities := Activities{
+		Reporter: reporter,
+		Store: stubProjectStore{
+			upsertedConversation: &upserted,
+		},
+	}
+	_, err := activities.ReportResponse(context.Background(), ReportResponseRequest{
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "project-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+		},
+		Message: "first chunk\nsecond chunk",
+	})
+	if err != nil {
+		t.Fatalf("report response: %v", err)
+	}
+	if len(upserted) != 2 {
+		t.Fatalf("expected two future-thread rows, got %#v", upserted)
+	}
+	got := map[string]string{}
+	for _, message := range upserted {
+		got[message.ThreadID] = message.Body
+	}
+	if got["bot-message-1"] != "first chunk" || got["bot-message-2"] != "second chunk" {
+		t.Fatalf("expected per-receipt chunk bodies, got %#v", upserted)
 	}
 }
 
@@ -2594,117 +2646,120 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 	}
 }
 
-func TestExecuteAgentToolRunsSubAgentLoop(t *testing.T) {
-	t.Parallel()
-
-	workspace := t.TempDir()
-	target := filepath.Join(workspace, "agent.txt")
-	writeInput, err := json.Marshal(map[string]any{
-		"file_path": target,
-		"content":   "hello from agent\n",
-	})
-	if err != nil {
-		t.Fatalf("marshal write input: %v", err)
-	}
-	engine := &sequenceEngine{outputs: []agent.NextActionOutput{
-		{
-			Status: NextActionStatusTool,
-			ToolChoice: &agent.ToolChoice{
-				ToolCallID: "toolu_write",
-				Type:       domain.ToolTypeWrite,
-				Intent:     "write agent file",
-				Input:      json.RawMessage(writeInput),
-			},
-			AssistantText: "I will write the file.",
-		},
-		{
-			Status: NextActionStatusCompleted,
-			NextAction: agent.NextAction{
-				ResponseMessage: "wrote the requested file",
-			},
-		},
-	}}
-
-	result, err := (&Activities{
-		Engine:        engine,
-		WorkspaceRoot: workspace,
-		Project:       domain.Project{ID: "project-1", Name: "Test Project"},
-	}).ExecuteTool(context.Background(), executeRequest(domain.ToolTypeAgent, "agent-1", map[string]any{
-		"goal":          "Write file",
-		"prompt":        "Create the requested file in the workspace.",
-		"allowed_tools": []domain.ToolType{domain.ToolTypeWrite},
-		"max_turns":     5,
-	}))
-	if err != nil {
-		t.Fatalf("agent tool: %v", err)
-	}
-	if result.Status != domain.ExecutionStatusSucceeded {
-		t.Fatalf("expected agent success, got %#v", result)
-	}
-	content, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("read agent file: %v", err)
-	}
-	if string(content) != "hello from agent\n" {
-		t.Fatalf("unexpected agent file content: %q", content)
-	}
-	if result.Metadata["agent_turn_count"] != "2" ||
-		result.Metadata["agent_tools_used"] != string(domain.ToolTypeWrite) ||
-		!strings.Contains(result.Metadata["agent_files_touched"], target) {
-		t.Fatalf("unexpected agent metadata: %#v", result.Metadata)
-	}
-	if !strings.Contains(result.Observation, "wrote the requested file") ||
-		!strings.Contains(result.Observation, "turn_count: 2") {
-		t.Fatalf("unexpected agent observation: %s", result.Observation)
-	}
-	if len(engine.inputs) != 2 {
-		t.Fatalf("expected two sub-agent turns, got %d", len(engine.inputs))
-	}
-	first := engine.inputs[0]
-	if !first.RestrictTools || len(first.ToolAllowlist) != 1 || first.ToolAllowlist[0] != domain.ToolTypeWrite {
-		t.Fatalf("unexpected sub-agent allowlist: %#v", first)
-	}
-	for _, toolType := range first.ToolAllowlist {
-		if toolType == domain.ToolTypeAgent {
-			t.Fatalf("sub-agent should not receive Agent in allowlist")
-		}
-	}
-	if first.SubAgent == nil || first.SubAgent.Goal != "Write file" || !strings.Contains(first.Context.Event.Body, "Create the requested file") {
-		t.Fatalf("unexpected sub-agent context: %#v", first)
-	}
-}
-
-func TestExecuteAgentToolRejectsRecursiveAllowedTool(t *testing.T) {
+func TestExecuteAgentToolIsNotRunInsideActivity(t *testing.T) {
 	t.Parallel()
 
 	result, err := (&Activities{
-		Engine:        stubEngine{output: agent.NextActionOutput{Status: NextActionStatusCompleted, NextAction: agent.NextAction{ResponseMessage: "done"}}},
 		WorkspaceRoot: t.TempDir(),
 	}).ExecuteTool(context.Background(), executeRequest(domain.ToolTypeAgent, "agent-1", map[string]any{
-		"goal":          "Nested",
-		"prompt":        "Try nested agent.",
-		"allowed_tools": []domain.ToolType{domain.ToolTypeAgent},
+		"goal":   "Nested",
+		"prompt": "Run as workflow.",
 	}))
 	if err != nil {
 		t.Fatalf("agent tool should return structured failure, got error: %v", err)
 	}
-	if result.Status != domain.ExecutionStatusFailed || !strings.Contains(result.Error, "recursion") {
-		t.Fatalf("expected recursive Agent allowlist failure, got %#v", result)
+	if result.Status != domain.ExecutionStatusFailed || !strings.Contains(result.Error, "unsupported tool type") {
+		t.Fatalf("expected unsupported Agent tool activity failure, got %#v", result)
 	}
 }
 
-func TestAgentAllowedToolsOmittedMeansAllExceptAgent(t *testing.T) {
+func TestCompressAgentObservationsSummarizesOlderHistory(t *testing.T) {
 	t.Parallel()
 
-	allowed, err := (&Activities{}).agentAllowedTools(agenttool.Request{})
+	compressorInput := agent.AgentObservationCompressionInput{}
+	result, err := (&Activities{
+		AgentObservationCompressor: stubAgentObservationCompressor{
+			output: agent.AgentObservationCompressionOutput{Summary: "Older agent tool context."},
+			input:  &compressorInput,
+		},
+		ConversationSummaryTrigger:  10,
+		ConversationSummaryRecent:   1,
+		ConversationSummaryMaxChars: 200,
+		ConversationMaxContextChars: 1000,
+	}).CompressAgentObservations(context.Background(), CompressAgentObservationsRequest{
+		ProjectID:       "project-1",
+		Goal:            "Audit files",
+		PreviousSummary: "Previous context.",
+		Observations: []agent.ExecutionFeedback{
+			{Cycle: 1, Tool: domain.ToolTypeRead, Status: string(domain.ExecutionStatusSucceeded), Observation: strings.Repeat("old ", 20)},
+			{Cycle: 2, Tool: domain.ToolTypeExec, Status: string(domain.ExecutionStatusSucceeded), Observation: strings.Repeat("older ", 20)},
+			{Cycle: 3, Tool: domain.ToolTypeGrep, Status: string(domain.ExecutionStatusSucceeded), Observation: "recent"},
+		},
+	})
 	if err != nil {
-		t.Fatalf("agent allowed tools: %v", err)
+		t.Fatalf("compress agent observations: %v", err)
 	}
-	if !toolTypeInList(domain.ToolTypeWrite, allowed) {
-		t.Fatalf("expected omitted allowed_tools to include Write, got %v", allowed)
+	if !result.Summarized || result.Summary != "Older agent tool context." {
+		t.Fatalf("unexpected compression result: %#v", result)
 	}
-	if toolTypeInList(domain.ToolTypeAgent, allowed) {
-		t.Fatalf("expected omitted allowed_tools to exclude Agent, got %v", allowed)
+	if len(result.RemainingObservations) != 1 || result.RemainingObservations[0].Cycle != 3 {
+		t.Fatalf("expected only recent observation to remain raw, got %#v", result.RemainingObservations)
+	}
+	if compressorInput.Goal != "Audit files" || len(compressorInput.Observations) != 2 {
+		t.Fatalf("unexpected compressor input: %#v", compressorInput)
+	}
+}
+
+func TestCompressAgentObservationsCountsToolInputTowardBudget(t *testing.T) {
+	t.Parallel()
+
+	writeInput, err := json.Marshal(map[string]string{
+		"file_path": "/tmp/large.txt",
+		"content":   strings.Repeat("x", 200),
+	})
+	if err != nil {
+		t.Fatalf("marshal input: %v", err)
+	}
+	compressorInput := agent.AgentObservationCompressionInput{}
+	result, err := (&Activities{
+		AgentObservationCompressor: stubAgentObservationCompressor{
+			output: agent.AgentObservationCompressionOutput{Summary: "Large write input."},
+			input:  &compressorInput,
+		},
+		ConversationSummaryTrigger:  80,
+		ConversationSummaryRecent:   1,
+		ConversationSummaryMaxChars: 200,
+		ConversationMaxContextChars: 1000,
+	}).CompressAgentObservations(context.Background(), CompressAgentObservationsRequest{
+		ProjectID: "project-1",
+		Goal:      "Write large file",
+		Observations: []agent.ExecutionFeedback{
+			{Cycle: 1, Tool: domain.ToolTypeWrite, Status: string(domain.ExecutionStatusSucceeded), Input: writeInput},
+			{Cycle: 2, Tool: domain.ToolTypeRead, Status: string(domain.ExecutionStatusSucceeded), Observation: "recent"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compress agent observations: %v", err)
+	}
+	if !result.Summarized || result.Summary != "Large write input." {
+		t.Fatalf("expected large input to trigger compression, got %#v", result)
+	}
+	if len(compressorInput.Observations) != 1 || string(compressorInput.Observations[0].Input) != string(writeInput) {
+		t.Fatalf("unexpected compressor input: %#v", compressorInput)
+	}
+}
+
+func TestCompressAgentObservationsRejectsEmptySummaryOverBudget(t *testing.T) {
+	t.Parallel()
+
+	result, err := (&Activities{
+		AgentObservationCompressor: stubAgentObservationCompressor{
+			output: agent.AgentObservationCompressionOutput{Summary: ""},
+		},
+		ConversationSummaryTrigger:  10,
+		ConversationSummaryRecent:   1,
+		ConversationSummaryMaxChars: 200,
+		ConversationMaxContextChars: 80,
+	}).CompressAgentObservations(context.Background(), CompressAgentObservationsRequest{
+		ProjectID: "project-1",
+		Goal:      "Audit files",
+		Observations: []agent.ExecutionFeedback{
+			{Cycle: 1, Tool: domain.ToolTypeExec, Status: string(domain.ExecutionStatusSucceeded), Observation: strings.Repeat("old ", 50)},
+			{Cycle: 2, Tool: domain.ToolTypeRead, Status: string(domain.ExecutionStatusSucceeded), Observation: "recent"},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "empty summary") {
+		t.Fatalf("expected empty-summary budget error, got result=%#v err=%v", result, err)
 	}
 }
 
@@ -2853,6 +2908,153 @@ func TestNextActionAssignsWorkItemInternallyForToolChoice(t *testing.T) {
 	}
 	if result.ToolChoice == nil || result.ToolChoice.Metadata["work_item_id"] != wantWorkItemID {
 		t.Fatalf("expected internal work item metadata, got %#v", result.ToolChoice)
+	}
+}
+
+func TestNextActionAssignsSubAgentWorkItemFromSyntheticEvent(t *testing.T) {
+	t.Parallel()
+
+	activities := Activities{
+		Engine: stubEngine{output: agent.NextActionOutput{
+			ToolChoice: &agent.ToolChoice{
+				ToolCallID: "toolu_read",
+				Type:       domain.ToolTypeRead,
+				Intent:     "read file",
+				Input:      json.RawMessage(`{"file_path":"/tmp/example.txt"}`),
+				Metadata: map[string]string{
+					"tool_call_id": "toolu_read",
+				},
+			},
+			Status: NextActionStatusTool,
+		}},
+		Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+	}
+
+	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "parent request"}
+	result, err := activities.NextAction(context.Background(), NextActionRequest{
+		ProjectID:      "project-1",
+		Event:          event,
+		ExecutionCycle: 1,
+		SubAgent: &agent.SubAgentContext{
+			Goal:   "Inspect wiring",
+			Prompt: "Find the child workflow wiring.",
+			RunID:  "agent-workflow-1",
+		},
+		ToolAllowlist: []domain.ToolType{domain.ToolTypeRead},
+		RestrictTools: true,
+	})
+	if err != nil {
+		t.Fatalf("next action: %v", err)
+	}
+	parentWorkItemID := stableActivityID("work-item", "project-1", "event-1", "1")
+	subAgentEventID := stableActivityID("sub-agent-event", "project-1", "event-1", "agent-workflow-1", "Inspect wiring", "Find the child workflow wiring.")
+	wantWorkItemID := stableActivityID("work-item", "project-1", subAgentEventID, "1")
+	if result.WorkItemID != wantWorkItemID {
+		t.Fatalf("expected sub-agent work item %q, got %q", wantWorkItemID, result.WorkItemID)
+	}
+	if result.WorkItemID == parentWorkItemID {
+		t.Fatalf("sub-agent work item should not collide with parent work item %q", parentWorkItemID)
+	}
+	if result.ToolChoice == nil || result.ToolChoice.Metadata["work_item_id"] != wantWorkItemID {
+		t.Fatalf("expected sub-agent work item metadata, got %#v", result.ToolChoice)
+	}
+}
+
+func TestNextActionKeepsSubAgentWorkItemWhenEngineReplacesNextAction(t *testing.T) {
+	t.Parallel()
+
+	activities := Activities{
+		Engine: stubEngine{output: agent.NextActionOutput{
+			NextAction: agent.NextAction{
+				ToolChoice: agent.ToolChoice{
+					ToolCallID: "toolu_read",
+					Type:       domain.ToolTypeRead,
+					Intent:     "read file",
+				},
+			},
+			ToolChoice: &agent.ToolChoice{
+				ToolCallID: "toolu_read",
+				Type:       domain.ToolTypeRead,
+				Intent:     "read file",
+				Input:      json.RawMessage(`{"file_path":"/tmp/example.txt"}`),
+				Metadata: map[string]string{
+					"tool_call_id": "toolu_read",
+				},
+			},
+			Status: NextActionStatusTool,
+		}},
+		Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+	}
+
+	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "parent request"}
+	result, err := activities.NextAction(context.Background(), NextActionRequest{
+		ProjectID:      "project-1",
+		Event:          event,
+		ExecutionCycle: 1,
+		SubAgent: &agent.SubAgentContext{
+			Goal:   "Inspect wiring",
+			Prompt: "Find the child workflow wiring.",
+			RunID:  "agent-workflow-1",
+		},
+		ToolAllowlist: []domain.ToolType{domain.ToolTypeRead},
+		RestrictTools: true,
+	})
+	if err != nil {
+		t.Fatalf("next action: %v", err)
+	}
+	parentWorkItemID := stableActivityID("work-item", "project-1", "event-1", "1")
+	subAgentEventID := stableActivityID("sub-agent-event", "project-1", "event-1", "agent-workflow-1", "Inspect wiring", "Find the child workflow wiring.")
+	wantWorkItemID := stableActivityID("work-item", "project-1", subAgentEventID, "1")
+	if result.WorkItemID != wantWorkItemID {
+		t.Fatalf("expected sub-agent work item %q, got %q", wantWorkItemID, result.WorkItemID)
+	}
+	if result.WorkItemID == parentWorkItemID {
+		t.Fatalf("sub-agent work item should not fall back to parent work item %q", parentWorkItemID)
+	}
+}
+
+func TestNextActionSubAgentRunIDSeparatesSyntheticWorkItems(t *testing.T) {
+	t.Parallel()
+
+	run := func(runID string) string {
+		t.Helper()
+		activities := Activities{
+			Engine: stubEngine{output: agent.NextActionOutput{
+				ToolChoice: &agent.ToolChoice{
+					ToolCallID: "toolu_read",
+					Type:       domain.ToolTypeRead,
+					Intent:     "read file",
+					Input:      json.RawMessage(`{"file_path":"/tmp/example.txt"}`),
+					Metadata: map[string]string{
+						"tool_call_id": "toolu_read",
+					},
+				},
+				Status: NextActionStatusTool,
+			}},
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+		}
+		result, err := activities.NextAction(context.Background(), NextActionRequest{
+			ProjectID:      "project-1",
+			Event:          domain.Event{ID: "event-1", ProjectID: "project-1", Body: "parent request"},
+			ExecutionCycle: 1,
+			SubAgent: &agent.SubAgentContext{
+				Goal:   "Inspect wiring",
+				Prompt: "Find the child workflow wiring.",
+				RunID:  runID,
+			},
+			ToolAllowlist: []domain.ToolType{domain.ToolTypeRead},
+			RestrictTools: true,
+		})
+		if err != nil {
+			t.Fatalf("next action: %v", err)
+		}
+		return result.WorkItemID
+	}
+
+	first := run("agent-workflow-1")
+	second := run("agent-workflow-2")
+	if first == second {
+		t.Fatalf("expected different work item ids for distinct agent run ids, got %q", first)
 	}
 }
 

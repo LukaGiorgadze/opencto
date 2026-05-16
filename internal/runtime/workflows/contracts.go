@@ -11,6 +11,7 @@ import (
 const (
 	ProjectWorkflowName           = "ProjectWorkflow"
 	TaskWorkflowName              = "TaskWorkflow"
+	AgentWorkflowName             = "AgentWorkflow"
 	ScheduledDispatchWorkflowName = scheduled.DispatchWorkflowName
 	WorkflowRunWorkflowName       = workflowrun.WorkflowName
 
@@ -54,4 +55,29 @@ type TaskWorkflowResult struct {
 	ResponseMessage     string                    `json:"response_message,omitempty"`
 	ResponseAttachments []domain.ReportAttachment `json:"response_attachments,omitempty"`
 	Report              bool                      `json:"report,omitempty"`
+}
+
+type AgentWorkflowInput struct {
+	ProjectID          string                    `json:"project_id"`
+	Event              domain.Event              `json:"event"`
+	ParentWorkItemID   string                    `json:"parent_work_item_id"`
+	ParentToolCallID   string                    `json:"parent_tool_call_id"`
+	ParentWorkflowID   string                    `json:"parent_workflow_id,omitempty"`
+	AgentWorkflowID    string                    `json:"agent_workflow_id,omitempty"`
+	ToolChoice         agent.ToolChoice          `json:"tool_choice"`
+	AdditionalEvents   []domain.Event            `json:"additional_events,omitempty"`
+	ResumedFromPause   bool                      `json:"resumed_from_pause,omitempty"`
+	InitialRunSummary  string                    `json:"initial_run_summary,omitempty"`
+	InitialNextAction  *agent.NextAction         `json:"initial_next_action,omitempty"`
+	InitialObservation []agent.ExecutionFeedback `json:"initial_observation,omitempty"`
+}
+
+type AgentWorkflowResult struct {
+	Status       domain.ExecutionStatus    `json:"status"`
+	Message      string                    `json:"message,omitempty"`
+	TurnCount    int                       `json:"turn_count,omitempty"`
+	FilesTouched []string                  `json:"files_touched,omitempty"`
+	ToolsUsed    []domain.ToolType         `json:"tools_used,omitempty"`
+	Processes    []domain.ProcessReference `json:"processes,omitempty"`
+	Error        string                    `json:"error,omitempty"`
 }

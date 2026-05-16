@@ -67,6 +67,15 @@ func messageText(message llms.MessageContent) string {
 	return strings.Join(parts, "")
 }
 
+func messagesContainText(messages []llms.MessageContent, text string) bool {
+	for _, message := range messages {
+		if strings.Contains(messageText(message), text) {
+			return true
+		}
+	}
+	return false
+}
+
 func countImageParts(message llms.MessageContent) int {
 	count := 0
 	for _, part := range message.Parts {
@@ -1435,7 +1444,7 @@ func TestNextActionSubAgentUsesRestrictedToolsAndPrompt(t *testing.T) {
 			Project: domain.Project{ID: "project-1"},
 			Event:   domain.Event{Body: "# Goal\nAudit\n\n# Task Context And Instructions\nCheck files."},
 		},
-		SubAgent:      &agent.SubAgentContext{Goal: "Audit"},
+		SubAgent:      &agent.SubAgentContext{Goal: "Audit", RunSummary: "Read README.md already."},
 		RestrictTools: true,
 		ToolAllowlist: []domain.ToolType{domain.ToolTypeRead},
 	})
@@ -1450,6 +1459,9 @@ func TestNextActionSubAgentUsesRestrictedToolsAndPrompt(t *testing.T) {
 	}
 	if len(model.messages) == 0 || !strings.Contains(messageText(model.messages[0]), "OpenCTO sub-agent") || !strings.Contains(messageText(model.messages[0]), "Audit") {
 		t.Fatalf("sub-agent system prompt missing expected text: %#v", model.messages)
+	}
+	if !messagesContainText(model.messages, "Sub-agent run summary") || !messagesContainText(model.messages, "Read README.md already.") {
+		t.Fatalf("sub-agent run summary missing from context: %#v", model.messages)
 	}
 }
 

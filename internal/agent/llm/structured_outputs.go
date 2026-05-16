@@ -14,6 +14,18 @@ func conversationCompressionResponseFormat() *openai.ResponseFormat {
 	)
 }
 
+func agentObservationCompressionResponseFormat() *openai.ResponseFormat {
+	return jsonSchemaResponseFormat(
+		"agent_observation_compression",
+		objectSchema(
+			map[string]*openai.ResponseFormatJSONSchemaProperty{
+				"summary": stringSchema(),
+			},
+			"summary",
+		),
+	)
+}
+
 func jsonSchemaResponseFormat(name string, schema *openai.ResponseFormatJSONSchemaProperty) *openai.ResponseFormat {
 	return &openai.ResponseFormat{
 		Type: "json_schema",

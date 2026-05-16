@@ -1,6 +1,7 @@
 package workflows_test
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -23,6 +24,7 @@ func registerTaskWorkflowActivities(env *testsuite.TestWorkflowEnvironment) {
 	env.RegisterActivityWithOptions((&activities.Activities{}).ExecuteTool, activity.RegisterOptions{Name: "Activities.ExecuteTool"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).ExecuteMemoryTool, activity.RegisterOptions{Name: "Activities.ExecuteMemoryTool"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).PersistEvent, activity.RegisterOptions{Name: "Activities.PersistEvent"})
+	env.RegisterActivityWithOptions((&activities.Activities{}).CompressAgentObservations, activity.RegisterOptions{Name: "Activities.CompressAgentObservations"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).PersistNextAction, activity.RegisterOptions{Name: "Activities.PersistNextAction"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).PersistToolResult, activity.RegisterOptions{Name: "Activities.PersistToolResult"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).ResponseSession, activity.RegisterOptions{Name: "Activities.ResponseSession"})
@@ -111,6 +113,294 @@ func TestTaskWorkflowAlternatesNextActionAndExecuteTool(t *testing.T) {
 	}
 	if !result.Completed {
 		t.Fatalf("expected workflow to complete")
+	}
+	env.AssertExpectations(t)
+}
+
+func TestTaskWorkflowRoutesAgentToolToChildWorkflow(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.TaskWorkflow)
+	env.RegisterWorkflowWithOptions(func(_ workflow.Context, input workflows.AgentWorkflowInput) (workflows.AgentWorkflowResult, error) {
+		if input.ParentWorkItemID != "wi-agent" || input.ParentToolCallID != "toolu_agent" {
+			return workflows.AgentWorkflowResult{}, errors.New("missing parent lineage")
+		}
+		return workflows.AgentWorkflowResult{
+			Status:       domain.ExecutionStatusSucceeded,
+			Message:      "child completed",
+			TurnCount:    2,
+			ToolsUsed:    []domain.ToolType{domain.ToolTypeWrite},
+			FilesTouched: []string{"/tmp/agent.txt"},
+		}, nil
+	}, workflow.RegisterOptions{Name: workflows.AgentWorkflowName})
+	registerTaskWorkflowActivities(env)
+
+	input, err := json.Marshal(map[string]any{
+		"goal":          "Write file",
+		"prompt":        "Create the requested file.",
+		"allowed_tools": []domain.ToolType{domain.ToolTypeWrite},
+		"max_turns":     5,
+	})
+	if err != nil {
+		t.Fatalf("marshal agent input: %v", err)
+	}
+	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "delegate work"}
+	nextAction := agent.NextAction{WorkItems: []domain.WorkItem{{
+		ID:        "wi-agent",
+		ProjectID: "project-1",
+		Status:    domain.WorkItemStatusReady,
+	}}}
+	agentChoice := agent.ToolChoice{
+		ToolCallID: "toolu_agent",
+		Type:       domain.ToolTypeAgent,
+		Intent:     "run child agent",
+		Input:      input,
+		Metadata: map[string]string{
+			"tool_call_id": "toolu_agent",
+			"work_item_id": "wi-agent",
+		},
+	}
+
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
+		return request.ExecutionCycle == 1 && len(request.LastResults) == 0
+	})).Return(activities.NextActionResult{
+		NextAction: nextAction,
+		ToolChoice: &agentChoice,
+		WorkItemID: "wi-agent",
+		Status:     activities.NextActionStatusTool,
+	}, nil).Once()
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
+		return request.ExecutionCycle == 2 &&
+			len(request.LastResults) == 1 &&
+			request.LastResults[0].Tool == domain.ToolTypeAgent &&
+			request.LastResults[0].Status == domain.ExecutionStatusSucceeded &&
+			strings.Contains(request.LastResults[0].Observation, "child completed") &&
+			request.LastResults[0].Metadata["agent_turn_count"] == "2" &&
+			request.LastResults[0].Metadata["agent_tools_used"] == string(domain.ToolTypeWrite)
+	})).Return(activities.NextActionResult{
+		NextAction: agent.NextAction{ResponseMessage: "done"},
+		Status:     activities.NextActionStatusCompleted,
+	}, nil).Once()
+
+	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{
+		ProjectID: "project-1",
+		Event:     event,
+	})
+
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("task workflow failed: %v", err)
+	}
+	env.AssertExpectations(t)
+}
+
+func TestTaskWorkflowStopsWhenAgentChildIsCanceled(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.TaskWorkflow)
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context, _ workflows.AgentWorkflowInput) (workflows.AgentWorkflowResult, error) {
+		var signal workflows.TaskControlSignal
+		workflow.GetSignalChannel(ctx, workflows.SignalTaskCancel).Receive(ctx, &signal)
+		return workflows.AgentWorkflowResult{
+			Status:  domain.ExecutionStatusCanceled,
+			Message: "Agent canceled.",
+		}, nil
+	}, workflow.RegisterOptions{Name: workflows.AgentWorkflowName})
+	registerTaskWorkflowActivities(env)
+
+	input, err := json.Marshal(map[string]any{
+		"goal":      "Long task",
+		"prompt":    "Wait for cancellation.",
+		"max_turns": 5,
+	})
+	if err != nil {
+		t.Fatalf("marshal agent input: %v", err)
+	}
+	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "delegate long work"}
+	agentChoice := agent.ToolChoice{
+		ToolCallID: "toolu_agent",
+		Type:       domain.ToolTypeAgent,
+		Intent:     "run child agent",
+		Input:      input,
+		Metadata: map[string]string{
+			"tool_call_id": "toolu_agent",
+			"work_item_id": "wi-agent",
+		},
+	}
+
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
+		return request.ExecutionCycle == 1
+	})).Return(activities.NextActionResult{
+		NextAction: agent.NextAction{WorkItems: []domain.WorkItem{{
+			ID:        "wi-agent",
+			ProjectID: "project-1",
+			Status:    domain.WorkItemStatusReady,
+		}}},
+		ToolChoice: &agentChoice,
+		WorkItemID: "wi-agent",
+		Status:     activities.NextActionStatusTool,
+	}, nil).Once()
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalTaskCancel, workflows.TaskControlSignal{
+			Event:  domain.Event{ID: "cancel-1", ProjectID: "project-1", Body: "cancel"},
+			Reason: "test cancel",
+		})
+	}, time.Millisecond)
+
+	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{
+		ProjectID: "project-1",
+		Event:     event,
+	})
+
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("task workflow failed: %v", err)
+	}
+	var result workflows.TaskWorkflowResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatalf("get result: %v", err)
+	}
+	if result.Completed {
+		t.Fatalf("expected parent task to stop incomplete after cancel, got %#v", result)
+	}
+	env.AssertExpectations(t)
+}
+
+func TestAgentWorkflowRunsDurableSubAgentLoop(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.AgentWorkflow)
+	registerTaskWorkflowActivities(env)
+
+	input, err := json.Marshal(map[string]any{
+		"goal":          "Write file",
+		"prompt":        "Create the requested file.",
+		"allowed_tools": []domain.ToolType{domain.ToolTypeWrite},
+		"max_turns":     5,
+	})
+	if err != nil {
+		t.Fatalf("marshal agent input: %v", err)
+	}
+	writeInput, err := json.Marshal(map[string]any{
+		"file_path": "/tmp/agent.txt",
+		"content":   "hello\n",
+	})
+	if err != nil {
+		t.Fatalf("marshal write input: %v", err)
+	}
+
+	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "delegate work"}
+	nextAction := agent.NextAction{WorkItems: []domain.WorkItem{{
+		ID:        "wi-child",
+		ProjectID: "project-1",
+		Status:    domain.WorkItemStatusReady,
+	}}}
+	writeChoice := agent.ToolChoice{
+		ToolCallID: "toolu_write",
+		Type:       domain.ToolTypeWrite,
+		Intent:     "write file",
+		Input:      writeInput,
+		Metadata: map[string]string{
+			"tool_call_id": "toolu_write",
+			"work_item_id": "wi-child",
+		},
+	}
+
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
+		return request.ExecutionCycle == 1 &&
+			request.SubAgent != nil &&
+			request.SubAgent.Goal == "Write file" &&
+			strings.Contains(request.SubAgent.Prompt, "Create the requested file") &&
+			request.RestrictTools &&
+			len(request.ToolAllowlist) == 1 &&
+			request.ToolAllowlist[0] == domain.ToolTypeWrite &&
+			len(request.Processes) == 0
+	})).Return(activities.NextActionResult{
+		NextAction: nextAction,
+		ToolChoice: &writeChoice,
+		WorkItemID: "wi-child",
+		Status:     activities.NextActionStatusTool,
+	}, nil).Once()
+	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.MatchedBy(func(request activities.ExecuteToolRequest) bool {
+		return request.WorkItemID == "wi-child" &&
+			request.ToolChoice.ToolCallID == "toolu_write" &&
+			request.ToolChoice.Metadata["parent_work_item_id"] == "wi-parent" &&
+			request.ToolChoice.Metadata["parent_tool_call_id"] == "toolu_agent" &&
+			request.ToolChoice.Metadata["agent_child_trace"] == "true"
+	})).Return(activities.ExecuteToolResult{
+		Cycle:           1,
+		WorkItemID:      "wi-child",
+		ToolCallID:      "toolu_write",
+		Tool:            domain.ToolTypeWrite,
+		Status:          domain.ExecutionStatusSucceeded,
+		RequestedAction: "write file",
+		Input:           writeInput,
+		Observation:     "wrote file",
+		ResultCode:      "0",
+		Metadata: map[string]string{
+			"tool_call_id": "toolu_write",
+			"file_path":    "/tmp/agent.txt",
+		},
+		Processes: []domain.ProcessReference{{
+			ID:          "proc-1",
+			Description: "child background process",
+			Status:      domain.ProcessStatusRunning,
+			Scope:       domain.ProcessScopeStopOnFinish,
+		}},
+	}, nil).Once()
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
+		return request.ExecutionCycle == 2 &&
+			len(request.LastResults) == 1 &&
+			request.LastResults[0].ToolCallID == "toolu_write" &&
+			len(request.Processes) == 1 &&
+			request.Processes[0].ID == "proc-1" &&
+			request.Processes[0].Status == domain.ProcessStatusRunning
+	})).Return(activities.NextActionResult{
+		NextAction: agent.NextAction{ResponseMessage: "wrote the requested file"},
+		Status:     activities.NextActionStatusCompleted,
+		Processes: []domain.ProcessReference{{
+			ID:          "proc-1",
+			Description: "child background process",
+			Status:      domain.ProcessStatusStopped,
+			Scope:       domain.ProcessScopeStopOnFinish,
+		}},
+	}, nil).Once()
+
+	env.ExecuteWorkflow(workflows.AgentWorkflow, workflows.AgentWorkflowInput{
+		ProjectID:        "project-1",
+		Event:            event,
+		ParentWorkItemID: "wi-parent",
+		ParentToolCallID: "toolu_agent",
+		AgentWorkflowID:  "project-1:agent:test",
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_agent",
+			Type:       domain.ToolTypeAgent,
+			Intent:     "run child agent",
+			Input:      input,
+		},
+	})
+
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("agent workflow failed: %v", err)
+	}
+	var result workflows.AgentWorkflowResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatalf("get result: %v", err)
+	}
+	if result.Status != domain.ExecutionStatusSucceeded ||
+		result.TurnCount != 2 ||
+		len(result.ToolsUsed) != 1 ||
+		result.ToolsUsed[0] != domain.ToolTypeWrite ||
+		len(result.FilesTouched) != 1 ||
+		result.FilesTouched[0] != "/tmp/agent.txt" ||
+		len(result.Processes) != 1 ||
+		result.Processes[0].ID != "proc-1" ||
+		result.Processes[0].Status != domain.ProcessStatusStopped {
+		t.Fatalf("unexpected agent result: %#v", result)
 	}
 	env.AssertExpectations(t)
 }

@@ -683,6 +683,7 @@ func (a *Adapter) Report(ctx context.Context, event domain.Event, report domain.
 			return nil, err
 		}
 		if receipt := discordReportReceipt(event, sent); receipt.MessageID != "" || receipt.ThreadID != "" {
+			receipt.Body = chunk
 			receipts = append(receipts, receipt)
 		}
 		closeDiscordFiles(closers)

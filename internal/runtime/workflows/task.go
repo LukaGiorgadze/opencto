@@ -142,7 +142,16 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 
 		lastResults = nil
 		for _, choice := range toolChoices {
-			execResult, canceled, interrupted, signalEvents, err := executeToolStep(ctx, toolCtx, persistenceCtx, input.ProjectID, next.WorkItemID, input.Event, choice, cycle, &additionalEvents)
+			var execResult activities.ExecuteToolResult
+			var canceled bool
+			var interrupted bool
+			var signalEvents []taskSignalEvent
+			var err error
+			if choice.Type == domain.ToolTypeAgent {
+				execResult, canceled, interrupted, signalEvents, err = executeAgentWorkflowStep(ctx, input.ProjectID, next.WorkItemID, input.Event, choice, cycle, &additionalEvents)
+			} else {
+				execResult, canceled, interrupted, signalEvents, err = executeToolStep(ctx, toolCtx, persistenceCtx, input.ProjectID, next.WorkItemID, input.Event, choice, cycle, &additionalEvents)
+			}
 			mergeTaskProcesses(&processes, execResult.Processes)
 			if err := persistTaskSignalEvents(persistenceCtx, signalEvents); err != nil {
 				return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)
