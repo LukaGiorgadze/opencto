@@ -14,7 +14,7 @@ const (
 	WorkflowCreateToolDescription = `Create a new scheduled workflow by delegating authoring to a durable sub-agent.
 
 Only for new workflows. Fails if workflow_id is already registered.
-Provide a self-contained prompt with the desired schedule, behavior, state handling, credentials/env names, and validation expectations.
+Provide a self-contained prompt with the desired schedule, behavior, state handling, credential requirements, and validation expectations.
 Do not provide workflow.yml, step definitions, or source files in this tool call. The child agent authors workflow.yml and source files on disk; OpenCTO validates, commits, and schedules the final bundle.`
 
 	WorkflowUpdateToolDescription = `Update an existing scheduled workflow by delegating authoring to a durable sub-agent.

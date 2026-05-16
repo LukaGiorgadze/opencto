@@ -51,7 +51,6 @@ func WorkflowRunWorkflow(ctx workflow.Context, input workflowrun.Input) error {
 			RunID:      prepared.RunID,
 			RunPath:    prepared.RunPath,
 			Step:       step,
-			Env:        prepared.Manifest.Env,
 		}).Get(ctx, &result)
 		if err != nil {
 			return completeAndNotifyWorkflowFailure(ctx, input, prepared.RunID, prepared.RunPath, workflowFailureMessage(err), prepared.Manifest.NotificationPolicy.OnFailure)

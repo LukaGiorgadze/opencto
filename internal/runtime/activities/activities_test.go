@@ -3663,7 +3663,6 @@ func TestPrepareWorkflowRunUsesExecutionRunID(t *testing.T) {
 			CatchupWindow: "10m",
 		},
 		NotificationPolicy: workflowbundle.NotificationPolicy{OnFailure: true},
-		Env:                []string{},
 		Steps: []workflowbundle.Step{{
 			ID:                  "check",
 			Command:             "sh",
@@ -3820,7 +3819,7 @@ func TestCleanupWorkflowRunsDoesNotDeleteActiveOlderSnapshot(t *testing.T) {
 	}
 }
 
-func TestWorkflowStepEnvironmentSetsGlobalAssignmentsAndRunPaths(t *testing.T) {
+func TestWorkflowStepEnvironmentSetsRunPaths(t *testing.T) {
 	t.Setenv("OPENCTO_WORKSPACE", "/inherited")
 	t.Setenv("OPENCTO_RUN_DIR", "/old-run")
 
@@ -3829,15 +3828,11 @@ func TestWorkflowStepEnvironmentSetsGlobalAssignmentsAndRunPaths(t *testing.T) {
 		WorkflowID: "finance-check",
 		RunID:      "run-1",
 		RunPath:    runPath,
-		Env:        []string{"GLOBAL_FLAG=on"},
 	}
 
 	env, err := workflowStepEnvironment("/workspace", request)
 	if err != nil {
 		t.Fatalf("workflow step environment: %v", err)
-	}
-	if got := envValue(env, "GLOBAL_FLAG"); got != "on" {
-		t.Fatalf("expected GLOBAL_FLAG assignment, got %q", got)
 	}
 	for name, want := range map[string]string{
 		"OPENCTO_WORKFLOWS_DIR":     filepath.Join("/workspace", "workflows"),
@@ -3852,22 +3847,6 @@ func TestWorkflowStepEnvironmentSetsGlobalAssignmentsAndRunPaths(t *testing.T) {
 		if got := envValue(env, name); got != "" {
 			t.Fatalf("expected %s to be stripped, got %q", name, got)
 		}
-	}
-}
-
-func TestWorkflowStepEnvironmentRejectsNonAssignmentEnv(t *testing.T) {
-	request := workflowrun.ExecuteStepRequest{WorkflowID: "finance-check", RunPath: "/tmp/run", Env: []string{"MISSING_TOKEN"}}
-
-	if _, err := workflowStepEnvironment("/workspace", request); err == nil {
-		t.Fatal("expected non-assignment env to fail")
-	}
-}
-
-func TestWorkflowStepEnvironmentRejectsTemplateEnv(t *testing.T) {
-	request := workflowrun.ExecuteStepRequest{WorkflowID: "finance-check", RunPath: "/tmp/run", Env: []string{"PAYLOAD={{steps.check.stdout}}"}}
-
-	if _, err := workflowStepEnvironment("/workspace", request); err == nil {
-		t.Fatal("expected template env to fail")
 	}
 }
 
@@ -3889,7 +3868,6 @@ func TestExecuteWorkflowStepCreatesStepArtifactDirectory(t *testing.T) {
 				`dir="$OPENCTO_WORKFLOW_RUN_DIR/artifacts" && test -d "$dir" && printf '{"ok":true}\n' > "$dir/payload.json"`,
 			},
 		},
-		Env: []string{"GLOBAL_FLAG=on"},
 	})
 	if err != nil {
 		t.Fatalf("execute workflow step: %v", err)

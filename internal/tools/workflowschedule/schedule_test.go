@@ -29,7 +29,6 @@ func testWorkflowManifest(name string) workflowbundle.Manifest {
 			CatchupWindow: "5m",
 		},
 		NotificationPolicy: workflowbundle.NotificationPolicy{OnFailure: true},
-		Env:                []string{},
 		Steps: []workflowbundle.Step{{
 			ID:                  "check",
 			Command:             "python3",
@@ -102,7 +101,6 @@ func TestWorkflowCreateCommitsBundleAndCreatesTemporalSchedule(t *testing.T) {
 			CatchupWindow: "5m",
 		},
 		NotificationPolicy: workflowbundle.NotificationPolicy{OnFailure: true},
-		Env:                []string{"GITHUB_TOKEN=dummy"},
 		Steps: []workflowbundle.Step{{
 			ID:                  "download",
 			Command:             "python",
@@ -203,7 +201,6 @@ func TestWorkflowUpdateCommitsDirtyWorkflowFiles(t *testing.T) {
 	}
 
 	manifest := testWorkflowManifest("finance2049 availability")
-	manifest.Env = []string{"CHECK_TOKEN=dummy"}
 	manifest.Steps[0].RetryPolicy.MaximumAttempts = 2
 	created := createAuthoredWorkflow(t, ctx, executor, "finance2049", manifest, []workflowbundle.File{{
 		Path:    "src/check_site.py",
@@ -249,13 +246,6 @@ func TestWorkflowUpdateCommitsDirtyWorkflowFiles(t *testing.T) {
 	snapshot := t.TempDir()
 	if err := workflowbundle.ArchiveCommit(ctx, workflowPath, updated.CommitHash, snapshot); err != nil {
 		t.Fatalf("archive updated commit: %v", err)
-	}
-	archivedManifest, err := workflowbundle.LoadManifest(snapshot)
-	if err != nil {
-		t.Fatalf("load archived manifest: %v", err)
-	}
-	if len(archivedManifest.Env) != 1 || archivedManifest.Env[0] != "CHECK_TOKEN=dummy" {
-		t.Fatalf("expected sparse update to preserve env, got %#v", archivedManifest.Env)
 	}
 	source, err := os.ReadFile(filepath.Join(snapshot, "src", "check_site.py"))
 	if err != nil {
@@ -347,7 +337,6 @@ func TestWorkflowUpdatePublishesAuthoredManifestChanges(t *testing.T) {
 	workspaceRoot := t.TempDir()
 	executor, _, _ := newWorkflowTestExecutor(t, workspaceRoot)
 	manifest := testWorkflowManifest("finance2049 availability")
-	manifest.Env = []string{"CHECK_TOKEN=dummy"}
 	createAuthoredWorkflow(t, ctx, executor, "finance2049", manifest, []workflowbundle.File{{
 		Path:    "src/check_site.py",
 		Content: "print('old')\n",
@@ -358,7 +347,6 @@ func TestWorkflowUpdatePublishesAuthoredManifestChanges(t *testing.T) {
 	}
 	manifest.Description = ""
 	manifest.NotificationPolicy.OnFailure = false
-	manifest.Env = []string{}
 	if err := workflowbundle.WriteManifest(workflowPath, manifest); err != nil {
 		t.Fatalf("write authored manifest update: %v", err)
 	}
@@ -378,7 +366,7 @@ func TestWorkflowUpdatePublishesAuthoredManifestChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load archived manifest: %v", err)
 	}
-	if archivedManifest.Description != "" || archivedManifest.NotificationPolicy.OnFailure || len(archivedManifest.Env) != 0 {
+	if archivedManifest.Description != "" || archivedManifest.NotificationPolicy.OnFailure {
 		t.Fatalf("expected optional fields to be cleared, got %#v", archivedManifest)
 	}
 }

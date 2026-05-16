@@ -34,7 +34,7 @@ func TestWorkflowUpdateSchemaIsAuthoringPromptOnly(t *testing.T) {
 			t.Fatalf("WorkflowUpdate schema missing field %q", field)
 		}
 	}
-	for _, field := range []string{"name", "description", "schedule", "notification_policy", "env", "steps", "files"} {
+	for _, field := range []string{"name", "description", "schedule", "notification_policy", "steps", "files"} {
 		if _, ok := schema.Properties[field]; ok {
 			t.Fatalf("WorkflowUpdate schema should not expose manifest field %q", field)
 		}
@@ -59,7 +59,7 @@ func TestWorkflowCreateSchemaIsAuthoringPromptOnly(t *testing.T) {
 			t.Fatalf("WorkflowCreate schema missing field %q", field)
 		}
 	}
-	for _, field := range []string{"description", "notification_policy", "env", "steps", "files", "paused", "note"} {
+	for _, field := range []string{"description", "notification_policy", "steps", "files", "paused", "note"} {
 		if _, ok := schema.Properties[field]; ok {
 			t.Fatalf("WorkflowCreate schema should not expose manifest field %q", field)
 		}

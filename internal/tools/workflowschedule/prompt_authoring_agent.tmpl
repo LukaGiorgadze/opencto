@@ -104,8 +104,6 @@ OPENCTO_WORKFLOW_DATA_DIR — persistent data directory at OPENCTO_WORKFLOWS_DIR
                             Use for state or outputs future scheduled runs must read.
 ```
 
-Custom env variables are defined in `workflow.yml` under `env` as literal `NAME=value` entries. They are injected into every step alongside the runtime variables above.
-
 ## Exact workflow.yml Shape
 
 Use this shape. Keep empty fields explicitly present where shown.
@@ -121,6 +119,7 @@ Each step runs as a Temporal activity. Keep every step single-purpose, bounded, 
 - Steps must be idempotent or tolerate repeated execution without duplicating irreversible effects. Use deterministic keys, upserts, checkpointing, or duplicate guards when writing external state.
 - `command`: executable only. `args`: its arguments. Never repeat the executable in `args`.
 - Optional fields may be omitted: `args` for workflow-local executables, `schedule_to_close_timeout`, `retry_policy`. Omitted retry settings use runtime defaults.
+- Do not add an `env` field to `workflow.yml`; manifest-level custom env assignments are not supported.
 - Do not write schedulers, workers, queues, daemons, or orchestration framework code in workflow source.
 - Do not use template syntax such as `{{ "{{" }}steps.check.stdout{{ "}}" }}` anywhere in `workflow.yml`.
 
@@ -181,8 +180,6 @@ schedule:
   pause_on_failure: false
 notification_policy:
   on_failure: true
-env:
-  - GITHUB_REPO=owner/repo
 steps:
   - id: fetch
     command: python3
@@ -210,7 +207,6 @@ Why this is good:
 - Each step has one responsibility and is safe to retry independently.
 - `fetch` writes to `OPENCTO_WORKFLOW_RUN_DIR/artifacts/` for same-run sharing.
 - `append` reads that artifact and writes durable state to `OPENCTO_WORKFLOW_DATA_DIR/`.
-- `env` contains only literal configuration.
 - No source code under `data/`, `artifacts/`, or ignored paths.
 
 ### Bad folder structure
@@ -229,9 +225,6 @@ $OPENCTO_WORKSPACE/workflows/github-stargazers/
 ### Bad workflow.yml
 
 ```yaml
-env:
-  - OPENCTO_RUN_DIR=/tmp/run        # reserved name
-  - NEXT_PAGE={{ "{{" }}steps.fetch.stdout{{ "}}" }} # template syntax not supported
 steps:
   - id: fetch-and-append
     command: python3 src/fetch_stargazers.py   # executable + path in command
@@ -240,8 +233,6 @@ steps:
 ```
 
 Why this is bad:
-- `OPENCTO_*` env names are reserved.
-- Template syntax is not supported.
 - `command` must be the executable only; path belongs in `args`.
 - `args` repeats the executable.
 - One step combines two responsibilities, making targeted retries impossible.

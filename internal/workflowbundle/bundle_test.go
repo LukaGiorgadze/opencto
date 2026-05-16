@@ -127,34 +127,6 @@ func TestValidateManifestRejectsRepeatedExecutableArgument(t *testing.T) {
 	}
 }
 
-func TestValidateManifestRequiresEnvAssignments(t *testing.T) {
-	t.Parallel()
-
-	manifest := testManifest()
-	manifest.Env = []string{"API_TOKEN"}
-	err := ValidateManifest(manifest)
-	if err == nil {
-		t.Fatal("expected env entry without assignment to be rejected")
-	}
-	if !strings.Contains(err.Error(), "must be NAME=value") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestValidateManifestRejectsEnvTemplates(t *testing.T) {
-	t.Parallel()
-
-	manifest := testManifest()
-	manifest.Env = []string{"PAYLOAD={{steps.check.stdout}}"}
-	err := ValidateManifest(manifest)
-	if err == nil {
-		t.Fatal("expected env template syntax to be rejected")
-	}
-	if !strings.Contains(err.Error(), "template syntax") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 func TestValidateManifestRejectsUnsupportedNonRetryableErrorType(t *testing.T) {
 	t.Parallel()
 
@@ -193,7 +165,6 @@ schedule:
   pause_on_failure: false
 notification_policy:
   on_failure: true
-env: []
 steps:
   - id: step
     command: echo
@@ -230,7 +201,6 @@ schedule:
   pause_on_failure: false
 notification_policy:
   on_failure: true
-env: []
 steps:
   - id: step
     command: echo
@@ -270,7 +240,6 @@ schedule:
   pause_on_failure: false
 notification_policy:
   on_failure: true
-env: []
 steps:
   - id: step
     command: src/check.sh
@@ -309,7 +278,6 @@ schedule:
   pause_on_failure: false
 notification_policy:
   on_failure: true
-env: []
 steps:
   - id: step
     command: python3
@@ -340,7 +308,6 @@ schedule:
   catchup_window: 10m
   pause_on_failure: false
 notification_policy: {}
-env: []
 steps:
   - id: step
     command: echo
@@ -519,7 +486,6 @@ func TestParseOptionalDurationRejectsNegativeDuration(t *testing.T) {
 func testManifest() Manifest {
 	return Manifest{
 		Name: "test workflow",
-		Env:  []string{},
 		Schedule: Schedule{
 			Cron:          "0 9 * * *",
 			OverlapPolicy: OverlapPolicySkip,

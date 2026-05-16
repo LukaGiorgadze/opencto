@@ -48,7 +48,6 @@ type Manifest struct {
 	Description        string             `json:"description" yaml:"description"`
 	Schedule           Schedule           `json:"schedule" yaml:"schedule"`
 	NotificationPolicy NotificationPolicy `json:"notification_policy" yaml:"notification_policy"`
-	Env                []string           `json:"env" yaml:"env"`
 	Steps              []Step             `json:"steps" yaml:"steps"`
 }
 
@@ -269,7 +268,6 @@ func validateManifestYAMLRequiredFields(data []byte) error {
 		"description",
 		"schedule",
 		"notification_policy",
-		"env",
 		"steps",
 	}); err != nil {
 		return err
@@ -482,14 +480,6 @@ func ValidateManifest(manifest Manifest) error {
 	if strings.TrimSpace(manifest.Name) == "" {
 		return ErrWorkflowNameRequired
 	}
-	if manifest.Env == nil {
-		return fmt.Errorf("env is required; use [] when the workflow has no global env assignments")
-	}
-	for index, envVar := range manifest.Env {
-		if _, _, err := ParseEnvAssignment(envVar); err != nil {
-			return fmt.Errorf("env[%d]: %w", index, err)
-		}
-	}
 	cron := strings.TrimSpace(manifest.Schedule.Cron)
 	oneShot := strings.TrimSpace(manifest.Schedule.OneShotAt)
 	switch {
@@ -609,31 +599,6 @@ func cleanStrings(values []string) []string {
 		}
 	}
 	return cleaned
-}
-
-func ParseEnvAssignment(value string) (string, string, error) {
-	assignment := strings.TrimSpace(value)
-	if assignment == "" {
-		return "", "", fmt.Errorf("env assignment is required")
-	}
-	if strings.Contains(assignment, "{{") || strings.Contains(assignment, "}}") {
-		return "", "", fmt.Errorf("env assignment must not use template syntax")
-	}
-	name, envValue, ok := strings.Cut(assignment, "=")
-	if !ok {
-		return "", "", fmt.Errorf("env assignment %q must be NAME=value", value)
-	}
-	name = strings.TrimSpace(name)
-	if !envNamePattern.MatchString(name) {
-		return "", "", fmt.Errorf("env name %q must match %s", name, envNamePattern.String())
-	}
-	if strings.HasPrefix(name, "OPENCTO_") {
-		return "", "", fmt.Errorf("env name %q is reserved for OpenCTO runtime variables", name)
-	}
-	if strings.ContainsRune(envValue, 0) {
-		return "", "", fmt.Errorf("env value for %q must not contain NUL", name)
-	}
-	return name, envValue, nil
 }
 
 func NormalizeStepID(value string) (string, error) {
@@ -828,9 +793,8 @@ func fullCommitHash(value string) bool {
 }
 
 var (
-	slugPattern    = regexp.MustCompile(`[^a-zA-Z0-9_.-]+`)
-	safeIDPattern  = regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`)
-	envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	slugPattern   = regexp.MustCompile(`[^a-zA-Z0-9_.-]+`)
+	safeIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`)
 )
 
 func slugify(value string) string {

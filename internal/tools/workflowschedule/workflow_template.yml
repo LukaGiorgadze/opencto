@@ -8,7 +8,6 @@ schedule:
     pause_on_failure: false
 notification_policy:
     on_failure: true
-env: [] # or ["NAME=value"]
 steps:
     - id: step-id
       command: python3
