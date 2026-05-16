@@ -771,23 +771,29 @@ func (e *TemporalExecutor) authoringPlan(operation, workflowID, workflowPath str
 }
 
 func (e *TemporalExecutor) CleanupAuthoring(ctx context.Context, plan AuthoringPlan) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if strings.TrimSpace(plan.WorkflowPath) == "" {
-		return nil
-	}
-	if plan.RemoveOnFailure {
-		return os.RemoveAll(plan.WorkflowPath)
-	}
-	if strings.TrimSpace(plan.RestoreCommitHash) == "" {
-		return nil
-	}
-	if _, err := gitOutput(ctx, plan.WorkflowPath, "reset", "--hard", strings.TrimSpace(plan.RestoreCommitHash)); err != nil {
+	// TODO: Temporarily hide workflow authoring cleanup so failed agent runs leave
+	// the authored bundle on disk for debugging. Re-enable this once the
+	// workflow-authoring prompt and validation loop are stable.
+	/*
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if strings.TrimSpace(plan.WorkflowPath) == "" {
+			return nil
+		}
+		if plan.RemoveOnFailure {
+			return os.RemoveAll(plan.WorkflowPath)
+		}
+		if strings.TrimSpace(plan.RestoreCommitHash) == "" {
+			return nil
+		}
+		if _, err := gitOutput(ctx, plan.WorkflowPath, "reset", "--hard", strings.TrimSpace(plan.RestoreCommitHash)); err != nil {
+			return err
+		}
+		_, err := gitOutput(ctx, plan.WorkflowPath, "clean", "-fd")
 		return err
-	}
-	_, err := gitOutput(ctx, plan.WorkflowPath, "clean", "-fd")
-	return err
+	*/
+	return nil
 }
 
 func defaultCommitMessage(operation, workflowID, commitMessage string) string {
@@ -816,43 +822,7 @@ func authoringAgentGoal(operation, workflowID string) string {
 }
 
 func authoringAgentPrompt(operation, workflowID, workflowPath, userPrompt, commitMessage string) string {
-	var builder strings.Builder
-	builder.WriteString("You are authoring an OpenCTO scheduled workflow bundle.\n\n")
-	builder.WriteString("Operation: ")
-	builder.WriteString(normalizeOperation(operation))
-	builder.WriteString("\nWorkflow ID: ")
-	builder.WriteString(strings.TrimSpace(workflowID))
-	builder.WriteString("\nWorkflow directory: ")
-	builder.WriteString(strings.TrimSpace(workflowPath))
-	builder.WriteString("\n\nUser request:\n")
-	builder.WriteString(strings.TrimSpace(userPrompt))
-	builder.WriteString("\n\nAuthoring rules:\n")
-	builder.WriteString("- Work only inside the workflow directory above.\n")
-	builder.WriteString("- Create or update workflow.yml and any source files needed by its steps.\n")
-	builder.WriteString("- Do not commit, create Temporal schedules, edit data/, or run long-lived schedulers/workers/daemons.\n")
-	builder.WriteString("- workflow.yml must define name, description, schedule, notification_policy, env, and steps.\n")
-	builder.WriteString("- env must be a YAML list. Use [] when no literal global env assignments are needed. Do not define OPENCTO_* env names.\n")
-	builder.WriteString("- Each step is executed by OpenCTO as an activity. Use command for only the executable and args for its arguments.\n")
-	builder.WriteString("- External commands such as python3 must put the script path in args and must not repeat the executable in args.\n")
-	builder.WriteString("- Each step needs start_to_close_timeout. Add retry_policy only when behavior requires it.\n")
-	builder.WriteString("- Same-run step communication must use $OPENCTO_WORKFLOW_RUN_DIR/artifacts/.\n")
-	builder.WriteString("- Cross-run state and durable outputs must use $OPENCTO_WORKFLOW_DATA_DIR/.\n")
-	builder.WriteString("- The workflow source at $OPENCTO_WORKFLOWS_DIR/{workflow_id} is read-only during runs.\n")
-	builder.WriteString("- Do not use removed runtime names: OPENCTO_RUN_DIR, OPENCTO_STEP_ID, OPENCTO_STEP_DIR, OPENCTO_WORKFLOW_ID, OPENCTO_RUN_ID.\n")
-	builder.WriteString("\nValidation before final response:\n")
-	builder.WriteString("- Read back workflow.yml after writing it.\n")
-	builder.WriteString("- Check that step boundaries match the requested data flow and state rules.\n")
-	builder.WriteString("- Run practical local checks for the source you wrote, such as syntax checks or unit-style dry runs with fake inputs.\n")
-	builder.WriteString("- If a check fails, fix the files and check again before final response.\n")
-	if strings.TrimSpace(commitMessage) != "" {
-		builder.WriteString("\nRequested commit message: ")
-		builder.WriteString(strings.TrimSpace(commitMessage))
-		builder.WriteString("\n")
-	}
-	builder.WriteString("\nFinal response requirements:\n")
-	builder.WriteString("- Only finish when workflow.yml and source files are ready for OpenCTO to validate and publish.\n")
-	builder.WriteString("- Briefly list the files created or changed and the checks run.\n")
-	return builder.String()
+	return PromptAuthoringAgent(normalizeOperation(operation), workflowID, workflowPath, userPrompt, commitMessage)
 }
 
 func (e *TemporalExecutor) workflowExists(ctx context.Context, projectID, workflowID, _ string) (bool, error) {
