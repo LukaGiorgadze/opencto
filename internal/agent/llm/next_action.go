@@ -35,6 +35,8 @@ type nextActionPromptData struct {
 	HostTimeZone       string
 	HostTimeZoneError  string
 	ChannelType        domain.ChannelType
+	SubAgentGoal       string
+	AllowedTools       []string
 }
 
 type memoryContextPromptData struct {
@@ -70,11 +72,15 @@ func (e *OpenAIEngine) NextAction(ctx context.Context, input agent.NextActionInp
 		return agent.NextActionOutput{}, err
 	}
 
-	response, err := e.reasoningModel.GenerateContent(
-		ctx,
-		messages,
-		llms.WithTools(toolregistry.LLMDefinitions()),
-	)
+	options := []llms.CallOption{}
+	tools := toolregistry.LLMDefinitions()
+	if input.RestrictTools {
+		tools = toolregistry.LLMDefinitionsForTypes(input.ToolAllowlist)
+	}
+	if len(tools) > 0 {
+		options = append(options, llms.WithTools(tools))
+	}
+	response, err := e.reasoningModel.GenerateContent(ctx, messages, options...)
 	if err != nil {
 		return agent.NextActionOutput{}, err
 	}
@@ -112,6 +118,9 @@ func buildNextActionMessagesWithContext(ctx context.Context, input agent.NextAct
 	}
 	if memory := memoryContextMessage(input.Context.Memory); memory != "" {
 		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, memory))
+	}
+	if summary := subAgentRunSummaryMessage(input.SubAgent); summary != "" {
+		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, summary))
 	}
 	summaryBudget, historyBudget := conversationContextBudgets(input.Context.ConversationMaxContextChars, len(input.Context.ConversationSummaries) > 0)
 	if summaries := conversationSummaryContextMessage(input.Context.ConversationSummaries, summaryBudget); summaries != "" {
@@ -185,7 +194,41 @@ func renderNextActionPrompt(input agent.NextActionInput) (string, error) {
 		ChannelType:        input.ChannelType,
 	}
 
+	if input.SubAgent != nil {
+		data.SubAgentGoal = strings.TrimSpace(input.SubAgent.Goal)
+		data.AllowedTools = toolTypeNames(input.ToolAllowlist)
+		return prompts.Render("sub_agent.tmpl", data)
+	}
+
 	return prompts.Render("next_action.tmpl", data)
+}
+
+func subAgentRunSummaryMessage(context *agent.SubAgentContext) string {
+	if context == nil {
+		return ""
+	}
+	summary := strings.TrimSpace(context.RunSummary)
+	if summary == "" {
+		return ""
+	}
+	return prompts.MustRender("sub_agent_run_summary.tmpl", map[string]any{
+		"Summary": summary,
+	})
+}
+
+func toolTypeNames(values []domain.ToolType) []string {
+	names := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		name := strings.TrimSpace(string(value))
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func additionalUserMessages(ctx context.Context, events []domain.Event, imageResolver *media.ImageResolver) ([]llms.MessageContent, error) {
@@ -896,6 +939,8 @@ func nextActionToolOutput(choice *llms.ContentChoice, input agent.NextActionInpu
 		Context:        input.Context,
 		Runtime:        input.Runtime,
 		ExecutionCycle: input.ExecutionCycle,
+		ToolAllowlist:  input.ToolAllowlist,
+		RestrictTools:  input.RestrictTools,
 	}
 	toolChoices, err := toolChoicesFromToolCalls(choice.ToolCalls, selectionInput)
 	if err != nil {

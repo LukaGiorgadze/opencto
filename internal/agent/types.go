@@ -104,6 +104,8 @@ type ToolSelectionInput struct {
 	Context        Context
 	Runtime        RuntimeContext
 	ExecutionCycle int
+	ToolAllowlist  []domain.ToolType
+	RestrictTools  bool
 }
 
 type NextActionInput struct {
@@ -117,6 +119,16 @@ type NextActionInput struct {
 	LastObservation    *ExecutionFeedback
 	ObservationHistory []ExecutionFeedback
 	ChannelType        domain.ChannelType
+	SubAgent           *SubAgentContext
+	ToolAllowlist      []domain.ToolType
+	RestrictTools      bool
+}
+
+type SubAgentContext struct {
+	Goal       string `json:"goal"`
+	Prompt     string `json:"prompt,omitempty"`
+	RunSummary string `json:"run_summary,omitempty"`
+	RunID      string `json:"run_id,omitempty"`
 }
 
 type Engine interface {
@@ -136,4 +148,20 @@ type ConversationCompressionOutput struct {
 
 type ConversationCompressor interface {
 	CompressConversation(context.Context, ConversationCompressionInput) (ConversationCompressionOutput, error)
+}
+
+type AgentObservationCompressionInput struct {
+	ProjectID       string              `json:"project_id"`
+	Goal            string              `json:"goal,omitempty"`
+	PreviousSummary string              `json:"previous_summary,omitempty"`
+	Observations    []ExecutionFeedback `json:"observations,omitempty"`
+	MaxSummaryChars int                 `json:"max_summary_chars"`
+}
+
+type AgentObservationCompressionOutput struct {
+	Summary string `json:"summary"`
+}
+
+type AgentObservationCompressor interface {
+	CompressAgentObservations(context.Context, AgentObservationCompressionInput) (AgentObservationCompressionOutput, error)
 }

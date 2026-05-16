@@ -12,6 +12,7 @@ import (
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
 	toolregistry "github.com/opencto/opencto/internal/tools"
+	agenttool "github.com/opencto/opencto/internal/tools/agenttool"
 	edittool "github.com/opencto/opencto/internal/tools/edit"
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
@@ -58,9 +59,18 @@ func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) 
 	if !ok {
 		return agent.ToolChoice{}, fmt.Errorf("unsupported tool call %q", call.FunctionCall.Name)
 	}
+	if input.RestrictTools && !toolTypeAllowed(definition.Type, input.ToolAllowlist) {
+		return agent.ToolChoice{}, fmt.Errorf("tool %q is not allowed in this agent context", definition.Type)
+	}
 
 	raw := json.RawMessage(strings.TrimSpace(call.FunctionCall.Arguments))
 	switch definition.Type {
+	case domain.ToolTypeAgent:
+		var args agenttool.Request
+		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
+			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
+		}
+		return agentToolChoiceFromInput(definition, call, raw, input, args), nil
 	case domain.ToolTypeExec:
 		var args execToolInput
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
@@ -174,6 +184,36 @@ func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) 
 		return structuredToolChoiceFromInput(definition, call, raw, input, skilltool.PromptSummary(args.SkillID)), nil
 	default:
 		return agent.ToolChoice{}, fmt.Errorf("unsupported tool type %q for call %q", definition.Type, call.FunctionCall.Name)
+	}
+}
+
+func toolTypeAllowed(toolType domain.ToolType, allowed []domain.ToolType) bool {
+	for _, item := range allowed {
+		if item == toolType {
+			return true
+		}
+	}
+	return false
+}
+
+func agentToolChoiceFromInput(definition toolregistry.Definition, call llms.ToolCall, raw json.RawMessage, input agent.ToolSelectionInput, args agenttool.Request) agent.ToolChoice {
+	summary := agenttool.PromptSummary(args.Goal)
+	return agent.ToolChoice{
+		ToolCallID:   call.ID,
+		Type:         definition.Type,
+		Intent:       firstNonEmpty(summary, strings.TrimSpace(input.Context.Event.Body)),
+		Input:        cloneRawMessage(raw),
+		WorkingDir:   strings.TrimSpace(input.Runtime.WorkspaceRoot),
+		TimeoutMs:    clampToolTimeoutMs(0),
+		RunMode:      domain.ToolRunModeWaitForExit,
+		Idempotency:  domain.ToolIdempotencyNonIdempotent,
+		ProcessScope: domain.ProcessScopeStopOnFinish,
+		InputSummary: firstNonEmpty(summary, strings.TrimSpace(input.Context.Event.Body)),
+		Destructive:  false,
+		Metadata: map[string]string{
+			"model_tool":   definition.Name,
+			"tool_call_id": call.ID,
+		},
 	}
 }
 

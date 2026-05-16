@@ -6,6 +6,7 @@ import (
 	"github.com/tmc/langchaingo/llms"
 
 	"github.com/opencto/opencto/internal/domain"
+	agenttool "github.com/opencto/opencto/internal/tools/agenttool"
 	edittool "github.com/opencto/opencto/internal/tools/edit"
 	exectool "github.com/opencto/opencto/internal/tools/exec"
 	globtool "github.com/opencto/opencto/internal/tools/glob"
@@ -35,6 +36,12 @@ var definitions = []Definition{
 		Type:        domain.ToolTypeExec,
 		Description: exectool.ExecToolDescription,
 		Schema:      exectool.ExecToolSchema(),
+	},
+	{
+		Name:        agenttool.AgentToolName,
+		Type:        domain.ToolTypeAgent,
+		Description: agenttool.AgentToolDescription,
+		Schema:      agenttool.AgentToolSchema(),
 	},
 	{
 		Name:        readtool.ReadToolName,
@@ -146,7 +153,45 @@ func ToolResultProcessors() []postprocess.Processor {
 }
 
 func LLMDefinitions() []llms.Tool {
+	return llmDefinitionsFromDefinitions(Definitions())
+}
+
+func LLMDefinitionsForTypes(allowed []domain.ToolType) []llms.Tool {
+	if len(allowed) == 0 {
+		return nil
+	}
+	allowedSet := make(map[domain.ToolType]bool, len(allowed))
+	for _, toolType := range allowed {
+		allowedSet[toolType] = true
+	}
 	registered := Definitions()
+	filtered := make([]Definition, 0, len(registered))
+	for _, definition := range registered {
+		if allowedSet[definition.Type] {
+			filtered = append(filtered, definition)
+		}
+	}
+	return llmDefinitionsFromDefinitions(filtered)
+}
+
+func ModelToolTypes(includeAgent bool) []domain.ToolType {
+	registered := Definitions()
+	types := make([]domain.ToolType, 0, len(registered))
+	for _, definition := range registered {
+		if !includeAgent && definition.Type == domain.ToolTypeAgent {
+			continue
+		}
+		types = append(types, definition.Type)
+	}
+	return types
+}
+
+func SupportsToolType(toolType domain.ToolType) bool {
+	_, ok := DefinitionByType(toolType)
+	return ok
+}
+
+func llmDefinitionsFromDefinitions(registered []Definition) []llms.Tool {
 	tools := make([]llms.Tool, 0, len(registered))
 	for _, definition := range registered {
 		tools = append(tools, llms.Tool{
@@ -164,7 +209,7 @@ func LLMDefinitions() []llms.Tool {
 
 func strictForDefinition(definition Definition) bool {
 	switch definition.Type {
-	case domain.ToolTypeWorkflowCreate, domain.ToolTypeWorkflowUpdate, domain.ToolTypeWorkflowDelete, domain.ToolTypeWorkflowOperation:
+	case domain.ToolTypeAgent, domain.ToolTypeWorkflowCreate, domain.ToolTypeWorkflowUpdate, domain.ToolTypeWorkflowDelete, domain.ToolTypeWorkflowOperation:
 		return false
 	default:
 		return true

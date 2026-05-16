@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["goal", "prompt"],
+  "additionalProperties": false,
+  "properties": {
+    "goal": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Short outcome the sub-agent should accomplish."
+    },
+    "prompt": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Self-contained dynamic context and instructions for the sub-agent. Include the task, relevant paths, constraints, and expected final report."
+    },
+    "allowed_tools": {
+      "type": "array",
+      "uniqueItems": true,
+      "description": "Optional domain.ToolType allowlist for the sub-agent. Omit to allow every normal tool except Agent. Recursive Agent calls are never allowed.",
+      "items": {
+        "type": "string",
+        "enum": [
+          "Exec",
+          "Read",
+          "Edit",
+          "Write",
+          "Glob",
+          "Grep",
+          "MemoryProposeAdd",
+          "MemorySearch",
+          "MemoryList",
+          "MemoryProposeUpdate",
+          "MemoryProposeForget",
+          "WorkflowCreate",
+          "WorkflowUpdate",
+          "WorkflowDelete",
+          "WorkflowOperation",
+          "Skill"
+        ]
+      }
+    },
+    "max_turns": {
+      "type": "integer",
+      "minimum": 2,
+      "maximum": 100,
+      "description": "Optional number of sub-agent LLM turns before forcing a final response. Omit to use the default of 50."
+    }
+  }
+}

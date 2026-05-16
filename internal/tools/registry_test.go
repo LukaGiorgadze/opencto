@@ -14,8 +14,8 @@ func TestDefinitionsIncludeDedicatedTools(t *testing.T) {
 	t.Parallel()
 
 	definitions := Definitions()
-	if len(definitions) != 16 {
-		t.Fatalf("expected sixteen tool definitions, got %d", len(definitions))
+	if len(definitions) != 17 {
+		t.Fatalf("expected seventeen tool definitions, got %d", len(definitions))
 	}
 
 	definition := definitions[0]
@@ -40,6 +40,7 @@ func TestDefinitionsIncludeDedicatedTools(t *testing.T) {
 		seen[definition.Type] = true
 	}
 	for _, toolType := range []domain.ToolType{
+		domain.ToolTypeAgent,
 		domain.ToolTypeExec,
 		domain.ToolTypeRead,
 		domain.ToolTypeEdit,
@@ -70,8 +71,8 @@ func TestLLMDefinitionsUseCommandNameAndDescription(t *testing.T) {
 	t.Parallel()
 
 	definitions := LLMDefinitions()
-	if len(definitions) != 16 || definitions[0].Function == nil {
-		t.Fatalf("expected sixteen function definitions, got %#v", definitions)
+	if len(definitions) != 17 || definitions[0].Function == nil {
+		t.Fatalf("expected seventeen function definitions, got %#v", definitions)
 	}
 
 	function := definitions[0].Function
@@ -118,6 +119,30 @@ func TestDefinitionsDeepCopySchema(t *testing.T) {
 	third := Definitions()
 	if third[0].Schema[0] != original {
 		t.Fatalf("mutating cloned Schema should not alter registry state")
+	}
+}
+
+func TestLLMDefinitionsForTypesFiltersTools(t *testing.T) {
+	t.Parallel()
+
+	definitions := LLMDefinitionsForTypes([]domain.ToolType{domain.ToolTypeRead, domain.ToolTypeGrep})
+	if len(definitions) != 2 {
+		t.Fatalf("expected two definitions, got %d", len(definitions))
+	}
+	names := []string{definitions[0].Function.Name, definitions[1].Function.Name}
+	sort.Strings(names)
+	if strings.Join(names, ",") != "Grep,Read" {
+		t.Fatalf("unexpected filtered tool names: %v", names)
+	}
+}
+
+func TestModelToolTypesCanExcludeAgent(t *testing.T) {
+	t.Parallel()
+
+	for _, toolType := range ModelToolTypes(false) {
+		if toolType == domain.ToolTypeAgent {
+			t.Fatalf("Agent should be excluded from child model tool types")
+		}
 	}
 }
 

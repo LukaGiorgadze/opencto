@@ -22,6 +22,7 @@ import (
 	"github.com/opencto/opencto/internal/media"
 	"github.com/opencto/opencto/internal/skills"
 	toolregistry "github.com/opencto/opencto/internal/tools"
+	agenttool "github.com/opencto/opencto/internal/tools/agenttool"
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	memorytool "github.com/opencto/opencto/internal/tools/memory"
@@ -64,6 +65,15 @@ func messageText(message llms.MessageContent) string {
 		}
 	}
 	return strings.Join(parts, "")
+}
+
+func messagesContainText(messages []llms.MessageContent, text string) bool {
+	for _, message := range messages {
+		if strings.Contains(messageText(message), text) {
+			return true
+		}
+	}
+	return false
 }
 
 func countImageParts(message llms.MessageContent) int {
@@ -1418,6 +1428,43 @@ func TestNextActionReturnsSingleToolChoice(t *testing.T) {
 	}
 }
 
+func TestNextActionSubAgentUsesRestrictedToolsAndPrompt(t *testing.T) {
+	t.Parallel()
+
+	model := &recordingToolModel{
+		response: &llms.ContentResponse{
+			Choices: []*llms.ContentChoice{{Content: "done"}},
+		},
+	}
+
+	engine := &OpenAIEngine{reasoningModel: model}
+	output, err := engine.NextAction(context.Background(), agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1"},
+			Event:   domain.Event{Body: "# Goal\nAudit\n\n# Task Context And Instructions\nCheck files."},
+		},
+		SubAgent:      &agent.SubAgentContext{Goal: "Audit", RunSummary: "Read README.md already."},
+		RestrictTools: true,
+		ToolAllowlist: []domain.ToolType{domain.ToolTypeRead},
+	})
+	if err != nil {
+		t.Fatalf("NextAction: %v", err)
+	}
+	if output.Status != "completed" {
+		t.Fatalf("expected completed output, got %#v", output)
+	}
+	if len(model.options.Tools) != 1 || model.options.Tools[0].Function.Name != "Read" {
+		t.Fatalf("expected only Read tool, got %#v", model.options.Tools)
+	}
+	if len(model.messages) == 0 || !strings.Contains(messageText(model.messages[0]), "OpenCTO sub-agent") || !strings.Contains(messageText(model.messages[0]), "Audit") {
+		t.Fatalf("sub-agent system prompt missing expected text: %#v", model.messages)
+	}
+	if !messagesContainText(model.messages, "Sub-agent run summary") || !messagesContainText(model.messages, "Read README.md already.") {
+		t.Fatalf("sub-agent run summary missing from context: %#v", model.messages)
+	}
+}
+
 func TestNextActionCombinesMultipleExecToolCalls(t *testing.T) {
 	t.Parallel()
 
@@ -1825,6 +1872,53 @@ func TestToolChoiceCapturesSkillInput(t *testing.T) {
 	}
 	if choice.Metadata["model_tool"] != skilltool.SkillToolName {
 		t.Fatalf("expected model tool metadata, got %#v", choice.Metadata)
+	}
+}
+
+func TestToolChoiceCapturesAgentInput(t *testing.T) {
+	t.Parallel()
+
+	choice, err := toolChoiceFromToolCall(llms.ToolCall{
+		ID:   "toolu_agent",
+		Type: "function",
+		FunctionCall: &llms.FunctionCall{
+			Name:      agenttool.AgentToolName,
+			Arguments: `{"goal":"Audit branch","prompt":"Check git state and report.","allowed_tools":["Exec"],"max_turns":3}`,
+		},
+	}, agent.ToolSelectionInput{
+		Runtime: agent.RuntimeContext{WorkspaceRoot: "/workspace"},
+	})
+	if err != nil {
+		t.Fatalf("tool choice: %v", err)
+	}
+	if choice.Type != domain.ToolTypeAgent {
+		t.Fatalf("expected Agent tool type, got %q", choice.Type)
+	}
+	if choice.RunMode != domain.ToolRunModeWaitForExit || choice.Idempotency != domain.ToolIdempotencyNonIdempotent {
+		t.Fatalf("unexpected Agent execution metadata: %#v", choice)
+	}
+	if choice.Metadata["model_tool"] != agenttool.AgentToolName {
+		t.Fatalf("expected model tool metadata, got %#v", choice.Metadata)
+	}
+}
+
+func TestToolChoiceRejectsDisallowedToolInRestrictedContext(t *testing.T) {
+	t.Parallel()
+
+	_, err := toolChoiceFromToolCall(llms.ToolCall{
+		ID:   "toolu_agent",
+		Type: "function",
+		FunctionCall: &llms.FunctionCall{
+			Name:      agenttool.AgentToolName,
+			Arguments: `{"goal":"Nested","prompt":"Try recursion."}`,
+		},
+	}, agent.ToolSelectionInput{
+		Runtime:       agent.RuntimeContext{WorkspaceRoot: "/workspace"},
+		RestrictTools: true,
+		ToolAllowlist: []domain.ToolType{domain.ToolTypeRead},
+	})
+	if err == nil || !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("expected disallowed tool error, got %v", err)
 	}
 }
 
