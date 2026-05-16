@@ -147,9 +147,7 @@ func Definitions() []Definition {
 }
 
 func ToolResultProcessors() []postprocess.Processor {
-	return []postprocess.Processor{
-		workflowscheduletool.NewWorkflowBundlePostProcessor(),
-	}
+	return nil
 }
 
 func LLMDefinitions() []llms.Tool {

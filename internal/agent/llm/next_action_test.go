@@ -539,7 +539,7 @@ func TestBuildNextActionMessagesIncludesCollaborationGuidance(t *testing.T) {
 		"For non-trivial work, use read-only tools first",
 		"ask one concise question",
 		"continue with the necessary work and verify before reporting success",
-		"Before any scheduled workflow action, load the `scheduled-workflows` skill",
+		"For scheduled workflow creation or updates, use `WorkflowCreate` or `WorkflowUpdate` with a self-contained prompt",
 		"`workflows/`: scheduled workflow source repositories",
 		"`workflow-runs/`: per-run workflow snapshots",
 	} {
@@ -1930,7 +1930,7 @@ func TestToolChoiceCapturesWorkflowCreateInput(t *testing.T) {
 		Type: "function",
 		FunctionCall: &llms.FunctionCall{
 			Name:      scheduletool.WorkflowCreateToolName,
-			Arguments: `{"workflow_id":"daily-hello","name":"daily hello","description":"","schedule":{"cron":"0 9 * * *","one_shot_at":"","overlap_policy":"skip","catchup_window":"10m","pause_on_failure":false},"notification_policy":{"on_failure":true},"env":[],"steps":[{"id":"hello","command":"sh","args":["src/hello.sh"],"start_to_close_timeout":"1m","schedule_to_close_timeout":"","retry_policy":{"initial_interval":"","backoff_coefficient":0,"maximum_interval":"","maximum_attempts":1,"non_retryable_error_types":[]}}],"files":[{"path":"src/hello.sh","content":"echo hello\n","executable":true}],"commit_message":"","paused":false,"note":""}`,
+			Arguments: `{"workflow_id":"daily-hello","prompt":"Create a workflow that runs every morning at 9 and sends hello.","commit_message":"Create daily hello workflow"}`,
 		},
 	}, agent.ToolSelectionInput{
 		Context: agent.Context{Event: domain.Event{Body: "every morning send hello"}},
@@ -1948,7 +1948,7 @@ func TestToolChoiceCapturesWorkflowCreateInput(t *testing.T) {
 	if choice.Metadata["model_tool"] != scheduletool.WorkflowCreateToolName {
 		t.Fatalf("expected workflow metadata, got %#v", choice.Metadata)
 	}
-	if !strings.Contains(string(choice.Input), `"cron":"0 9 * * *"`) {
+	if !strings.Contains(string(choice.Input), `"prompt":"Create a workflow`) {
 		t.Fatalf("expected raw workflow input to be preserved, got %s", choice.Input)
 	}
 }

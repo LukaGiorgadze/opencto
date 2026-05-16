@@ -183,6 +183,23 @@ func WriteBundle(ctx context.Context, dir string, manifest Manifest, files []Fil
 	return EnsureGitRepo(ctx, dir)
 }
 
+func InitializeBundle(ctx context.Context, dir string) error {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return fmt.Errorf("workflow directory is required")
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "src"), 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "data"), 0o755); err != nil {
+		return err
+	}
+	if err := ensureGitIgnore(dir); err != nil {
+		return err
+	}
+	return EnsureGitRepo(ctx, dir)
+}
+
 func WriteManifest(dir string, manifest Manifest) error {
 	manifest = normalizeManifestDefaults(manifest)
 	data, err := yaml.Marshal(manifest)

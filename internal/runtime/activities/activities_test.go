@@ -2605,36 +2605,9 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 	}}
 	activities.Schedule = scheduleExecutor
 	scheduleResult, err := activities.ExecuteTool(ctx, executeRequest(domain.ToolTypeWorkflowCreate, "schedule-1", map[string]any{
-		"workflow_id": "daily-hello",
-		"name":        "daily hello",
-		"description": "",
-		"schedule": map[string]any{
-			"cron":             "0 9 * * *",
-			"one_shot_at":      "",
-			"overlap_policy":   "skip",
-			"catchup_window":   "10m",
-			"pause_on_failure": false,
-		},
-		"notification_policy": map[string]any{"on_failure": true},
-		"env":                 []string{},
-		"steps": []map[string]any{{
-			"id":                        "hello",
-			"command":                   "sh",
-			"args":                      []string{"src/hello.sh"},
-			"start_to_close_timeout":    "1m",
-			"schedule_to_close_timeout": "",
-			"retry_policy": map[string]any{
-				"initial_interval":          "",
-				"backoff_coefficient":       0,
-				"maximum_interval":          "",
-				"maximum_attempts":          1,
-				"non_retryable_error_types": []string{},
-			},
-		}},
-		"files":          []map[string]any{},
+		"workflow_id":    "daily-hello",
+		"prompt":         "Create a daily hello workflow.",
 		"commit_message": "",
-		"paused":         false,
-		"note":           "",
 	}))
 	if err != nil {
 		t.Fatalf("schedule tool: %v", err)

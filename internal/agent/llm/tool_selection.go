@@ -144,21 +144,13 @@ func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) 
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
 			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
 		}
-		return workflowToolChoiceFromInput(definition, call, raw, input, scheduletool.OperationCreate, args.WorkflowID, args.Name, args.Description, domain.ToolIdempotencyNonIdempotent), nil
+		return workflowToolChoiceFromInput(definition, call, raw, input, scheduletool.OperationCreate, args.WorkflowID, "", args.Prompt, domain.ToolIdempotencyNonIdempotent), nil
 	case domain.ToolTypeWorkflowUpdate:
 		var args scheduletool.UpdateRequest
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
 			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
 		}
-		name := ""
-		if args.Name != nil {
-			name = *args.Name
-		}
-		description := ""
-		if args.Description != nil {
-			description = *args.Description
-		}
-		return workflowToolChoiceFromInput(definition, call, raw, input, scheduletool.OperationUpdate, args.WorkflowID, name, description, domain.ToolIdempotencyNonIdempotent), nil
+		return workflowToolChoiceFromInput(definition, call, raw, input, scheduletool.OperationUpdate, args.WorkflowID, "", args.Prompt, domain.ToolIdempotencyNonIdempotent), nil
 	case domain.ToolTypeWorkflowDelete:
 		var args scheduletool.DeleteRequest
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {

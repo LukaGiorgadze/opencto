@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/mock"
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
 
@@ -401,6 +402,200 @@ func TestAgentWorkflowRunsDurableSubAgentLoop(t *testing.T) {
 		result.Processes[0].ID != "proc-1" ||
 		result.Processes[0].Status != domain.ProcessStatusStopped {
 		t.Fatalf("unexpected agent result: %#v", result)
+	}
+	env.AssertExpectations(t)
+}
+
+func TestAgentWorkflowCompletionSuccessUsesPublishObservation(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.AgentWorkflow)
+	registerTaskWorkflowActivities(env)
+
+	input, err := json.Marshal(map[string]any{
+		"goal":      "Create scheduled workflow github-stargazers",
+		"prompt":    "Create a workflow that fetches GitHub stargazers.",
+		"max_turns": 5,
+	})
+	if err != nil {
+		t.Fatalf("marshal agent input: %v", err)
+	}
+	completionInput, err := json.Marshal(map[string]any{
+		"workflow_id": "github-stargazers",
+		"prompt":      "Create a workflow that fetches GitHub stargazers.",
+	})
+	if err != nil {
+		t.Fatalf("marshal completion input: %v", err)
+	}
+
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
+		return request.ExecutionCycle == 1 &&
+			request.SubAgent != nil &&
+			request.SubAgent.Goal == "Create scheduled workflow github-stargazers"
+	})).Return(activities.NextActionResult{
+		NextAction: agent.NextAction{
+			ResponseMessage: "Created workflow.yml and ran syntax checks.",
+			WorkItems: []domain.WorkItem{{
+				ID:        "wi-child",
+				ProjectID: "project-1",
+				Status:    domain.WorkItemStatusCompleted,
+			}},
+		},
+		WorkItemID: "wi-child",
+		Status:     activities.NextActionStatusCompleted,
+	}, nil).Once()
+	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.MatchedBy(func(request activities.ExecuteToolRequest) bool {
+		return request.WorkItemID == "wi-child" &&
+			request.ToolChoice.Type == domain.ToolTypeWorkflowCreate &&
+			request.ToolChoice.ToolCallID == "toolu_workflow:completion:1" &&
+			request.ToolChoice.Metadata["agent_child_trace"] == "true"
+	})).Return(activities.ExecuteToolResult{
+		Cycle:           1,
+		WorkItemID:      "wi-child",
+		ToolCallID:      "toolu_workflow:completion:1",
+		Tool:            domain.ToolTypeWorkflowCreate,
+		Status:          domain.ExecutionStatusSucceeded,
+		RequestedAction: "create workflow",
+		Input:           completionInput,
+		Observation:     "workflow schedule created\nworkflow_id: github-stargazers\nschedule_id: default:workflow:github-stargazers",
+		ResultCode:      "0",
+		Metadata: map[string]string{
+			"tool_call_id":         "toolu_workflow:completion:1",
+			"workflow_commit_hash": "abc123",
+			"schedule_id":          "default:workflow:github-stargazers",
+		},
+	}, nil).Once()
+
+	env.ExecuteWorkflow(workflows.AgentWorkflow, workflows.AgentWorkflowInput{
+		ProjectID:        "project-1",
+		Event:            domain.Event{ID: "event-1", ProjectID: "project-1", Body: "delegate workflow authoring"},
+		ParentWorkItemID: "wi-parent",
+		ParentToolCallID: "toolu_agent",
+		AgentWorkflowID:  "project-1:agent:test",
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_agent",
+			Type:       domain.ToolTypeAgent,
+			Intent:     "run child agent",
+			Input:      input,
+		},
+		CompletionTool: &agent.ToolChoice{
+			ToolCallID: "toolu_workflow",
+			Type:       domain.ToolTypeWorkflowCreate,
+			Intent:     "create workflow",
+			Input:      completionInput,
+		},
+	})
+
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("agent workflow failed: %v", err)
+	}
+	var result workflows.AgentWorkflowResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatalf("get result: %v", err)
+	}
+	if result.Status != domain.ExecutionStatusSucceeded {
+		t.Fatalf("expected success, got %#v", result)
+	}
+	if !strings.Contains(result.Message, "workflow schedule created") ||
+		!strings.Contains(result.Message, "Authoring notes:") ||
+		!strings.Contains(result.Message, "Created workflow.yml") {
+		t.Fatalf("expected publish message with child notes, got %q", result.Message)
+	}
+	if result.Metadata["workflow_commit_hash"] != "abc123" {
+		t.Fatalf("expected publish metadata, got %#v", result.Metadata)
+	}
+	env.AssertExpectations(t)
+}
+
+func TestAgentWorkflowCompletionSuccessSurvivesTracePersistenceFailure(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.AgentWorkflow)
+	registerTaskWorkflowActivities(env)
+
+	input, err := json.Marshal(map[string]any{
+		"goal":      "Create scheduled workflow github-stargazers",
+		"prompt":    "Create a workflow that fetches GitHub stargazers.",
+		"max_turns": 5,
+	})
+	if err != nil {
+		t.Fatalf("marshal agent input: %v", err)
+	}
+	completionInput, err := json.Marshal(map[string]any{
+		"workflow_id": "github-stargazers",
+		"prompt":      "Create a workflow that fetches GitHub stargazers.",
+	})
+	if err != nil {
+		t.Fatalf("marshal completion input: %v", err)
+	}
+
+	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{
+		NextAction: agent.NextAction{
+			ResponseMessage: "Created workflow.yml.",
+			WorkItems: []domain.WorkItem{{
+				ID:        "wi-child",
+				ProjectID: "project-1",
+				Status:    domain.WorkItemStatusCompleted,
+			}},
+		},
+		WorkItemID: "wi-child",
+		Status:     activities.NextActionStatusCompleted,
+	}, nil).Once()
+	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.Anything).Return(activities.ExecuteToolResult{
+		Cycle:           1,
+		WorkItemID:      "wi-child",
+		ToolCallID:      "toolu_workflow:completion:1",
+		Tool:            domain.ToolTypeWorkflowCreate,
+		Status:          domain.ExecutionStatusSucceeded,
+		RequestedAction: "create workflow",
+		Input:           completionInput,
+		Observation:     "workflow schedule created",
+		ResultCode:      "0",
+	}, nil).Once()
+	env.OnActivity("Activities.PersistToolResult", mock.Anything, mock.MatchedBy(func(request activities.PersistToolResultRequest) bool {
+		return request.Result.Tool == domain.ToolTypeWorkflowCreate &&
+			request.Result.Status == domain.ExecutionStatusSucceeded
+	})).Return(temporal.NewNonRetryableApplicationError("trace store unavailable", "TracePersistError", nil)).Once()
+
+	env.ExecuteWorkflow(workflows.AgentWorkflow, workflows.AgentWorkflowInput{
+		ProjectID:        "project-1",
+		Event:            domain.Event{ID: "event-1", ProjectID: "project-1", Body: "delegate workflow authoring"},
+		ParentWorkItemID: "wi-parent",
+		ParentToolCallID: "toolu_agent",
+		AgentWorkflowID:  "project-1:agent:test",
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_agent",
+			Type:       domain.ToolTypeAgent,
+			Intent:     "run child agent",
+			Input:      input,
+		},
+		CompletionTool: &agent.ToolChoice{
+			ToolCallID: "toolu_workflow",
+			Type:       domain.ToolTypeWorkflowCreate,
+			Intent:     "create workflow",
+			Input:      completionInput,
+		},
+	})
+
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("agent workflow failed: %v", err)
+	}
+	var result workflows.AgentWorkflowResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatalf("get result: %v", err)
+	}
+	if result.Status != domain.ExecutionStatusSucceeded {
+		t.Fatalf("expected publish success to win, got %#v", result)
+	}
+	if !strings.Contains(result.Message, "workflow schedule created") {
+		t.Fatalf("expected publish message, got %q", result.Message)
+	}
+	if !strings.Contains(result.Metadata["agent_trace_persist_error"], "trace store unavailable") {
+		t.Fatalf("expected trace warning metadata, got %#v", result.Metadata)
 	}
 	env.AssertExpectations(t)
 }

@@ -162,6 +162,46 @@ func AgentWorkflow(ctx workflow.Context, input AgentWorkflowInput) (AgentWorkflo
 		}
 
 		if next.IsTerminal() {
+			if next.Status == activities.NextActionStatusCompleted && input.CompletionTool != nil {
+				workItemID := firstNonEmpty(next.WorkItemID, firstAgentWorkItemID(next.NextAction), lineage.ParentWorkItemID)
+				execResult, canceled, interrupted, signalEvents, err := executeAgentCompletionTool(ctx, toolCtx, persistenceCtx, projectID, workItemID, event, *input.CompletionTool, turn, lineage, &additionalEvents)
+				mergeAgentProcessReferences(&processes, execResult.Processes)
+				var traceErrors []error
+				if err := persistTaskSignalEvents(persistenceCtx, signalEvents); err != nil {
+					traceErrors = append(traceErrors, err)
+				}
+				if err != nil {
+					execResult = failedExecutionActivityResult(*input.CompletionTool, workItemID, turn, err)
+					execResult = annotateAgentToolResult(execResult, lineage)
+				}
+				if err := persistToolResult(persistenceCtx, activities.PersistToolResultRequest{
+					Event:            event,
+					Result:           execResult,
+					SkipConversation: true,
+				}); err != nil {
+					traceErrors = append(traceErrors, err)
+				}
+				toolsUsed = appendUniqueAgentToolType(toolsUsed, execResult.Tool)
+				if execResult.Status == domain.ExecutionStatusSucceeded {
+					return agentWorkflowResultFromCompletion(next, turn, toolsUsed, filesTouched, processes, execResult, traceErrors...), nil
+				}
+				if canceled {
+					if err := firstAgentTraceError(traceErrors); err != nil {
+						return failedAgentWorkflowResultWithState(turn, toolsUsed, filesTouched, processes, err), err
+					}
+					return AgentWorkflowResult{Status: domain.ExecutionStatusCanceled, Message: "Agent canceled.", TurnCount: turn, FilesTouched: filesTouched, ToolsUsed: toolsUsed, Processes: processes}, nil
+				}
+				if err := firstAgentTraceError(traceErrors); err != nil {
+					return failedAgentWorkflowResultWithState(turn, toolsUsed, filesTouched, processes, err), err
+				}
+				lastResults = []activities.ExecuteToolResult{execResult}
+				currentAction.ResponseMessage = ""
+				currentAction.ResponseAttachments = nil
+				if interrupted {
+					continue
+				}
+				continue
+			}
 			return agentWorkflowResultFromNextAction(next, turn, toolsUsed, filesTouched, processes), nil
 		}
 
@@ -257,6 +297,48 @@ func AgentWorkflow(ctx workflow.Context, input AgentWorkflowInput) (AgentWorkflo
 			ToolsUsed:    toolsUsed,
 			Processes:    processes,
 			Error:        "agent reached max turns without a terminal response",
+		}, nil
+	}
+	if final.Status == activities.NextActionStatusCompleted && input.CompletionTool != nil {
+		workItemID := firstNonEmpty(final.WorkItemID, firstAgentWorkItemID(final.NextAction), lineage.ParentWorkItemID)
+		execResult, canceled, _, signalEvents, err := executeAgentCompletionTool(ctx, toolCtx, persistenceCtx, projectID, workItemID, event, *input.CompletionTool, maxTurns+1, lineage, &additionalEvents)
+		mergeAgentProcessReferences(&processes, execResult.Processes)
+		var traceErrors []error
+		if err := persistTaskSignalEvents(persistenceCtx, signalEvents); err != nil {
+			traceErrors = append(traceErrors, err)
+		}
+		if err != nil {
+			execResult = failedExecutionActivityResult(*input.CompletionTool, workItemID, maxTurns+1, err)
+			execResult = annotateAgentToolResult(execResult, lineage)
+		}
+		if err := persistToolResult(persistenceCtx, activities.PersistToolResultRequest{
+			Event:            event,
+			Result:           execResult,
+			SkipConversation: true,
+		}); err != nil {
+			traceErrors = append(traceErrors, err)
+		}
+		toolsUsed = appendUniqueAgentToolType(toolsUsed, execResult.Tool)
+		if execResult.Status == domain.ExecutionStatusSucceeded {
+			return agentWorkflowResultFromCompletion(final, maxTurns+1, toolsUsed, filesTouched, processes, execResult, traceErrors...), nil
+		}
+		if canceled {
+			if err := firstAgentTraceError(traceErrors); err != nil {
+				return failedAgentWorkflowResultWithState(maxTurns+1, toolsUsed, filesTouched, processes, err), err
+			}
+			return AgentWorkflowResult{Status: domain.ExecutionStatusCanceled, Message: "Agent canceled.", TurnCount: maxTurns + 1, FilesTouched: filesTouched, ToolsUsed: toolsUsed, Processes: processes}, nil
+		}
+		if err := firstAgentTraceError(traceErrors); err != nil {
+			return failedAgentWorkflowResultWithState(maxTurns+1, toolsUsed, filesTouched, processes, err), err
+		}
+		return AgentWorkflowResult{
+			Status:       domain.ExecutionStatusFailed,
+			Message:      agentCycleLimitResponseMessage(append(observationHistory, executionFeedbackFromToolResult(execResult))),
+			TurnCount:    maxTurns + 1,
+			FilesTouched: filesTouched,
+			ToolsUsed:    toolsUsed,
+			Processes:    processes,
+			Error:        firstNonEmpty(execResult.Error, execResult.Observation, "workflow authoring validation failed"),
 		}, nil
 	}
 	return agentWorkflowResultFromNextAction(final, maxTurns+1, toolsUsed, filesTouched, processes), nil
@@ -367,7 +449,22 @@ func compressAgentObservations(ctx workflow.Context, request activities.Compress
 	return result, err
 }
 
-func executeAgentWorkflowStep(ctx workflow.Context, projectID, workItemID string, event domain.Event, choice agent.ToolChoice, cycle int, additionalEvents *[]domain.Event) (activities.ExecuteToolResult, bool, bool, []taskSignalEvent, error) {
+func executeAgentCompletionTool(ctx workflow.Context, toolCtx workflow.Context, persistenceCtx workflow.Context, projectID, workItemID string, event domain.Event, choice agent.ToolChoice, turn int, lineage agentLineage, additionalEvents *[]domain.Event) (activities.ExecuteToolResult, bool, bool, []taskSignalEvent, error) {
+	if choice.Metadata == nil {
+		choice.Metadata = domain.Metadata{}
+	}
+	baseToolCallID := firstNonEmpty(choice.ToolCallID, choice.Metadata["tool_call_id"], lineage.ParentToolCallID)
+	choice.ToolCallID = fmt.Sprintf("%s:completion:%d", baseToolCallID, turn)
+	choice.Metadata["tool_call_id"] = choice.ToolCallID
+	choice = annotateAgentToolChoice(choice, lineage)
+	result, canceled, interrupted, signalEvents, err := executeToolStep(ctx, toolCtx, persistenceCtx, projectID, workItemID, event, choice, turn, additionalEvents)
+	if err != nil {
+		return result, canceled, interrupted, signalEvents, err
+	}
+	return annotateAgentToolResult(result, lineage), canceled, interrupted, signalEvents, nil
+}
+
+func executeAgentWorkflowStep(ctx workflow.Context, projectID, workItemID string, event domain.Event, choice agent.ToolChoice, cycle int, additionalEvents *[]domain.Event, completionTool *agent.ToolChoice) (activities.ExecuteToolResult, bool, bool, []taskSignalEvent, error) {
 	toolCallID := firstNonEmpty(choice.ToolCallID, choice.Metadata["tool_call_id"])
 	workflowID := agentWorkflowID(projectID, workItemID, toolCallID)
 	if choice.Metadata == nil {
@@ -389,6 +486,7 @@ func executeAgentWorkflowStep(ctx workflow.Context, projectID, workItemID string
 		AgentWorkflowID:  workflowID,
 		ToolChoice:       choice,
 		AdditionalEvents: append([]domain.Event(nil), *additionalEvents...),
+		CompletionTool:   completionTool,
 	})
 	if err := future.GetChildWorkflowExecution().Get(ctx, nil); err != nil {
 		return agentWorkflowToolResult(choice, workItemID, cycle, AgentWorkflowResult{}, workflowID, err), false, false, nil, nil
@@ -507,6 +605,55 @@ func agentWorkflowResultFromNextAction(next activities.NextActionResult, turn in
 	}
 }
 
+func agentWorkflowResultFromCompletion(next activities.NextActionResult, turn int, toolsUsed []domain.ToolType, filesTouched []string, processes []domain.ProcessReference, completion activities.ExecuteToolResult, traceErrors ...error) AgentWorkflowResult {
+	run := agentWorkflowResultFromNextAction(next, turn, toolsUsed, filesTouched, processes)
+	run.Message = agentCompletionSuccessMessage(completion, run.Message)
+	run.Metadata = cloneAgentResultMetadata(completion.Metadata)
+	run.Metadata = addAgentTraceErrors(run.Metadata, traceErrors)
+	return run
+}
+
+func agentCompletionSuccessMessage(result activities.ExecuteToolResult, childMessage string) string {
+	publishMessage := strings.TrimSpace(result.Observation)
+	childMessage = strings.TrimSpace(childMessage)
+	if publishMessage == "" {
+		return childMessage
+	}
+	if childMessage == "" || childMessage == publishMessage {
+		return publishMessage
+	}
+	return publishMessage + "\n\nAuthoring notes:\n" + childMessage
+}
+
+func firstAgentTraceError(errs []error) error {
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func addAgentTraceErrors(metadata map[string]string, errs []error) map[string]string {
+	messages := make([]string, 0, len(errs))
+	for _, err := range errs {
+		if err == nil {
+			continue
+		}
+		if message := strings.TrimSpace(err.Error()); message != "" {
+			messages = append(messages, message)
+		}
+	}
+	if len(messages) == 0 {
+		return metadata
+	}
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	metadata["agent_trace_persist_error"] = strings.Join(messages, "\n")
+	return metadata
+}
+
 func failedAgentWorkflowResult(err error) AgentWorkflowResult {
 	return failedAgentWorkflowResultWithState(0, nil, nil, nil, err)
 }
@@ -555,6 +702,11 @@ func agentWorkflowToolResult(choice agent.ToolChoice, workItemID string, cycle i
 	}
 	if len(run.FilesTouched) > 0 {
 		metadata["agent_files_touched"] = strings.Join(run.FilesTouched, "\n")
+	}
+	for key, value := range run.Metadata {
+		if strings.TrimSpace(key) != "" && strings.TrimSpace(value) != "" {
+			metadata[key] = value
+		}
 	}
 	if goal := strings.TrimSpace(choice.Metadata["agent_goal"]); goal != "" {
 		metadata["agent_goal"] = goal
@@ -634,6 +786,48 @@ func changedFilesFromAgentToolResult(result activities.ExecuteToolResult) []stri
 	return nil
 }
 
+func executionFeedbackFromToolResult(result activities.ExecuteToolResult) agent.ExecutionFeedback {
+	metadata := domain.Metadata{}
+	for key, value := range result.Metadata {
+		if strings.TrimSpace(key) != "" && strings.TrimSpace(value) != "" {
+			metadata[key] = value
+		}
+	}
+	if len(metadata) == 0 {
+		metadata = nil
+	}
+	return agent.ExecutionFeedback{
+		Cycle:           result.Cycle,
+		WorkItemID:      result.WorkItemID,
+		ToolCallID:      result.ToolCallID,
+		Tool:            result.Tool,
+		Status:          string(result.Status),
+		RequestedAction: result.RequestedAction,
+		Command:         result.Command,
+		Args:            result.Args,
+		Input:           cloneWorkflowRawMessage(result.Input),
+		Observation:     result.Observation,
+		Error:           result.Error,
+		Metadata:        metadata,
+	}
+}
+
+func cloneAgentResultMetadata(metadata map[string]string) map[string]string {
+	if len(metadata) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(metadata))
+	for key, value := range metadata {
+		if strings.TrimSpace(key) != "" && strings.TrimSpace(value) != "" {
+			cloned[key] = value
+		}
+	}
+	if len(cloned) == 0 {
+		return nil
+	}
+	return cloned
+}
+
 func appendUniqueAgentToolType(values []domain.ToolType, value domain.ToolType) []domain.ToolType {
 	if value == "" {
 		return values
@@ -644,6 +838,15 @@ func appendUniqueAgentToolType(values []domain.ToolType, value domain.ToolType) 
 		}
 	}
 	return append(values, value)
+}
+
+func firstAgentWorkItemID(nextAction agent.NextAction) string {
+	for _, item := range nextAction.WorkItems {
+		if strings.TrimSpace(item.ID) != "" {
+			return strings.TrimSpace(item.ID)
+		}
+	}
+	return ""
 }
 
 func appendUniqueAgentStrings(values []string, additions ...string) []string {

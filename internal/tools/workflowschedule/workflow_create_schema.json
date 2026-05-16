@@ -1,88 +1,22 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["workflow_id", "name", "schedule", "steps"],
+  "required": ["workflow_id", "prompt"],
   "additionalProperties": false,
   "properties": {
-    "workflow_id": {"type": "string", "minLength": 1, "description": "Stable workflow id. Source is stored under $OPENCTO_WORKSPACE/workflows/{workflow_id}."},
-    "name": {"type": "string", "minLength": 1},
-    "description": {"type": "string"},
-    "schedule": {
-      "type": "object",
-      "required": [],
-      "additionalProperties": false,
-      "properties": {
-        "cron": {"type": "string"},
-        "one_shot_at": {"type": "string"},
-        "overlap_policy": {"type": "string", "enum": ["", "skip", "buffer_one", "buffer_all", "cancel_other", "terminate_other", "allow_all"]},
-        "catchup_window": {"type": "string"},
-        "pause_on_failure": {"type": "boolean"}
-      }
+    "workflow_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable workflow id. Source is authored under $OPENCTO_WORKSPACE/workflows/{workflow_id}."
     },
-    "notification_policy": {
-      "type": "object",
-      "required": [],
-      "additionalProperties": false,
-      "properties": {
-        "on_failure": {"type": "boolean"}
-      }
+    "prompt": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Self-contained workflow authoring request. Include schedule, desired behavior, state rules, expected outputs, credentials/env names, and validation expectations."
     },
-    "env": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "pattern": "^[A-Za-z_][A-Za-z0-9_]*=.*$",
-        "description": "Optional global env entries injected into every step. Must be literal NAME=value assignments. OPENCTO_* names are reserved — do not override them. Steps also receive OPENCTO_WORKFLOWS_DIR, OPENCTO_WORKFLOW_RUN_DIR, OPENCTO_WORKFLOW_DATA_DIR, and system environment variables automatically."
-      }
-    },
-    "steps": {
-      "type": "array",
-      "minItems": 1,
-      "items": {
-        "type": "object",
-        "required": ["id", "command", "start_to_close_timeout"],
-        "additionalProperties": false,
-        "properties": {
-          "id": {"type": "string", "minLength": 1},
-          "command": {"type": "string", "minLength": 1, "pattern": "^\\S+$", "description": "Executable name or workflow-local executable path only. Put arguments in args and do not repeat the executable in args."},
-          "args": {"type": "array", "items": {"type": "string"}, "description": "Optional command arguments. External commands such as python3 usually need args; workflow-local executable commands may omit args. Use OPENCTO_WORKFLOW_RUN_DIR/artifacts for same-run files and OPENCTO_WORKFLOW_DATA_DIR for cross-run data."},
-          "start_to_close_timeout": {"type": "string", "description": "Maximum wall-clock time for one step attempt once it starts, using Go duration syntax. Examples: \"30s\" for quick API calls, \"2m\" for small scripts, \"15m\" for longer batch work."},
-          "schedule_to_close_timeout": {"type": "string", "description": "Optional total deadline for the step including queueing and all retries, using Go duration syntax. Empty string means no separate total deadline. Set this when retries must finish within a business window; for example \"5m\" with start_to_close_timeout \"1m\", or \"30m\" for a longer batch step."},
-          "retry_policy": {
-            "type": "object",
-            "description": "Optional retry settings. Omit to use runtime defaults.",
-            "required": [],
-            "additionalProperties": false,
-            "properties": {
-              "initial_interval": {"type": "string", "description": "Delay before the first retry after a step failure, using Go duration syntax. Empty string uses the runtime default. Examples: \"5s\" for transient API/network failures, \"30s\" when rate limits are likely, \"1m\" for slower external systems."},
-              "backoff_coefficient": {"type": "number", "minimum": 0, "description": "Retry backoff multiplier. Use 0 for the runtime default, 1 for constant delay, or 2 for exponential backoff."},
-              "maximum_interval": {"type": "string", "description": "Maximum delay between retry attempts, using Go duration syntax. Empty string uses the runtime default. Examples: \"30s\" for short workflows, \"5m\" for rate-limited APIs, \"15m\" for expensive external services."},
-              "maximum_attempts": {"type": "integer", "minimum": 0, "description": "Maximum attempts including the first try. Use 0 for the runtime default, 1 for no retries, or 3 for a common retry budget."},
-              "non_retryable_error_types": {
-                "type": "array",
-                "items": {"type": "string", "enum": ["WorkflowStepFailed"]},
-                "description": "Optional. Use [\"WorkflowStepFailed\"] to make command failures non-retryable. Omit or use [] to allow retry attempts."
-              }
-            }
-          }
-        }
-      }
-    },
-    "files": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["path", "content"],
-        "additionalProperties": false,
-        "properties": {
-          "path": {"type": "string", "pattern": "^(?!workflow\\.yml$)(?!\\.gitignore$)(?!\\.git(?:/|$))(?!.*(?:^|/)data(?:/|$))(?!.*(?:^|/)node_modules(?:/|$))(?!.*(?:^|/)dist(?:/|$))(?!.*(?:^|/)build(?:/|$))(?!.*(?:^|/)target(?:/|$))(?!.*(?:^|/)venv(?:/|$))(?!.*(?:^|/)\\.venv(?:/|$))(?!.*(?:^|/)__pycache__(?:/|$))(?!.*(?:^|/)\\.pytest_cache(?:/|$))(?!.*(?:^|/)\\.cache(?:/|$))(?!.*(?:^|/)tmp(?:/|$))(?!.*(?:^|/)temp(?:/|$))(?!.*(?:^|/)output(?:/|$))(?!.*(?:^|/)\\.DS_Store(?:/|$))(?!.*\\.log$).+", "description": "Workflow-owned source file path relative to workflows/{workflow_id}. May be outside src/. Must not target workflow.yml, .gitignore, .git, data, dependency/cache/build/output dirs, .DS_Store, or .log files."},
-          "content": {"type": "string"},
-          "executable": {"type": "boolean"}
-        }
-      }
-    },
-    "commit_message": {"type": "string"},
-    "paused": {"type": "boolean"},
-    "note": {"type": "string"}
+    "commit_message": {
+      "type": "string",
+      "description": "Optional commit message for the final authored workflow bundle."
+    }
   }
 }

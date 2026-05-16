@@ -53,17 +53,9 @@ type CreateRequest struct {
 	Intent      string       `json:"-"`
 	SourceEvent domain.Event `json:"-"`
 
-	WorkflowID         string                            `json:"workflow_id"`
-	Name               string                            `json:"name"`
-	Description        string                            `json:"description"`
-	Schedule           workflowbundle.Schedule           `json:"schedule"`
-	NotificationPolicy workflowbundle.NotificationPolicy `json:"notification_policy"`
-	Env                []string                          `json:"env"`
-	Steps              []workflowbundle.Step             `json:"steps"`
-	Files              []workflowbundle.File             `json:"files"`
-	CommitMessage      string                            `json:"commit_message,omitempty"`
-	Paused             bool                              `json:"paused,omitempty"`
-	Note               string                            `json:"note,omitempty"`
+	WorkflowID    string `json:"workflow_id"`
+	Prompt        string `json:"prompt"`
+	CommitMessage string `json:"commit_message,omitempty"`
 }
 
 type UpdateRequest struct {
@@ -73,18 +65,9 @@ type UpdateRequest struct {
 	Intent      string       `json:"-"`
 	SourceEvent domain.Event `json:"-"`
 
-	WorkflowID string `json:"workflow_id"`
-
-	Name               *string                  `json:"name,omitempty"`
-	Description        *string                  `json:"description,omitempty"`
-	Schedule           *SchedulePatch           `json:"schedule,omitempty"`
-	NotificationPolicy *NotificationPolicyPatch `json:"notification_policy,omitempty"`
-	Env                []string                 `json:"env,omitempty"`
-	Steps              []workflowbundle.Step    `json:"steps,omitempty"`
-	Files              []workflowbundle.File    `json:"files,omitempty"`
-	CommitMessage      string                   `json:"commit_message,omitempty"`
-	Paused             *bool                    `json:"paused,omitempty"`
-	Note               string                   `json:"note,omitempty"`
+	WorkflowID    string `json:"workflow_id"`
+	Prompt        string `json:"prompt"`
+	CommitMessage string `json:"commit_message,omitempty"`
 }
 
 type DeleteRequest struct {
@@ -111,18 +94,6 @@ type OperationRequest struct {
 	IncludeCompleted bool   `json:"include_completed,omitempty"`
 }
 
-type SchedulePatch struct {
-	Cron           *string `json:"cron,omitempty"`
-	OneShotAt      *string `json:"one_shot_at,omitempty"`
-	OverlapPolicy  *string `json:"overlap_policy,omitempty"`
-	CatchupWindow  *string `json:"catchup_window,omitempty"`
-	PauseOnFailure *bool   `json:"pause_on_failure,omitempty"`
-}
-
-type NotificationPolicyPatch struct {
-	OnFailure *bool `json:"on_failure,omitempty"`
-}
-
 type Request struct {
 	ProjectID   string       `json:"-"`
 	WorkItemID  string       `json:"-"`
@@ -130,29 +101,39 @@ type Request struct {
 	Intent      string       `json:"-"`
 	SourceEvent domain.Event `json:"-"`
 
-	Operation          string                            `json:"operation"`
-	WorkflowID         string                            `json:"workflow_id"`
-	Name               string                            `json:"name"`
-	Description        string                            `json:"description"`
-	Schedule           workflowbundle.Schedule           `json:"schedule"`
-	NotificationPolicy workflowbundle.NotificationPolicy `json:"notification_policy"`
-	Env                []string                          `json:"env"`
-	Steps              []workflowbundle.Step             `json:"steps"`
-	Files              []workflowbundle.File             `json:"files"`
-	CommitMessage      string                            `json:"commit_message"`
-	CommitHash         string                            `json:"commit_hash"`
-	Paused             bool                              `json:"paused"`
-	Note               string                            `json:"note"`
-	Limit              int                               `json:"limit"`
-	IncludeCompleted   bool                              `json:"include_completed"`
+	Operation        string `json:"operation"`
+	WorkflowID       string `json:"workflow_id"`
+	Prompt           string `json:"prompt"`
+	CommitMessage    string `json:"commit_message"`
+	CommitHash       string `json:"commit_hash"`
+	Note             string `json:"note"`
+	Limit            int    `json:"limit"`
+	IncludeCompleted bool   `json:"include_completed"`
+	Paused           bool   `json:"paused"`
+}
 
-	nameSet               bool
-	descriptionSet        bool
-	schedulePatch         *SchedulePatch
-	notificationPolicySet bool
-	envSet                bool
-	stepsSet              bool
-	pausedSet             bool
+type AuthoringRequest struct {
+	ProjectID   string       `json:"project_id"`
+	WorkItemID  string       `json:"work_item_id,omitempty"`
+	ToolCallID  string       `json:"tool_call_id,omitempty"`
+	Intent      string       `json:"intent,omitempty"`
+	SourceEvent domain.Event `json:"source_event,omitempty"`
+
+	Operation     string `json:"operation"`
+	WorkflowID    string `json:"workflow_id"`
+	Prompt        string `json:"prompt"`
+	CommitMessage string `json:"commit_message,omitempty"`
+}
+
+type AuthoringPlan struct {
+	Operation         string `json:"operation"`
+	WorkflowID        string `json:"workflow_id"`
+	WorkflowPath      string `json:"workflow_path"`
+	AgentGoal         string `json:"agent_goal"`
+	AgentPrompt       string `json:"agent_prompt"`
+	CommitMessage     string `json:"commit_message,omitempty"`
+	RemoveOnFailure   bool   `json:"remove_on_failure,omitempty"`
+	RestoreCommitHash string `json:"restore_commit_hash,omitempty"`
 }
 
 type Result struct {
@@ -186,6 +167,11 @@ type Executor interface {
 	Update(context.Context, UpdateRequest) (Result, error)
 	Delete(context.Context, DeleteRequest) (Result, error)
 	Operation(context.Context, OperationRequest) (Result, error)
+}
+
+type AuthoringExecutor interface {
+	PrepareAuthoring(context.Context, AuthoringRequest) (AuthoringPlan, error)
+	CleanupAuthoring(context.Context, AuthoringPlan) error
 }
 
 type Client interface {
@@ -297,28 +283,20 @@ func (e *TemporalExecutor) validate() error {
 
 func requestFromCreate(req CreateRequest) Request {
 	return Request{
-		ProjectID:          req.ProjectID,
-		WorkItemID:         req.WorkItemID,
-		ToolCallID:         req.ToolCallID,
-		Intent:             req.Intent,
-		SourceEvent:        req.SourceEvent,
-		Operation:          OperationCreate,
-		WorkflowID:         req.WorkflowID,
-		Name:               req.Name,
-		Description:        req.Description,
-		Schedule:           req.Schedule,
-		NotificationPolicy: req.NotificationPolicy,
-		Env:                req.Env,
-		Steps:              req.Steps,
-		Files:              req.Files,
-		CommitMessage:      req.CommitMessage,
-		Paused:             req.Paused,
-		Note:               req.Note,
+		ProjectID:     req.ProjectID,
+		WorkItemID:    req.WorkItemID,
+		ToolCallID:    req.ToolCallID,
+		Intent:        req.Intent,
+		SourceEvent:   req.SourceEvent,
+		Operation:     OperationCreate,
+		WorkflowID:    req.WorkflowID,
+		Prompt:        req.Prompt,
+		CommitMessage: req.CommitMessage,
 	}
 }
 
 func requestFromUpdate(req UpdateRequest) Request {
-	request := Request{
+	return Request{
 		ProjectID:     req.ProjectID,
 		WorkItemID:    req.WorkItemID,
 		ToolCallID:    req.ToolCallID,
@@ -326,36 +304,9 @@ func requestFromUpdate(req UpdateRequest) Request {
 		SourceEvent:   req.SourceEvent,
 		Operation:     OperationUpdate,
 		WorkflowID:    req.WorkflowID,
-		Files:         req.Files,
+		Prompt:        req.Prompt,
 		CommitMessage: req.CommitMessage,
-		Note:          req.Note,
-		schedulePatch: req.Schedule,
-		envSet:        req.Env != nil,
-		stepsSet:      req.Steps != nil,
 	}
-	if req.Name != nil {
-		request.Name = *req.Name
-		request.nameSet = true
-	}
-	if req.Description != nil {
-		request.Description = *req.Description
-		request.descriptionSet = true
-	}
-	if req.NotificationPolicy != nil && req.NotificationPolicy.OnFailure != nil {
-		request.notificationPolicySet = true
-		request.NotificationPolicy.OnFailure = *req.NotificationPolicy.OnFailure
-	}
-	if req.Env != nil {
-		request.Env = req.Env
-	}
-	if req.Steps != nil {
-		request.Steps = req.Steps
-	}
-	if req.Paused != nil {
-		request.Paused = *req.Paused
-		request.pausedSet = true
-	}
-	return request
 }
 
 func requestFromDelete(req DeleteRequest) Request {
@@ -394,10 +345,6 @@ func (e *TemporalExecutor) create(ctx context.Context, req Request) (Result, err
 	if err != nil {
 		return Result{}, err
 	}
-	hadLocalBundle, err := pathExists(workflowPath)
-	if err != nil {
-		return Result{}, err
-	}
 	exists, err := e.workflowExists(ctx, req.ProjectID, workflowID, workflowPath)
 	if err != nil {
 		return Result{}, err
@@ -405,15 +352,9 @@ func (e *TemporalExecutor) create(ctx context.Context, req Request) (Result, err
 	if exists {
 		return Result{}, ErrWorkflowExists
 	}
-	if hadLocalBundle {
-		if err := os.RemoveAll(workflowPath); err != nil {
-			return Result{}, err
-		}
-		hadLocalBundle = false
-	}
 	req.WorkflowID = workflowID
 
-	workflowID, manifest, workflowPath, commitHash, err := e.prepareBundle(ctx, req, false)
+	manifest, commitHash, err := e.commitAuthoredBundle(ctx, req, workflowPath)
 	if err != nil {
 		return Result{}, err
 	}
@@ -424,13 +365,11 @@ func (e *TemporalExecutor) create(ctx context.Context, req Request) (Result, err
 	}
 	handle, err := e.Client.Create(ctx, options)
 	if err != nil {
-		e.cleanupCreateFailure(workflowPath, !hadLocalBundle)
 		return Result{}, err
 	}
 	scheduleID = handle.GetID()
-	if err := e.Store.UpsertScheduledWorkflow(ctx, e.workflowRecord(req, workflowID, manifest, workflowPath, commitHash, scheduleID, statusFromPaused(req.Paused))); err != nil {
+	if err := e.Store.UpsertScheduledWorkflow(ctx, e.workflowRecord(req, workflowID, manifest, workflowPath, commitHash, scheduleID, domain.ScheduledWorkflowStatusActive)); err != nil {
 		_ = e.Client.GetHandle(ctx, scheduleID).Delete(ctx)
-		e.cleanupCreateFailure(workflowPath, !hadLocalBundle)
 		return Result{}, err
 	}
 	e.log("created", workflowID, scheduleID)
@@ -438,61 +377,53 @@ func (e *TemporalExecutor) create(ctx context.Context, req Request) (Result, err
 }
 
 func (e *TemporalExecutor) update(ctx context.Context, req Request) (Result, error) {
-	workflowID, manifest, workflowPath, commitHash, err := e.prepareBundle(ctx, req, true)
+	workflowID, err := workflowbundle.NormalizeWorkflowID(req.WorkflowID)
+	if err != nil {
+		return Result{}, ErrWorkflowIDRequired
+	}
+	workflowPath, err := workflowbundle.WorkflowDir(e.WorkspaceRoot, workflowID)
 	if err != nil {
 		return Result{}, err
 	}
-	scheduleID := workflowrun.ScheduleID(req.ProjectID, workflowID)
+	existing, ok, err := e.Store.GetScheduledWorkflow(ctx, strings.TrimSpace(req.ProjectID), workflowID)
+	if err != nil {
+		return Result{}, err
+	}
+	if !ok {
+		return Result{}, fmt.Errorf("workflow %q not found", workflowID)
+	}
+	scheduleID := firstNonEmpty(strings.TrimSpace(existing.TemporalScheduleID), workflowrun.ScheduleID(req.ProjectID, workflowID))
+	status := existing.Status
+	if status == "" {
+		status = domain.ScheduledWorkflowStatusActive
+	}
+	manifest, commitHash, err := e.commitAuthoredBundle(ctx, req, workflowPath)
+	if err != nil {
+		return Result{}, err
+	}
 	options, err := e.scheduleOptions(req, workflowID, scheduleID, commitHash, manifest)
 	if err != nil {
 		return Result{}, err
 	}
 	handle := e.Client.GetHandle(ctx, scheduleID)
+	var previousSchedule temporalclient.Schedule
+	previousScheduleCaptured := false
 	err = handle.Update(ctx, temporalclient.ScheduleUpdateOptions{
 		DoUpdate: func(input temporalclient.ScheduleUpdateInput) (*temporalclient.ScheduleUpdate, error) {
-			remaining := options.RemainingActions
-			state := &temporalclient.ScheduleState{
-				Note:             options.Note,
-				Paused:           options.Paused,
-				LimitedActions:   remaining > 0,
-				RemainingActions: remaining,
-			}
-			if input.Description.Schedule.State != nil {
-				existingState := *input.Description.Schedule.State
-				state = &existingState
-				state.Note = options.Note
-				if req.pausedSet {
-					state.Paused = options.Paused
-				}
-				state.LimitedActions = remaining > 0
-				state.RemainingActions = remaining
-			}
-			return &temporalclient.ScheduleUpdate{
-				Schedule: &temporalclient.Schedule{
-					Action: options.Action,
-					Spec:   &options.Spec,
-					Policy: &temporalclient.SchedulePolicies{
-						Overlap:        options.Overlap,
-						CatchupWindow:  options.CatchupWindow,
-						PauseOnFailure: options.PauseOnFailure,
-					},
-					State: state,
-				},
-			}, nil
+			previousSchedule = input.Description.Schedule
+			previousScheduleCaptured = true
+			return scheduleUpdateFromOptions(input, options), nil
 		},
 	})
 	if err != nil {
 		return Result{}, err
 	}
-	status := statusFromPaused(req.Paused)
-	if !req.pausedSet {
-		if item, ok, err := e.Store.GetScheduledWorkflow(ctx, strings.TrimSpace(req.ProjectID), workflowID); err != nil {
-			return Result{}, err
-		} else if ok {
-			status = item.Status
-		}
-	}
 	if err := e.Store.UpsertScheduledWorkflow(ctx, e.workflowRecord(req, workflowID, manifest, workflowPath, commitHash, scheduleID, status)); err != nil {
+		if previousScheduleCaptured {
+			if rollbackErr := rollbackScheduleUpdate(ctx, handle, previousSchedule); rollbackErr != nil {
+				return Result{}, fmt.Errorf("persist scheduled workflow after Temporal update: %w; rollback Temporal schedule: %v", err, rollbackErr)
+			}
+		}
 		return Result{}, err
 	}
 	e.log("updated", workflowID, scheduleID)
@@ -680,140 +611,248 @@ func (e *TemporalExecutor) validateTriggerReady(ctx context.Context, projectID, 
 	return item, scheduleID, nil
 }
 
-func (e *TemporalExecutor) prepareBundle(ctx context.Context, req Request, useExisting bool) (string, workflowbundle.Manifest, string, string, error) {
+func scheduleUpdateFromOptions(input temporalclient.ScheduleUpdateInput, options temporalclient.ScheduleOptions) *temporalclient.ScheduleUpdate {
+	remaining := options.RemainingActions
+	state := &temporalclient.ScheduleState{
+		Note:             options.Note,
+		Paused:           options.Paused,
+		LimitedActions:   remaining > 0,
+		RemainingActions: remaining,
+	}
+	if input.Description.Schedule.State != nil {
+		existingState := *input.Description.Schedule.State
+		state = &existingState
+		state.Note = options.Note
+		state.LimitedActions = remaining > 0
+		state.RemainingActions = remaining
+	}
+	return &temporalclient.ScheduleUpdate{
+		Schedule: &temporalclient.Schedule{
+			Action: options.Action,
+			Spec:   &options.Spec,
+			Policy: &temporalclient.SchedulePolicies{
+				Overlap:        options.Overlap,
+				CatchupWindow:  options.CatchupWindow,
+				PauseOnFailure: options.PauseOnFailure,
+			},
+			State: state,
+		},
+	}
+}
+
+func rollbackScheduleUpdate(ctx context.Context, handle temporalclient.ScheduleHandle, previous temporalclient.Schedule) error {
+	return handle.Update(ctx, temporalclient.ScheduleUpdateOptions{
+		DoUpdate: func(temporalclient.ScheduleUpdateInput) (*temporalclient.ScheduleUpdate, error) {
+			return &temporalclient.ScheduleUpdate{Schedule: &previous}, nil
+		},
+	})
+}
+
+func (e *TemporalExecutor) commitAuthoredBundle(ctx context.Context, req Request, workflowPath string) (workflowbundle.Manifest, string, error) {
+	if _, _, err := e.resolveTimeZone(); err != nil {
+		return workflowbundle.Manifest{}, "", err
+	}
+	manifest, err := workflowbundle.LoadManifest(workflowPath)
+	if err != nil {
+		return workflowbundle.Manifest{}, "", err
+	}
 	workflowID, err := workflowbundle.NormalizeWorkflowID(req.WorkflowID)
 	if err != nil {
-		return "", workflowbundle.Manifest{}, "", "", ErrWorkflowIDRequired
+		return workflowbundle.Manifest{}, "", ErrWorkflowIDRequired
+	}
+	commitMessage := defaultCommitMessage(req.Operation, workflowID, req.CommitMessage)
+	commitHash, err := workflowbundle.CommitBundle(ctx, workflowPath, commitMessage, nil)
+	if err != nil {
+		return workflowbundle.Manifest{}, "", err
+	}
+	return manifest, commitHash, nil
+}
+
+func (e *TemporalExecutor) PrepareAuthoring(ctx context.Context, req AuthoringRequest) (AuthoringPlan, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := e.validate(); err != nil {
+		return AuthoringPlan{}, err
+	}
+	request := Request{
+		ProjectID:     req.ProjectID,
+		WorkItemID:    req.WorkItemID,
+		ToolCallID:    req.ToolCallID,
+		Intent:        req.Intent,
+		SourceEvent:   req.SourceEvent,
+		Operation:     normalizeOperation(req.Operation),
+		WorkflowID:    req.WorkflowID,
+		Prompt:        req.Prompt,
+		CommitMessage: req.CommitMessage,
+	}
+	switch request.Operation {
+	case OperationCreate:
+		return e.prepareCreateAuthoring(ctx, request)
+	case OperationUpdate:
+		return e.prepareUpdateAuthoring(ctx, request)
+	default:
+		return AuthoringPlan{}, fmt.Errorf("unsupported workflow authoring operation %q", req.Operation)
+	}
+}
+
+func (e *TemporalExecutor) prepareCreateAuthoring(ctx context.Context, req Request) (AuthoringPlan, error) {
+	workflowID, err := workflowbundle.NormalizeWorkflowID(req.WorkflowID)
+	if err != nil {
+		return AuthoringPlan{}, ErrWorkflowIDRequired
 	}
 	workflowPath, err := workflowbundle.WorkflowDir(e.WorkspaceRoot, workflowID)
 	if err != nil {
-		return "", workflowbundle.Manifest{}, "", "", err
+		return AuthoringPlan{}, err
 	}
-	manifest, err := e.manifest(req, workflowPath, useExisting)
+	if exists, err := e.workflowExists(ctx, req.ProjectID, workflowID, workflowPath); err != nil {
+		return AuthoringPlan{}, err
+	} else if exists {
+		return AuthoringPlan{}, ErrWorkflowExists
+	}
+	if hadLocalBundle, err := pathExists(workflowPath); err != nil {
+		return AuthoringPlan{}, err
+	} else if hadLocalBundle {
+		if err := os.RemoveAll(workflowPath); err != nil {
+			return AuthoringPlan{}, err
+		}
+	}
+	if err := workflowbundle.InitializeBundle(ctx, workflowPath); err != nil {
+		return AuthoringPlan{}, err
+	}
+	return e.authoringPlan(OperationCreate, workflowID, workflowPath, req, true, ""), nil
+}
+
+func (e *TemporalExecutor) prepareUpdateAuthoring(ctx context.Context, req Request) (AuthoringPlan, error) {
+	workflowID, err := workflowbundle.NormalizeWorkflowID(req.WorkflowID)
 	if err != nil {
-		return "", workflowbundle.Manifest{}, "", "", err
+		return AuthoringPlan{}, ErrWorkflowIDRequired
 	}
-	if err := workflowbundle.WriteBundle(ctx, workflowPath, manifest, req.Files); err != nil {
-		return "", workflowbundle.Manifest{}, "", "", err
-	}
-	commitMessage := firstNonEmpty(strings.TrimSpace(req.CommitMessage), strings.TrimSpace(req.Name), "Update workflow "+workflowID)
-	commitHash, err := workflowbundle.CommitBundle(ctx, workflowPath, commitMessage, req.Files)
+	workflowPath, err := workflowbundle.WorkflowDir(e.WorkspaceRoot, workflowID)
 	if err != nil {
-		return "", workflowbundle.Manifest{}, "", "", err
+		return AuthoringPlan{}, err
 	}
-	return workflowID, manifest, workflowPath, commitHash, nil
+	if _, ok, err := e.Store.GetScheduledWorkflow(ctx, strings.TrimSpace(req.ProjectID), workflowID); err != nil {
+		return AuthoringPlan{}, err
+	} else if !ok {
+		return AuthoringPlan{}, fmt.Errorf("workflow %q not found", workflowID)
+	}
+	if exists, err := pathExists(workflowPath); err != nil {
+		return AuthoringPlan{}, err
+	} else if !exists {
+		return AuthoringPlan{}, fmt.Errorf("workflow %q source directory not found", workflowID)
+	}
+	if _, err := workflowbundle.LoadManifest(workflowPath); err != nil {
+		return AuthoringPlan{}, err
+	}
+	if status, err := gitOutput(ctx, workflowPath, "status", "--porcelain"); err != nil {
+		return AuthoringPlan{}, err
+	} else if strings.TrimSpace(status) != "" {
+		return AuthoringPlan{}, fmt.Errorf("workflow %q has uncommitted changes before authoring", workflowID)
+	}
+	head, err := gitOutput(ctx, workflowPath, "rev-parse", "HEAD")
+	if err != nil {
+		return AuthoringPlan{}, err
+	}
+	return e.authoringPlan(OperationUpdate, workflowID, workflowPath, req, false, strings.TrimSpace(head)), nil
 }
 
-func (e *TemporalExecutor) manifest(req Request, workflowPath string, useExisting bool) (workflowbundle.Manifest, error) {
-	if useExisting {
-		existing, err := workflowbundle.LoadManifest(workflowPath)
-		if err != nil {
-			return workflowbundle.Manifest{}, err
-		}
-		return e.mergeManifest(existing, req)
+func (e *TemporalExecutor) authoringPlan(operation, workflowID, workflowPath string, req Request, removeOnFailure bool, restoreCommitHash string) AuthoringPlan {
+	return AuthoringPlan{
+		Operation:         operation,
+		WorkflowID:        workflowID,
+		WorkflowPath:      workflowPath,
+		AgentGoal:         authoringAgentGoal(operation, workflowID),
+		AgentPrompt:       authoringAgentPrompt(operation, workflowID, workflowPath, req.Prompt, req.CommitMessage),
+		CommitMessage:     req.CommitMessage,
+		RemoveOnFailure:   removeOnFailure,
+		RestoreCommitHash: restoreCommitHash,
 	}
-	return e.manifestFromRequest(req)
 }
 
-func (e *TemporalExecutor) manifestFromRequest(req Request) (workflowbundle.Manifest, error) {
-	if _, _, err := e.resolveTimeZone(); err != nil {
-		return workflowbundle.Manifest{}, err
+func (e *TemporalExecutor) CleanupAuthoring(ctx context.Context, plan AuthoringPlan) error {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	schedule := req.Schedule
-	if strings.TrimSpace(schedule.OverlapPolicy) == "" {
-		schedule.OverlapPolicy = workflowbundle.OverlapPolicySkip
+	if strings.TrimSpace(plan.WorkflowPath) == "" {
+		return nil
 	}
-	if strings.TrimSpace(schedule.CatchupWindow) == "" {
-		schedule.CatchupWindow = workflowbundle.DefaultCatchupWindow.String()
+	if plan.RemoveOnFailure {
+		return os.RemoveAll(plan.WorkflowPath)
 	}
-	notification := req.NotificationPolicy
-	env := cleanStrings(req.Env)
-	if env == nil {
-		env = []string{}
+	if strings.TrimSpace(plan.RestoreCommitHash) == "" {
+		return nil
 	}
-	manifest := workflowbundle.Manifest{
-		Name:               firstNonEmpty(req.Name, req.WorkflowID),
-		Description:        strings.TrimSpace(req.Description),
-		Schedule:           schedule,
-		NotificationPolicy: notification,
-		Env:                env,
-		Steps:              normalizeSteps(req.Steps),
+	if _, err := gitOutput(ctx, plan.WorkflowPath, "reset", "--hard", strings.TrimSpace(plan.RestoreCommitHash)); err != nil {
+		return err
 	}
-	if err := workflowbundle.ValidateManifest(manifest); err != nil {
-		return workflowbundle.Manifest{}, err
-	}
-	return manifest, nil
+	_, err := gitOutput(ctx, plan.WorkflowPath, "clean", "-fd")
+	return err
 }
 
-func (e *TemporalExecutor) mergeManifest(existing workflowbundle.Manifest, req Request) (workflowbundle.Manifest, error) {
-	manifest := existing
-	if req.nameSet {
-		manifest.Name = strings.TrimSpace(req.Name)
+func defaultCommitMessage(operation, workflowID, commitMessage string) string {
+	if strings.TrimSpace(commitMessage) != "" {
+		return strings.TrimSpace(commitMessage)
 	}
-	if req.descriptionSet {
-		manifest.Description = strings.TrimSpace(req.Description)
+	switch normalizeOperation(operation) {
+	case OperationCreate:
+		return "Create workflow " + strings.TrimSpace(workflowID)
+	case OperationUpdate:
+		return "Update workflow " + strings.TrimSpace(workflowID)
+	default:
+		return "Update workflow " + strings.TrimSpace(workflowID)
 	}
-	if req.schedulePatch != nil {
-		manifest.Schedule = mergeSchedulePatch(manifest.Schedule, req.schedulePatch)
-	}
-	if req.notificationPolicySet {
-		manifest.NotificationPolicy.OnFailure = req.NotificationPolicy.OnFailure
-	}
-	if req.envSet {
-		manifest.Env = cleanStrings(req.Env)
-		if manifest.Env == nil {
-			manifest.Env = []string{}
-		}
-	}
-	if req.stepsSet {
-		manifest.Steps = normalizeSteps(req.Steps)
-	}
-	if err := workflowbundle.ValidateManifest(manifest); err != nil {
-		return workflowbundle.Manifest{}, err
-	}
-	return manifest, nil
 }
 
-func mergeSchedulePatch(existing workflowbundle.Schedule, update *SchedulePatch) workflowbundle.Schedule {
-	schedule := existing
-	if update == nil {
-		return schedule
+func authoringAgentGoal(operation, workflowID string) string {
+	switch normalizeOperation(operation) {
+	case OperationCreate:
+		return "Create scheduled workflow " + strings.TrimSpace(workflowID)
+	case OperationUpdate:
+		return "Update scheduled workflow " + strings.TrimSpace(workflowID)
+	default:
+		return "Author scheduled workflow " + strings.TrimSpace(workflowID)
 	}
-	if update.Cron != nil {
-		schedule.Cron = strings.TrimSpace(*update.Cron)
-		if schedule.Cron != "" && update.OneShotAt == nil {
-			schedule.OneShotAt = ""
-		}
-	}
-	if update.OneShotAt != nil {
-		schedule.OneShotAt = strings.TrimSpace(*update.OneShotAt)
-		if schedule.OneShotAt != "" && update.Cron == nil {
-			schedule.Cron = ""
-		}
-	}
-	if update.OverlapPolicy != nil {
-		schedule.OverlapPolicy = strings.TrimSpace(*update.OverlapPolicy)
-	}
-	if update.CatchupWindow != nil {
-		schedule.CatchupWindow = strings.TrimSpace(*update.CatchupWindow)
-	}
-	if update.PauseOnFailure != nil {
-		schedule.PauseOnFailure = *update.PauseOnFailure
-	}
-	return schedule
 }
 
-func normalizeSteps(steps []workflowbundle.Step) []workflowbundle.Step {
-	next := append([]workflowbundle.Step(nil), steps...)
-	for index := range next {
-		if next[index].Args == nil {
-			next[index].Args = []string{}
-		}
-		if next[index].RetryPolicy.NonRetryableErrorTypes == nil {
-			next[index].RetryPolicy.NonRetryableErrorTypes = []string{}
-		}
+func authoringAgentPrompt(operation, workflowID, workflowPath, userPrompt, commitMessage string) string {
+	var builder strings.Builder
+	builder.WriteString("You are authoring an OpenCTO scheduled workflow bundle.\n\n")
+	builder.WriteString("Operation: ")
+	builder.WriteString(normalizeOperation(operation))
+	builder.WriteString("\nWorkflow ID: ")
+	builder.WriteString(strings.TrimSpace(workflowID))
+	builder.WriteString("\nWorkflow directory: ")
+	builder.WriteString(strings.TrimSpace(workflowPath))
+	builder.WriteString("\n\nUser request:\n")
+	builder.WriteString(strings.TrimSpace(userPrompt))
+	builder.WriteString("\n\nAuthoring rules:\n")
+	builder.WriteString("- Work only inside the workflow directory above.\n")
+	builder.WriteString("- Create or update workflow.yml and any source files needed by its steps.\n")
+	builder.WriteString("- Do not commit, create Temporal schedules, edit data/, or run long-lived schedulers/workers/daemons.\n")
+	builder.WriteString("- workflow.yml must define name, description, schedule, notification_policy, env, and steps.\n")
+	builder.WriteString("- env must be a YAML list. Use [] when no literal global env assignments are needed. Do not define OPENCTO_* env names.\n")
+	builder.WriteString("- Each step is executed by OpenCTO as an activity. Use command for only the executable and args for its arguments.\n")
+	builder.WriteString("- External commands such as python3 must put the script path in args and must not repeat the executable in args.\n")
+	builder.WriteString("- Each step needs start_to_close_timeout. Add retry_policy only when behavior requires it.\n")
+	builder.WriteString("- Same-run step communication must use $OPENCTO_WORKFLOW_RUN_DIR/artifacts/.\n")
+	builder.WriteString("- Cross-run state and durable outputs must use $OPENCTO_WORKFLOW_DATA_DIR/.\n")
+	builder.WriteString("- The workflow source at $OPENCTO_WORKFLOWS_DIR/{workflow_id} is read-only during runs.\n")
+	builder.WriteString("- Do not use removed runtime names: OPENCTO_RUN_DIR, OPENCTO_STEP_ID, OPENCTO_STEP_DIR, OPENCTO_WORKFLOW_ID, OPENCTO_RUN_ID.\n")
+	builder.WriteString("\nValidation before final response:\n")
+	builder.WriteString("- Read back workflow.yml after writing it.\n")
+	builder.WriteString("- Check that step boundaries match the requested data flow and state rules.\n")
+	builder.WriteString("- Run practical local checks for the source you wrote, such as syntax checks or unit-style dry runs with fake inputs.\n")
+	builder.WriteString("- If a check fails, fix the files and check again before final response.\n")
+	if strings.TrimSpace(commitMessage) != "" {
+		builder.WriteString("\nRequested commit message: ")
+		builder.WriteString(strings.TrimSpace(commitMessage))
+		builder.WriteString("\n")
 	}
-	return next
+	builder.WriteString("\nFinal response requirements:\n")
+	builder.WriteString("- Only finish when workflow.yml and source files are ready for OpenCTO to validate and publish.\n")
+	builder.WriteString("- Briefly list the files created or changed and the checks run.\n")
+	return builder.String()
 }
 
 func (e *TemporalExecutor) workflowExists(ctx context.Context, projectID, workflowID, _ string) (bool, error) {
@@ -823,19 +862,6 @@ func (e *TemporalExecutor) workflowExists(ctx context.Context, projectID, workfl
 		return true, nil
 	}
 	return false, nil
-}
-
-func (e *TemporalExecutor) cleanupCreateFailure(workflowPath string, removeBundle bool) {
-	if !removeBundle {
-		return
-	}
-	if err := os.RemoveAll(workflowPath); err != nil {
-		logger := e.Logger
-		if logger == nil {
-			logger = slog.Default()
-		}
-		logger.Warn("failed to remove workflow bundle after create failure", slog.String("workflow_path", workflowPath), slog.String("error", err.Error()))
-	}
 }
 
 func pathExists(path string) (bool, error) {

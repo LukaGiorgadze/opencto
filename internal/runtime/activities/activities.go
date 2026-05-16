@@ -3528,6 +3528,33 @@ func (a *Activities) runWorkflowTool(ctx context.Context, choice agent.ToolChoic
 	}, err
 }
 
+func (a *Activities) PrepareWorkflowAuthoring(ctx context.Context, request scheduletool.AuthoringRequest) (scheduletool.AuthoringPlan, error) {
+	executor, err := a.workflowAuthoringExecutor()
+	if err != nil {
+		return scheduletool.AuthoringPlan{}, err
+	}
+	return executor.PrepareAuthoring(ctx, request)
+}
+
+func (a *Activities) CleanupWorkflowAuthoring(ctx context.Context, plan scheduletool.AuthoringPlan) error {
+	executor, err := a.workflowAuthoringExecutor()
+	if err != nil {
+		return err
+	}
+	return executor.CleanupAuthoring(ctx, plan)
+}
+
+func (a *Activities) workflowAuthoringExecutor() (scheduletool.AuthoringExecutor, error) {
+	if a.Schedule == nil {
+		return nil, fmt.Errorf("workflow schedule executor is not configured")
+	}
+	executor, ok := a.Schedule.(scheduletool.AuthoringExecutor)
+	if !ok {
+		return nil, fmt.Errorf("workflow schedule executor does not support agent authoring")
+	}
+	return executor, nil
+}
+
 func (a *Activities) runSkillTool(ctx context.Context, choice agent.ToolChoice) (toolRunResult, error) {
 	var req skilltool.Request
 	if err := decodeChoiceInput(choice, &req); err != nil {

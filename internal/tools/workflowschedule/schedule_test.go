@@ -2,6 +2,7 @@ package workflowschedule
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,53 @@ import (
 	sqlitestore "github.com/opencto/opencto/internal/storage/sqlite"
 	"github.com/opencto/opencto/internal/workflowbundle"
 )
+
+func testWorkflowManifest(name string) workflowbundle.Manifest {
+	return workflowbundle.Manifest{
+		Name:        name,
+		Description: "checks website availability",
+		Schedule: workflowbundle.Schedule{
+			Cron:          "* * * * *",
+			OverlapPolicy: workflowbundle.OverlapPolicySkip,
+			CatchupWindow: "5m",
+		},
+		NotificationPolicy: workflowbundle.NotificationPolicy{OnFailure: true},
+		Env:                []string{},
+		Steps: []workflowbundle.Step{{
+			ID:                  "check",
+			Command:             "python3",
+			Args:                []string{"src/check_site.py"},
+			StartToCloseTimeout: "30s",
+			RetryPolicy:         workflowbundle.RetryPolicy{MaximumAttempts: 1},
+		}},
+	}
+}
+
+func writeAuthoredWorkflow(t *testing.T, ctx context.Context, workspaceRoot, workflowID string, manifest workflowbundle.Manifest, files []workflowbundle.File) string {
+	t.Helper()
+	workflowPath, err := workflowbundle.WorkflowDir(workspaceRoot, workflowID)
+	if err != nil {
+		t.Fatalf("workflow dir: %v", err)
+	}
+	if err := workflowbundle.WriteBundle(ctx, workflowPath, manifest, files); err != nil {
+		t.Fatalf("write authored workflow: %v", err)
+	}
+	return workflowPath
+}
+
+func createAuthoredWorkflow(t *testing.T, ctx context.Context, executor *TemporalExecutor, workflowID string, manifest workflowbundle.Manifest, files []workflowbundle.File) Result {
+	t.Helper()
+	writeAuthoredWorkflow(t, ctx, executor.WorkspaceRoot, workflowID, manifest, files)
+	result, err := executor.Create(ctx, CreateRequest{
+		ProjectID:  "project-1",
+		WorkflowID: workflowID,
+		Prompt:     "publish authored test workflow",
+	})
+	if err != nil {
+		t.Fatalf("create workflow: %v", err)
+	}
+	return result
+}
 
 func TestWorkflowCreateCommitsBundleAndCreatesTemporalSchedule(t *testing.T) {
 	t.Parallel()
@@ -45,9 +93,7 @@ func TestWorkflowCreateCommitsBundleAndCreatesTemporalSchedule(t *testing.T) {
 		},
 	}
 
-	result, err := executor.Create(ctx, CreateRequest{
-		ProjectID:   "project-1",
-		WorkflowID:  "daily-etl",
+	manifest := workflowbundle.Manifest{
 		Name:        "daily etl",
 		Description: "runs an etl workflow",
 		Schedule: workflowbundle.Schedule{
@@ -66,10 +112,15 @@ func TestWorkflowCreateCommitsBundleAndCreatesTemporalSchedule(t *testing.T) {
 				MaximumAttempts: 3,
 			},
 		}},
-		Files: []workflowbundle.File{{
-			Path:    "src/etl.py",
-			Content: "print('ok')\n",
-		}},
+	}
+	writeAuthoredWorkflow(t, ctx, workspaceRoot, "daily-etl", manifest, []workflowbundle.File{{
+		Path:    "src/etl.py",
+		Content: "print('ok')\n",
+	}})
+	result, err := executor.Create(ctx, CreateRequest{
+		ProjectID:   "project-1",
+		WorkflowID:  "daily-etl",
+		Prompt:      "publish authored test workflow",
 		SourceEvent: domain.Event{ID: "event-1", ProjectID: "project-1", ChannelID: "channel-1"},
 	})
 	if err != nil {
@@ -124,45 +175,6 @@ func TestWorkflowCreateCommitsBundleAndCreatesTemporalSchedule(t *testing.T) {
 	}
 }
 
-func TestWorkflowCreateStoresPausedStatus(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	executor, store, client := newWorkflowTestExecutor(t, t.TempDir())
-	if _, err := executor.Create(ctx, CreateRequest{
-		ProjectID:  "project-1",
-		WorkflowID: "paused-workflow",
-		Name:       "paused workflow",
-		Schedule: workflowbundle.Schedule{
-			Cron:          "0 2 * * *",
-			OverlapPolicy: workflowbundle.OverlapPolicySkip,
-			CatchupWindow: "5m",
-		},
-		Env: []string{},
-		Steps: []workflowbundle.Step{{
-			ID:                  "check",
-			Command:             "python3",
-			Args:                []string{"src/check.py"},
-			StartToCloseTimeout: "30s",
-			RetryPolicy:         workflowbundle.RetryPolicy{MaximumAttempts: 1},
-		}},
-		Files:  []workflowbundle.File{{Path: "src/check.py", Content: "print('ok')\n"}},
-		Paused: true,
-	}); err != nil {
-		t.Fatalf("create paused workflow: %v", err)
-	}
-	if len(client.created) != 1 || !client.created[0].Paused {
-		t.Fatalf("expected paused Temporal schedule, got %#v", client.created)
-	}
-	workflow, ok, err := store.GetScheduledWorkflow(ctx, "project-1", "paused-workflow")
-	if err != nil || !ok {
-		t.Fatalf("stored workflow: ok=%t err=%v", ok, err)
-	}
-	if workflow.Status != domain.ScheduledWorkflowStatusPaused {
-		t.Fatalf("expected stored paused status, got %q", workflow.Status)
-	}
-}
-
 func TestWorkflowUpdateCommitsDirtyWorkflowFiles(t *testing.T) {
 	t.Parallel()
 
@@ -190,35 +202,13 @@ func TestWorkflowUpdateCommitsDirtyWorkflowFiles(t *testing.T) {
 		},
 	}
 
-	created, err := executor.Create(ctx, CreateRequest{
-		ProjectID:   "project-1",
-		WorkflowID:  "finance2049",
-		Name:        "finance2049 availability",
-		Description: "checks website availability",
-		Schedule: workflowbundle.Schedule{
-			Cron:          "* * * * *",
-			OverlapPolicy: workflowbundle.OverlapPolicySkip,
-			CatchupWindow: "5m",
-		},
-		NotificationPolicy: workflowbundle.NotificationPolicy{OnFailure: true},
-		Env:                []string{"CHECK_TOKEN=dummy"},
-		Steps: []workflowbundle.Step{{
-			ID:                  "check",
-			Command:             "python3",
-			Args:                []string{"src/check_site.py"},
-			StartToCloseTimeout: "30s",
-			RetryPolicy: workflowbundle.RetryPolicy{
-				MaximumAttempts: 2,
-			},
-		}},
-		Files: []workflowbundle.File{{
-			Path:    "src/check_site.py",
-			Content: "print('old')\n",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("create workflow schedule: %v", err)
-	}
+	manifest := testWorkflowManifest("finance2049 availability")
+	manifest.Env = []string{"CHECK_TOKEN=dummy"}
+	manifest.Steps[0].RetryPolicy.MaximumAttempts = 2
+	created := createAuthoredWorkflow(t, ctx, executor, "finance2049", manifest, []workflowbundle.File{{
+		Path:    "src/check_site.py",
+		Content: "print('old')\n",
+	}})
 	workflowPath, err := workflowbundle.WorkflowDir(workspaceRoot, "finance2049")
 	if err != nil {
 		t.Fatalf("workflow dir: %v", err)
@@ -233,6 +223,7 @@ func TestWorkflowUpdateCommitsDirtyWorkflowFiles(t *testing.T) {
 	updated, err := executor.Update(ctx, UpdateRequest{
 		ProjectID:     "project-1",
 		WorkflowID:    "finance2049",
+		Prompt:        "publish authored test workflow update",
 		CommitMessage: "update finance2049 workflow code",
 	})
 	if err != nil {
@@ -259,12 +250,12 @@ func TestWorkflowUpdateCommitsDirtyWorkflowFiles(t *testing.T) {
 	if err := workflowbundle.ArchiveCommit(ctx, workflowPath, updated.CommitHash, snapshot); err != nil {
 		t.Fatalf("archive updated commit: %v", err)
 	}
-	manifest, err := workflowbundle.LoadManifest(snapshot)
+	archivedManifest, err := workflowbundle.LoadManifest(snapshot)
 	if err != nil {
 		t.Fatalf("load archived manifest: %v", err)
 	}
-	if len(manifest.Env) != 1 || manifest.Env[0] != "CHECK_TOKEN=dummy" {
-		t.Fatalf("expected sparse update to preserve env, got %#v", manifest.Env)
+	if len(archivedManifest.Env) != 1 || archivedManifest.Env[0] != "CHECK_TOKEN=dummy" {
+		t.Fatalf("expected sparse update to preserve env, got %#v", archivedManifest.Env)
 	}
 	source, err := os.ReadFile(filepath.Join(snapshot, "src", "check_site.py"))
 	if err != nil {
@@ -287,31 +278,19 @@ func TestWorkflowCreateFailsWhenWorkflowAlreadyExists(t *testing.T) {
 
 	ctx := context.Background()
 	executor, store, _ := newWorkflowTestExecutor(t, t.TempDir())
+	manifest := testWorkflowManifest("daily etl")
+	manifest.Steps[0].ID = "download"
+	manifest.Steps[0].Command = "python"
+	manifest.Steps[0].Args = []string{"src/etl.py"}
+	manifest.Steps[0].StartToCloseTimeout = "10m"
+	writeAuthoredWorkflow(t, ctx, executor.WorkspaceRoot, "daily-etl", manifest, []workflowbundle.File{{
+		Path:    "src/etl.py",
+		Content: "print('ok')\n",
+	}})
 	request := CreateRequest{
-		ProjectID:   "project-1",
-		WorkflowID:  "daily-etl",
-		Name:        "daily etl",
-		Description: "runs an etl workflow",
-		Schedule: workflowbundle.Schedule{
-			Cron:          "0 2 * * *",
-			OverlapPolicy: workflowbundle.OverlapPolicySkip,
-			CatchupWindow: "5m",
-		},
-		NotificationPolicy: workflowbundle.NotificationPolicy{OnFailure: true},
-		Env:                []string{},
-		Steps: []workflowbundle.Step{{
-			ID:                  "download",
-			Command:             "python",
-			Args:                []string{"src/etl.py"},
-			StartToCloseTimeout: "10m",
-			RetryPolicy: workflowbundle.RetryPolicy{
-				MaximumAttempts: 1,
-			},
-		}},
-		Files: []workflowbundle.File{{
-			Path:    "src/etl.py",
-			Content: "print('ok')\n",
-		}},
+		ProjectID:  "project-1",
+		WorkflowID: "daily-etl",
+		Prompt:     "publish authored test workflow",
 	}
 	if _, err := executor.Create(ctx, request); err != nil {
 		t.Fatalf("first create workflow: %v", err)
@@ -324,12 +303,12 @@ func TestWorkflowCreateFailsWhenWorkflowAlreadyExists(t *testing.T) {
 	}
 }
 
-func TestWorkflowCreateIgnoresUnregisteredLocalBundle(t *testing.T) {
+func TestPrepareCreateAuthoringReplacesUnregisteredLocalBundle(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	workspaceRoot := t.TempDir()
-	executor, _, client := newWorkflowTestExecutor(t, workspaceRoot)
+	executor, _, _ := newWorkflowTestExecutor(t, workspaceRoot)
 	workflowPath, err := workflowbundle.WorkflowDir(workspaceRoot, "daily-etl")
 	if err != nil {
 		t.Fatalf("workflow dir: %v", err)
@@ -341,106 +320,137 @@ func TestWorkflowCreateIgnoresUnregisteredLocalBundle(t *testing.T) {
 		t.Fatalf("write stale source: %v", err)
 	}
 
-	result, err := executor.Create(ctx, CreateRequest{
-		ProjectID:   "project-1",
-		WorkflowID:  "daily-etl",
-		Name:        "daily etl",
-		Description: "runs an etl workflow",
-		Schedule: workflowbundle.Schedule{
-			Cron:          "0 2 * * *",
-			OverlapPolicy: workflowbundle.OverlapPolicySkip,
-			CatchupWindow: "5m",
-		},
-		Env: []string{},
-		Steps: []workflowbundle.Step{{
-			ID:                  "download",
-			Command:             "python",
-			Args:                []string{"src/etl.py"},
-			StartToCloseTimeout: "10m",
-			RetryPolicy: workflowbundle.RetryPolicy{
-				MaximumAttempts: 1,
-			},
-		}},
-		Files: []workflowbundle.File{{Path: "src/etl.py", Content: "print('ok')\n"}},
+	plan, err := executor.PrepareAuthoring(ctx, AuthoringRequest{
+		ProjectID:  "project-1",
+		Operation:  OperationCreate,
+		WorkflowID: "daily-etl",
+		Prompt:     "create daily etl",
 	})
 	if err != nil {
-		t.Fatalf("create workflow from stale bundle: %v", err)
+		t.Fatalf("prepare workflow authoring: %v", err)
 	}
-	if result.CommitHash == "" || len(client.created) != 1 {
-		t.Fatalf("expected workflow to be created, result=%#v created=%d", result, len(client.created))
+	if plan.WorkflowID != "daily-etl" || plan.WorkflowPath != workflowPath || !plan.RemoveOnFailure {
+		t.Fatalf("unexpected authoring plan: %#v", plan)
 	}
-	snapshot := t.TempDir()
-	if err := workflowbundle.ArchiveCommit(ctx, workflowPath, result.CommitHash, snapshot); err != nil {
-		t.Fatalf("archive created workflow: %v", err)
+	if _, err := os.Stat(filepath.Join(workflowPath, "src", "old.py")); !os.IsNotExist(err) {
+		t.Fatalf("expected stale source file to be removed, stat err=%v", err)
 	}
-	if _, err := os.Stat(filepath.Join(snapshot, "src", "old.py")); !os.IsNotExist(err) {
-		t.Fatalf("expected stale source file to be absent from created workflow archive, stat err=%v", err)
+	if _, err := os.Stat(filepath.Join(workflowPath, ".git")); err != nil {
+		t.Fatalf("expected prepared git repo: %v", err)
 	}
 }
 
-func TestWorkflowUpdateCanClearOptionalManifestFields(t *testing.T) {
+func TestWorkflowUpdatePublishesAuthoredManifestChanges(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	workspaceRoot := t.TempDir()
 	executor, _, _ := newWorkflowTestExecutor(t, workspaceRoot)
-	if _, err := executor.Create(ctx, CreateRequest{
-		ProjectID:   "project-1",
-		WorkflowID:  "finance2049",
-		Name:        "finance2049 availability",
-		Description: "checks website availability",
-		Schedule: workflowbundle.Schedule{
-			Cron:          "* * * * *",
-			OverlapPolicy: workflowbundle.OverlapPolicySkip,
-			CatchupWindow: "5m",
-		},
-		NotificationPolicy: workflowbundle.NotificationPolicy{OnFailure: true},
-		Env:                []string{"CHECK_TOKEN=dummy"},
-		Steps: []workflowbundle.Step{{
-			ID:                  "check",
-			Command:             "python3",
-			Args:                []string{"src/check_site.py"},
-			StartToCloseTimeout: "30s",
-			RetryPolicy: workflowbundle.RetryPolicy{
-				MaximumAttempts: 2,
-			},
-		}},
-		Files: []workflowbundle.File{{
-			Path:    "src/check_site.py",
-			Content: "print('old')\n",
-		}},
-	}); err != nil {
-		t.Fatalf("create workflow schedule: %v", err)
-	}
-
-	description := ""
-	onFailure := false
-	updated, err := executor.Update(ctx, UpdateRequest{
-		ProjectID:   "project-1",
-		WorkflowID:  "finance2049",
-		Description: &description,
-		NotificationPolicy: &NotificationPolicyPatch{
-			OnFailure: &onFailure,
-		},
-		Env: []string{},
-	})
-	if err != nil {
-		t.Fatalf("update workflow schedule: %v", err)
-	}
+	manifest := testWorkflowManifest("finance2049 availability")
+	manifest.Env = []string{"CHECK_TOKEN=dummy"}
+	createAuthoredWorkflow(t, ctx, executor, "finance2049", manifest, []workflowbundle.File{{
+		Path:    "src/check_site.py",
+		Content: "print('old')\n",
+	}})
 	workflowPath, err := workflowbundle.WorkflowDir(workspaceRoot, "finance2049")
 	if err != nil {
 		t.Fatalf("workflow dir: %v", err)
+	}
+	manifest.Description = ""
+	manifest.NotificationPolicy.OnFailure = false
+	manifest.Env = []string{}
+	if err := workflowbundle.WriteManifest(workflowPath, manifest); err != nil {
+		t.Fatalf("write authored manifest update: %v", err)
+	}
+	updated, err := executor.Update(ctx, UpdateRequest{
+		ProjectID:  "project-1",
+		WorkflowID: "finance2049",
+		Prompt:     "publish authored manifest update",
+	})
+	if err != nil {
+		t.Fatalf("update workflow schedule: %v", err)
 	}
 	snapshot := t.TempDir()
 	if err := workflowbundle.ArchiveCommit(ctx, workflowPath, updated.CommitHash, snapshot); err != nil {
 		t.Fatalf("archive updated commit: %v", err)
 	}
-	manifest, err := workflowbundle.LoadManifest(snapshot)
+	archivedManifest, err := workflowbundle.LoadManifest(snapshot)
 	if err != nil {
 		t.Fatalf("load archived manifest: %v", err)
 	}
-	if manifest.Description != "" || manifest.NotificationPolicy.OnFailure || len(manifest.Env) != 0 {
-		t.Fatalf("expected optional fields to be cleared, got %#v", manifest)
+	if archivedManifest.Description != "" || archivedManifest.NotificationPolicy.OnFailure || len(archivedManifest.Env) != 0 {
+		t.Fatalf("expected optional fields to be cleared, got %#v", archivedManifest)
+	}
+}
+
+func TestWorkflowUpdateRollsBackTemporalScheduleWhenStorePersistFails(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	workspaceRoot := t.TempDir()
+	executor, store, client := newWorkflowTestExecutor(t, workspaceRoot)
+	manifest := testWorkflowManifest("finance2049 availability")
+	created := createAuthoredWorkflow(t, ctx, executor, "finance2049", manifest, []workflowbundle.File{{
+		Path:    "src/check_site.py",
+		Content: "print('old')\n",
+	}})
+	workflowPath, err := workflowbundle.WorkflowDir(workspaceRoot, "finance2049")
+	if err != nil {
+		t.Fatalf("workflow dir: %v", err)
+	}
+	manifest.Description = "updated description"
+	if err := workflowbundle.WriteManifest(workflowPath, manifest); err != nil {
+		t.Fatalf("write authored manifest update: %v", err)
+	}
+
+	executor.Store = &failingScheduledWorkflowStore{Store: store, upsertErr: errors.New("db unavailable")}
+	_, err = executor.Update(ctx, UpdateRequest{
+		ProjectID:  "project-1",
+		WorkflowID: "finance2049",
+		Prompt:     "publish authored manifest update",
+	})
+	if err == nil || !strings.Contains(err.Error(), "db unavailable") {
+		t.Fatalf("expected store error, got %v", err)
+	}
+	if client.handle.updated != 2 {
+		t.Fatalf("expected update plus rollback, got %d update calls", client.handle.updated)
+	}
+	if got := scheduleCommitHash(t, client.handle.currentSchedule); got != created.CommitHash {
+		t.Fatalf("expected Temporal schedule rollback to commit %s, got %s", created.CommitHash, got)
+	}
+}
+
+func TestWorkflowUpdateReturnsStoreReadErrorBeforeTemporalUpdate(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	workspaceRoot := t.TempDir()
+	executor, store, client := newWorkflowTestExecutor(t, workspaceRoot)
+	manifest := testWorkflowManifest("finance2049 availability")
+	createAuthoredWorkflow(t, ctx, executor, "finance2049", manifest, []workflowbundle.File{{
+		Path:    "src/check_site.py",
+		Content: "print('old')\n",
+	}})
+	workflowPath, err := workflowbundle.WorkflowDir(workspaceRoot, "finance2049")
+	if err != nil {
+		t.Fatalf("workflow dir: %v", err)
+	}
+	manifest.Description = "updated description"
+	if err := workflowbundle.WriteManifest(workflowPath, manifest); err != nil {
+		t.Fatalf("write authored manifest update: %v", err)
+	}
+
+	executor.Store = &failingScheduledWorkflowStore{Store: store, getErr: errors.New("db read unavailable")}
+	_, err = executor.Update(ctx, UpdateRequest{
+		ProjectID:  "project-1",
+		WorkflowID: "finance2049",
+		Prompt:     "publish authored manifest update",
+	})
+	if err == nil || !strings.Contains(err.Error(), "db read unavailable") {
+		t.Fatalf("expected store read error, got %v", err)
+	}
+	if client.handle.updated != 0 {
+		t.Fatalf("Temporal update should not run after store read failure, got %d update calls", client.handle.updated)
 	}
 }
 
@@ -450,29 +460,7 @@ func TestWorkflowDeleteHardDeletesScheduleStoreAndFiles(t *testing.T) {
 	ctx := context.Background()
 	workspaceRoot := t.TempDir()
 	executor, store, client := newWorkflowTestExecutor(t, workspaceRoot)
-	if _, err := executor.Create(ctx, CreateRequest{
-		ProjectID:   "project-1",
-		WorkflowID:  "finance2049",
-		Name:        "finance2049 availability",
-		Description: "checks website availability",
-		Schedule: workflowbundle.Schedule{
-			Cron:          "* * * * *",
-			OverlapPolicy: workflowbundle.OverlapPolicySkip,
-			CatchupWindow: "5m",
-		},
-		NotificationPolicy: workflowbundle.NotificationPolicy{OnFailure: true},
-		Env:                []string{},
-		Steps: []workflowbundle.Step{{
-			ID:                  "check",
-			Command:             "python3",
-			Args:                []string{"src/check_site.py"},
-			StartToCloseTimeout: "30s",
-			RetryPolicy:         workflowbundle.RetryPolicy{MaximumAttempts: 1},
-		}},
-		Files: []workflowbundle.File{{Path: "src/check_site.py", Content: "print('ok')\n"}},
-	}); err != nil {
-		t.Fatalf("create workflow: %v", err)
-	}
+	createAuthoredWorkflow(t, ctx, executor, "finance2049", testWorkflowManifest("finance2049 availability"), []workflowbundle.File{{Path: "src/check_site.py", Content: "print('ok')\n"}})
 	workflowPath, err := workflowbundle.WorkflowDir(workspaceRoot, "finance2049")
 	if err != nil {
 		t.Fatalf("workflow dir: %v", err)
@@ -509,27 +497,7 @@ func TestWorkflowDeleteHardDeletesWhenScheduleIsAlreadyMissing(t *testing.T) {
 	ctx := context.Background()
 	workspaceRoot := t.TempDir()
 	executor, store, client := newWorkflowTestExecutor(t, workspaceRoot)
-	if _, err := executor.Create(ctx, CreateRequest{
-		ProjectID:  "project-1",
-		WorkflowID: "finance2049",
-		Name:       "finance2049 availability",
-		Schedule: workflowbundle.Schedule{
-			Cron:          "* * * * *",
-			OverlapPolicy: workflowbundle.OverlapPolicySkip,
-			CatchupWindow: "5m",
-		},
-		Env: []string{},
-		Steps: []workflowbundle.Step{{
-			ID:                  "check",
-			Command:             "python3",
-			Args:                []string{"src/check_site.py"},
-			StartToCloseTimeout: "30s",
-			RetryPolicy:         workflowbundle.RetryPolicy{MaximumAttempts: 1},
-		}},
-		Files: []workflowbundle.File{{Path: "src/check_site.py", Content: "print('ok')\n"}},
-	}); err != nil {
-		t.Fatalf("create workflow: %v", err)
-	}
+	createAuthoredWorkflow(t, ctx, executor, "finance2049", testWorkflowManifest("finance2049 availability"), []workflowbundle.File{{Path: "src/check_site.py", Content: "print('ok')\n"}})
 	workflowPath, err := workflowbundle.WorkflowDir(workspaceRoot, "finance2049")
 	if err != nil {
 		t.Fatalf("workflow dir: %v", err)
@@ -562,27 +530,7 @@ func TestWorkflowOperationDispatchesControlActions(t *testing.T) {
 
 	ctx := context.Background()
 	executor, _, client := newWorkflowTestExecutor(t, t.TempDir())
-	if _, err := executor.Create(ctx, CreateRequest{
-		ProjectID:  "project-1",
-		WorkflowID: "finance2049",
-		Name:       "finance2049 availability",
-		Schedule: workflowbundle.Schedule{
-			Cron:          "* * * * *",
-			OverlapPolicy: workflowbundle.OverlapPolicySkip,
-			CatchupWindow: "5m",
-		},
-		Env: []string{},
-		Steps: []workflowbundle.Step{{
-			ID:                  "check",
-			Command:             "python3",
-			Args:                []string{"src/check_site.py"},
-			StartToCloseTimeout: "30s",
-			RetryPolicy:         workflowbundle.RetryPolicy{MaximumAttempts: 1},
-		}},
-		Files: []workflowbundle.File{{Path: "src/check_site.py", Content: "print('ok')\n"}},
-	}); err != nil {
-		t.Fatalf("create workflow: %v", err)
-	}
+	createAuthoredWorkflow(t, ctx, executor, "finance2049", testWorkflowManifest("finance2049 availability"), []workflowbundle.File{{Path: "src/check_site.py", Content: "print('ok')\n"}})
 	if _, err := executor.Operation(ctx, OperationRequest{ProjectID: "project-1", Operation: OperationTrigger, WorkflowID: "finance2049"}); err != nil {
 		t.Fatalf("trigger workflow: %v", err)
 	}
@@ -606,27 +554,7 @@ func TestWorkflowTriggerRejectsDirtyWorkflowRepo(t *testing.T) {
 	ctx := context.Background()
 	workspaceRoot := t.TempDir()
 	executor, _, client := newWorkflowTestExecutor(t, workspaceRoot)
-	if _, err := executor.Create(ctx, CreateRequest{
-		ProjectID:  "project-1",
-		WorkflowID: "finance2049",
-		Name:       "finance2049 availability",
-		Schedule: workflowbundle.Schedule{
-			Cron:          "* * * * *",
-			OverlapPolicy: workflowbundle.OverlapPolicySkip,
-			CatchupWindow: "5m",
-		},
-		Env: []string{},
-		Steps: []workflowbundle.Step{{
-			ID:                  "check",
-			Command:             "python3",
-			Args:                []string{"src/check_site.py"},
-			StartToCloseTimeout: "30s",
-			RetryPolicy:         workflowbundle.RetryPolicy{MaximumAttempts: 1},
-		}},
-		Files: []workflowbundle.File{{Path: "src/check_site.py", Content: "print('old')\n"}},
-	}); err != nil {
-		t.Fatalf("create workflow: %v", err)
-	}
+	createAuthoredWorkflow(t, ctx, executor, "finance2049", testWorkflowManifest("finance2049 availability"), []workflowbundle.File{{Path: "src/check_site.py", Content: "print('old')\n"}})
 	workflowPath, err := workflowbundle.WorkflowDir(workspaceRoot, "finance2049")
 	if err != nil {
 		t.Fatalf("workflow dir: %v", err)
@@ -650,27 +578,7 @@ func TestWorkflowTriggerRejectsUnpublishedCommit(t *testing.T) {
 	ctx := context.Background()
 	workspaceRoot := t.TempDir()
 	executor, _, client := newWorkflowTestExecutor(t, workspaceRoot)
-	if _, err := executor.Create(ctx, CreateRequest{
-		ProjectID:  "project-1",
-		WorkflowID: "finance2049",
-		Name:       "finance2049 availability",
-		Schedule: workflowbundle.Schedule{
-			Cron:          "* * * * *",
-			OverlapPolicy: workflowbundle.OverlapPolicySkip,
-			CatchupWindow: "5m",
-		},
-		Env: []string{},
-		Steps: []workflowbundle.Step{{
-			ID:                  "check",
-			Command:             "python3",
-			Args:                []string{"src/check_site.py"},
-			StartToCloseTimeout: "30s",
-			RetryPolicy:         workflowbundle.RetryPolicy{MaximumAttempts: 1},
-		}},
-		Files: []workflowbundle.File{{Path: "src/check_site.py", Content: "print('old')\n"}},
-	}); err != nil {
-		t.Fatalf("create workflow: %v", err)
-	}
+	createAuthoredWorkflow(t, ctx, executor, "finance2049", testWorkflowManifest("finance2049 availability"), []workflowbundle.File{{Path: "src/check_site.py", Content: "print('old')\n"}})
 	workflowPath, err := workflowbundle.WorkflowDir(workspaceRoot, "finance2049")
 	if err != nil {
 		t.Fatalf("workflow dir: %v", err)
@@ -710,6 +618,26 @@ type fakeScheduleClient struct {
 	entries []*temporalclient.ScheduleListEntry
 }
 
+type failingScheduledWorkflowStore struct {
+	*sqlitestore.Store
+	getErr    error
+	upsertErr error
+}
+
+func (s *failingScheduledWorkflowStore) GetScheduledWorkflow(ctx context.Context, projectID, workflowID string) (domain.ScheduledWorkflow, bool, error) {
+	if s.getErr != nil {
+		return domain.ScheduledWorkflow{}, false, s.getErr
+	}
+	return s.Store.GetScheduledWorkflow(ctx, projectID, workflowID)
+}
+
+func (s *failingScheduledWorkflowStore) UpsertScheduledWorkflow(ctx context.Context, item domain.ScheduledWorkflow) error {
+	if s.upsertErr != nil {
+		return s.upsertErr
+	}
+	return s.Store.UpsertScheduledWorkflow(ctx, item)
+}
+
 func newWorkflowTestExecutor(t *testing.T, workspaceRoot string) (*TemporalExecutor, *sqlitestore.Store, *fakeScheduleClient) {
 	t.Helper()
 	ctx := context.Background()
@@ -747,6 +675,7 @@ func (f *fakeScheduleClient) Create(_ context.Context, options temporalclient.Sc
 		f.handle = handle
 	}
 	handle.id = options.ID
+	handle.currentSchedule = scheduleFromOptions(options)
 	return handle, nil
 }
 
@@ -764,6 +693,41 @@ func (f *fakeScheduleClient) GetHandle(_ context.Context, id string) temporalcli
 	return handle
 }
 
+func scheduleFromOptions(options temporalclient.ScheduleOptions) temporalclient.Schedule {
+	remaining := options.RemainingActions
+	return temporalclient.Schedule{
+		Action: options.Action,
+		Spec:   &options.Spec,
+		Policy: &temporalclient.SchedulePolicies{
+			Overlap:        options.Overlap,
+			CatchupWindow:  options.CatchupWindow,
+			PauseOnFailure: options.PauseOnFailure,
+		},
+		State: &temporalclient.ScheduleState{
+			Note:             options.Note,
+			Paused:           options.Paused,
+			LimitedActions:   remaining > 0,
+			RemainingActions: remaining,
+		},
+	}
+}
+
+func scheduleCommitHash(t *testing.T, schedule temporalclient.Schedule) string {
+	t.Helper()
+	action, ok := schedule.Action.(*temporalclient.ScheduleWorkflowAction)
+	if !ok {
+		t.Fatalf("expected workflow action, got %T", schedule.Action)
+	}
+	if len(action.Args) != 1 {
+		t.Fatalf("expected one workflow arg, got %#v", action.Args)
+	}
+	input, ok := action.Args[0].(workflowrun.Input)
+	if !ok {
+		t.Fatalf("expected workflowrun input, got %T", action.Args[0])
+	}
+	return input.CommitHash
+}
+
 type fakeScheduleHandle struct {
 	id                 string
 	deleted            int
@@ -772,6 +736,7 @@ type fakeScheduleHandle struct {
 	triggered          int
 	paused             int
 	unpaused           int
+	currentSchedule    temporalclient.Schedule
 	lastUpdate         *temporalclient.ScheduleUpdate
 	lastTriggerOptions temporalclient.ScheduleTriggerOptions
 }
@@ -792,9 +757,16 @@ func (f *fakeScheduleHandle) Backfill(context.Context, temporalclient.ScheduleBa
 func (f *fakeScheduleHandle) Update(_ context.Context, options temporalclient.ScheduleUpdateOptions) error {
 	f.updated++
 	if options.DoUpdate != nil {
-		update, err := options.DoUpdate(temporalclient.ScheduleUpdateInput{})
+		update, err := options.DoUpdate(temporalclient.ScheduleUpdateInput{
+			Description: temporalclient.ScheduleDescription{Schedule: f.currentSchedule},
+		})
 		f.lastUpdate = update
-		return err
+		if err != nil {
+			return err
+		}
+		if update != nil && update.Schedule != nil {
+			f.currentSchedule = *update.Schedule
+		}
 	}
 	return nil
 }

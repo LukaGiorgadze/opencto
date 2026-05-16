@@ -1,6 +1,7 @@
 package workflows
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -11,6 +12,8 @@ import (
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/runtime/activities"
+	agenttool "github.com/opencto/opencto/internal/tools/agenttool"
+	scheduletool "github.com/opencto/opencto/internal/tools/workflowschedule"
 )
 
 const (
@@ -148,7 +151,9 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			var signalEvents []taskSignalEvent
 			var err error
 			if choice.Type == domain.ToolTypeAgent {
-				execResult, canceled, interrupted, signalEvents, err = executeAgentWorkflowStep(ctx, input.ProjectID, next.WorkItemID, input.Event, choice, cycle, &additionalEvents)
+				execResult, canceled, interrupted, signalEvents, err = executeAgentWorkflowStep(ctx, input.ProjectID, next.WorkItemID, input.Event, choice, cycle, &additionalEvents, nil)
+			} else if isWorkflowAuthoringTool(choice.Type) {
+				execResult, canceled, interrupted, signalEvents, err = executeWorkflowAuthoringStep(ctx, persistenceCtx, input.ProjectID, next.WorkItemID, input.Event, choice, cycle, &additionalEvents)
 			} else {
 				execResult, canceled, interrupted, signalEvents, err = executeToolStep(ctx, toolCtx, persistenceCtx, input.ProjectID, next.WorkItemID, input.Event, choice, cycle, &additionalEvents)
 			}
@@ -260,6 +265,149 @@ func eventWithControlMetadata(event domain.Event, control string) domain.Event {
 	metadata[domain.MetadataKeyControl] = control
 	event.Metadata = metadata
 	return event
+}
+
+func executeWorkflowAuthoringStep(ctx workflow.Context, persistenceCtx workflow.Context, projectID, workItemID string, event domain.Event, choice agent.ToolChoice, cycle int, additionalEvents *[]domain.Event) (activities.ExecuteToolResult, bool, bool, []taskSignalEvent, error) {
+	request, err := workflowAuthoringRequest(projectID, workItemID, event, choice)
+	if err != nil {
+		return failedExecutionActivityResult(choice, workItemID, cycle, err), false, false, nil, nil
+	}
+	plan, err := prepareWorkflowAuthoring(persistenceCtx, request)
+	if err != nil {
+		return failedExecutionActivityResult(choice, workItemID, cycle, err), false, false, nil, nil
+	}
+
+	agentChoice, err := workflowAuthoringAgentChoice(choice, plan)
+	if err != nil {
+		_ = cleanupWorkflowAuthoring(persistenceCtx, plan)
+		return failedExecutionActivityResult(choice, workItemID, cycle, err), false, false, nil, nil
+	}
+	completionTool := workflowAuthoringCompletionTool(choice, plan)
+	execResult, canceled, interrupted, signalEvents, err := executeAgentWorkflowStep(ctx, projectID, workItemID, event, agentChoice, cycle, additionalEvents, &completionTool)
+	result := workflowAuthoringParentResult(choice, execResult, plan)
+	if err != nil {
+		result = failedExecutionActivityResult(choice, workItemID, cycle, err)
+	}
+	if result.Status == domain.ExecutionStatusSucceeded {
+		return result, false, interrupted, signalEvents, nil
+	}
+	if cleanupErr := cleanupWorkflowAuthoring(persistenceCtx, plan); cleanupErr != nil {
+		result.Status = domain.ExecutionStatusFailed
+		result.ResultCode = "1"
+		result.Error = firstNonEmpty(result.Error, "workflow authoring failed")
+		result.Observation = strings.TrimSpace(result.Observation + "\ncleanup_error: " + cleanupErr.Error())
+	}
+	return result, canceled, interrupted, signalEvents, nil
+}
+
+func workflowAuthoringRequest(projectID, workItemID string, event domain.Event, choice agent.ToolChoice) (scheduletool.AuthoringRequest, error) {
+	var payload struct {
+		WorkflowID    string `json:"workflow_id"`
+		Prompt        string `json:"prompt"`
+		CommitMessage string `json:"commit_message,omitempty"`
+	}
+	if err := json.Unmarshal(choice.Input, &payload); err != nil {
+		return scheduletool.AuthoringRequest{}, fmt.Errorf("decode workflow authoring input: %w", err)
+	}
+	operation := ""
+	switch choice.Type {
+	case domain.ToolTypeWorkflowCreate:
+		operation = scheduletool.OperationCreate
+	case domain.ToolTypeWorkflowUpdate:
+		operation = scheduletool.OperationUpdate
+	default:
+		return scheduletool.AuthoringRequest{}, fmt.Errorf("unsupported workflow authoring tool %q", choice.Type)
+	}
+	return scheduletool.AuthoringRequest{
+		ProjectID:     projectID,
+		WorkItemID:    workItemID,
+		ToolCallID:    toolCallID(choice),
+		Intent:        choice.Intent,
+		SourceEvent:   event,
+		Operation:     operation,
+		WorkflowID:    payload.WorkflowID,
+		Prompt:        payload.Prompt,
+		CommitMessage: payload.CommitMessage,
+	}, nil
+}
+
+func prepareWorkflowAuthoring(ctx workflow.Context, request scheduletool.AuthoringRequest) (scheduletool.AuthoringPlan, error) {
+	var result scheduletool.AuthoringPlan
+	err := workflow.ExecuteActivity(ctx, "Activities.PrepareWorkflowAuthoring", request).Get(ctx, &result)
+	return result, err
+}
+
+func cleanupWorkflowAuthoring(ctx workflow.Context, plan scheduletool.AuthoringPlan) error {
+	return workflow.ExecuteActivity(ctx, "Activities.CleanupWorkflowAuthoring", plan).Get(ctx, nil)
+}
+
+func workflowAuthoringAgentChoice(original agent.ToolChoice, plan scheduletool.AuthoringPlan) (agent.ToolChoice, error) {
+	allowedTools := []domain.ToolType{
+		domain.ToolTypeRead,
+		domain.ToolTypeWrite,
+		domain.ToolTypeEdit,
+		domain.ToolTypeGlob,
+		domain.ToolTypeGrep,
+		domain.ToolTypeExec,
+	}
+	request := agenttool.Request{
+		Goal:         plan.AgentGoal,
+		Prompt:       plan.AgentPrompt,
+		AllowedTools: &allowedTools,
+		MaxTurns:     agenttool.DefaultMaxTurns,
+	}
+	input, err := json.Marshal(request)
+	if err != nil {
+		return agent.ToolChoice{}, err
+	}
+	metadata := cloneChoiceMetadata(original.Metadata)
+	metadata["workflow_id"] = plan.WorkflowID
+	metadata["workflow_path"] = plan.WorkflowPath
+	metadata["workflow_schedule_operation"] = plan.Operation
+	return agent.ToolChoice{
+		ToolCallID:   toolCallID(original),
+		Type:         domain.ToolTypeAgent,
+		Intent:       agenttool.PromptSummary(plan.AgentGoal),
+		Input:        input,
+		InputSummary: plan.AgentGoal,
+		Metadata:     metadata,
+	}, nil
+}
+
+func workflowAuthoringCompletionTool(original agent.ToolChoice, plan scheduletool.AuthoringPlan) agent.ToolChoice {
+	choice := original
+	choice.Metadata = cloneChoiceMetadata(original.Metadata)
+	choice.Metadata["workflow_id"] = plan.WorkflowID
+	choice.Metadata["workflow_path"] = plan.WorkflowPath
+	choice.Metadata["workflow_schedule_operation"] = plan.Operation
+	return choice
+}
+
+func workflowAuthoringParentResult(original agent.ToolChoice, result activities.ExecuteToolResult, plan scheduletool.AuthoringPlan) activities.ExecuteToolResult {
+	result.Tool = original.Type
+	result.RequestedAction = original.Intent
+	result.Input = cloneWorkflowRawMessage(original.Input)
+	result.ToolCallID = toolCallID(original)
+	if result.Metadata == nil {
+		result.Metadata = map[string]string{}
+	}
+	result.Metadata["tool_call_id"] = result.ToolCallID
+	result.Metadata["workflow_id"] = plan.WorkflowID
+	result.Metadata["workflow_path"] = plan.WorkflowPath
+	result.Metadata["workflow_schedule_operation"] = plan.Operation
+	return result
+}
+
+func isWorkflowAuthoringTool(toolType domain.ToolType) bool {
+	return toolType == domain.ToolTypeWorkflowCreate || toolType == domain.ToolTypeWorkflowUpdate
+}
+
+func cloneChoiceMetadata(metadata domain.Metadata) domain.Metadata {
+	cloned := domain.Metadata{}
+	for key, value := range metadata {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func executeToolStep(ctx workflow.Context, toolCtx workflow.Context, persistenceCtx workflow.Context, projectID, workItemID string, event domain.Event, choice agent.ToolChoice, cycle int, additionalEvents *[]domain.Event) (activities.ExecuteToolResult, bool, bool, []taskSignalEvent, error) {
