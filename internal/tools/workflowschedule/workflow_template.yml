@@ -1,0 +1,24 @@
+name: string
+description: string
+schedule:
+    cron: "*/3 * * * *" # or "" when one_shot_at is used
+    one_shot_at: "" # or RFC3339 timestamp when cron is ""
+    overlap_policy: skip # skip | buffer_one | buffer_all | cancel_other | terminate_other | allow_all
+    catchup_window: 10m
+    pause_on_failure: false
+notification_policy:
+    on_failure: true
+env: [] # or ["NAME=value"]
+steps:
+    - id: step-id
+      command: python3
+      args:
+          - src/script.py
+      start_to_close_timeout: 2m
+      schedule_to_close_timeout: "" # optional; omit when not needed
+      retry_policy: # optional; omit when not needed
+          initial_interval: 2s
+          backoff_coefficient: 2
+          maximum_interval: 30s
+          maximum_attempts: 3
+          non_retryable_error_types: []

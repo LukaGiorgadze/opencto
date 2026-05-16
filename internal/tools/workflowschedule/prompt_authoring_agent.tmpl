@@ -17,21 +17,9 @@ Requested commit message: {{ .CommitMessage }}
 - Create or update `workflow.yml` and any source files required by its steps.
 - Do not commit, register Temporal schedules, edit `data/`, or run schedulers, workers, or daemons.
 
-**workflow.yml requirements:**
-- Must define: `name`, `description`, `schedule`, `notification_policy`, `env`, `steps`.
-- `schedule` must define `cron`, `one_shot_at`, `overlap_policy`, `catchup_window`, and `pause_on_failure`.
-- Use exactly one schedule trigger: set `cron` and `one_shot_at: ""`, or set `one_shot_at` and `cron: ""`.
-- `notification_policy` must be a mapping with `on_failure`.
-- `env` must be a YAML list. Use `[]` when no custom env is needed. Never define `OPENCTO_*` names.
-- Each step must define `id`, `command`, and `start_to_close_timeout`.
-- `command`: executable only. `args`: its arguments. Never repeat the executable in `args`.
-- External commands such as `python3` must have the script path in `args`.
-- Every step requires `start_to_close_timeout`. Add `retry_policy` only when the step behavior requires it.
-
 **State passing:**
 - Same-run step communication: `$OPENCTO_WORKFLOW_RUN_DIR/artifacts/`
 - Cross-run persistent state: `$OPENCTO_WORKFLOW_DATA_DIR/`
-- Do not use removed runtime names: `OPENCTO_RUN_DIR`, `OPENCTO_STEP_ID`, `OPENCTO_STEP_DIR`, `OPENCTO_WORKFLOW_ID`, `OPENCTO_RUN_ID`.
 
 # Validation Before Final Response
 
@@ -123,30 +111,7 @@ Custom env variables are defined in `workflow.yml` under `env` as literal `NAME=
 Use this shape. Keep empty fields explicitly present where shown.
 
 ```yaml
-name: string
-description: string
-schedule:
-  cron: "*/3 * * * *"        # or "" when one_shot_at is used
-  one_shot_at: ""            # or RFC3339 timestamp when cron is ""
-  overlap_policy: skip       # skip | buffer_one | buffer_all | cancel_other | terminate_other | allow_all
-  catchup_window: 10m
-  pause_on_failure: false
-notification_policy:
-  on_failure: true
-env: []                      # or ["NAME=value"]
-steps:
-  - id: step-id
-    command: python3
-    args:
-      - src/script.py
-    start_to_close_timeout: 2m
-    schedule_to_close_timeout: "" # optional; omit when not needed
-    retry_policy:                 # optional; omit when not needed
-      initial_interval: 2s
-      backoff_coefficient: 2
-      maximum_interval: 30s
-      maximum_attempts: 3
-      non_retryable_error_types: []
+{{ template "workflow_template.yml" . }}
 ```
 
 ## Workflow Design Rules
