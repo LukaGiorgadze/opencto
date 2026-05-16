@@ -104,6 +104,8 @@ type ToolSelectionInput struct {
 	Context        Context
 	Runtime        RuntimeContext
 	ExecutionCycle int
+	ToolAllowlist  []domain.ToolType
+	RestrictTools  bool
 }
 
 type NextActionInput struct {
@@ -117,6 +119,13 @@ type NextActionInput struct {
 	LastObservation    *ExecutionFeedback
 	ObservationHistory []ExecutionFeedback
 	ChannelType        domain.ChannelType
+	SubAgent           *SubAgentContext
+	ToolAllowlist      []domain.ToolType
+	RestrictTools      bool
+}
+
+type SubAgentContext struct {
+	Goal string `json:"goal"`
 }
 
 type Engine interface {

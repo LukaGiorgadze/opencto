@@ -21,6 +21,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 
 	"github.com/opencto/opencto/internal/agent"
+	"github.com/opencto/opencto/internal/agent/prompts"
 	"github.com/opencto/opencto/internal/config"
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/embedding"
@@ -30,6 +31,7 @@ import (
 	"github.com/opencto/opencto/internal/storage"
 	"github.com/opencto/opencto/internal/textclean"
 	toolregistry "github.com/opencto/opencto/internal/tools"
+	agenttool "github.com/opencto/opencto/internal/tools/agenttool"
 	edittool "github.com/opencto/opencto/internal/tools/edit"
 	exectool "github.com/opencto/opencto/internal/tools/exec"
 	globtool "github.com/opencto/opencto/internal/tools/glob"
@@ -2960,6 +2962,8 @@ func (a *Activities) startExecProcess(ctx context.Context, request ExecuteToolRe
 
 func (a *Activities) runChosenTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
 	switch choice.Type {
+	case domain.ToolTypeAgent:
+		return a.runAgentTool(ctx, choice, execution)
 	case domain.ToolTypeExec:
 		return a.runExecTool(ctx, choice, execution)
 	case domain.ToolTypeRead:
@@ -2979,6 +2983,445 @@ func (a *Activities) runChosenTool(ctx context.Context, choice agent.ToolChoice,
 	default:
 		return toolRunResult{ResultCode: "1"}, fmt.Errorf("unsupported tool type %q", choice.Type)
 	}
+}
+
+func (a *Activities) runAgentTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
+	if a.Engine == nil {
+		return toolRunResult{ResultCode: "1"}, fmt.Errorf("next action engine is not configured")
+	}
+	var req agenttool.Request
+	if err := decodeChoiceInput(choice, &req); err != nil {
+		return toolRunResult{ResultCode: "1"}, err
+	}
+	req.Goal = strings.TrimSpace(req.Goal)
+	req.Prompt = strings.TrimSpace(req.Prompt)
+	if req.Goal == "" {
+		return toolRunResult{ResultCode: "1"}, fmt.Errorf("agent goal is required")
+	}
+	if req.Prompt == "" {
+		return toolRunResult{ResultCode: "1"}, fmt.Errorf("agent prompt is required")
+	}
+
+	allowedTools, err := a.agentAllowedTools(req)
+	if err != nil {
+		return toolRunResult{ResultCode: "1"}, err
+	}
+	maxTurns := agenttool.NormalizeMaxTurns(req.MaxTurns)
+	subContext, err := a.subAgentContext(ctx, req, execution, allowedTools)
+	if err != nil {
+		return toolRunResult{ResultCode: "1"}, err
+	}
+
+	run, err := a.runSubAgentLoop(ctx, subAgentRunRequest{
+		Execution:    execution,
+		Context:      subContext,
+		AllowedTools: allowedTools,
+		MaxTurns:     maxTurns,
+		Goal:         req.Goal,
+	})
+	if err != nil {
+		return toolRunResult{ResultCode: "1"}, err
+	}
+	metadata := map[string]string{
+		"agent_goal":       req.Goal,
+		"agent_turn_count": strconv.Itoa(run.TurnCount),
+	}
+	if len(run.ToolsUsed) > 0 {
+		metadata["agent_tools_used"] = strings.Join(toolTypeStrings(run.ToolsUsed), ",")
+	}
+	if len(run.FilesTouched) > 0 {
+		metadata["agent_files_touched"] = strings.Join(run.FilesTouched, "\n")
+	}
+	return toolRunResult{
+		Observation: agentObservation(run),
+		ResultCode:  "0",
+		Metadata:    metadata,
+		Processes:   run.Processes,
+	}, nil
+}
+
+type subAgentRunRequest struct {
+	Execution    toolExecutionContext
+	Context      agent.Context
+	AllowedTools []domain.ToolType
+	MaxTurns     int
+	Goal         string
+}
+
+type subAgentRunResult struct {
+	agenttool.Result
+	Processes []domain.ProcessReference
+}
+
+func (a *Activities) runSubAgentLoop(ctx context.Context, req subAgentRunRequest) (subAgentRunResult, error) {
+	now := time.Now().UTC()
+	currentAction := agent.NextAction{}
+	if err := ensureNextAction(&currentAction, req.Execution.ProjectID, req.Context.Event, now); err != nil {
+		return subAgentRunResult{}, err
+	}
+
+	var history []agent.ExecutionFeedback
+	var lastResults []ExecuteToolResult
+	var processes []domain.ProcessReference
+	var toolsUsed []domain.ToolType
+	var filesTouched []string
+
+	for turn := 1; turn <= req.MaxTurns; turn++ {
+		var observations []agent.ExecutionFeedback
+		if len(lastResults) > 0 {
+			currentAction.ToolChoice = agent.ToolChoice{}
+			for _, result := range lastResults {
+				feedback := executionFeedback(result)
+				observations = append(observations, feedback)
+				history = append(history, feedback)
+				if err := applyObservationToNextAction(&currentAction, feedback, time.Now().UTC()); err != nil {
+					return subAgentRunResult{}, err
+				}
+			}
+			lastResults = nil
+		}
+
+		output, err := a.Engine.NextAction(ctx, agent.NextActionInput{
+			ProjectID:          req.Execution.ProjectID,
+			Context:            req.Context,
+			NextAction:         currentAction,
+			Runtime:            buildRuntimeContext(a.WorkspaceRoot, a.OpenCTORoot),
+			ExecutionCycle:     turn,
+			LastObservation:    lastObservation(observations),
+			ObservationHistory: history,
+			ChannelType:        req.Context.Event.ChannelType,
+			SubAgent:           &agent.SubAgentContext{Goal: req.Goal},
+			ToolAllowlist:      req.AllowedTools,
+			RestrictTools:      true,
+		})
+		if err != nil {
+			return subAgentRunResult{}, err
+		}
+		if nextActionHasOutput(output.NextAction) {
+			currentAction = output.NextAction
+		}
+		if err := ensureNextAction(&currentAction, req.Execution.ProjectID, req.Context.Event, time.Now().UTC()); err != nil {
+			return subAgentRunResult{}, err
+		}
+
+		if output.Status != NextActionStatusTool {
+			return subAgentRunResult{
+				Result: agenttool.Result{
+					Message:      strings.TrimSpace(output.NextAction.ResponseMessage),
+					TurnCount:    turn,
+					FilesTouched: filesTouched,
+					ToolsUsed:    toolsUsed,
+				},
+				Processes: processes,
+			}, nil
+		}
+
+		choices := append([]agent.ToolChoice(nil), output.ToolChoices...)
+		if len(choices) == 0 && output.ToolChoice != nil {
+			choices = []agent.ToolChoice{*output.ToolChoice}
+		}
+		if len(choices) == 0 {
+			return subAgentRunResult{}, fmt.Errorf("sub-agent returned tool status without a tool choice")
+		}
+		workItemID := nextActionToolWorkItemID(currentAction, lastObservation(observations))
+		if strings.TrimSpace(workItemID) == "" {
+			return subAgentRunResult{}, fmt.Errorf("sub-agent tool choice is missing work item id")
+		}
+		if err := ensureToolWorkItem(&currentAction, workItemID, time.Now().UTC()); err != nil {
+			return subAgentRunResult{}, err
+		}
+		if err := completePreviousWorkItemForNextAction(&currentAction, workItemID, lastObservation(observations), time.Now().UTC()); err != nil {
+			return subAgentRunResult{}, err
+		}
+
+		toolCallIDs := make([]string, 0, len(choices))
+		for _, child := range choices {
+			toolCallIDs = append(toolCallIDs, strings.TrimSpace(child.ToolCallID))
+		}
+		assistantText := strings.TrimSpace(output.AssistantText)
+		if assistantText == "" {
+			assistantText = strings.TrimSpace(choices[0].Intent)
+		}
+		for index := range choices {
+			if choices[index].Type == domain.ToolTypeAgent {
+				return subAgentRunResult{}, fmt.Errorf("Agent tool recursion is not allowed")
+			}
+			if !toolTypeInList(choices[index].Type, req.AllowedTools) {
+				return subAgentRunResult{}, fmt.Errorf("tool %q is not allowed in this agent context", choices[index].Type)
+			}
+			ensureToolChoiceMetadata(&choices[index], workItemID, turn, assistantText)
+			choices[index].Metadata["tool_call_ids"] = strings.Join(toolCallIDs, ",")
+		}
+
+		lastResults = nil
+		for _, child := range choices {
+			result, err := a.executeSubAgentTool(ctx, req.Execution.ProjectID, workItemID, req.Context.Event, child)
+			if err != nil && strings.TrimSpace(result.ToolCallID) == "" {
+				result = failedSubAgentToolResult(req.Execution.ProjectID, workItemID, child, turn, err)
+			}
+			lastResults = append(lastResults, result)
+			toolsUsed = appendUniqueToolType(toolsUsed, result.Tool)
+			filesTouched = appendUniqueStrings(filesTouched, changedFilesFromToolResult(result)...)
+			mergeProcessReferences(&processes, result.Processes)
+		}
+	}
+
+	if len(lastResults) > 0 {
+		currentAction.ToolChoice = agent.ToolChoice{}
+		for _, result := range lastResults {
+			feedback := executionFeedback(result)
+			history = append(history, feedback)
+			if err := applyObservationToNextAction(&currentAction, feedback, time.Now().UTC()); err != nil {
+				return subAgentRunResult{}, err
+			}
+		}
+	}
+
+	output, err := a.Engine.NextAction(ctx, agent.NextActionInput{
+		ProjectID:          req.Execution.ProjectID,
+		Context:            req.Context,
+		NextAction:         currentAction,
+		Runtime:            buildRuntimeContext(a.WorkspaceRoot, a.OpenCTORoot),
+		ExecutionCycle:     req.MaxTurns + 1,
+		ForceFinal:         true,
+		ObservationHistory: history,
+		ChannelType:        req.Context.Event.ChannelType,
+		SubAgent:           &agent.SubAgentContext{Goal: req.Goal},
+		ToolAllowlist:      req.AllowedTools,
+		RestrictTools:      true,
+	})
+	if err != nil {
+		return subAgentRunResult{}, err
+	}
+	if output.Status == NextActionStatusTool {
+		output.Status = NextActionStatusBlocked
+		output.ToolChoice = nil
+		output.ToolChoices = nil
+		if strings.TrimSpace(output.NextAction.ResponseMessage) == "" {
+			output.NextAction.ResponseMessage = cycleLimitResponseMessage(history)
+		}
+	}
+	message := strings.TrimSpace(output.NextAction.ResponseMessage)
+	if message == "" {
+		message = cycleLimitResponseMessage(history)
+	}
+	return subAgentRunResult{
+		Result: agenttool.Result{
+			Message:      message,
+			TurnCount:    req.MaxTurns + 1,
+			FilesTouched: filesTouched,
+			ToolsUsed:    toolsUsed,
+		},
+		Processes: processes,
+	}, nil
+}
+
+func (a *Activities) agentAllowedTools(req agenttool.Request) ([]domain.ToolType, error) {
+	if req.AllowedTools == nil {
+		return toolregistry.ModelToolTypes(false), nil
+	}
+	return agenttool.ValidateAllowedTools(*req.AllowedTools, func(toolType domain.ToolType) bool {
+		return toolregistry.SupportsToolType(toolType) && toolType != domain.ToolTypeAgent
+	})
+}
+
+func (a *Activities) subAgentContext(ctx context.Context, req agenttool.Request, execution toolExecutionContext, allowedTools []domain.ToolType) (agent.Context, error) {
+	project := a.Project
+	if strings.TrimSpace(project.ID) == "" {
+		project.ID = execution.ProjectID
+	}
+	var availableSkills []skillcatalog.Summary
+	if toolTypeInList(domain.ToolTypeSkill, allowedTools) {
+		var err error
+		availableSkills, err = skillcatalog.Discover(ctx, a.skillsRoots()...)
+		if err != nil {
+			return agent.Context{}, err
+		}
+	}
+	event := execution.SourceEvent
+	event.ID = stableActivityID("sub-agent-event", execution.ProjectID, execution.WorkItemID, execution.ToolCallID)
+	event.ProjectID = execution.ProjectID
+	event.Kind = domain.EventKindSystem
+	event.Body = strings.TrimSpace(prompts.MustRender("sub_agent_user.tmpl", map[string]any{
+		"Goal":   req.Goal,
+		"Prompt": req.Prompt,
+	}))
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = time.Now().UTC()
+	}
+	return agent.Context{
+		Event:                       event,
+		Project:                     project,
+		ConversationMaxContextChars: storage.DefaultConversationMaxContextChars(a.ConversationMaxContextChars),
+		Skills:                      availableSkills,
+	}, nil
+}
+
+func (a *Activities) executeSubAgentTool(ctx context.Context, projectID, workItemID string, event domain.Event, choice agent.ToolChoice) (ExecuteToolResult, error) {
+	request := ExecuteToolRequest{
+		ProjectID:  projectID,
+		WorkItemID: workItemID,
+		Event:      event,
+		ToolChoice: choice,
+	}
+	if subAgentMemoryTool(choice.Type) {
+		return a.ExecuteMemoryTool(ctx, request)
+	}
+	return a.ExecuteTool(ctx, request)
+}
+
+func nextActionHasOutput(nextAction agent.NextAction) bool {
+	return len(nextAction.WorkItems) > 0 ||
+		!nextAction.ToolChoice.IsZero() ||
+		strings.TrimSpace(nextAction.ResponseMessage) != "" ||
+		len(nextAction.ResponseAttachments) > 0
+}
+
+func toolTypeInList(toolType domain.ToolType, values []domain.ToolType) bool {
+	for _, value := range values {
+		if value == toolType {
+			return true
+		}
+	}
+	return false
+}
+
+func subAgentMemoryTool(toolType domain.ToolType) bool {
+	switch toolType {
+	case domain.ToolTypeMemoryProposeAdd, domain.ToolTypeMemorySearch, domain.ToolTypeMemoryList, domain.ToolTypeMemoryProposeUpdate, domain.ToolTypeMemoryProposeForget:
+		return true
+	default:
+		return false
+	}
+}
+
+func failedSubAgentToolResult(projectID, workItemID string, choice agent.ToolChoice, cycle int, err error) ExecuteToolResult {
+	message := ""
+	if err != nil {
+		message = err.Error()
+	}
+	return ExecuteToolResult{
+		Cycle:           cycle,
+		WorkItemID:      workItemID,
+		ToolCallID:      firstNonEmpty(choice.ToolCallID, choice.Metadata["tool_call_id"]),
+		Tool:            choice.Type,
+		Status:          domain.ExecutionStatusFailed,
+		RequestedAction: choice.Intent,
+		Command:         choice.Command,
+		Args:            append([]string(nil), choice.Args...),
+		Input:           cloneRawMessage(choice.Input),
+		Observation:     firstNonEmpty(message, "Tool execution failed."),
+		Error:           message,
+		ResultCode:      "1",
+		Metadata: map[string]string{
+			"tool_call_id":     firstNonEmpty(choice.ToolCallID, choice.Metadata["tool_call_id"]),
+			"work_item_id":     workItemID,
+			"execution_cycle":  strconv.Itoa(cycle),
+			"sub_agent_failed": "true",
+			"project_id":       projectID,
+		},
+	}
+}
+
+func changedFilesFromToolResult(result ExecuteToolResult) []string {
+	switch result.Tool {
+	case domain.ToolTypeEdit, domain.ToolTypeWrite:
+		if filePath := strings.TrimSpace(result.Metadata["file_path"]); filePath != "" {
+			return []string{filePath}
+		}
+	default:
+		return nil
+	}
+	return nil
+}
+
+func appendUniqueToolType(values []domain.ToolType, value domain.ToolType) []domain.ToolType {
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func appendUniqueStrings(values []string, additions ...string) []string {
+	for _, addition := range additions {
+		addition = strings.TrimSpace(addition)
+		if addition == "" {
+			continue
+		}
+		exists := false
+		for _, existing := range values {
+			if existing == addition {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			values = append(values, addition)
+		}
+	}
+	return values
+}
+
+func mergeProcessReferences(target *[]domain.ProcessReference, additions []domain.ProcessReference) {
+	if len(additions) == 0 {
+		return
+	}
+	for _, addition := range additions {
+		id := strings.TrimSpace(addition.ID)
+		if id == "" {
+			continue
+		}
+		replaced := false
+		for index := range *target {
+			if strings.TrimSpace((*target)[index].ID) == id {
+				(*target)[index] = addition
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			*target = append(*target, addition)
+		}
+	}
+}
+
+func toolTypeStrings(values []domain.ToolType) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(string(value)) != "" {
+			out = append(out, string(value))
+		}
+	}
+	return out
+}
+
+func agentObservation(result subAgentRunResult) string {
+	var builder strings.Builder
+	builder.WriteString("Agent completed.")
+	builder.WriteString("\nturn_count: ")
+	builder.WriteString(strconv.Itoa(result.TurnCount))
+	if len(result.ToolsUsed) > 0 {
+		builder.WriteString("\ntools_used: ")
+		builder.WriteString(strings.Join(toolTypeStrings(result.ToolsUsed), ", "))
+	}
+	if len(result.FilesTouched) > 0 {
+		builder.WriteString("\nfiles_touched:")
+		for _, filePath := range result.FilesTouched {
+			builder.WriteString("\n- ")
+			builder.WriteString(filePath)
+		}
+	}
+	message := strings.TrimSpace(result.Message)
+	if message != "" {
+		builder.WriteString("\n\nmessage:\n")
+		builder.WriteString(message)
+	}
+	return builder.String()
 }
 
 func (a *Activities) applyToolResultPostProcessors(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext, input json.RawMessage, status domain.ExecutionStatus, errorMessage string, result toolRunResult, metadata map[string]string) (toolRunResult, map[string]string) {

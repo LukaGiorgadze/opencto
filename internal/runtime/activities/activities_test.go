@@ -18,6 +18,7 @@ import (
 	"github.com/opencto/opencto/internal/runtime/workflowrun"
 	skillcatalog "github.com/opencto/opencto/internal/skills"
 	"github.com/opencto/opencto/internal/storage"
+	agenttool "github.com/opencto/opencto/internal/tools/agenttool"
 	exectool "github.com/opencto/opencto/internal/tools/exec"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	"github.com/opencto/opencto/internal/tools/postprocess"
@@ -61,6 +62,21 @@ func (e stubEngine) NextAction(_ context.Context, input agent.NextActionInput) (
 		*e.input = input
 	}
 	return e.output, e.err
+}
+
+type sequenceEngine struct {
+	outputs []agent.NextActionOutput
+	inputs  []agent.NextActionInput
+}
+
+func (e *sequenceEngine) NextAction(_ context.Context, input agent.NextActionInput) (agent.NextActionOutput, error) {
+	e.inputs = append(e.inputs, input)
+	if len(e.outputs) == 0 {
+		return agent.NextActionOutput{}, fmt.Errorf("unexpected NextAction call")
+	}
+	output := e.outputs[0]
+	e.outputs = e.outputs[1:]
+	return output, nil
 }
 
 type stubConversationCompressor struct {
@@ -2575,6 +2591,120 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 		scheduleResult.Metadata["schedule_id"] != "opencto:project-1:workflow-schedule:daily-hello" ||
 		scheduleExecutor.createRequest.SourceEvent.ChannelID != "channel-1" {
 		t.Fatalf("unexpected schedule result: %#v request=%#v", scheduleResult, scheduleExecutor.createRequest)
+	}
+}
+
+func TestExecuteAgentToolRunsSubAgentLoop(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	target := filepath.Join(workspace, "agent.txt")
+	writeInput, err := json.Marshal(map[string]any{
+		"file_path": target,
+		"content":   "hello from agent\n",
+	})
+	if err != nil {
+		t.Fatalf("marshal write input: %v", err)
+	}
+	engine := &sequenceEngine{outputs: []agent.NextActionOutput{
+		{
+			Status: NextActionStatusTool,
+			ToolChoice: &agent.ToolChoice{
+				ToolCallID: "toolu_write",
+				Type:       domain.ToolTypeWrite,
+				Intent:     "write agent file",
+				Input:      json.RawMessage(writeInput),
+			},
+			AssistantText: "I will write the file.",
+		},
+		{
+			Status: NextActionStatusCompleted,
+			NextAction: agent.NextAction{
+				ResponseMessage: "wrote the requested file",
+			},
+		},
+	}}
+
+	result, err := (&Activities{
+		Engine:        engine,
+		WorkspaceRoot: workspace,
+		Project:       domain.Project{ID: "project-1", Name: "Test Project"},
+	}).ExecuteTool(context.Background(), executeRequest(domain.ToolTypeAgent, "agent-1", map[string]any{
+		"goal":          "Write file",
+		"prompt":        "Create the requested file in the workspace.",
+		"allowed_tools": []domain.ToolType{domain.ToolTypeWrite},
+		"max_turns":     5,
+	}))
+	if err != nil {
+		t.Fatalf("agent tool: %v", err)
+	}
+	if result.Status != domain.ExecutionStatusSucceeded {
+		t.Fatalf("expected agent success, got %#v", result)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read agent file: %v", err)
+	}
+	if string(content) != "hello from agent\n" {
+		t.Fatalf("unexpected agent file content: %q", content)
+	}
+	if result.Metadata["agent_turn_count"] != "2" ||
+		result.Metadata["agent_tools_used"] != string(domain.ToolTypeWrite) ||
+		!strings.Contains(result.Metadata["agent_files_touched"], target) {
+		t.Fatalf("unexpected agent metadata: %#v", result.Metadata)
+	}
+	if !strings.Contains(result.Observation, "wrote the requested file") ||
+		!strings.Contains(result.Observation, "turn_count: 2") {
+		t.Fatalf("unexpected agent observation: %s", result.Observation)
+	}
+	if len(engine.inputs) != 2 {
+		t.Fatalf("expected two sub-agent turns, got %d", len(engine.inputs))
+	}
+	first := engine.inputs[0]
+	if !first.RestrictTools || len(first.ToolAllowlist) != 1 || first.ToolAllowlist[0] != domain.ToolTypeWrite {
+		t.Fatalf("unexpected sub-agent allowlist: %#v", first)
+	}
+	for _, toolType := range first.ToolAllowlist {
+		if toolType == domain.ToolTypeAgent {
+			t.Fatalf("sub-agent should not receive Agent in allowlist")
+		}
+	}
+	if first.SubAgent == nil || first.SubAgent.Goal != "Write file" || !strings.Contains(first.Context.Event.Body, "Create the requested file") {
+		t.Fatalf("unexpected sub-agent context: %#v", first)
+	}
+}
+
+func TestExecuteAgentToolRejectsRecursiveAllowedTool(t *testing.T) {
+	t.Parallel()
+
+	result, err := (&Activities{
+		Engine:        stubEngine{output: agent.NextActionOutput{Status: NextActionStatusCompleted, NextAction: agent.NextAction{ResponseMessage: "done"}}},
+		WorkspaceRoot: t.TempDir(),
+	}).ExecuteTool(context.Background(), executeRequest(domain.ToolTypeAgent, "agent-1", map[string]any{
+		"goal":          "Nested",
+		"prompt":        "Try nested agent.",
+		"allowed_tools": []domain.ToolType{domain.ToolTypeAgent},
+	}))
+	if err != nil {
+		t.Fatalf("agent tool should return structured failure, got error: %v", err)
+	}
+	if result.Status != domain.ExecutionStatusFailed || !strings.Contains(result.Error, "recursion") {
+		t.Fatalf("expected recursive Agent allowlist failure, got %#v", result)
+	}
+}
+
+func TestAgentAllowedToolsOmittedMeansAllExceptAgent(t *testing.T) {
+	t.Parallel()
+
+	allowed, err := (&Activities{}).agentAllowedTools(agenttool.Request{})
+	if err != nil {
+		t.Fatalf("agent allowed tools: %v", err)
+	}
+	if !toolTypeInList(domain.ToolTypeWrite, allowed) {
+		t.Fatalf("expected omitted allowed_tools to include Write, got %v", allowed)
+	}
+	if toolTypeInList(domain.ToolTypeAgent, allowed) {
+		t.Fatalf("expected omitted allowed_tools to exclude Agent, got %v", allowed)
 	}
 }
 
