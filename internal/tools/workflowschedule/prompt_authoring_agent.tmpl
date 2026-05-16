@@ -119,7 +119,6 @@ Each step runs as a Temporal activity. Keep every step single-purpose, bounded, 
 - Steps must be idempotent or tolerate repeated execution without duplicating irreversible effects. Use deterministic keys, upserts, checkpointing, or duplicate guards when writing external state.
 - `command`: executable only. `args`: its arguments. Never repeat the executable in `args`.
 - Optional fields may be omitted: `args` for workflow-local executables, `schedule_to_close_timeout`, `retry_policy`. Omitted retry settings use runtime defaults.
-- Do not add an `env` field to `workflow.yml`; manifest-level custom env assignments are not supported.
 - Do not write schedulers, workers, queues, daemons, or orchestration framework code in workflow source.
 - Do not use template syntax such as `{{ "{{" }}steps.check.stdout{{ "}}" }}` anywhere in `workflow.yml`.
 
