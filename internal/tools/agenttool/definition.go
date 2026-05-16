@@ -12,20 +12,18 @@ import (
 const (
 	AgentToolName = "Agent"
 
-	AgentToolDescription = `Launch a focused sub-agent to handle a complex, multi-step task.
+	AgentToolDescription = `Launch a sub-agent to handle a bounded, multi-step task independently.
 
-The sub-agent receives a fresh sub-agent system prompt, the provided goal, the provided dynamic context/instructions, and only the allowed tools. It does not receive the parent conversation by default.
+The sub-agent receives its own system prompt, the provided goal, and dynamic context or instructions. It does not inherit the parent conversation.
 
-Use this for bounded delegation where another agent can inspect, edit, or validate independently. The result is returned to the parent as a tool observation; it is not shown directly to the user.
+The result is returned to the parent as a tool observation — not shown directly to the user.
 
 Constraints:
-- allowed_tools must contain domain.ToolType values such as Read, Edit, Write, Glob, Grep, Exec, Skill, WorkflowOperation.
-- Omit allowed_tools to allow every normal tool except Agent.
-- Recursive Agent calls are blocked.
-- The prompt must be self-contained.`
+- The goal and prompt must be fully self-contained — the sub-agent has no access to parent context.
+- Recursive Agent calls are blocked.`
 
-	DefaultMaxTurns = 20
-	MaxTurnsLimit   = 50
+	DefaultMaxTurns = 50
+	MaxTurnsLimit   = 100
 )
 
 type Request struct {
@@ -42,7 +40,7 @@ type Result struct {
 	ToolsUsed    []domain.ToolType `json:"tools_used,omitempty"`
 }
 
-//go:embed agent_schema.json
+//go:embed schema.json
 var agentToolSchema json.RawMessage
 
 func AgentToolSchema() json.RawMessage {

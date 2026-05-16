@@ -42,9 +42,9 @@
     },
     "max_turns": {
       "type": "integer",
-      "minimum": 1,
-      "maximum": 50,
-      "description": "Maximum number of sub-agent LLM turns before forcing a final response. Omit to use the default of 20."
+      "minimum": 2,
+      "maximum": 100,
+      "description": "Optional number of sub-agent LLM turns before forcing a final response. Omit to use the default of 50."
     }
   }
 }
