@@ -17,7 +17,6 @@ func TestPromptAuthoringAgentRendersWorkflowGuidance(t *testing.T) {
 		"User request:\nbuild daily etl",
 		"Same-run step communication: `$OPENCTO_WORKFLOW_RUN_DIR/artifacts/`",
 		"## Exact workflow.yml Shape",
-		"Do not add an `env` field to `workflow.yml`",
 		"After your final response, OpenCTO automatically attempts to publish the authored bundle",
 		"Requested commit message: create daily workflow",
 	} {

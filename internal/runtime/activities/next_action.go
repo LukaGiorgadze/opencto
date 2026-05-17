@@ -50,7 +50,7 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 	var loaded agent.Context
 	var err error
 	if request.SubAgent != nil {
-		loaded, err = a.loadSubAgentContext(ctx, event, *request.SubAgent, request.ToolAllowlist)
+		loaded, err = a.loadSubAgentContext(ctx, event, request.AdditionalEvents, *request.SubAgent, request.ToolAllowlist)
 	} else {
 		conversationEvent := latestConversationContextEvent(event, request.AdditionalEvents)
 		loaded, err = a.loadContext(ctx, event, conversationEvent, request.AdditionalEvents)

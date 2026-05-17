@@ -11,16 +11,16 @@ const (
 	WorkflowDeleteToolName    = "WorkflowDelete"
 	WorkflowOperationToolName = "WorkflowOperation"
 
-	WorkflowCreateToolDescription = `Create a new scheduled workflow by delegating authoring to a durable sub-agent.
+	WorkflowCreateToolDescription = `Create a new scheduled workflow by delegating authoring to a durable agent.
 
 Only for new workflows. Fails if workflow_id is already registered.
 Provide a self-contained prompt with the desired schedule, behavior, state handling, credential requirements, and validation expectations.
-Do not provide workflow.yml, step definitions, or source files in this tool call. The child agent authors workflow.yml and source files on disk; OpenCTO validates, commits, and schedules the final bundle.`
+Do not provide workflow.yml, step definitions, or source files in this tool call. The sub agent authors workflow.yml and source files on disk; OpenCTO validates, commits, and schedules the final bundle.`
 
-	WorkflowUpdateToolDescription = `Update an existing scheduled workflow by delegating authoring to a durable sub-agent.
+	WorkflowUpdateToolDescription = `Update an existing scheduled workflow by delegating authoring to a durable agent.
 
 Provide a self-contained prompt describing what should change and what must stay stable.
-Do not provide workflow.yml, step definitions, or source files in this tool call. The child agent edits workflow.yml and source files on disk; OpenCTO validates, commits, and repoints the schedule to the final bundle.`
+Do not provide workflow.yml, step definitions, or source files in this tool call. The sub agent edits workflow.yml and source files on disk; OpenCTO validates, commits, and repoints the schedule to the final bundle.`
 
 	WorkflowDeleteToolDescription = `Hard-delete an existing scheduled workflow.
 

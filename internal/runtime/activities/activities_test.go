@@ -2884,6 +2884,69 @@ func TestNextActionAssignsWorkItemInternallyForToolChoice(t *testing.T) {
 	}
 }
 
+func TestNextActionSubAgentInheritsConversationContext(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	captured := agent.NextActionInput{}
+	activities := Activities{
+		Engine: stubEngine{
+			output: agent.NextActionOutput{
+				NextAction: agent.NextAction{ResponseMessage: "done"},
+				Status:     NextActionStatusCompleted,
+			},
+			input: &captured,
+		},
+		Store: stubProjectStore{
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeThread: {
+					{ID: "original-request", EventID: "event-original", ProjectID: "project-1", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-1", ThreadID: "thread-1", Role: domain.ConversationRoleUser, Body: "Create the stargazers workflow.", CreatedAt: base},
+					{ID: "clarifier", EventID: "event-clarifier", ProjectID: "project-1", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-1", ThreadID: "thread-1", Role: domain.ConversationRoleAssistant, Body: "Should it restart from scratch?", CreatedAt: base.Add(time.Second)},
+				},
+			},
+		},
+		Project:                     domain.Project{ID: "project-1", Name: "OpenCTO"},
+		ConversationEnabled:         true,
+		ConversationLimit:           5,
+		ConversationMaxContextChars: 8000,
+	}
+
+	event := domain.Event{
+		ID:          "event-current",
+		ProjectID:   "project-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		ThreadID:    "thread-1",
+		Body:        "Yes, start fresh.",
+	}
+	_, err := activities.NextAction(context.Background(), NextActionRequest{
+		ProjectID:      "project-1",
+		Event:          event,
+		ExecutionCycle: 1,
+		SubAgent: &agent.SubAgentContext{
+			Goal:   "Update scheduled workflow github-stargazers",
+			Prompt: "Apply the user's latest answer.",
+			RunID:  "agent-workflow-1",
+		},
+		ToolAllowlist: []domain.ToolType{domain.ToolTypeRead},
+		RestrictTools: true,
+	})
+	if err != nil {
+		t.Fatalf("next action: %v", err)
+	}
+
+	if !strings.Contains(captured.Context.Event.Body, "Update scheduled workflow github-stargazers") ||
+		!strings.Contains(captured.Context.Event.Body, "Apply the user's latest answer.") {
+		t.Fatalf("expected synthetic agent event, got %q", captured.Context.Event.Body)
+	}
+	if got := idsFromConversation(captured.Context.Conversation); strings.Join(got, ",") != "original-request,clarifier" {
+		t.Fatalf("expected inherited parent conversation, got %#v", captured.Context.Conversation)
+	}
+	if len(captured.Context.Skills) != 0 {
+		t.Fatalf("expected skills to respect agent tool allowlist, got %#v", captured.Context.Skills)
+	}
+}
+
 func TestNextActionAssignsSubAgentWorkItemFromSyntheticEvent(t *testing.T) {
 	t.Parallel()
 
@@ -2920,16 +2983,16 @@ func TestNextActionAssignsSubAgentWorkItemFromSyntheticEvent(t *testing.T) {
 		t.Fatalf("next action: %v", err)
 	}
 	parentWorkItemID := stableActivityID("work-item", "project-1", "event-1", "1")
-	subAgentEventID := stableActivityID("sub-agent-event", "project-1", "event-1", "agent-workflow-1", "Inspect wiring", "Find the child workflow wiring.")
+	subAgentEventID := stableActivityID("agent-event", "project-1", "event-1", "agent-workflow-1", "Inspect wiring", "Find the child workflow wiring.")
 	wantWorkItemID := stableActivityID("work-item", "project-1", subAgentEventID, "1")
 	if result.WorkItemID != wantWorkItemID {
-		t.Fatalf("expected sub-agent work item %q, got %q", wantWorkItemID, result.WorkItemID)
+		t.Fatalf("expected agent work item %q, got %q", wantWorkItemID, result.WorkItemID)
 	}
 	if result.WorkItemID == parentWorkItemID {
-		t.Fatalf("sub-agent work item should not collide with parent work item %q", parentWorkItemID)
+		t.Fatalf("agent work item should not collide with parent work item %q", parentWorkItemID)
 	}
 	if result.ToolChoice == nil || result.ToolChoice.Metadata["work_item_id"] != wantWorkItemID {
-		t.Fatalf("expected sub-agent work item metadata, got %#v", result.ToolChoice)
+		t.Fatalf("expected agent work item metadata, got %#v", result.ToolChoice)
 	}
 }
 
@@ -2976,13 +3039,13 @@ func TestNextActionKeepsSubAgentWorkItemWhenEngineReplacesNextAction(t *testing.
 		t.Fatalf("next action: %v", err)
 	}
 	parentWorkItemID := stableActivityID("work-item", "project-1", "event-1", "1")
-	subAgentEventID := stableActivityID("sub-agent-event", "project-1", "event-1", "agent-workflow-1", "Inspect wiring", "Find the child workflow wiring.")
+	subAgentEventID := stableActivityID("agent-event", "project-1", "event-1", "agent-workflow-1", "Inspect wiring", "Find the child workflow wiring.")
 	wantWorkItemID := stableActivityID("work-item", "project-1", subAgentEventID, "1")
 	if result.WorkItemID != wantWorkItemID {
-		t.Fatalf("expected sub-agent work item %q, got %q", wantWorkItemID, result.WorkItemID)
+		t.Fatalf("expected agent work item %q, got %q", wantWorkItemID, result.WorkItemID)
 	}
 	if result.WorkItemID == parentWorkItemID {
-		t.Fatalf("sub-agent work item should not fall back to parent work item %q", parentWorkItemID)
+		t.Fatalf("agent work item should not fall back to parent work item %q", parentWorkItemID)
 	}
 }
 

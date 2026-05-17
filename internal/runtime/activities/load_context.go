@@ -17,6 +17,10 @@ func (a *Activities) LoadContext(ctx context.Context, event domain.Event) (agent
 }
 
 func (a *Activities) loadContext(ctx context.Context, event domain.Event, conversationEvent domain.Event, additionalEvents []domain.Event) (agent.Context, error) {
+	return a.loadContextWithOptions(ctx, event, conversationEvent, additionalEvents, true)
+}
+
+func (a *Activities) loadContextWithOptions(ctx context.Context, event domain.Event, conversationEvent domain.Event, additionalEvents []domain.Event, includeSkills bool) (agent.Context, error) {
 	var activeWorkItems []domain.WorkItem
 	if a.Store != nil {
 		var err error
@@ -55,9 +59,12 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event, conver
 	if strings.TrimSpace(project.ID) == "" {
 		project.ID = event.ProjectID
 	}
-	availableSkills, err := skillcatalog.Discover(ctx, a.skillsRoots()...)
-	if err != nil {
-		return agent.Context{}, err
+	var availableSkills []skillcatalog.Summary
+	if includeSkills {
+		availableSkills, err = skillcatalog.Discover(ctx, a.skillsRoots()...)
+		if err != nil {
+			return agent.Context{}, err
+		}
 	}
 	return agent.Context{
 		Event:                       event,
@@ -71,25 +78,19 @@ func (a *Activities) loadContext(ctx context.Context, event domain.Event, conver
 	}, nil
 }
 
-func (a *Activities) loadSubAgentContext(ctx context.Context, sourceEvent domain.Event, subAgent agent.SubAgentContext, allowedTools []domain.ToolType) (agent.Context, error) {
+func (a *Activities) loadSubAgentContext(ctx context.Context, sourceEvent domain.Event, additionalEvents []domain.Event, subAgent agent.SubAgentContext, allowedTools []domain.ToolType) (agent.Context, error) {
 	projectID := strings.TrimSpace(sourceEvent.ProjectID)
 	if projectID == "" {
 		projectID = strings.TrimSpace(a.Project.ID)
 	}
-	project := a.Project
-	if strings.TrimSpace(project.ID) == "" {
-		project.ID = projectID
-	}
-	var availableSkills []skillcatalog.Summary
-	if toolTypeInList(domain.ToolTypeSkill, allowedTools) {
-		var err error
-		availableSkills, err = skillcatalog.Discover(ctx, a.skillsRoots()...)
-		if err != nil {
-			return agent.Context{}, err
-		}
+	sourceEvent.ProjectID = projectID
+	conversationEvent := latestConversationContextEvent(sourceEvent, additionalEvents)
+	loaded, err := a.loadContextWithOptions(ctx, sourceEvent, conversationEvent, additionalEvents, toolTypeInList(domain.ToolTypeSkill, allowedTools))
+	if err != nil {
+		return agent.Context{}, err
 	}
 	event := sourceEvent
-	event.ID = stableActivityID("sub-agent-event", projectID, sourceEvent.ID, subAgent.RunID, subAgent.Goal, subAgent.Prompt)
+	event.ID = stableActivityID("agent-event", projectID, sourceEvent.ID, subAgent.RunID, subAgent.Goal, subAgent.Prompt)
 	event.ProjectID = projectID
 	event.Kind = domain.EventKindSystem
 	event.Body = strings.TrimSpace(prompts.MustRender("sub_agent_user.tmpl", map[string]any{
@@ -99,10 +100,7 @@ func (a *Activities) loadSubAgentContext(ctx context.Context, sourceEvent domain
 	if event.CreatedAt.IsZero() {
 		event.CreatedAt = time.Now().UTC()
 	}
-	return agent.Context{
-		Event:                       event,
-		Project:                     project,
-		ConversationMaxContextChars: storage.DefaultConversationMaxContextChars(a.ConversationMaxContextChars),
-		Skills:                      availableSkills,
-	}, nil
+	loaded.Event = event
+	loaded.ConversationMaxContextChars = storage.DefaultConversationMaxContextChars(a.ConversationMaxContextChars)
+	return loaded, nil
 }

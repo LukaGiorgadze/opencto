@@ -118,7 +118,7 @@ func TestTaskWorkflowAlternatesNextActionAndExecuteTool(t *testing.T) {
 	env.AssertExpectations(t)
 }
 
-func TestTaskWorkflowRoutesAgentToolToChildWorkflow(t *testing.T) {
+func TestTaskWorkflowRoutesAgentToolTosubWorkflow(t *testing.T) {
 	t.Parallel()
 
 	var suite testsuite.WorkflowTestSuite
@@ -130,7 +130,7 @@ func TestTaskWorkflowRoutesAgentToolToChildWorkflow(t *testing.T) {
 		}
 		return workflows.AgentWorkflowResult{
 			Status:       domain.ExecutionStatusSucceeded,
-			Message:      "child completed",
+			Message:      "sub completed",
 			TurnCount:    2,
 			ToolsUsed:    []domain.ToolType{domain.ToolTypeWrite},
 			FilesTouched: []string{"/tmp/agent.txt"},
@@ -156,7 +156,7 @@ func TestTaskWorkflowRoutesAgentToolToChildWorkflow(t *testing.T) {
 	agentChoice := agent.ToolChoice{
 		ToolCallID: "toolu_agent",
 		Type:       domain.ToolTypeAgent,
-		Intent:     "run child agent",
+		Intent:     "run sub agent",
 		Input:      input,
 		Metadata: map[string]string{
 			"tool_call_id": "toolu_agent",
@@ -177,7 +177,7 @@ func TestTaskWorkflowRoutesAgentToolToChildWorkflow(t *testing.T) {
 			len(request.LastResults) == 1 &&
 			request.LastResults[0].Tool == domain.ToolTypeAgent &&
 			request.LastResults[0].Status == domain.ExecutionStatusSucceeded &&
-			strings.Contains(request.LastResults[0].Observation, "child completed") &&
+			strings.Contains(request.LastResults[0].Observation, "sub completed") &&
 			request.LastResults[0].Metadata["agent_turn_count"] == "2" &&
 			request.LastResults[0].Metadata["agent_tools_used"] == string(domain.ToolTypeWrite)
 	})).Return(activities.NextActionResult{
@@ -196,7 +196,7 @@ func TestTaskWorkflowRoutesAgentToolToChildWorkflow(t *testing.T) {
 	env.AssertExpectations(t)
 }
 
-func TestTaskWorkflowStopsWhenAgentChildIsCanceled(t *testing.T) {
+func TestTaskWorkflowStopsWhenAgentsubIsCanceled(t *testing.T) {
 	t.Parallel()
 
 	var suite testsuite.WorkflowTestSuite
@@ -224,7 +224,7 @@ func TestTaskWorkflowStopsWhenAgentChildIsCanceled(t *testing.T) {
 	agentChoice := agent.ToolChoice{
 		ToolCallID: "toolu_agent",
 		Type:       domain.ToolTypeAgent,
-		Intent:     "run child agent",
+		Intent:     "run sub agent",
 		Input:      input,
 		Metadata: map[string]string{
 			"tool_call_id": "toolu_agent",
@@ -296,7 +296,7 @@ func TestAgentWorkflowRunsDurableSubAgentLoop(t *testing.T) {
 
 	event := domain.Event{ID: "event-1", ProjectID: "project-1", Body: "delegate work"}
 	nextAction := agent.NextAction{WorkItems: []domain.WorkItem{{
-		ID:        "wi-child",
+		ID:        "wi-sub",
 		ProjectID: "project-1",
 		Status:    domain.WorkItemStatusReady,
 	}}}
@@ -307,7 +307,7 @@ func TestAgentWorkflowRunsDurableSubAgentLoop(t *testing.T) {
 		Input:      writeInput,
 		Metadata: map[string]string{
 			"tool_call_id": "toolu_write",
-			"work_item_id": "wi-child",
+			"work_item_id": "wi-sub",
 		},
 	}
 
@@ -323,18 +323,18 @@ func TestAgentWorkflowRunsDurableSubAgentLoop(t *testing.T) {
 	})).Return(activities.NextActionResult{
 		NextAction: nextAction,
 		ToolChoice: &writeChoice,
-		WorkItemID: "wi-child",
+		WorkItemID: "wi-sub",
 		Status:     activities.NextActionStatusTool,
 	}, nil).Once()
 	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.MatchedBy(func(request activities.ExecuteToolRequest) bool {
-		return request.WorkItemID == "wi-child" &&
+		return request.WorkItemID == "wi-sub" &&
 			request.ToolChoice.ToolCallID == "toolu_write" &&
 			request.ToolChoice.Metadata["parent_work_item_id"] == "wi-parent" &&
 			request.ToolChoice.Metadata["parent_tool_call_id"] == "toolu_agent" &&
-			request.ToolChoice.Metadata["agent_child_trace"] == "true"
+			request.ToolChoice.Metadata["agent_sub_trace"] == "true"
 	})).Return(activities.ExecuteToolResult{
 		Cycle:           1,
-		WorkItemID:      "wi-child",
+		WorkItemID:      "wi-sub",
 		ToolCallID:      "toolu_write",
 		Tool:            domain.ToolTypeWrite,
 		Status:          domain.ExecutionStatusSucceeded,
@@ -348,7 +348,7 @@ func TestAgentWorkflowRunsDurableSubAgentLoop(t *testing.T) {
 		},
 		Processes: []domain.ProcessReference{{
 			ID:          "proc-1",
-			Description: "child background process",
+			Description: "sub background process",
 			Status:      domain.ProcessStatusRunning,
 			Scope:       domain.ProcessScopeStopOnFinish,
 		}},
@@ -365,7 +365,7 @@ func TestAgentWorkflowRunsDurableSubAgentLoop(t *testing.T) {
 		Status:     activities.NextActionStatusCompleted,
 		Processes: []domain.ProcessReference{{
 			ID:          "proc-1",
-			Description: "child background process",
+			Description: "sub background process",
 			Status:      domain.ProcessStatusStopped,
 			Scope:       domain.ProcessScopeStopOnFinish,
 		}},
@@ -380,7 +380,7 @@ func TestAgentWorkflowRunsDurableSubAgentLoop(t *testing.T) {
 		ToolChoice: agent.ToolChoice{
 			ToolCallID: "toolu_agent",
 			Type:       domain.ToolTypeAgent,
-			Intent:     "run child agent",
+			Intent:     "run sub agent",
 			Input:      input,
 		},
 	})
@@ -438,22 +438,22 @@ func TestAgentWorkflowCompletionSuccessUsesPublishObservation(t *testing.T) {
 		NextAction: agent.NextAction{
 			ResponseMessage: "Created workflow.yml and ran syntax checks.",
 			WorkItems: []domain.WorkItem{{
-				ID:        "wi-child",
+				ID:        "wi-sub",
 				ProjectID: "project-1",
 				Status:    domain.WorkItemStatusCompleted,
 			}},
 		},
-		WorkItemID: "wi-child",
+		WorkItemID: "wi-sub",
 		Status:     activities.NextActionStatusCompleted,
 	}, nil).Once()
 	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.MatchedBy(func(request activities.ExecuteToolRequest) bool {
-		return request.WorkItemID == "wi-child" &&
+		return request.WorkItemID == "wi-sub" &&
 			request.ToolChoice.Type == domain.ToolTypeWorkflowCreate &&
 			request.ToolChoice.ToolCallID == "toolu_workflow:completion:1" &&
-			request.ToolChoice.Metadata["agent_child_trace"] == "true"
+			request.ToolChoice.Metadata["agent_sub_trace"] == "true"
 	})).Return(activities.ExecuteToolResult{
 		Cycle:           1,
-		WorkItemID:      "wi-child",
+		WorkItemID:      "wi-sub",
 		ToolCallID:      "toolu_workflow:completion:1",
 		Tool:            domain.ToolTypeWorkflowCreate,
 		Status:          domain.ExecutionStatusSucceeded,
@@ -477,7 +477,7 @@ func TestAgentWorkflowCompletionSuccessUsesPublishObservation(t *testing.T) {
 		ToolChoice: agent.ToolChoice{
 			ToolCallID: "toolu_agent",
 			Type:       domain.ToolTypeAgent,
-			Intent:     "run child agent",
+			Intent:     "run sub agent",
 			Input:      input,
 		},
 		CompletionTool: &agent.ToolChoice{
@@ -501,7 +501,7 @@ func TestAgentWorkflowCompletionSuccessUsesPublishObservation(t *testing.T) {
 	if !strings.Contains(result.Message, "workflow schedule created") ||
 		!strings.Contains(result.Message, "Authoring notes:") ||
 		!strings.Contains(result.Message, "Created workflow.yml") {
-		t.Fatalf("expected publish message with child notes, got %q", result.Message)
+		t.Fatalf("expected publish message with sub notes, got %q", result.Message)
 	}
 	if result.Metadata["workflow_commit_hash"] != "abc123" {
 		t.Fatalf("expected publish metadata, got %#v", result.Metadata)
@@ -537,17 +537,17 @@ func TestAgentWorkflowCompletionSuccessSurvivesTracePersistenceFailure(t *testin
 		NextAction: agent.NextAction{
 			ResponseMessage: "Created workflow.yml.",
 			WorkItems: []domain.WorkItem{{
-				ID:        "wi-child",
+				ID:        "wi-sub",
 				ProjectID: "project-1",
 				Status:    domain.WorkItemStatusCompleted,
 			}},
 		},
-		WorkItemID: "wi-child",
+		WorkItemID: "wi-sub",
 		Status:     activities.NextActionStatusCompleted,
 	}, nil).Once()
 	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.Anything).Return(activities.ExecuteToolResult{
 		Cycle:           1,
-		WorkItemID:      "wi-child",
+		WorkItemID:      "wi-sub",
 		ToolCallID:      "toolu_workflow:completion:1",
 		Tool:            domain.ToolTypeWorkflowCreate,
 		Status:          domain.ExecutionStatusSucceeded,
@@ -570,7 +570,7 @@ func TestAgentWorkflowCompletionSuccessSurvivesTracePersistenceFailure(t *testin
 		ToolChoice: agent.ToolChoice{
 			ToolCallID: "toolu_agent",
 			Type:       domain.ToolTypeAgent,
-			Intent:     "run child agent",
+			Intent:     "run sub agent",
 			Input:      input,
 		},
 		CompletionTool: &agent.ToolChoice{
@@ -1750,7 +1750,7 @@ func TestProjectWorkflowReportsAfterTaskWorkflowCompletes(t *testing.T) {
 		t.Fatalf("expected cancellation error")
 	}
 	if !reported {
-		t.Fatalf("expected project workflow to report after child task result")
+		t.Fatalf("expected project workflow to report after sub task result")
 	}
 	env.AssertExpectations(t)
 }
@@ -1854,7 +1854,7 @@ func TestProjectWorkflowReportsAfterTaskWorkflowFails(t *testing.T) {
 		t.Fatalf("expected cancellation error")
 	}
 	if !reported {
-		t.Fatalf("expected project workflow to report after child task failure")
+		t.Fatalf("expected project workflow to report after sub task failure")
 	}
 	env.AssertExpectations(t)
 }

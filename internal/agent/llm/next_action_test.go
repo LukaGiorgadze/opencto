@@ -539,7 +539,8 @@ func TestBuildNextActionMessagesIncludesCollaborationGuidance(t *testing.T) {
 		"For non-trivial work, use read-only tools first",
 		"ask one concise question",
 		"continue with the necessary work and verify before reporting success",
-		"For scheduled workflow creation or updates, use `WorkflowCreate` or `WorkflowUpdate` with a self-contained prompt",
+		"Prefer first-class specialized tools over generic delegation",
+		"For scheduled workflow creation, source updates, manifest changes, or behavior changes, use `WorkflowCreate` or `WorkflowUpdate` with a self-contained prompt",
 		"`workflows/`: scheduled workflow source repositories",
 		"`workflow-runs/`: per-run workflow snapshots",
 	} {
@@ -1457,11 +1458,11 @@ func TestNextActionSubAgentUsesRestrictedToolsAndPrompt(t *testing.T) {
 	if len(model.options.Tools) != 1 || model.options.Tools[0].Function.Name != "Read" {
 		t.Fatalf("expected only Read tool, got %#v", model.options.Tools)
 	}
-	if len(model.messages) == 0 || !strings.Contains(messageText(model.messages[0]), "OpenCTO sub-agent") || !strings.Contains(messageText(model.messages[0]), "Audit") {
-		t.Fatalf("sub-agent system prompt missing expected text: %#v", model.messages)
+	if len(model.messages) == 0 || !strings.Contains(messageText(model.messages[0]), "OpenCTO agent") || !strings.Contains(messageText(model.messages[0]), "Audit") {
+		t.Fatalf("agent system prompt missing expected text: %#v", model.messages)
 	}
-	if !messagesContainText(model.messages, "Sub-agent run summary") || !messagesContainText(model.messages, "Read README.md already.") {
-		t.Fatalf("sub-agent run summary missing from context: %#v", model.messages)
+	if !messagesContainText(model.messages, "Agent run summary") || !messagesContainText(model.messages, "Read README.md already.") {
+		t.Fatalf("agent run summary missing from context: %#v", model.messages)
 	}
 }
 
