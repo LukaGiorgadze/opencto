@@ -187,6 +187,38 @@ unknown: true
 	}
 }
 
+func TestLoadManifestRejectsEnvField(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	data := []byte(`name: test workflow
+description: ""
+schedule:
+  cron: "0 9 * * *"
+  one_shot_at: ""
+  overlap_policy: skip
+  catchup_window: 10m
+  pause_on_failure: false
+notification_policy:
+  on_failure: true
+env:
+  - GITHUB_REPO=owner/repo
+steps:
+  - id: step
+    command: echo
+    args: ["ok"]
+    start_to_close_timeout: 1m
+`)
+	if err := os.WriteFile(filepath.Join(dir, ManifestFilename), data, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if _, err := LoadManifest(dir); err == nil {
+		t.Fatal("expected env field to be rejected")
+	} else if !strings.Contains(err.Error(), "field env not found") {
+		t.Fatalf("expected env unknown field error, got %v", err)
+	}
+}
+
 func TestLoadManifestDoesNotRequireVersion(t *testing.T) {
 	t.Parallel()
 

@@ -15,11 +15,11 @@ func TestPromptAuthoringAgentRendersWorkflowGuidance(t *testing.T) {
 		"Workflow ID: daily-etl",
 		"Workflow directory: /tmp/workflows/daily-etl",
 		"User request:\nbuild daily etl",
-		"Same-run step communication: `$OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR/`",
-		"OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR\n                          — writable same-run artifact directory",
-		"## Exact workflow.yml Shape",
-		"After your final response, OpenCTO automatically attempts to publish the authored bundle",
-		"Requested commit message: create daily workflow",
+		"**Same-run sharing** — write to `OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR/`",
+		"OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR — writable artifact directory",
+		"# workflow.yml Requirements",
+		"After your final response, OpenCTO automatically publishes the bundle",
+		"Commit message: create daily workflow",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("expected prompt to contain %q, got:\n%s", expected, prompt)
@@ -33,7 +33,8 @@ func TestPromptAuthoringAgentIncludesValidManifestExampleShape(t *testing.T) {
 	prompt := PromptAuthoringAgent("create", "daily-etl", "/tmp/workflows/daily-etl", "build daily etl", "")
 
 	for _, expected := range []string{
-		"## Exact workflow.yml Shape",
+		"# workflow.yml Requirements",
+		"Use this exact shape:",
 		"  one_shot_at: \"\"",
 		"  overlap_policy: skip",
 		"  catchup_window: 10m",
@@ -51,6 +52,8 @@ func TestPromptAuthoringAgentIncludesValidManifestExampleShape(t *testing.T) {
 		"notification_policy: on_success",
 		"activity:\n      command:",
 		"  - name:",
+		"env:\n",
+		"  - GITHUB_REPO=owner/repo",
 	} {
 		if strings.Contains(prompt, invalid) {
 			t.Fatalf("prompt still contains invalid manifest pattern %q:\n%s", invalid, prompt)
@@ -62,7 +65,7 @@ func TestPromptAuthoringAgentOmitsEmptyCommitMessage(t *testing.T) {
 	t.Parallel()
 
 	prompt := PromptAuthoringAgent("update", "daily-etl", "/tmp/workflows/daily-etl", "update workflow", " ")
-	if strings.Contains(prompt, "Requested commit message") {
+	if strings.Contains(prompt, "Commit message:") {
 		t.Fatalf("expected empty commit message to be omitted, got:\n%s", prompt)
 	}
 }

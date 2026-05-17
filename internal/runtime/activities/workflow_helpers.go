@@ -10,6 +10,7 @@ import (
 
 	"go.temporal.io/sdk/activity"
 
+	"github.com/opencto/opencto/internal/config"
 	"github.com/opencto/opencto/internal/runtime/workflowrun"
 	"github.com/opencto/opencto/internal/workflowbundle"
 )
@@ -52,6 +53,7 @@ func workflowStepEnvironment(workspaceRoot string, request workflowrun.ExecuteSt
 	if runPath != "" {
 		runArtifactsDir = filepath.Join(runPath, "artifacts")
 	}
+	env = upsertEnv(env, config.EnvOpenCTOWorkspace, workspaceRoot)
 	env = upsertEnv(env, "OPENCTO_WORKFLOWS_DIR", workflowsDir)
 	env = upsertEnv(env, "OPENCTO_WORKFLOW_DATA_DIR", dataDir)
 	env = upsertEnv(env, "OPENCTO_WORKFLOW_RUN_DIR", runPath)

@@ -3965,6 +3965,7 @@ func TestWorkflowStepEnvironmentSetsRunPaths(t *testing.T) {
 		t.Fatalf("workflow step environment: %v", err)
 	}
 	for name, want := range map[string]string{
+		"OPENCTO_WORKSPACE":                  "/workspace",
 		"OPENCTO_WORKFLOWS_DIR":              filepath.Join("/workspace", "workflows"),
 		"OPENCTO_WORKFLOW_RUN_DIR":           runPath,
 		"OPENCTO_WORKFLOW_DATA_DIR":          filepath.Join("/workspace", "workflows", "finance-check", "data"),
@@ -3974,7 +3975,7 @@ func TestWorkflowStepEnvironmentSetsRunPaths(t *testing.T) {
 			t.Fatalf("expected %s=%q, got %q", name, want, got)
 		}
 	}
-	for _, name := range []string{"OPENCTO_WORKSPACE", "OPENCTO_RUN_DIR"} {
+	for _, name := range []string{"OPENCTO_RUN_DIR"} {
 		if got := envValue(env, name); got != "" {
 			t.Fatalf("expected %s to be stripped, got %q", name, got)
 		}
