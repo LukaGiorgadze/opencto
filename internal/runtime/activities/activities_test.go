@@ -3892,15 +3892,17 @@ func TestWorkflowStepEnvironmentSetsRunPaths(t *testing.T) {
 		RunID:      "run-1",
 		RunPath:    runPath,
 	}
+	artifactsDir := filepath.Join(runPath, "artifacts")
 
 	env, err := workflowStepEnvironment("/workspace", request)
 	if err != nil {
 		t.Fatalf("workflow step environment: %v", err)
 	}
 	for name, want := range map[string]string{
-		"OPENCTO_WORKFLOWS_DIR":     filepath.Join("/workspace", "workflows"),
-		"OPENCTO_WORKFLOW_RUN_DIR":  runPath,
-		"OPENCTO_WORKFLOW_DATA_DIR": filepath.Join("/workspace", "workflows", "finance-check", "data"),
+		"OPENCTO_WORKFLOWS_DIR":              filepath.Join("/workspace", "workflows"),
+		"OPENCTO_WORKFLOW_RUN_DIR":           runPath,
+		"OPENCTO_WORKFLOW_DATA_DIR":          filepath.Join("/workspace", "workflows", "finance-check", "data"),
+		"OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR": artifactsDir,
 	} {
 		if got := envValue(env, name); got != want {
 			t.Fatalf("expected %s=%q, got %q", name, want, got)
@@ -3928,7 +3930,7 @@ func TestExecuteWorkflowStepCreatesStepArtifactDirectory(t *testing.T) {
 			Command: "sh",
 			Args: []string{
 				"-c",
-				`dir="$OPENCTO_WORKFLOW_RUN_DIR/artifacts" && test -d "$dir" && printf '{"ok":true}\n' > "$dir/payload.json"`,
+				`dir="$OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR" && test -d "$dir" && printf '{"ok":true}\n' > "$dir/payload.json"`,
 			},
 		},
 	})

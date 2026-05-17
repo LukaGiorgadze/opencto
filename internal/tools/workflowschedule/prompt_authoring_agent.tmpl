@@ -18,7 +18,7 @@ Requested commit message: {{ .CommitMessage }}
 - Do not commit, register Temporal schedules, edit `data/`, or run schedulers, workers, or daemons.
 
 **State passing:**
-- Same-run step communication: `$OPENCTO_WORKFLOW_RUN_DIR/artifacts/`
+- Same-run step communication: `$OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR/`
 - Cross-run persistent state: `$OPENCTO_WORKFLOW_DATA_DIR/`
 
 # Validation Before Final Response
@@ -94,14 +94,15 @@ Set by OpenCTO at step execution time. Do not hardcode their values.
 OPENCTO_WORKFLOWS_DIR     — root of all workflow source repos under $OPENCTO_WORKSPACE.
                             Each workflow lives at OPENCTO_WORKFLOWS_DIR/{workflow_id}/.
                             Read-only during step execution.
-
-OPENCTO_WORKFLOW_RUN_DIR  — current run snapshot directory and step working directory.
-                            Use OPENCTO_WORKFLOW_RUN_DIR/artifacts/ to share files between
-                            steps in the same run. Not available to future runs.
-
 OPENCTO_WORKFLOW_DATA_DIR — persistent data directory at OPENCTO_WORKFLOWS_DIR/{workflow_id}/data/.
                             Git-ignored and writable at step runtime.
                             Use for state or outputs future scheduled runs must read.
+OPENCTO_WORKFLOW_RUN_DIR  — current run snapshot directory and step working directory.
+                            Runtime evidence only. Not available to future runs.
+OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR
+                          — writable same-run artifact directory for files that later steps
+                            in the same run should read. Not available to future runs.
+
 ```
 
 ## Exact workflow.yml Shape
@@ -126,17 +127,17 @@ Each step runs as a Temporal activity. Keep every step single-purpose, bounded, 
 
 OpenCTO does not pass business data between steps automatically.
 
-**Within a run** — write under `OPENCTO_WORKFLOW_RUN_DIR/artifacts/`:
+**Within a run** — write under `OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR/`:
 
 ```sh
-mkdir -p "$OPENCTO_WORKFLOW_RUN_DIR/artifacts"
-printf '{"ok":true}\n' > "$OPENCTO_WORKFLOW_RUN_DIR/artifacts/payload.json"
+mkdir -p "$OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR"
+printf '{"ok":true}\n' > "$OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR/payload.json"
 ```
 
 Read from a later step:
 
 ```sh
-cat "$OPENCTO_WORKFLOW_RUN_DIR/artifacts/payload.json"
+cat "$OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR/payload.json"
 ```
 
 **Across runs** — write and read under `OPENCTO_WORKFLOW_DATA_DIR/`. Each scheduled run starts with fresh process state; cross-run memory must be explicit.
@@ -204,7 +205,7 @@ steps:
 
 Why this is good:
 - Each step has one responsibility and is safe to retry independently.
-- `fetch` writes to `OPENCTO_WORKFLOW_RUN_DIR/artifacts/` for same-run sharing.
+- `fetch` writes to `OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR/` for same-run sharing.
 - `append` reads that artifact and writes durable state to `OPENCTO_WORKFLOW_DATA_DIR/`.
 - No source code under `data/`, `artifacts/`, or ignored paths.
 

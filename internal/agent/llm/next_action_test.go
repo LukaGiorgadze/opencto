@@ -165,6 +165,8 @@ func TestBuildNextActionMessagesUsesOpenAIToolTranscript(t *testing.T) {
 		"`$OPENCTO_WORKSPACE`: /tmp/opencto",
 		"Projects, scheduled workflow source and run snapshots, artifacts, data/db, screenshots, logs, and related files.",
 		"Default working directory for all user project work",
+		"`$OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR`: writable same-run artifact directory",
+		"`$OPENCTO_WORKFLOW_DATA_DIR`: writable persistent data directory",
 		"PATH: /usr/bin:/bin",
 	} {
 		if !strings.Contains(prompt, want) {

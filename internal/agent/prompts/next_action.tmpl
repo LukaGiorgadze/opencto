@@ -115,6 +115,12 @@ Host timezone:{{- if .HostTimeZone }} {{ .HostTimeZone }}{{- else }} unresolved{
 - `workflows/`: scheduled workflow source repositories, one directory per workflow id.
 - `workflow-runs/`: per-run workflow snapshots and same-run artifacts.
 
+Scheduled workflow step runtime environment:
+- `$OPENCTO_WORKFLOWS_DIR`: workflow source repository root. Treat as read-only during step execution.
+- `$OPENCTO_WORKFLOW_RUN_DIR`: current run snapshot directory and step working directory.
+- `$OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR`: writable same-run artifact directory for files that later steps in the same run should read.
+- `$OPENCTO_WORKFLOW_DATA_DIR`: writable persistent data directory for state or outputs future scheduled runs must read.
+
 {{- if .Path }}
 PATH: {{ .Path }}
 {{- end }}

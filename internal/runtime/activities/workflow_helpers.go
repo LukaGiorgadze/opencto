@@ -48,9 +48,14 @@ func workflowStepEnvironment(workspaceRoot string, request workflowrun.ExecuteSt
 		return nil, err
 	}
 	runPath := strings.TrimSpace(request.RunPath)
+	runArtifactsDir := ""
+	if runPath != "" {
+		runArtifactsDir = filepath.Join(runPath, "artifacts")
+	}
 	env = upsertEnv(env, "OPENCTO_WORKFLOWS_DIR", workflowsDir)
-	env = upsertEnv(env, "OPENCTO_WORKFLOW_RUN_DIR", runPath)
 	env = upsertEnv(env, "OPENCTO_WORKFLOW_DATA_DIR", dataDir)
+	env = upsertEnv(env, "OPENCTO_WORKFLOW_RUN_DIR", runPath)
+	env = upsertEnv(env, "OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR", runArtifactsDir)
 	return env, nil
 }
 
