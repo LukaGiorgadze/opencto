@@ -22,12 +22,13 @@ type OpenAIConversationCompressor struct {
 	model llms.Model
 }
 
-func NewOpenAIConversationCompressor(apiKey, baseURL, modelID string) (*OpenAIConversationCompressor, error) {
+func NewOpenAIConversationCompressor(apiKey, baseURL, modelID string, bifrostEnabled bool) (*OpenAIConversationCompressor, error) {
 	model, err := openai.New(
 		openai.WithToken(apiKey),
 		openai.WithBaseURL(baseURL),
 		openai.WithModel(modelID),
 		openai.WithResponseFormat(conversationCompressionResponseFormat()),
+		openai.WithHTTPClient(newOpenAIHTTPClient(bifrostEnabled)),
 	)
 	if err != nil {
 		return nil, err

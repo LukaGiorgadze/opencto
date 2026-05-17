@@ -146,12 +146,12 @@ func TestModelToolTypesCanExcludeAgent(t *testing.T) {
 	}
 }
 
-func TestToolResultProcessorsIncludesWorkflowBundleProcessor(t *testing.T) {
+func TestToolResultProcessorsEmptyByDefault(t *testing.T) {
 	t.Parallel()
 
 	processors := ToolResultProcessors()
-	if len(processors) != 1 {
-		t.Fatalf("expected one tool result processor, got %d", len(processors))
+	if len(processors) != 0 {
+		t.Fatalf("expected no tool result processors, got %d", len(processors))
 	}
 }
 

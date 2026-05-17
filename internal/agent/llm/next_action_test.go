@@ -165,6 +165,8 @@ func TestBuildNextActionMessagesUsesOpenAIToolTranscript(t *testing.T) {
 		"`$OPENCTO_WORKSPACE`: /tmp/opencto",
 		"Projects, scheduled workflow source and run snapshots, artifacts, data/db, screenshots, logs, and related files.",
 		"Default working directory for all user project work",
+		"`$OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR`: writable same-run artifact directory",
+		"`$OPENCTO_WORKFLOW_DATA_DIR`: writable persistent data directory",
 		"PATH: /usr/bin:/bin",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -539,7 +541,8 @@ func TestBuildNextActionMessagesIncludesCollaborationGuidance(t *testing.T) {
 		"For non-trivial work, use read-only tools first",
 		"ask one concise question",
 		"continue with the necessary work and verify before reporting success",
-		"Before any scheduled workflow action, load the `scheduled-workflows` skill",
+		"Prefer first-class specialized tools over generic delegation",
+		"For scheduled workflow creation, source updates, manifest changes, or behavior changes, use `WorkflowCreate` or `WorkflowUpdate` with a self-contained prompt",
 		"`workflows/`: scheduled workflow source repositories",
 		"`workflow-runs/`: per-run workflow snapshots",
 	} {
@@ -1411,17 +1414,18 @@ func TestNextActionReturnsSingleToolChoice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NextAction: %v", err)
 	}
-	if output.Status != "tool" || output.ToolChoice == nil {
+	if output.Status != "tool" || len(output.ToolChoices) != 1 {
 		t.Fatalf("expected tool output, got %#v", output)
 	}
-	if output.ToolChoice.ToolCallID != "toolu_next" || output.ToolChoice.Metadata["tool_call_id"] != "toolu_next" {
-		t.Fatalf("tool call id was not preserved: %#v", output.ToolChoice)
+	choice := output.ToolChoices[0]
+	if choice.ToolCallID != "toolu_next" || choice.Metadata["tool_call_id"] != "toolu_next" {
+		t.Fatalf("tool call id was not preserved: %#v", choice)
 	}
 	if output.WorkItemID != "" {
 		t.Fatalf("unexpected work item id: %q", output.WorkItemID)
 	}
-	if output.ToolChoice.RunMode != domain.ToolRunModeWaitForExit || output.ToolChoice.Idempotency != domain.ToolIdempotencyReadOnly || output.ToolChoice.ProcessScope != domain.ProcessScopeStopOnFinish {
-		t.Fatalf("tool execution metadata was not preserved: %#v", output.ToolChoice)
+	if choice.RunMode != domain.ToolRunModeWaitForExit || choice.Idempotency != domain.ToolIdempotencyReadOnly || choice.ProcessScope != domain.ProcessScopeStopOnFinish {
+		t.Fatalf("tool execution metadata was not preserved: %#v", choice)
 	}
 	if len(model.options.Tools) != len(toolregistry.Definitions()) {
 		t.Fatalf("expected all tool schemas, got %#v", model.options.Tools)
@@ -1457,11 +1461,11 @@ func TestNextActionSubAgentUsesRestrictedToolsAndPrompt(t *testing.T) {
 	if len(model.options.Tools) != 1 || model.options.Tools[0].Function.Name != "Read" {
 		t.Fatalf("expected only Read tool, got %#v", model.options.Tools)
 	}
-	if len(model.messages) == 0 || !strings.Contains(messageText(model.messages[0]), "OpenCTO sub-agent") || !strings.Contains(messageText(model.messages[0]), "Audit") {
-		t.Fatalf("sub-agent system prompt missing expected text: %#v", model.messages)
+	if len(model.messages) == 0 || !strings.Contains(messageText(model.messages[0]), "OpenCTO agent") || !strings.Contains(messageText(model.messages[0]), "Audit") {
+		t.Fatalf("agent system prompt missing expected text: %#v", model.messages)
 	}
-	if !messagesContainText(model.messages, "Sub-agent run summary") || !messagesContainText(model.messages, "Read README.md already.") {
-		t.Fatalf("sub-agent run summary missing from context: %#v", model.messages)
+	if !messagesContainText(model.messages, "Agent run summary") || !messagesContainText(model.messages, "Read README.md already.") {
+		t.Fatalf("agent run summary missing from context: %#v", model.messages)
 	}
 }
 
@@ -1505,8 +1509,8 @@ func TestNextActionCombinesMultipleExecToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NextAction: %v", err)
 	}
-	if output.ToolChoice != nil || len(output.ToolChoices) != 2 {
-		t.Fatalf("expected two exec choices, got single=%#v multiple=%#v", output.ToolChoice, output.ToolChoices)
+	if len(output.ToolChoices) != 2 {
+		t.Fatalf("expected two exec choices, got %#v", output.ToolChoices)
 	}
 	if output.ToolChoices[0].Command != "pwd" || output.ToolChoices[1].Command != "uname" {
 		t.Fatalf("unexpected exec choices: %#v", output.ToolChoices)
@@ -1599,8 +1603,8 @@ func TestNextActionCombinesMultipleStructuredReadOnlyToolCalls(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NextAction: %v", err)
 			}
-			if output.ToolChoice != nil || len(output.ToolChoices) != 2 {
-				t.Fatalf("expected two %s choices, got single=%#v multiple=%#v", test.toolType, output.ToolChoice, output.ToolChoices)
+			if len(output.ToolChoices) != 2 {
+				t.Fatalf("expected two %s choices, got %#v", test.toolType, output.ToolChoices)
 			}
 			if output.ToolChoices[0].Type != test.toolType || output.ToolChoices[1].Type != test.toolType {
 				t.Fatalf("unexpected tool choice types: %#v", output.ToolChoices)
@@ -1654,8 +1658,8 @@ func TestNextActionCombinesMixedToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NextAction: %v", err)
 	}
-	if output.ToolChoice != nil || len(output.ToolChoices) != 2 {
-		t.Fatalf("expected two tool choices, got single=%#v multiple=%#v", output.ToolChoice, output.ToolChoices)
+	if len(output.ToolChoices) != 2 {
+		t.Fatalf("expected two tool choices, got %#v", output.ToolChoices)
 	}
 	if !output.ToolChoices[0].Destructive || output.ToolChoices[0].Idempotency != domain.ToolIdempotencyNonIdempotent {
 		t.Fatalf("expected first choice destructive/idempotency to be preserved, got %#v", output.ToolChoices[0])
@@ -1930,7 +1934,7 @@ func TestToolChoiceCapturesWorkflowCreateInput(t *testing.T) {
 		Type: "function",
 		FunctionCall: &llms.FunctionCall{
 			Name:      scheduletool.WorkflowCreateToolName,
-			Arguments: `{"workflow_id":"daily-hello","name":"daily hello","description":"","schedule":{"cron":"0 9 * * *","one_shot_at":"","overlap_policy":"skip","catchup_window":"10m","pause_on_failure":false},"notification_policy":{"on_failure":true},"env":[],"steps":[{"id":"hello","command":"sh","args":["src/hello.sh"],"start_to_close_timeout":"1m","schedule_to_close_timeout":"","retry_policy":{"initial_interval":"","backoff_coefficient":0,"maximum_interval":"","maximum_attempts":1,"non_retryable_error_types":[]}}],"files":[{"path":"src/hello.sh","content":"echo hello\n","executable":true}],"commit_message":"","paused":false,"note":""}`,
+			Arguments: `{"workflow_id":"daily-hello","prompt":"Create a workflow that runs every morning at 9 and sends hello.","commit_message":"Create daily hello workflow"}`,
 		},
 	}, agent.ToolSelectionInput{
 		Context: agent.Context{Event: domain.Event{Body: "every morning send hello"}},
@@ -1948,7 +1952,7 @@ func TestToolChoiceCapturesWorkflowCreateInput(t *testing.T) {
 	if choice.Metadata["model_tool"] != scheduletool.WorkflowCreateToolName {
 		t.Fatalf("expected workflow metadata, got %#v", choice.Metadata)
 	}
-	if !strings.Contains(string(choice.Input), `"cron":"0 9 * * *"`) {
+	if !strings.Contains(string(choice.Input), `"prompt":"Create a workflow`) {
 		t.Fatalf("expected raw workflow input to be preserved, got %s", choice.Input)
 	}
 }

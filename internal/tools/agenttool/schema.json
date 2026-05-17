@@ -7,17 +7,17 @@
     "goal": {
       "type": "string",
       "minLength": 1,
-      "description": "Short outcome the sub-agent should accomplish."
+      "description": "Short outcome the agent should accomplish."
     },
     "prompt": {
       "type": "string",
       "minLength": 1,
-      "description": "Self-contained dynamic context and instructions for the sub-agent. Include the task, relevant paths, constraints, and expected final report."
+      "description": "Explicit dynamic context and instructions for the agent. It also receives inherited conversation context, but include the task, relevant paths, constraints, and expected final report so the worker can act without guessing."
     },
     "allowed_tools": {
       "type": "array",
       "uniqueItems": true,
-      "description": "Optional domain.ToolType allowlist for the sub-agent. Omit to allow every normal tool except Agent. Recursive Agent calls are never allowed.",
+      "description": "Optional domain.ToolType allowlist for the agent. Omit to allow every normal tool except Agent. Recursive Agent calls are never allowed.",
       "items": {
         "type": "string",
         "enum": [
@@ -44,7 +44,7 @@
       "type": "integer",
       "minimum": 2,
       "maximum": 100,
-      "description": "Optional number of sub-agent LLM turns before forcing a final response. Omit to use the default of 50."
+      "description": "Optional number of agent LLM turns before forcing a final response. Omit to use the default of 50."
     }
   }
 }

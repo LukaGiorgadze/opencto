@@ -7,7 +7,7 @@ import (
 	"github.com/opencto/opencto/internal/prompttemplate"
 )
 
-//go:embed prompt_*.tmpl
+//go:embed prompt_*.tmpl workflow_template.yml
 var promptFS embed.FS
 
 func PromptSummary(operation, workflowID, name, description string) string {
@@ -19,9 +19,12 @@ func PromptSummary(operation, workflowID, name, description string) string {
 	})
 }
 
-func PromptWorkflowBundleChanged(workflowID string) string {
-	return prompttemplate.MustRenderFS(promptFS, "prompt_workflow_bundle_changed.tmpl", map[string]any{
-		"WorkflowID":       strings.TrimSpace(workflowID),
-		"RequiredNextTool": WorkflowUpdateToolName,
-	})
+func PromptAuthoringAgent(operation, workflowID, workflowPath, userPrompt, commitMessage string) string {
+	return prompttemplate.MustRenderFSWithPatterns(promptFS, "prompt_workflow_authoring_agent.tmpl", map[string]any{
+		"Operation":     strings.TrimSpace(operation),
+		"WorkflowID":    strings.TrimSpace(workflowID),
+		"WorkflowPath":  strings.TrimSpace(workflowPath),
+		"UserPrompt":    strings.TrimSpace(userPrompt),
+		"CommitMessage": strings.TrimSpace(commitMessage),
+	}, "prompt_workflow_authoring_agent.tmpl", "workflow_template.yml")
 }

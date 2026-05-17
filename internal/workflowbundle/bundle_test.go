@@ -127,34 +127,6 @@ func TestValidateManifestRejectsRepeatedExecutableArgument(t *testing.T) {
 	}
 }
 
-func TestValidateManifestRequiresEnvAssignments(t *testing.T) {
-	t.Parallel()
-
-	manifest := testManifest()
-	manifest.Env = []string{"API_TOKEN"}
-	err := ValidateManifest(manifest)
-	if err == nil {
-		t.Fatal("expected env entry without assignment to be rejected")
-	}
-	if !strings.Contains(err.Error(), "must be NAME=value") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestValidateManifestRejectsEnvTemplates(t *testing.T) {
-	t.Parallel()
-
-	manifest := testManifest()
-	manifest.Env = []string{"PAYLOAD={{steps.check.stdout}}"}
-	err := ValidateManifest(manifest)
-	if err == nil {
-		t.Fatal("expected env template syntax to be rejected")
-	}
-	if !strings.Contains(err.Error(), "template syntax") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 func TestValidateManifestRejectsUnsupportedNonRetryableErrorType(t *testing.T) {
 	t.Parallel()
 
@@ -193,7 +165,6 @@ schedule:
   pause_on_failure: false
 notification_policy:
   on_failure: true
-env: []
 steps:
   - id: step
     command: echo
@@ -216,6 +187,38 @@ unknown: true
 	}
 }
 
+func TestLoadManifestRejectsEnvField(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	data := []byte(`name: test workflow
+description: ""
+schedule:
+  cron: "0 9 * * *"
+  one_shot_at: ""
+  overlap_policy: skip
+  catchup_window: 10m
+  pause_on_failure: false
+notification_policy:
+  on_failure: true
+env:
+  - GITHUB_REPO=owner/repo
+steps:
+  - id: step
+    command: echo
+    args: ["ok"]
+    start_to_close_timeout: 1m
+`)
+	if err := os.WriteFile(filepath.Join(dir, ManifestFilename), data, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if _, err := LoadManifest(dir); err == nil {
+		t.Fatal("expected env field to be rejected")
+	} else if !strings.Contains(err.Error(), "field env not found") {
+		t.Fatalf("expected env unknown field error, got %v", err)
+	}
+}
+
 func TestLoadManifestDoesNotRequireVersion(t *testing.T) {
 	t.Parallel()
 
@@ -230,7 +233,6 @@ schedule:
   pause_on_failure: false
 notification_policy:
   on_failure: true
-env: []
 steps:
   - id: step
     command: echo
@@ -270,7 +272,6 @@ schedule:
   pause_on_failure: false
 notification_policy:
   on_failure: true
-env: []
 steps:
   - id: step
     command: src/check.sh
@@ -309,7 +310,6 @@ schedule:
   pause_on_failure: false
 notification_policy:
   on_failure: true
-env: []
 steps:
   - id: step
     command: python3
@@ -340,7 +340,6 @@ schedule:
   catchup_window: 10m
   pause_on_failure: false
 notification_policy: {}
-env: []
 steps:
   - id: step
     command: echo
@@ -519,7 +518,6 @@ func TestParseOptionalDurationRejectsNegativeDuration(t *testing.T) {
 func testManifest() Manifest {
 	return Manifest{
 		Name: "test workflow",
-		Env:  []string{},
 		Schedule: Schedule{
 			Cron:          "0 9 * * *",
 			OverlapPolicy: OverlapPolicySkip,

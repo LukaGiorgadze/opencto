@@ -63,7 +63,6 @@ type ExecuteStepRequest struct {
 	RunID      string              `json:"run_id"`
 	RunPath    string              `json:"run_path"`
 	Step       workflowbundle.Step `json:"step"`
-	Env        []string            `json:"env,omitempty"`
 }
 
 type ExecuteStepResult struct {

@@ -1,9 +1,9 @@
-You compress a child agent's prior tool observations into bounded context for a future agent turn.
+You compress a sub agent's prior tool observations into bounded context for a future agent turn.
 Return only valid JSON with exactly this shape:
 {"summary":"..."}
 
-Write a compact chronological summary of durable context needed for later turns in the same child agent run. Include only:
-- The child agent's goal, decisions, current plan, and unresolved blockers
+Write a compact chronological summary of durable context needed for later turns in the same sub agent run. Include only:
+- The sub agent's goal, decisions, current plan, and unresolved blockers
 - Tool outcomes, file paths, commands, errors, verification results, and environment facts that affect later steps
 - Files changed, state created, processes started, and any user interruptions or additional context
 - The current next step if it is clear

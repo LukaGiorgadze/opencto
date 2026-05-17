@@ -12,14 +12,15 @@ import (
 const (
 	AgentToolName = "Agent"
 
-	AgentToolDescription = `Launch a sub-agent to handle a bounded, multi-step task independently.
+	AgentToolDescription = `Launch a agent to handle a bounded, multi-step task independently.
 
-The sub-agent receives its own system prompt, the provided goal, and dynamic context or instructions. It does not inherit the parent conversation.
+The agent receives its own system prompt, the provided goal, dynamic context or instructions, and inherited parent conversation context.
 
 The result is returned to the parent as a tool observation — not shown directly to the user.
 
 Constraints:
-- The goal and prompt must be fully self-contained — the sub-agent has no access to parent context.
+- Prefer first-class specialized tools when they directly match the user's request. Use Agent for delegated work that genuinely needs an independent multi-step loop.
+- The goal and prompt must still be explicit enough for a fresh worker to act without guessing.
 - Recursive Agent calls are blocked.`
 
 	DefaultMaxTurns = 50
@@ -50,9 +51,9 @@ func AgentToolSchema() json.RawMessage {
 func PromptSummary(goal string) string {
 	goal = strings.TrimSpace(goal)
 	if goal == "" {
-		return "Run sub-agent"
+		return "Run agent"
 	}
-	return "Run sub-agent: " + goal
+	return "Run agent: " + goal
 }
 
 func NormalizeMaxTurns(value int) int {

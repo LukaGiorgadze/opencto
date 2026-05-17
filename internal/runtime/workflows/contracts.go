@@ -70,6 +70,7 @@ type AgentWorkflowInput struct {
 	InitialRunSummary  string                    `json:"initial_run_summary,omitempty"`
 	InitialNextAction  *agent.NextAction         `json:"initial_next_action,omitempty"`
 	InitialObservation []agent.ExecutionFeedback `json:"initial_observation,omitempty"`
+	CompletionTool     *agent.ToolChoice         `json:"completion_tool,omitempty"`
 }
 
 type AgentWorkflowResult struct {
@@ -79,5 +80,6 @@ type AgentWorkflowResult struct {
 	FilesTouched []string                  `json:"files_touched,omitempty"`
 	ToolsUsed    []domain.ToolType         `json:"tools_used,omitempty"`
 	Processes    []domain.ProcessReference `json:"processes,omitempty"`
+	Metadata     map[string]string         `json:"metadata,omitempty"`
 	Error        string                    `json:"error,omitempty"`
 }

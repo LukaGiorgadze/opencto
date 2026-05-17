@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestWorkflowUpdateSchemaHasOptionalManifestFields(t *testing.T) {
+func TestWorkflowUpdateSchemaIsAuthoringPromptOnly(t *testing.T) {
 	t.Parallel()
 
 	var schema struct {
@@ -23,35 +23,45 @@ func TestWorkflowUpdateSchemaHasOptionalManifestFields(t *testing.T) {
 	if schema.AdditionalProperties {
 		t.Fatalf("expected additionalProperties false")
 	}
-	if len(schema.Required) != 1 || schema.Required[0] != "workflow_id" {
-		t.Fatalf("expected only workflow_id to be required, got %#v", schema.Required)
+	if len(schema.Required) != 2 || schema.Required[0] != "workflow_id" || schema.Required[1] != "prompt" {
+		t.Fatalf("expected workflow_id and prompt to be required, got %#v", schema.Required)
 	}
 	if _, ok := schema.Properties["operation"]; ok {
 		t.Fatalf("WorkflowUpdate should not expose operation")
 	}
-	for _, field := range []string{"name", "description", "schedule", "notification_policy", "env", "steps", "files", "commit_message"} {
+	for _, field := range []string{"workflow_id", "prompt", "commit_message"} {
 		if _, ok := schema.Properties[field]; !ok {
-			t.Fatalf("WorkflowUpdate schema missing optional field %q", field)
+			t.Fatalf("WorkflowUpdate schema missing field %q", field)
+		}
+	}
+	for _, field := range []string{"name", "description", "schedule", "notification_policy", "steps", "files"} {
+		if _, ok := schema.Properties[field]; ok {
+			t.Fatalf("WorkflowUpdate schema should not expose manifest field %q", field)
 		}
 	}
 }
 
-func TestWorkflowCreateSchemaDoesNotRequireOptionalManifestFields(t *testing.T) {
+func TestWorkflowCreateSchemaIsAuthoringPromptOnly(t *testing.T) {
 	t.Parallel()
 
 	var schema struct {
-		Required []string `json:"required"`
+		Required   []string                   `json:"required"`
+		Properties map[string]json.RawMessage `json:"properties"`
 	}
 	if err := json.Unmarshal(WorkflowCreateToolSchema(), &schema); err != nil {
 		t.Fatalf("decode workflow create schema: %v", err)
 	}
-	required := map[string]bool{}
-	for _, field := range schema.Required {
-		required[field] = true
+	if len(schema.Required) != 2 || schema.Required[0] != "workflow_id" || schema.Required[1] != "prompt" {
+		t.Fatalf("expected workflow_id and prompt to be required, got %#v", schema.Required)
 	}
-	for _, field := range []string{"description", "notification_policy", "env", "files", "commit_message", "paused", "note"} {
-		if required[field] {
-			t.Fatalf("WorkflowCreate should not require optional field %q", field)
+	for _, field := range []string{"workflow_id", "prompt", "commit_message"} {
+		if _, ok := schema.Properties[field]; !ok {
+			t.Fatalf("WorkflowCreate schema missing field %q", field)
+		}
+	}
+	for _, field := range []string{"description", "notification_policy", "steps", "files", "paused", "note"} {
+		if _, ok := schema.Properties[field]; ok {
+			t.Fatalf("WorkflowCreate schema should not expose manifest field %q", field)
 		}
 	}
 }

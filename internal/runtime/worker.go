@@ -26,6 +26,8 @@ func NewWorker(client client.Client, taskQueue string, activities *activities.Ac
 	w.RegisterActivityWithOptions(activities.PersistEvent, activity.RegisterOptions{Name: "Activities.PersistEvent"})
 	w.RegisterActivityWithOptions(activities.CompressConversation, activity.RegisterOptions{Name: "Activities.CompressConversation"})
 	w.RegisterActivityWithOptions(activities.CompressAgentObservations, activity.RegisterOptions{Name: "Activities.CompressAgentObservations"})
+	w.RegisterActivityWithOptions(activities.PrepareWorkflowAuthoring, activity.RegisterOptions{Name: "Activities.PrepareWorkflowAuthoring"})
+	w.RegisterActivityWithOptions(activities.CleanupWorkflowAuthoring, activity.RegisterOptions{Name: "Activities.CleanupWorkflowAuthoring"})
 	w.RegisterActivityWithOptions(activities.PersistNextAction, activity.RegisterOptions{Name: "Activities.PersistNextAction"})
 	w.RegisterActivityWithOptions(activities.PersistToolResult, activity.RegisterOptions{Name: "Activities.PersistToolResult"})
 	w.RegisterActivityWithOptions(activities.ResponseSession, activity.RegisterOptions{Name: "Activities.ResponseSession"})

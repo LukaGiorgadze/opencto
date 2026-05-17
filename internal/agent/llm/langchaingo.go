@@ -1,9 +1,7 @@
 package llm
 
 import (
-	"net/http"
 	"strings"
-	"time"
 
 	"github.com/tmc/langchaingo/llms"
 	openai "github.com/tmc/langchaingo/llms/openai"
@@ -20,11 +18,13 @@ type OpenAIEngine struct {
 	imageResolver    *media.ImageResolver
 }
 
-func NewOpenAIEngine(apiKey, baseURL, reasoningModelID, fastModelID, transcriptionModel string) (*OpenAIEngine, error) {
+func NewOpenAIEngine(apiKey, baseURL, reasoningModelID, fastModelID, transcriptionModel string, bifrostEnabled bool) (*OpenAIEngine, error) {
+	httpClient := newOpenAIHTTPClient(bifrostEnabled)
 	reasoningModel, err := openai.New(
 		openai.WithToken(apiKey),
 		openai.WithBaseURL(baseURL),
 		openai.WithModel(reasoningModelID),
+		openai.WithHTTPClient(httpClient),
 	)
 	if err != nil {
 		return nil, err
@@ -34,6 +34,7 @@ func NewOpenAIEngine(apiKey, baseURL, reasoningModelID, fastModelID, transcripti
 		openai.WithToken(apiKey),
 		openai.WithBaseURL(baseURL),
 		openai.WithModel(fastModelID),
+		openai.WithHTTPClient(httpClient),
 	)
 	if err != nil {
 		return nil, err
@@ -44,7 +45,7 @@ func NewOpenAIEngine(apiKey, baseURL, reasoningModelID, fastModelID, transcripti
 		reasoningModelID: reasoningModelID,
 		fastModel:        fastModel,
 		fastModelID:      fastModelID,
-		audioTranscriber: newOpenAICompatibleAudioTranscriber(apiKey, baseURL, transcriptionModel, &http.Client{Timeout: 2 * time.Minute}),
+		audioTranscriber: newOpenAICompatibleAudioTranscriber(apiKey, baseURL, transcriptionModel, httpClient),
 		imageResolver:    media.NewImageResolver(media.DefaultImageResolverConfig()),
 	}, nil
 }

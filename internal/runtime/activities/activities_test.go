@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/testsuite"
+
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/embedding"
@@ -51,14 +54,18 @@ type stubProjectStore struct {
 }
 
 type stubEngine struct {
-	output agent.NextActionOutput
-	err    error
-	input  *agent.NextActionInput
+	output  agent.NextActionOutput
+	err     error
+	input   *agent.NextActionInput
+	session *agent.LLMSession
 }
 
-func (e stubEngine) NextAction(_ context.Context, input agent.NextActionInput) (agent.NextActionOutput, error) {
+func (e stubEngine) NextAction(ctx context.Context, input agent.NextActionInput) (agent.NextActionOutput, error) {
 	if e.input != nil {
 		*e.input = input
+	}
+	if e.session != nil {
+		*e.session = agent.LLMSessionFromContext(ctx)
 	}
 	return e.output, e.err
 }
@@ -2605,36 +2612,9 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 	}}
 	activities.Schedule = scheduleExecutor
 	scheduleResult, err := activities.ExecuteTool(ctx, executeRequest(domain.ToolTypeWorkflowCreate, "schedule-1", map[string]any{
-		"workflow_id": "daily-hello",
-		"name":        "daily hello",
-		"description": "",
-		"schedule": map[string]any{
-			"cron":             "0 9 * * *",
-			"one_shot_at":      "",
-			"overlap_policy":   "skip",
-			"catchup_window":   "10m",
-			"pause_on_failure": false,
-		},
-		"notification_policy": map[string]any{"on_failure": true},
-		"env":                 []string{},
-		"steps": []map[string]any{{
-			"id":                        "hello",
-			"command":                   "sh",
-			"args":                      []string{"src/hello.sh"},
-			"start_to_close_timeout":    "1m",
-			"schedule_to_close_timeout": "",
-			"retry_policy": map[string]any{
-				"initial_interval":          "",
-				"backoff_coefficient":       0,
-				"maximum_interval":          "",
-				"maximum_attempts":          1,
-				"non_retryable_error_types": []string{},
-			},
-		}},
-		"files":          []map[string]any{},
+		"workflow_id":    "daily-hello",
+		"prompt":         "Create a daily hello workflow.",
 		"commit_message": "",
-		"paused":         false,
-		"note":           "",
 	}))
 	if err != nil {
 		t.Fatalf("schedule tool: %v", err)
@@ -2878,7 +2858,7 @@ func TestNextActionAssignsWorkItemInternallyForToolChoice(t *testing.T) {
 
 	activities := Activities{
 		Engine: stubEngine{output: agent.NextActionOutput{
-			ToolChoice: &agent.ToolChoice{
+			ToolChoices: []agent.ToolChoice{{
 				ToolCallID: "toolu_next",
 				Type:       domain.ToolTypeExec,
 				Intent:     "inspect workspace",
@@ -2887,7 +2867,7 @@ func TestNextActionAssignsWorkItemInternallyForToolChoice(t *testing.T) {
 					"tool_call_id": "toolu_next",
 					"work_item_id": "model-supplied-work-item",
 				},
-			},
+			}},
 			WorkItemID: "model-supplied-work-item",
 			Status:     NextActionStatusTool,
 		}},
@@ -2906,8 +2886,134 @@ func TestNextActionAssignsWorkItemInternallyForToolChoice(t *testing.T) {
 	if result.WorkItemID != wantWorkItemID {
 		t.Fatalf("expected runtime-assigned work item %q, got %q", wantWorkItemID, result.WorkItemID)
 	}
-	if result.ToolChoice == nil || result.ToolChoice.Metadata["work_item_id"] != wantWorkItemID {
-		t.Fatalf("expected internal work item metadata, got %#v", result.ToolChoice)
+	if len(result.ToolChoices) != 1 || result.ToolChoices[0].Metadata["work_item_id"] != wantWorkItemID {
+		t.Fatalf("expected internal work item metadata, got %#v", result.ToolChoices)
+	}
+}
+
+func TestNextActionResultSerializesOnlyToolChoices(t *testing.T) {
+	t.Parallel()
+
+	data, err := json.Marshal(NextActionResult{
+		NextAction: agent.NextAction{WorkItems: []domain.WorkItem{{
+			ID:        "wi-1",
+			ProjectID: "project-1",
+			Status:    domain.WorkItemStatusRunning,
+		}}},
+		ToolChoices: []agent.ToolChoice{{
+			ToolCallID: "toolu_read",
+			Type:       domain.ToolTypeRead,
+			Intent:     "read file",
+		}},
+		WorkItemID: "wi-1",
+		Status:     NextActionStatusTool,
+	})
+	if err != nil {
+		t.Fatalf("marshal next action result: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, `"tool_choices"`) {
+		t.Fatalf("expected tool_choices field, got %s", text)
+	}
+	if strings.Contains(text, `"tool_choice"`) {
+		t.Fatalf("did not expect legacy tool_choice field, got %s", text)
+	}
+}
+
+func TestNextActionAddsWorkflowRunSessionToEngineContext(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestActivityEnvironment()
+
+	var capturedSession agent.LLMSession
+	activities := &Activities{
+		Engine: stubEngine{
+			output: agent.NextActionOutput{
+				NextAction: agent.NextAction{ResponseMessage: "done"},
+				Status:     NextActionStatusCompleted,
+			},
+			session: &capturedSession,
+		},
+		Project:    domain.Project{ID: "project-1", Name: "OpenCTO"},
+		SkillsRoot: t.TempDir(),
+	}
+	env.RegisterActivityWithOptions(activities.NextAction, activity.RegisterOptions{Name: "Activities.NextAction"})
+
+	_, err := env.ExecuteActivity("Activities.NextAction", NextActionRequest{
+		ProjectID:      "project-1",
+		Event:          domain.Event{ID: "event-1", ProjectID: "project-1", Body: "inspect workspace"},
+		ExecutionCycle: 3,
+	})
+	if err != nil {
+		t.Fatalf("next action activity: %v", err)
+	}
+
+	if capturedSession.ProjectID != "project-1" || capturedSession.WorkflowID == "" || capturedSession.WorkflowRunID == "" || capturedSession.RequestKind != "next_action" {
+		t.Fatalf("expected project/workflow/run session, got %#v", capturedSession)
+	}
+}
+
+func TestNextActionSubAgentInheritsConversationContext(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	captured := agent.NextActionInput{}
+	activities := Activities{
+		Engine: stubEngine{
+			output: agent.NextActionOutput{
+				NextAction: agent.NextAction{ResponseMessage: "done"},
+				Status:     NextActionStatusCompleted,
+			},
+			input: &captured,
+		},
+		Store: stubProjectStore{
+			conversationsByScope: map[storage.ConversationScope][]domain.ConversationMessage{
+				storage.ConversationScopeThread: {
+					{ID: "original-request", EventID: "event-original", ProjectID: "project-1", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-1", ThreadID: "thread-1", Role: domain.ConversationRoleUser, Body: "Create the stargazers workflow.", CreatedAt: base},
+					{ID: "clarifier", EventID: "event-clarifier", ProjectID: "project-1", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-1", ThreadID: "thread-1", Role: domain.ConversationRoleAssistant, Body: "Should it restart from scratch?", CreatedAt: base.Add(time.Second)},
+				},
+			},
+		},
+		Project:                     domain.Project{ID: "project-1", Name: "OpenCTO"},
+		ConversationEnabled:         true,
+		ConversationLimit:           5,
+		ConversationMaxContextChars: 8000,
+	}
+
+	event := domain.Event{
+		ID:          "event-current",
+		ProjectID:   "project-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		ThreadID:    "thread-1",
+		Body:        "Yes, start fresh.",
+	}
+	_, err := activities.NextAction(context.Background(), NextActionRequest{
+		ProjectID:      "project-1",
+		Event:          event,
+		ExecutionCycle: 1,
+		SubAgent: &agent.SubAgentContext{
+			Goal:   "Update scheduled workflow github-stargazers",
+			Prompt: "Apply the user's latest answer.",
+			RunID:  "agent-workflow-1",
+		},
+		ToolAllowlist: []domain.ToolType{domain.ToolTypeRead},
+		RestrictTools: true,
+	})
+	if err != nil {
+		t.Fatalf("next action: %v", err)
+	}
+
+	if !strings.Contains(captured.Context.Event.Body, "Update scheduled workflow github-stargazers") ||
+		!strings.Contains(captured.Context.Event.Body, "Apply the user's latest answer.") {
+		t.Fatalf("expected synthetic agent event, got %q", captured.Context.Event.Body)
+	}
+	if got := idsFromConversation(captured.Context.Conversation); strings.Join(got, ",") != "original-request,clarifier" {
+		t.Fatalf("expected inherited parent conversation, got %#v", captured.Context.Conversation)
+	}
+	if len(captured.Context.Skills) != 0 {
+		t.Fatalf("expected skills to respect agent tool allowlist, got %#v", captured.Context.Skills)
 	}
 }
 
@@ -2916,7 +3022,7 @@ func TestNextActionAssignsSubAgentWorkItemFromSyntheticEvent(t *testing.T) {
 
 	activities := Activities{
 		Engine: stubEngine{output: agent.NextActionOutput{
-			ToolChoice: &agent.ToolChoice{
+			ToolChoices: []agent.ToolChoice{{
 				ToolCallID: "toolu_read",
 				Type:       domain.ToolTypeRead,
 				Intent:     "read file",
@@ -2924,7 +3030,7 @@ func TestNextActionAssignsSubAgentWorkItemFromSyntheticEvent(t *testing.T) {
 				Metadata: map[string]string{
 					"tool_call_id": "toolu_read",
 				},
-			},
+			}},
 			Status: NextActionStatusTool,
 		}},
 		Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
@@ -2947,16 +3053,16 @@ func TestNextActionAssignsSubAgentWorkItemFromSyntheticEvent(t *testing.T) {
 		t.Fatalf("next action: %v", err)
 	}
 	parentWorkItemID := stableActivityID("work-item", "project-1", "event-1", "1")
-	subAgentEventID := stableActivityID("sub-agent-event", "project-1", "event-1", "agent-workflow-1", "Inspect wiring", "Find the child workflow wiring.")
+	subAgentEventID := stableActivityID("agent-event", "project-1", "event-1", "agent-workflow-1", "Inspect wiring", "Find the child workflow wiring.")
 	wantWorkItemID := stableActivityID("work-item", "project-1", subAgentEventID, "1")
 	if result.WorkItemID != wantWorkItemID {
-		t.Fatalf("expected sub-agent work item %q, got %q", wantWorkItemID, result.WorkItemID)
+		t.Fatalf("expected agent work item %q, got %q", wantWorkItemID, result.WorkItemID)
 	}
 	if result.WorkItemID == parentWorkItemID {
-		t.Fatalf("sub-agent work item should not collide with parent work item %q", parentWorkItemID)
+		t.Fatalf("agent work item should not collide with parent work item %q", parentWorkItemID)
 	}
-	if result.ToolChoice == nil || result.ToolChoice.Metadata["work_item_id"] != wantWorkItemID {
-		t.Fatalf("expected sub-agent work item metadata, got %#v", result.ToolChoice)
+	if len(result.ToolChoices) != 1 || result.ToolChoices[0].Metadata["work_item_id"] != wantWorkItemID {
+		t.Fatalf("expected agent work item metadata, got %#v", result.ToolChoices)
 	}
 }
 
@@ -2966,13 +3072,9 @@ func TestNextActionKeepsSubAgentWorkItemWhenEngineReplacesNextAction(t *testing.
 	activities := Activities{
 		Engine: stubEngine{output: agent.NextActionOutput{
 			NextAction: agent.NextAction{
-				ToolChoice: agent.ToolChoice{
-					ToolCallID: "toolu_read",
-					Type:       domain.ToolTypeRead,
-					Intent:     "read file",
-				},
+				ResponseMessage: "ignored for tool status",
 			},
-			ToolChoice: &agent.ToolChoice{
+			ToolChoices: []agent.ToolChoice{{
 				ToolCallID: "toolu_read",
 				Type:       domain.ToolTypeRead,
 				Intent:     "read file",
@@ -2980,7 +3082,7 @@ func TestNextActionKeepsSubAgentWorkItemWhenEngineReplacesNextAction(t *testing.
 				Metadata: map[string]string{
 					"tool_call_id": "toolu_read",
 				},
-			},
+			}},
 			Status: NextActionStatusTool,
 		}},
 		Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
@@ -3003,13 +3105,13 @@ func TestNextActionKeepsSubAgentWorkItemWhenEngineReplacesNextAction(t *testing.
 		t.Fatalf("next action: %v", err)
 	}
 	parentWorkItemID := stableActivityID("work-item", "project-1", "event-1", "1")
-	subAgentEventID := stableActivityID("sub-agent-event", "project-1", "event-1", "agent-workflow-1", "Inspect wiring", "Find the child workflow wiring.")
+	subAgentEventID := stableActivityID("agent-event", "project-1", "event-1", "agent-workflow-1", "Inspect wiring", "Find the child workflow wiring.")
 	wantWorkItemID := stableActivityID("work-item", "project-1", subAgentEventID, "1")
 	if result.WorkItemID != wantWorkItemID {
-		t.Fatalf("expected sub-agent work item %q, got %q", wantWorkItemID, result.WorkItemID)
+		t.Fatalf("expected agent work item %q, got %q", wantWorkItemID, result.WorkItemID)
 	}
 	if result.WorkItemID == parentWorkItemID {
-		t.Fatalf("sub-agent work item should not fall back to parent work item %q", parentWorkItemID)
+		t.Fatalf("agent work item should not fall back to parent work item %q", parentWorkItemID)
 	}
 }
 
@@ -3020,7 +3122,7 @@ func TestNextActionSubAgentRunIDSeparatesSyntheticWorkItems(t *testing.T) {
 		t.Helper()
 		activities := Activities{
 			Engine: stubEngine{output: agent.NextActionOutput{
-				ToolChoice: &agent.ToolChoice{
+				ToolChoices: []agent.ToolChoice{{
 					ToolCallID: "toolu_read",
 					Type:       domain.ToolTypeRead,
 					Intent:     "read file",
@@ -3028,7 +3130,7 @@ func TestNextActionSubAgentRunIDSeparatesSyntheticWorkItems(t *testing.T) {
 					Metadata: map[string]string{
 						"tool_call_id": "toolu_read",
 					},
-				},
+				}},
 				Status: NextActionStatusTool,
 			}},
 			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
@@ -3690,7 +3792,6 @@ func TestPrepareWorkflowRunUsesExecutionRunID(t *testing.T) {
 			CatchupWindow: "10m",
 		},
 		NotificationPolicy: workflowbundle.NotificationPolicy{OnFailure: true},
-		Env:                []string{},
 		Steps: []workflowbundle.Step{{
 			ID:                  "check",
 			Command:             "sh",
@@ -3847,7 +3948,7 @@ func TestCleanupWorkflowRunsDoesNotDeleteActiveOlderSnapshot(t *testing.T) {
 	}
 }
 
-func TestWorkflowStepEnvironmentSetsGlobalAssignmentsAndRunPaths(t *testing.T) {
+func TestWorkflowStepEnvironmentSetsRunPaths(t *testing.T) {
 	t.Setenv("OPENCTO_WORKSPACE", "/inherited")
 	t.Setenv("OPENCTO_RUN_DIR", "/old-run")
 
@@ -3856,45 +3957,28 @@ func TestWorkflowStepEnvironmentSetsGlobalAssignmentsAndRunPaths(t *testing.T) {
 		WorkflowID: "finance-check",
 		RunID:      "run-1",
 		RunPath:    runPath,
-		Env:        []string{"GLOBAL_FLAG=on"},
 	}
+	artifactsDir := filepath.Join(runPath, "artifacts")
 
 	env, err := workflowStepEnvironment("/workspace", request)
 	if err != nil {
 		t.Fatalf("workflow step environment: %v", err)
 	}
-	if got := envValue(env, "GLOBAL_FLAG"); got != "on" {
-		t.Fatalf("expected GLOBAL_FLAG assignment, got %q", got)
-	}
 	for name, want := range map[string]string{
-		"OPENCTO_WORKFLOWS_DIR":     filepath.Join("/workspace", "workflows"),
-		"OPENCTO_WORKFLOW_RUN_DIR":  runPath,
-		"OPENCTO_WORKFLOW_DATA_DIR": filepath.Join("/workspace", "workflows", "finance-check", "data"),
+		"OPENCTO_WORKSPACE":                  "/workspace",
+		"OPENCTO_WORKFLOWS_DIR":              filepath.Join("/workspace", "workflows"),
+		"OPENCTO_WORKFLOW_RUN_DIR":           runPath,
+		"OPENCTO_WORKFLOW_DATA_DIR":          filepath.Join("/workspace", "workflows", "finance-check", "data"),
+		"OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR": artifactsDir,
 	} {
 		if got := envValue(env, name); got != want {
 			t.Fatalf("expected %s=%q, got %q", name, want, got)
 		}
 	}
-	for _, name := range []string{"OPENCTO_WORKSPACE", "OPENCTO_RUN_DIR"} {
+	for _, name := range []string{"OPENCTO_RUN_DIR"} {
 		if got := envValue(env, name); got != "" {
 			t.Fatalf("expected %s to be stripped, got %q", name, got)
 		}
-	}
-}
-
-func TestWorkflowStepEnvironmentRejectsNonAssignmentEnv(t *testing.T) {
-	request := workflowrun.ExecuteStepRequest{WorkflowID: "finance-check", RunPath: "/tmp/run", Env: []string{"MISSING_TOKEN"}}
-
-	if _, err := workflowStepEnvironment("/workspace", request); err == nil {
-		t.Fatal("expected non-assignment env to fail")
-	}
-}
-
-func TestWorkflowStepEnvironmentRejectsTemplateEnv(t *testing.T) {
-	request := workflowrun.ExecuteStepRequest{WorkflowID: "finance-check", RunPath: "/tmp/run", Env: []string{"PAYLOAD={{steps.check.stdout}}"}}
-
-	if _, err := workflowStepEnvironment("/workspace", request); err == nil {
-		t.Fatal("expected template env to fail")
 	}
 }
 
@@ -3913,10 +3997,9 @@ func TestExecuteWorkflowStepCreatesStepArtifactDirectory(t *testing.T) {
 			Command: "sh",
 			Args: []string{
 				"-c",
-				`dir="$OPENCTO_WORKFLOW_RUN_DIR/artifacts" && test -d "$dir" && printf '{"ok":true}\n' > "$dir/payload.json"`,
+				`dir="$OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR" && test -d "$dir" && printf '{"ok":true}\n' > "$dir/payload.json"`,
 			},
 		},
-		Env: []string{"GLOBAL_FLAG=on"},
 	})
 	if err != nil {
 		t.Fatalf("execute workflow step: %v", err)
