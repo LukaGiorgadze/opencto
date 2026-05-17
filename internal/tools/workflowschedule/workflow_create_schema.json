@@ -16,7 +16,7 @@
     },
     "commit_message": {
       "type": "string",
-      "description": "Optional commit message for the final authored workflow bundle."
+      "description": "Commit message for the final authored workflow bundle."
     }
   }
 }
