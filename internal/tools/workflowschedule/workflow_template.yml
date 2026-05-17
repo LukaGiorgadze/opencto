@@ -20,4 +20,4 @@ steps:
           backoff_coefficient: 2
           maximum_interval: 30s
           maximum_attempts: 3
-          non_retryable_error_types: [] # [] or ["WorkflowStepFailed"]
+          non_retryable_error_types: [] # allowed values: [] or ["WorkflowStepFailed"]

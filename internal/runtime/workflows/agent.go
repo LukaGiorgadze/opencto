@@ -206,9 +206,6 @@ func AgentWorkflow(ctx workflow.Context, input AgentWorkflowInput) (AgentWorkflo
 		}
 
 		toolChoices := append([]agent.ToolChoice(nil), next.ToolChoices...)
-		if len(toolChoices) == 0 && next.ToolChoice != nil {
-			toolChoices = []agent.ToolChoice{*next.ToolChoice}
-		}
 		if len(toolChoices) == 0 {
 			return failedAgentWorkflowResultWithState(turn, toolsUsed, filesTouched, processes, fmt.Errorf("Activities.NextAction returned tool status without a tool choice")), nil
 		}

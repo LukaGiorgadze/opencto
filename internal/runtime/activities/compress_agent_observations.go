@@ -44,7 +44,8 @@ func (a *Activities) CompressAgentObservations(ctx context.Context, request Comp
 		return result, nil
 	}
 
-	output, err := a.AgentObservationCompressor.CompressAgentObservations(ctx, agent.AgentObservationCompressionInput{
+	compressorCtx := contextWithActivityLLMSession(ctx, strings.TrimSpace(request.ProjectID), "agent_observation_compression")
+	output, err := a.AgentObservationCompressor.CompressAgentObservations(compressorCtx, agent.AgentObservationCompressionInput{
 		ProjectID:       strings.TrimSpace(request.ProjectID),
 		Goal:            strings.TrimSpace(request.Goal),
 		PreviousSummary: strings.TrimSpace(request.PreviousSummary),

@@ -66,10 +66,10 @@ func TestTaskWorkflowAlternatesNextActionAndExecuteTool(t *testing.T) {
 			len(request.LastResults) == 0 &&
 			len(request.ObservationHistory) == 0
 	})).Return(activities.NextActionResult{
-		NextAction: nextAction,
-		ToolChoice: &toolChoice,
-		WorkItemID: "wi-1",
-		Status:     activities.NextActionStatusTool,
+		NextAction:  nextAction,
+		ToolChoices: []agent.ToolChoice{toolChoice},
+		WorkItemID:  "wi-1",
+		Status:      activities.NextActionStatusTool,
 	}, nil).Once()
 	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.MatchedBy(func(request activities.ExecuteToolRequest) bool {
 		return request.WorkItemID == "wi-1" &&
@@ -167,10 +167,10 @@ func TestTaskWorkflowRoutesAgentToolTosubWorkflow(t *testing.T) {
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
 		return request.ExecutionCycle == 1 && len(request.LastResults) == 0
 	})).Return(activities.NextActionResult{
-		NextAction: nextAction,
-		ToolChoice: &agentChoice,
-		WorkItemID: "wi-agent",
-		Status:     activities.NextActionStatusTool,
+		NextAction:  nextAction,
+		ToolChoices: []agent.ToolChoice{agentChoice},
+		WorkItemID:  "wi-agent",
+		Status:      activities.NextActionStatusTool,
 	}, nil).Once()
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.MatchedBy(func(request activities.NextActionRequest) bool {
 		return request.ExecutionCycle == 2 &&
@@ -240,9 +240,9 @@ func TestTaskWorkflowStopsWhenAgentsubIsCanceled(t *testing.T) {
 			ProjectID: "project-1",
 			Status:    domain.WorkItemStatusReady,
 		}}},
-		ToolChoice: &agentChoice,
-		WorkItemID: "wi-agent",
-		Status:     activities.NextActionStatusTool,
+		ToolChoices: []agent.ToolChoice{agentChoice},
+		WorkItemID:  "wi-agent",
+		Status:      activities.NextActionStatusTool,
 	}, nil).Once()
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(workflows.SignalTaskCancel, workflows.TaskControlSignal{
@@ -321,17 +321,17 @@ func TestAgentWorkflowRunsDurableSubAgentLoop(t *testing.T) {
 			request.ToolAllowlist[0] == domain.ToolTypeWrite &&
 			len(request.Processes) == 0
 	})).Return(activities.NextActionResult{
-		NextAction: nextAction,
-		ToolChoice: &writeChoice,
-		WorkItemID: "wi-sub",
-		Status:     activities.NextActionStatusTool,
+		NextAction:  nextAction,
+		ToolChoices: []agent.ToolChoice{writeChoice},
+		WorkItemID:  "wi-sub",
+		Status:      activities.NextActionStatusTool,
 	}, nil).Once()
 	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.MatchedBy(func(request activities.ExecuteToolRequest) bool {
 		return request.WorkItemID == "wi-sub" &&
 			request.ToolChoice.ToolCallID == "toolu_write" &&
 			request.ToolChoice.Metadata["parent_work_item_id"] == "wi-parent" &&
 			request.ToolChoice.Metadata["parent_tool_call_id"] == "toolu_agent" &&
-			request.ToolChoice.Metadata["agent_sub_trace"] == "true"
+			request.ToolChoice.Metadata["agent_child_trace"] == "true"
 	})).Return(activities.ExecuteToolResult{
 		Cycle:           1,
 		WorkItemID:      "wi-sub",
@@ -450,7 +450,7 @@ func TestAgentWorkflowCompletionSuccessUsesPublishObservation(t *testing.T) {
 		return request.WorkItemID == "wi-sub" &&
 			request.ToolChoice.Type == domain.ToolTypeWorkflowCreate &&
 			request.ToolChoice.ToolCallID == "toolu_workflow:completion:1" &&
-			request.ToolChoice.Metadata["agent_sub_trace"] == "true"
+			request.ToolChoice.Metadata["agent_child_trace"] == "true"
 	})).Return(activities.ExecuteToolResult{
 		Cycle:           1,
 		WorkItemID:      "wi-sub",
@@ -641,7 +641,6 @@ func TestTaskWorkflowExecutesMultipleToolChoicesAsSeparateActivities(t *testing.
 		return request.ExecutionCycle == 1 && len(request.LastResults) == 0
 	})).Return(activities.NextActionResult{
 		NextAction:  nextAction,
-		ToolChoice:  &choices[0],
 		ToolChoices: choices,
 		WorkItemID:  "wi-1",
 		Status:      activities.NextActionStatusTool,
@@ -727,9 +726,9 @@ func TestTaskWorkflowRoutesMemoryToolsToMemoryActivity(t *testing.T) {
 			ProjectID: "project-1",
 			Status:    domain.WorkItemStatusReady,
 		}}},
-		ToolChoice: &choice,
-		WorkItemID: "wi-1",
-		Status:     activities.NextActionStatusTool,
+		ToolChoices: []agent.ToolChoice{choice},
+		WorkItemID:  "wi-1",
+		Status:      activities.NextActionStatusTool,
 	}, nil).Once()
 	env.OnActivity("Activities.ExecuteMemoryTool", mock.Anything, mock.MatchedBy(func(request activities.ExecuteToolRequest) bool {
 		return request.ToolChoice.Type == domain.ToolTypeMemoryProposeAdd &&
@@ -852,9 +851,9 @@ func TestTaskWorkflowPassesProcessesReturnedByExecuteToolToNextAction(t *testing
 			ProjectID: "project-1",
 			Status:    domain.WorkItemStatusReady,
 		}}},
-		ToolChoice: &choice,
-		WorkItemID: "wi-1",
-		Status:     activities.NextActionStatusTool,
+		ToolChoices: []agent.ToolChoice{choice},
+		WorkItemID:  "wi-1",
+		Status:      activities.NextActionStatusTool,
 	}, nil).Once()
 	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.MatchedBy(func(request activities.ExecuteToolRequest) bool {
 		return request.ToolChoice.ToolCallID == "toolu_bg" && request.ToolChoice.RunMode == domain.ToolRunModeStartBackground
@@ -937,9 +936,9 @@ func TestTaskWorkflowKeepsProjectScopedBackgroundProcessRunning(t *testing.T) {
 			ProjectID: "project-1",
 			Status:    domain.WorkItemStatusReady,
 		}}},
-		ToolChoice: &choice,
-		WorkItemID: "wi-1",
-		Status:     activities.NextActionStatusTool,
+		ToolChoices: []agent.ToolChoice{choice},
+		WorkItemID:  "wi-1",
+		Status:      activities.NextActionStatusTool,
 	}, nil).Once()
 	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.Anything).Return(activities.ExecuteToolResult{
 		Cycle:           1,
@@ -1005,10 +1004,10 @@ func TestTaskWorkflowMarksIncompleteWhenTaskProcessCleanupFails(t *testing.T) {
 		Idempotency: domain.ToolIdempotencyNonIdempotent,
 	}
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{
-		NextAction: agent.NextAction{},
-		ToolChoice: &choice,
-		WorkItemID: "wi-1",
-		Status:     activities.NextActionStatusTool,
+		NextAction:  agent.NextAction{},
+		ToolChoices: []agent.ToolChoice{choice},
+		WorkItemID:  "wi-1",
+		Status:      activities.NextActionStatusTool,
 	}, nil).Once()
 	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.Anything).Return(activities.ExecuteToolResult{
 		Cycle:           1,
@@ -1076,10 +1075,10 @@ func TestTaskWorkflowPreservesProjectProcessAfterNextActionError(t *testing.T) {
 		ProcessScope: domain.ProcessScopeProject,
 	}
 	env.OnActivity("Activities.NextAction", mock.Anything, mock.Anything).Return(activities.NextActionResult{
-		NextAction: agent.NextAction{},
-		ToolChoice: &choice,
-		WorkItemID: "wi-1",
-		Status:     activities.NextActionStatusTool,
+		NextAction:  agent.NextAction{},
+		ToolChoices: []agent.ToolChoice{choice},
+		WorkItemID:  "wi-1",
+		Status:      activities.NextActionStatusTool,
 	}, nil).Once()
 	env.OnActivity("Activities.ExecuteTool", mock.Anything, mock.Anything).Return(activities.ExecuteToolResult{
 		Cycle:           1,

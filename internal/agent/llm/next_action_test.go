@@ -1414,17 +1414,18 @@ func TestNextActionReturnsSingleToolChoice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NextAction: %v", err)
 	}
-	if output.Status != "tool" || output.ToolChoice == nil {
+	if output.Status != "tool" || len(output.ToolChoices) != 1 {
 		t.Fatalf("expected tool output, got %#v", output)
 	}
-	if output.ToolChoice.ToolCallID != "toolu_next" || output.ToolChoice.Metadata["tool_call_id"] != "toolu_next" {
-		t.Fatalf("tool call id was not preserved: %#v", output.ToolChoice)
+	choice := output.ToolChoices[0]
+	if choice.ToolCallID != "toolu_next" || choice.Metadata["tool_call_id"] != "toolu_next" {
+		t.Fatalf("tool call id was not preserved: %#v", choice)
 	}
 	if output.WorkItemID != "" {
 		t.Fatalf("unexpected work item id: %q", output.WorkItemID)
 	}
-	if output.ToolChoice.RunMode != domain.ToolRunModeWaitForExit || output.ToolChoice.Idempotency != domain.ToolIdempotencyReadOnly || output.ToolChoice.ProcessScope != domain.ProcessScopeStopOnFinish {
-		t.Fatalf("tool execution metadata was not preserved: %#v", output.ToolChoice)
+	if choice.RunMode != domain.ToolRunModeWaitForExit || choice.Idempotency != domain.ToolIdempotencyReadOnly || choice.ProcessScope != domain.ProcessScopeStopOnFinish {
+		t.Fatalf("tool execution metadata was not preserved: %#v", choice)
 	}
 	if len(model.options.Tools) != len(toolregistry.Definitions()) {
 		t.Fatalf("expected all tool schemas, got %#v", model.options.Tools)
@@ -1508,8 +1509,8 @@ func TestNextActionCombinesMultipleExecToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NextAction: %v", err)
 	}
-	if output.ToolChoice != nil || len(output.ToolChoices) != 2 {
-		t.Fatalf("expected two exec choices, got single=%#v multiple=%#v", output.ToolChoice, output.ToolChoices)
+	if len(output.ToolChoices) != 2 {
+		t.Fatalf("expected two exec choices, got %#v", output.ToolChoices)
 	}
 	if output.ToolChoices[0].Command != "pwd" || output.ToolChoices[1].Command != "uname" {
 		t.Fatalf("unexpected exec choices: %#v", output.ToolChoices)
@@ -1602,8 +1603,8 @@ func TestNextActionCombinesMultipleStructuredReadOnlyToolCalls(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NextAction: %v", err)
 			}
-			if output.ToolChoice != nil || len(output.ToolChoices) != 2 {
-				t.Fatalf("expected two %s choices, got single=%#v multiple=%#v", test.toolType, output.ToolChoice, output.ToolChoices)
+			if len(output.ToolChoices) != 2 {
+				t.Fatalf("expected two %s choices, got %#v", test.toolType, output.ToolChoices)
 			}
 			if output.ToolChoices[0].Type != test.toolType || output.ToolChoices[1].Type != test.toolType {
 				t.Fatalf("unexpected tool choice types: %#v", output.ToolChoices)
@@ -1657,8 +1658,8 @@ func TestNextActionCombinesMixedToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NextAction: %v", err)
 	}
-	if output.ToolChoice != nil || len(output.ToolChoices) != 2 {
-		t.Fatalf("expected two tool choices, got single=%#v multiple=%#v", output.ToolChoice, output.ToolChoices)
+	if len(output.ToolChoices) != 2 {
+		t.Fatalf("expected two tool choices, got %#v", output.ToolChoices)
 	}
 	if !output.ToolChoices[0].Destructive || output.ToolChoices[0].Idempotency != domain.ToolIdempotencyNonIdempotent {
 		t.Fatalf("expected first choice destructive/idempotency to be preserved, got %#v", output.ToolChoices[0])

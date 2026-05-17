@@ -18,12 +18,13 @@ type OpenAIAgentObservationCompressor struct {
 	model llms.Model
 }
 
-func NewOpenAIAgentObservationCompressor(apiKey, baseURL, modelID string) (*OpenAIAgentObservationCompressor, error) {
+func NewOpenAIAgentObservationCompressor(apiKey, baseURL, modelID string, bifrostEnabled bool) (*OpenAIAgentObservationCompressor, error) {
 	model, err := openai.New(
 		openai.WithToken(apiKey),
 		openai.WithBaseURL(baseURL),
 		openai.WithModel(modelID),
 		openai.WithResponseFormat(agentObservationCompressionResponseFormat()),
+		openai.WithHTTPClient(newOpenAIHTTPClient(bifrostEnabled)),
 	)
 	if err != nil {
 		return nil, err

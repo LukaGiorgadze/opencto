@@ -197,7 +197,7 @@ func renderNextActionPrompt(input agent.NextActionInput) (string, error) {
 	if input.SubAgent != nil {
 		data.SubAgentGoal = strings.TrimSpace(input.SubAgent.Goal)
 		data.AllowedTools = toolTypeNames(input.ToolAllowlist)
-		return prompts.Render("sub_agent.tmpl", data)
+		return prompts.Render("agent.tmpl", data)
 	}
 
 	return prompts.Render("next_action.tmpl", data)
@@ -211,7 +211,7 @@ func subAgentRunSummaryMessage(context *agent.SubAgentContext) string {
 	if summary == "" {
 		return ""
 	}
-	return prompts.MustRender("sub_agent_run_summary.tmpl", map[string]any{
+	return prompts.MustRender("agent_run_summary.tmpl", map[string]any{
 		"Summary": summary,
 	})
 }
@@ -965,11 +965,7 @@ func nextActionToolOutput(choice *llms.ContentChoice, input agent.NextActionInpu
 		NextAction:    input.NextAction,
 		Status:        "tool",
 		AssistantText: assistantText,
-	}
-	if len(toolChoices) == 1 {
-		output.ToolChoice = &toolChoices[0]
-	} else {
-		output.ToolChoices = toolChoices
+		ToolChoices:   toolChoices,
 	}
 	return output, nil
 }

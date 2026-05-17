@@ -93,7 +93,7 @@ func (a *Activities) loadSubAgentContext(ctx context.Context, sourceEvent domain
 	event.ID = stableActivityID("agent-event", projectID, sourceEvent.ID, subAgent.RunID, subAgent.Goal, subAgent.Prompt)
 	event.ProjectID = projectID
 	event.Kind = domain.EventKindSystem
-	event.Body = strings.TrimSpace(prompts.MustRender("sub_agent_user.tmpl", map[string]any{
+	event.Body = strings.TrimSpace(prompts.MustRender("agent_user.tmpl", map[string]any{
 		"Goal":   subAgent.Goal,
 		"Prompt": subAgent.Prompt,
 	}))

@@ -73,7 +73,8 @@ func (a *Activities) CompressConversation(ctx context.Context, request CompressC
 		return CompressConversationResult{Scope: string(summaryScope), MessageCount: len(candidates), SourceChars: sourceChars}, nil
 	}
 	compressorMessages := conversationCompressionMessagesWithRoot(rootMessage, hasRootMessage, candidates)
-	output, err := a.ConversationCompressor.CompressConversation(ctx, agent.ConversationCompressionInput{
+	compressorCtx := contextWithActivityLLMSession(ctx, strings.TrimSpace(event.ProjectID), "conversation_compression")
+	output, err := a.ConversationCompressor.CompressConversation(compressorCtx, agent.ConversationCompressionInput{
 		ProjectID:       strings.TrimSpace(event.ProjectID),
 		Scope:           summaryScope,
 		Messages:        compressorMessages,

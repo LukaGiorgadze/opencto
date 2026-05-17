@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/skills"
@@ -71,7 +72,6 @@ type ExecutionFeedback struct {
 
 type NextActionOutput struct {
 	NextAction    NextAction         `json:"next_action"`
-	ToolChoice    *ToolChoice        `json:"tool_choice,omitempty"`
 	ToolChoices   []ToolChoice       `json:"tool_choices,omitempty"`
 	WorkItemID    string             `json:"work_item_id,omitempty"`
 	Observation   *ExecutionFeedback `json:"observation,omitempty"`
@@ -81,7 +81,6 @@ type NextActionOutput struct {
 
 type NextAction struct {
 	WorkItems           []domain.WorkItem         `json:"work_items,omitempty"`
-	ToolChoice          ToolChoice                `json:"tool_choice,omitempty,omitzero"`
 	ResponseMessage     string                    `json:"response_message,omitempty"`
 	ResponseAttachments []domain.ReportAttachment `json:"response_attachments,omitempty"`
 }
@@ -97,6 +96,41 @@ type RuntimeContext struct {
 	CurrentUTCTime    string `json:"current_utc_time,omitempty"`
 	HostTimeZone      string `json:"host_time_zone,omitempty"`
 	HostTimeZoneError string `json:"host_time_zone_error,omitempty"`
+}
+
+type LLMSession struct {
+	ProjectID     string
+	WorkflowID    string
+	WorkflowRunID string
+	RequestKind   string
+}
+
+type llmSessionContextKey struct{}
+
+func ContextWithLLMSession(ctx context.Context, session LLMSession) context.Context {
+	session.ProjectID = strings.TrimSpace(session.ProjectID)
+	session.WorkflowID = strings.TrimSpace(session.WorkflowID)
+	session.WorkflowRunID = strings.TrimSpace(session.WorkflowRunID)
+	session.RequestKind = strings.TrimSpace(session.RequestKind)
+	if session.ProjectID == "" && session.WorkflowID == "" && session.WorkflowRunID == "" && session.RequestKind == "" {
+		return ctx
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, llmSessionContextKey{}, session)
+}
+
+func LLMSessionFromContext(ctx context.Context) LLMSession {
+	if ctx == nil {
+		return LLMSession{}
+	}
+	session, _ := ctx.Value(llmSessionContextKey{}).(LLMSession)
+	session.ProjectID = strings.TrimSpace(session.ProjectID)
+	session.WorkflowID = strings.TrimSpace(session.WorkflowID)
+	session.WorkflowRunID = strings.TrimSpace(session.WorkflowRunID)
+	session.RequestKind = strings.TrimSpace(session.RequestKind)
+	return session
 }
 
 type ToolSelectionInput struct {

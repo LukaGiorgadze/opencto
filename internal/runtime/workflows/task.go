@@ -133,9 +133,6 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			return resultFromNextAction(reportTargetEvent(input.Event, additionalEvents), next), nil
 		}
 		toolChoices := append([]agent.ToolChoice(nil), next.ToolChoices...)
-		if len(toolChoices) == 0 && next.ToolChoice != nil {
-			toolChoices = []agent.ToolChoice{*next.ToolChoice}
-		}
 		if len(toolChoices) == 0 {
 			return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, fmt.Errorf("Activities.NextAction returned non-terminal status %q without a tool choice", next.Status))
 		}

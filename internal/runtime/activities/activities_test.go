@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/testsuite"
+
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/embedding"
@@ -51,14 +54,18 @@ type stubProjectStore struct {
 }
 
 type stubEngine struct {
-	output agent.NextActionOutput
-	err    error
-	input  *agent.NextActionInput
+	output  agent.NextActionOutput
+	err     error
+	input   *agent.NextActionInput
+	session *agent.LLMSession
 }
 
-func (e stubEngine) NextAction(_ context.Context, input agent.NextActionInput) (agent.NextActionOutput, error) {
+func (e stubEngine) NextAction(ctx context.Context, input agent.NextActionInput) (agent.NextActionOutput, error) {
 	if e.input != nil {
 		*e.input = input
+	}
+	if e.session != nil {
+		*e.session = agent.LLMSessionFromContext(ctx)
 	}
 	return e.output, e.err
 }
@@ -2851,7 +2858,7 @@ func TestNextActionAssignsWorkItemInternallyForToolChoice(t *testing.T) {
 
 	activities := Activities{
 		Engine: stubEngine{output: agent.NextActionOutput{
-			ToolChoice: &agent.ToolChoice{
+			ToolChoices: []agent.ToolChoice{{
 				ToolCallID: "toolu_next",
 				Type:       domain.ToolTypeExec,
 				Intent:     "inspect workspace",
@@ -2860,7 +2867,7 @@ func TestNextActionAssignsWorkItemInternallyForToolChoice(t *testing.T) {
 					"tool_call_id": "toolu_next",
 					"work_item_id": "model-supplied-work-item",
 				},
-			},
+			}},
 			WorkItemID: "model-supplied-work-item",
 			Status:     NextActionStatusTool,
 		}},
@@ -2879,8 +2886,71 @@ func TestNextActionAssignsWorkItemInternallyForToolChoice(t *testing.T) {
 	if result.WorkItemID != wantWorkItemID {
 		t.Fatalf("expected runtime-assigned work item %q, got %q", wantWorkItemID, result.WorkItemID)
 	}
-	if result.ToolChoice == nil || result.ToolChoice.Metadata["work_item_id"] != wantWorkItemID {
-		t.Fatalf("expected internal work item metadata, got %#v", result.ToolChoice)
+	if len(result.ToolChoices) != 1 || result.ToolChoices[0].Metadata["work_item_id"] != wantWorkItemID {
+		t.Fatalf("expected internal work item metadata, got %#v", result.ToolChoices)
+	}
+}
+
+func TestNextActionResultSerializesOnlyToolChoices(t *testing.T) {
+	t.Parallel()
+
+	data, err := json.Marshal(NextActionResult{
+		NextAction: agent.NextAction{WorkItems: []domain.WorkItem{{
+			ID:        "wi-1",
+			ProjectID: "project-1",
+			Status:    domain.WorkItemStatusRunning,
+		}}},
+		ToolChoices: []agent.ToolChoice{{
+			ToolCallID: "toolu_read",
+			Type:       domain.ToolTypeRead,
+			Intent:     "read file",
+		}},
+		WorkItemID: "wi-1",
+		Status:     NextActionStatusTool,
+	})
+	if err != nil {
+		t.Fatalf("marshal next action result: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, `"tool_choices"`) {
+		t.Fatalf("expected tool_choices field, got %s", text)
+	}
+	if strings.Contains(text, `"tool_choice"`) {
+		t.Fatalf("did not expect legacy tool_choice field, got %s", text)
+	}
+}
+
+func TestNextActionAddsWorkflowRunSessionToEngineContext(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestActivityEnvironment()
+
+	var capturedSession agent.LLMSession
+	activities := &Activities{
+		Engine: stubEngine{
+			output: agent.NextActionOutput{
+				NextAction: agent.NextAction{ResponseMessage: "done"},
+				Status:     NextActionStatusCompleted,
+			},
+			session: &capturedSession,
+		},
+		Project:    domain.Project{ID: "project-1", Name: "OpenCTO"},
+		SkillsRoot: t.TempDir(),
+	}
+	env.RegisterActivityWithOptions(activities.NextAction, activity.RegisterOptions{Name: "Activities.NextAction"})
+
+	_, err := env.ExecuteActivity("Activities.NextAction", NextActionRequest{
+		ProjectID:      "project-1",
+		Event:          domain.Event{ID: "event-1", ProjectID: "project-1", Body: "inspect workspace"},
+		ExecutionCycle: 3,
+	})
+	if err != nil {
+		t.Fatalf("next action activity: %v", err)
+	}
+
+	if capturedSession.ProjectID != "project-1" || capturedSession.WorkflowID == "" || capturedSession.WorkflowRunID == "" || capturedSession.RequestKind != "next_action" {
+		t.Fatalf("expected project/workflow/run session, got %#v", capturedSession)
 	}
 }
 
@@ -2952,7 +3022,7 @@ func TestNextActionAssignsSubAgentWorkItemFromSyntheticEvent(t *testing.T) {
 
 	activities := Activities{
 		Engine: stubEngine{output: agent.NextActionOutput{
-			ToolChoice: &agent.ToolChoice{
+			ToolChoices: []agent.ToolChoice{{
 				ToolCallID: "toolu_read",
 				Type:       domain.ToolTypeRead,
 				Intent:     "read file",
@@ -2960,7 +3030,7 @@ func TestNextActionAssignsSubAgentWorkItemFromSyntheticEvent(t *testing.T) {
 				Metadata: map[string]string{
 					"tool_call_id": "toolu_read",
 				},
-			},
+			}},
 			Status: NextActionStatusTool,
 		}},
 		Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
@@ -2991,8 +3061,8 @@ func TestNextActionAssignsSubAgentWorkItemFromSyntheticEvent(t *testing.T) {
 	if result.WorkItemID == parentWorkItemID {
 		t.Fatalf("agent work item should not collide with parent work item %q", parentWorkItemID)
 	}
-	if result.ToolChoice == nil || result.ToolChoice.Metadata["work_item_id"] != wantWorkItemID {
-		t.Fatalf("expected agent work item metadata, got %#v", result.ToolChoice)
+	if len(result.ToolChoices) != 1 || result.ToolChoices[0].Metadata["work_item_id"] != wantWorkItemID {
+		t.Fatalf("expected agent work item metadata, got %#v", result.ToolChoices)
 	}
 }
 
@@ -3002,13 +3072,9 @@ func TestNextActionKeepsSubAgentWorkItemWhenEngineReplacesNextAction(t *testing.
 	activities := Activities{
 		Engine: stubEngine{output: agent.NextActionOutput{
 			NextAction: agent.NextAction{
-				ToolChoice: agent.ToolChoice{
-					ToolCallID: "toolu_read",
-					Type:       domain.ToolTypeRead,
-					Intent:     "read file",
-				},
+				ResponseMessage: "ignored for tool status",
 			},
-			ToolChoice: &agent.ToolChoice{
+			ToolChoices: []agent.ToolChoice{{
 				ToolCallID: "toolu_read",
 				Type:       domain.ToolTypeRead,
 				Intent:     "read file",
@@ -3016,7 +3082,7 @@ func TestNextActionKeepsSubAgentWorkItemWhenEngineReplacesNextAction(t *testing.
 				Metadata: map[string]string{
 					"tool_call_id": "toolu_read",
 				},
-			},
+			}},
 			Status: NextActionStatusTool,
 		}},
 		Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
@@ -3056,7 +3122,7 @@ func TestNextActionSubAgentRunIDSeparatesSyntheticWorkItems(t *testing.T) {
 		t.Helper()
 		activities := Activities{
 			Engine: stubEngine{output: agent.NextActionOutput{
-				ToolChoice: &agent.ToolChoice{
+				ToolChoices: []agent.ToolChoice{{
 					ToolCallID: "toolu_read",
 					Type:       domain.ToolTypeRead,
 					Intent:     "read file",
@@ -3064,7 +3130,7 @@ func TestNextActionSubAgentRunIDSeparatesSyntheticWorkItems(t *testing.T) {
 					Metadata: map[string]string{
 						"tool_call_id": "toolu_read",
 					},
-				},
+				}},
 				Status: NextActionStatusTool,
 			}},
 			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},

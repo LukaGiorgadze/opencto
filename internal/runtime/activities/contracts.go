@@ -27,7 +27,6 @@ type NextActionRequest struct {
 
 type NextActionResult struct {
 	NextAction   agent.NextAction          `json:"next_action"`
-	ToolChoice   *agent.ToolChoice         `json:"tool_choice,omitempty"`
 	ToolChoices  []agent.ToolChoice        `json:"tool_choices,omitempty"`
 	WorkItemID   string                    `json:"work_item_id,omitempty"`
 	Observation  *agent.ExecutionFeedback  `json:"observation,omitempty"`

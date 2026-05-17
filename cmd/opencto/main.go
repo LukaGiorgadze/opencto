@@ -229,7 +229,7 @@ func buildNextActionEngine(cfg config.Config, logger *slog.Logger) agent.Engine 
 		logger.Warn("openai api key is loaded directly from config; prefer environment variables for local and production safety")
 	}
 
-	engine, err := agentllm.NewOpenAIEngine(apiKey, cfg.LLM.BaseURL, cfg.LLM.ModelReasoning, cfg.LLM.ModelFast, cfg.LLM.ModelTranscription)
+	engine, err := agentllm.NewOpenAIEngine(apiKey, cfg.LLM.BaseURL, cfg.LLM.ModelReasoning, cfg.LLM.ModelFast, cfg.LLM.ModelTranscription, cfg.LLM.Bifrost.Enabled)
 	if err != nil {
 		logger.Warn("failed to initialize openai next action engine", slog.String("error", err.Error()))
 		return unavailable(err.Error())
@@ -293,7 +293,7 @@ func buildConversationCompressor(cfg config.Config, logger *slog.Logger) agent.C
 		logger.Warn("openai conversation compression api key is not configured", slog.String("error", err.Error()))
 		return nil
 	}
-	compressor, err := agentllm.NewOpenAIConversationCompressor(apiKey, cfg.LLM.BaseURL, cfg.LLM.ModelSummary)
+	compressor, err := agentllm.NewOpenAIConversationCompressor(apiKey, cfg.LLM.BaseURL, cfg.LLM.ModelSummary, cfg.LLM.Bifrost.Enabled)
 	if err != nil {
 		logger.Warn("failed to initialize conversation compressor", slog.String("error", err.Error()))
 		return nil
@@ -321,7 +321,7 @@ func buildAgentObservationCompressor(cfg config.Config, logger *slog.Logger) age
 		logger.Warn("openai agent observation compression api key is not configured", slog.String("error", err.Error()))
 		return nil
 	}
-	compressor, err := agentllm.NewOpenAIAgentObservationCompressor(apiKey, cfg.LLM.BaseURL, cfg.LLM.ModelSummary)
+	compressor, err := agentllm.NewOpenAIAgentObservationCompressor(apiKey, cfg.LLM.BaseURL, cfg.LLM.ModelSummary, cfg.LLM.Bifrost.Enabled)
 	if err != nil {
 		logger.Warn("failed to initialize agent observation compressor", slog.String("error", err.Error()))
 		return nil

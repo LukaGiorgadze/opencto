@@ -41,6 +41,7 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		return NextActionResult{}, fmt.Errorf("project_id is required")
 	}
 	event.ProjectID = projectID
+	ctx = contextWithActivityLLMSession(ctx, projectID, "next_action")
 
 	a.logActivityStep(
 		"NextAction", "load_context_begin",
@@ -107,7 +108,6 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		if len(results) == 0 && request.LastResult != nil {
 			results = []ExecuteToolResult{*request.LastResult}
 		}
-		nextAction.ToolChoice = agent.ToolChoice{}
 		for _, result := range results {
 			feedback := executionFeedback(result)
 			observations = append(observations, feedback)
@@ -169,10 +169,10 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		slog.String("project_id", projectID),
 		slog.String("event_id", event.ID),
 		slog.String("status", engineOutput.Status),
-		slog.Bool("has_tool_choice", engineOutput.ToolChoice != nil),
+		slog.Int("tool_choices", len(engineOutput.ToolChoices)),
 		slog.String("work_item_id", strings.TrimSpace(engineOutput.WorkItemID)),
 	)
-	if len(engineOutput.NextAction.WorkItems) > 0 || !engineOutput.NextAction.ToolChoice.IsZero() || strings.TrimSpace(engineOutput.NextAction.ResponseMessage) != "" || len(engineOutput.NextAction.ResponseAttachments) > 0 {
+	if len(engineOutput.NextAction.WorkItems) > 0 || strings.TrimSpace(engineOutput.NextAction.ResponseMessage) != "" || len(engineOutput.NextAction.ResponseAttachments) > 0 {
 		nextAction = engineOutput.NextAction
 	}
 	if err := ensureNextAction(&nextAction, projectID, nextActionEvent, now); err != nil {
@@ -198,7 +198,7 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 			slog.String("event_id", event.ID),
 		)
 		engineOutput.Status = NextActionStatusBlocked
-		engineOutput.ToolChoice = nil
+		engineOutput.ToolChoices = nil
 		if strings.TrimSpace(engineOutput.NextAction.ResponseMessage) == "" {
 			engineOutput.NextAction.ResponseMessage = cycleLimitResponseMessage(history)
 		}
@@ -243,14 +243,10 @@ func (a *Activities) prepareToolNextAction(ctx context.Context, nextAction agent
 		"NextAction", "prepare_tool_begin",
 		slog.Int("execution_cycle", cycle),
 		slog.Int("observations", len(observations)),
-		slog.Bool("has_tool_choice", output.ToolChoice != nil),
 		slog.Int("tool_choices", len(output.ToolChoices)),
 		slog.String("output_work_item_id", strings.TrimSpace(output.WorkItemID)),
 	)
 	choices := append([]agent.ToolChoice(nil), output.ToolChoices...)
-	if len(choices) == 0 && output.ToolChoice != nil {
-		choices = []agent.ToolChoice{*output.ToolChoice}
-	}
 	if len(choices) == 0 {
 		a.logActivityStep("NextAction", "prepare_tool_missing_choice")
 		return NextActionResult{}, fmt.Errorf("%w: tool status requires at least one tool choice", agent.ErrInvalidToolChoice)
@@ -313,7 +309,6 @@ func (a *Activities) prepareToolNextAction(ctx context.Context, nextAction agent
 		choices[index].Metadata["tool_call_ids"] = strings.Join(toolCallIDs, ",")
 	}
 	choice = choices[0]
-	nextAction.ToolChoice = choice
 	nextAction.ResponseMessage = ""
 
 	a.logActivityStep(
@@ -325,7 +320,6 @@ func (a *Activities) prepareToolNextAction(ctx context.Context, nextAction agent
 
 	return NextActionResult{
 		NextAction:   nextAction,
-		ToolChoice:   &choice,
 		ToolChoices:  choices,
 		WorkItemID:   workItemID,
 		Observation:  observation,
@@ -354,7 +348,6 @@ func (a *Activities) finishNextAction(ctx context.Context, event domain.Event, n
 		return NextActionResult{}, fmt.Errorf("%w: terminal next action is missing response message", agent.ErrInvalidNextAction)
 	}
 
-	nextAction.ToolChoice = agent.ToolChoice{}
 	nextAction.ResponseMessage = message
 	nextAction.ResponseAttachments = attachments
 	markFinalNextActionWorkItems(&nextAction, terminalWorkItemStatus(output.Status), observation, now)
