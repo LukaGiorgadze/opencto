@@ -31,7 +31,7 @@ Removes the schedule, workflow record, {OPENCTO_WORKFLOWS_DIR}/{workflow_id}/, a
 Operations:
 - list              — list all registered workflows
 - describe          — full status, source path, and schedule state for a workflow
-- trigger           — manually run a workflow; requires a clean committed bundle (call WorkflowUpdate first if dirty)
+- trigger           — publish current local source if needed, then manually run the workflow
 - pause / resume    — suspend or re-enable the schedule
 
 Use describe before any action that changes schedule state when current workflow status is not already known in this turn.

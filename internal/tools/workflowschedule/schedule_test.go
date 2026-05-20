@@ -330,6 +330,67 @@ func TestPrepareCreateAuthoringReplacesUnregisteredLocalBundle(t *testing.T) {
 	}
 }
 
+func TestPrepareUpdateAuthoringCheckpointsDirtyWorkflowFiles(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	workspaceRoot := t.TempDir()
+	executor, _, _ := newWorkflowTestExecutor(t, workspaceRoot)
+	created := createAuthoredWorkflow(t, ctx, executor, "finance2049", testWorkflowManifest("finance2049 availability"), []workflowbundle.File{{
+		Path:    "src/check_site.py",
+		Content: "print('old')\n",
+	}})
+	workflowPath, err := workflowbundle.WorkflowDir(workspaceRoot, "finance2049")
+	if err != nil {
+		t.Fatalf("workflow dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workflowPath, "src", "check_site.py"), []byte("print('dirty')\n"), 0o644); err != nil {
+		t.Fatalf("dirty workflow source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workflowPath, "src", "helper.py"), []byte("print('helper')\n"), 0o644); err != nil {
+		t.Fatalf("write helper source: %v", err)
+	}
+
+	plan, err := executor.PrepareAuthoring(ctx, AuthoringRequest{
+		ProjectID:  "project-1",
+		Operation:  OperationUpdate,
+		WorkflowID: "finance2049",
+		Prompt:     "update workflow",
+	})
+	if err != nil {
+		t.Fatalf("prepare workflow authoring: %v", err)
+	}
+	if plan.RestoreCommitHash == "" || plan.RestoreCommitHash == created.CommitHash {
+		t.Fatalf("expected dirty checkpoint commit, created=%q plan=%#v", created.CommitHash, plan)
+	}
+	subject, err := gitOutput(ctx, workflowPath, "show", "-s", "--format=%s", plan.RestoreCommitHash)
+	if err != nil {
+		t.Fatalf("read checkpoint subject: %v", err)
+	}
+	if strings.TrimSpace(subject) != "Checkpoint local edits for workflow finance2049" {
+		t.Fatalf("unexpected checkpoint subject %q", strings.TrimSpace(subject))
+	}
+	if status, err := gitOutput(ctx, workflowPath, "status", "--porcelain"); err != nil {
+		t.Fatalf("git status: %v", err)
+	} else if strings.TrimSpace(status) != "" {
+		t.Fatalf("expected clean workflow repo after checkpoint, got %q", status)
+	}
+	source, err := gitOutput(ctx, workflowPath, "show", plan.RestoreCommitHash+":src/check_site.py")
+	if err != nil {
+		t.Fatalf("read checkpoint source: %v", err)
+	}
+	if source != "print('dirty')\n" {
+		t.Fatalf("expected dirty source in checkpoint, got %q", source)
+	}
+	helper, err := gitOutput(ctx, workflowPath, "show", plan.RestoreCommitHash+":src/helper.py")
+	if err != nil {
+		t.Fatalf("read checkpoint helper: %v", err)
+	}
+	if helper != "print('helper')\n" {
+		t.Fatalf("expected helper source in checkpoint, got %q", helper)
+	}
+}
+
 func TestWorkflowUpdatePublishesAuthoredManifestChanges(t *testing.T) {
 	t.Parallel()
 
@@ -536,13 +597,13 @@ func TestWorkflowOperationDispatchesControlActions(t *testing.T) {
 	}
 }
 
-func TestWorkflowTriggerRejectsDirtyWorkflowRepo(t *testing.T) {
+func TestWorkflowTriggerPublishesDirtyWorkflowRepo(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	workspaceRoot := t.TempDir()
-	executor, _, client := newWorkflowTestExecutor(t, workspaceRoot)
-	createAuthoredWorkflow(t, ctx, executor, "finance2049", testWorkflowManifest("finance2049 availability"), []workflowbundle.File{{Path: "src/check_site.py", Content: "print('old')\n"}})
+	executor, store, client := newWorkflowTestExecutor(t, workspaceRoot)
+	created := createAuthoredWorkflow(t, ctx, executor, "finance2049", testWorkflowManifest("finance2049 availability"), []workflowbundle.File{{Path: "src/check_site.py", Content: "print('old')\n"}})
 	workflowPath, err := workflowbundle.WorkflowDir(workspaceRoot, "finance2049")
 	if err != nil {
 		t.Fatalf("workflow dir: %v", err)
@@ -551,21 +612,50 @@ func TestWorkflowTriggerRejectsDirtyWorkflowRepo(t *testing.T) {
 		t.Fatalf("dirty workflow source: %v", err)
 	}
 
-	_, err = executor.Operation(ctx, OperationRequest{ProjectID: "project-1", Operation: OperationTrigger, WorkflowID: "finance2049"})
-	if err == nil || !strings.Contains(err.Error(), "uncommitted changes") {
-		t.Fatalf("expected dirty workflow error, got %v", err)
+	result, err := executor.Operation(ctx, OperationRequest{ProjectID: "project-1", Operation: OperationTrigger, WorkflowID: "finance2049"})
+	if err != nil {
+		t.Fatalf("trigger workflow: %v", err)
 	}
-	if client.handle.triggered != 0 {
-		t.Fatalf("trigger should not be called for dirty workflow, got %d", client.handle.triggered)
+	if result.CommitHash == "" || result.CommitHash == created.CommitHash {
+		t.Fatalf("expected trigger to publish dirty commit, created=%q result=%#v", created.CommitHash, result)
+	}
+	subject, err := gitOutput(ctx, workflowPath, "show", "-s", "--format=%s", result.CommitHash)
+	if err != nil {
+		t.Fatalf("read published subject: %v", err)
+	}
+	if strings.TrimSpace(subject) != "Apply manual edits to workflow finance2049" {
+		t.Fatalf("unexpected published subject %q", strings.TrimSpace(subject))
+	}
+	if client.handle.triggered != 1 || client.handle.updated != 1 {
+		t.Fatalf("expected schedule update and trigger, handle=%#v", client.handle)
+	}
+	stored, ok, err := store.GetScheduledWorkflow(ctx, "project-1", "finance2049")
+	if err != nil || !ok {
+		t.Fatalf("stored workflow: ok=%t err=%v", ok, err)
+	}
+	if stored.CurrentCommitHash != result.CommitHash {
+		t.Fatalf("expected stored commit %q, got %q", result.CommitHash, stored.CurrentCommitHash)
+	}
+	if status, err := gitOutput(ctx, workflowPath, "status", "--porcelain"); err != nil {
+		t.Fatalf("git status: %v", err)
+	} else if strings.TrimSpace(status) != "" {
+		t.Fatalf("expected clean workflow repo after trigger publish, got %q", status)
+	}
+	source, err := gitOutput(ctx, workflowPath, "show", result.CommitHash+":src/check_site.py")
+	if err != nil {
+		t.Fatalf("read published source: %v", err)
+	}
+	if source != "print('dirty')\n" {
+		t.Fatalf("expected dirty source to be published, got %q", source)
 	}
 }
 
-func TestWorkflowTriggerRejectsUnpublishedCommit(t *testing.T) {
+func TestWorkflowTriggerPublishesUnpublishedCommit(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	workspaceRoot := t.TempDir()
-	executor, _, client := newWorkflowTestExecutor(t, workspaceRoot)
+	executor, store, client := newWorkflowTestExecutor(t, workspaceRoot)
 	createAuthoredWorkflow(t, ctx, executor, "finance2049", testWorkflowManifest("finance2049 availability"), []workflowbundle.File{{Path: "src/check_site.py", Content: "print('old')\n"}})
 	workflowPath, err := workflowbundle.WorkflowDir(workspaceRoot, "finance2049")
 	if err != nil {
@@ -574,16 +664,27 @@ func TestWorkflowTriggerRejectsUnpublishedCommit(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workflowPath, "src", "check_site.py"), []byte("print('new')\n"), 0o644); err != nil {
 		t.Fatalf("edit workflow source: %v", err)
 	}
-	if _, err := workflowbundle.CommitBundle(ctx, workflowPath, "manual unpublished commit", nil); err != nil {
+	manualCommit, err := workflowbundle.CommitBundle(ctx, workflowPath, "manual unpublished commit", nil)
+	if err != nil {
 		t.Fatalf("commit workflow source: %v", err)
 	}
 
-	_, err = executor.Operation(ctx, OperationRequest{ProjectID: "project-1", Operation: OperationTrigger, WorkflowID: "finance2049"})
-	if err == nil || !strings.Contains(err.Error(), "unpublished commit") {
-		t.Fatalf("expected unpublished commit error, got %v", err)
+	result, err := executor.Operation(ctx, OperationRequest{ProjectID: "project-1", Operation: OperationTrigger, WorkflowID: "finance2049"})
+	if err != nil {
+		t.Fatalf("trigger workflow: %v", err)
 	}
-	if client.handle.triggered != 0 {
-		t.Fatalf("trigger should not be called for unpublished workflow, got %d", client.handle.triggered)
+	if result.CommitHash != manualCommit {
+		t.Fatalf("expected trigger to publish manual commit %q, got %#v", manualCommit, result)
+	}
+	if client.handle.triggered != 1 || client.handle.updated != 1 {
+		t.Fatalf("expected schedule update and trigger, handle=%#v", client.handle)
+	}
+	stored, ok, err := store.GetScheduledWorkflow(ctx, "project-1", "finance2049")
+	if err != nil || !ok {
+		t.Fatalf("stored workflow: ok=%t err=%v", ok, err)
+	}
+	if stored.CurrentCommitHash != manualCommit {
+		t.Fatalf("expected stored commit %q, got %q", manualCommit, stored.CurrentCommitHash)
 	}
 }
 

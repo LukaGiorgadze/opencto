@@ -169,6 +169,10 @@ type Executor interface {
 	Operation(context.Context, OperationRequest) (Result, error)
 }
 
+type SourcePublisher interface {
+	PublishCurrentSource(context.Context, UpdateRequest) (Result, error)
+}
+
 type AuthoringExecutor interface {
 	PrepareAuthoring(context.Context, AuthoringRequest) (AuthoringPlan, error)
 	CleanupAuthoring(context.Context, AuthoringPlan) error
@@ -224,6 +228,16 @@ func (e *TemporalExecutor) Update(ctx context.Context, req UpdateRequest) (Resul
 		return Result{}, err
 	}
 	return e.update(ctx, requestFromUpdate(req))
+}
+
+func (e *TemporalExecutor) PublishCurrentSource(ctx context.Context, req UpdateRequest) (Result, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := e.validate(); err != nil {
+		return Result{}, err
+	}
+	return e.publishCurrentSource(ctx, requestFromUpdate(req))
 }
 
 func (e *TemporalExecutor) Delete(ctx context.Context, req DeleteRequest) (Result, error) {
@@ -377,6 +391,10 @@ func (e *TemporalExecutor) create(ctx context.Context, req Request) (Result, err
 }
 
 func (e *TemporalExecutor) update(ctx context.Context, req Request) (Result, error) {
+	return e.publishCurrentSource(ctx, req)
+}
+
+func (e *TemporalExecutor) publishCurrentSource(ctx context.Context, req Request) (Result, error) {
 	workflowID, err := workflowbundle.NormalizeWorkflowID(req.WorkflowID)
 	if err != nil {
 		return Result{}, ErrWorkflowIDRequired
@@ -397,9 +415,15 @@ func (e *TemporalExecutor) update(ctx context.Context, req Request) (Result, err
 	if status == "" {
 		status = domain.ScheduledWorkflowStatusActive
 	}
+	req.Operation = OperationUpdate
+	req.WorkflowID = workflowID
+	req.Paused = status == domain.ScheduledWorkflowStatusPaused
 	manifest, commitHash, err := e.commitAuthoredBundle(ctx, req, workflowPath)
 	if err != nil {
 		return Result{}, err
+	}
+	if strings.EqualFold(commitHash, strings.TrimSpace(existing.CurrentCommitHash)) {
+		return resultFromManifest(OperationUpdate, workflowID, scheduleID, workflowPath, commitHash, manifest, "workflow schedule already current"), nil
 	}
 	options, err := e.scheduleOptions(req, workflowID, scheduleID, commitHash, manifest)
 	if err != nil {
@@ -564,51 +588,29 @@ func (e *TemporalExecutor) trigger(ctx context.Context, req Request) (Result, er
 	if err != nil {
 		return Result{}, err
 	}
-	item, scheduleID, err := e.validateTriggerReady(ctx, strings.TrimSpace(req.ProjectID), workflowID)
+	published, err := e.publishCurrentSource(ctx, Request{
+		ProjectID:     req.ProjectID,
+		WorkItemID:    req.WorkItemID,
+		ToolCallID:    req.ToolCallID,
+		Intent:        req.Intent,
+		SourceEvent:   req.SourceEvent,
+		Operation:     OperationUpdate,
+		WorkflowID:    workflowID,
+		CommitMessage: req.CommitMessage,
+	})
 	if err != nil {
 		return Result{}, err
+	}
+	scheduleID := strings.TrimSpace(published.ScheduleID)
+	if scheduleID == "" {
+		scheduleID = workflowrun.ScheduleID(req.ProjectID, workflowID)
 	}
 	if err := e.Client.GetHandle(ctx, scheduleID).Trigger(ctx, temporalclient.ScheduleTriggerOptions{}); err != nil {
 		return Result{}, err
 	}
-	return Result{Operation: OperationTrigger, WorkflowID: workflowID, ScheduleID: scheduleID, Name: item.Name, CommitHash: item.CurrentCommitHash, WorkflowPath: item.WorkflowPath, Message: "workflow schedule triggered"}, nil
-}
-
-func (e *TemporalExecutor) validateTriggerReady(ctx context.Context, projectID, workflowID string) (domain.ScheduledWorkflow, string, error) {
-	item, ok, err := e.Store.GetScheduledWorkflow(ctx, projectID, workflowID)
-	if err != nil {
-		return domain.ScheduledWorkflow{}, "", err
-	}
-	if !ok {
-		return domain.ScheduledWorkflow{}, "", fmt.Errorf("workflow %q not found", workflowID)
-	}
-	scheduleID := strings.TrimSpace(item.TemporalScheduleID)
-	if scheduleID == "" {
-		scheduleID = workflowrun.ScheduleID(projectID, workflowID)
-	}
-	workflowPath := strings.TrimSpace(item.WorkflowPath)
-	if workflowPath == "" {
-		workflowPath, err = workflowbundle.WorkflowDir(e.WorkspaceRoot, workflowID)
-		if err != nil {
-			return domain.ScheduledWorkflow{}, "", err
-		}
-	}
-	status, err := gitOutput(ctx, workflowPath, "status", "--porcelain")
-	if err != nil {
-		return domain.ScheduledWorkflow{}, "", err
-	}
-	if strings.TrimSpace(status) != "" {
-		return domain.ScheduledWorkflow{}, "", fmt.Errorf("workflow %q has uncommitted changes; run WorkflowUpdate before triggering", workflowID)
-	}
-	head, err := gitOutput(ctx, workflowPath, "rev-parse", "HEAD")
-	if err != nil {
-		return domain.ScheduledWorkflow{}, "", err
-	}
-	head = strings.TrimSpace(head)
-	if !strings.EqualFold(head, strings.TrimSpace(item.CurrentCommitHash)) {
-		return domain.ScheduledWorkflow{}, "", fmt.Errorf("workflow %q has unpublished commit %s; run WorkflowUpdate before triggering", workflowID, head)
-	}
-	return item, scheduleID, nil
+	published.Operation = OperationTrigger
+	published.Message = "workflow schedule triggered"
+	return published, nil
 }
 
 func scheduleUpdateFromOptions(input temporalclient.ScheduleUpdateInput, options temporalclient.ScheduleOptions) *temporalclient.ScheduleUpdate {
@@ -652,16 +654,16 @@ func (e *TemporalExecutor) commitAuthoredBundle(ctx context.Context, req Request
 	if _, _, err := e.resolveTimeZone(); err != nil {
 		return workflowbundle.Manifest{}, "", err
 	}
-	manifest, err := workflowbundle.LoadManifest(workflowPath)
-	if err != nil {
-		return workflowbundle.Manifest{}, "", err
-	}
 	workflowID, err := workflowbundle.NormalizeWorkflowID(req.WorkflowID)
 	if err != nil {
 		return workflowbundle.Manifest{}, "", ErrWorkflowIDRequired
 	}
-	commitMessage := defaultCommitMessage(req.Operation, workflowID, req.CommitMessage)
+	commitMessage := defaultCommitMessage(ctx, workflowPath, req, workflowID)
 	commitHash, err := workflowbundle.CommitBundle(ctx, workflowPath, commitMessage, nil)
+	if err != nil {
+		return workflowbundle.Manifest{}, "", err
+	}
+	manifest, err := workflowbundle.LoadManifest(workflowPath)
 	if err != nil {
 		return workflowbundle.Manifest{}, "", err
 	}
@@ -742,19 +744,11 @@ func (e *TemporalExecutor) prepareUpdateAuthoring(ctx context.Context, req Reque
 	} else if !exists {
 		return AuthoringPlan{}, fmt.Errorf("workflow %q source directory not found", workflowID)
 	}
-	if _, err := workflowbundle.LoadManifest(workflowPath); err != nil {
-		return AuthoringPlan{}, err
-	}
-	if status, err := gitOutput(ctx, workflowPath, "status", "--porcelain"); err != nil {
-		return AuthoringPlan{}, err
-	} else if strings.TrimSpace(status) != "" {
-		return AuthoringPlan{}, fmt.Errorf("workflow %q has uncommitted changes before authoring", workflowID)
-	}
-	head, err := gitOutput(ctx, workflowPath, "rev-parse", "HEAD")
+	head, err := checkpointWorkflowAuthoringBase(ctx, workflowID, workflowPath)
 	if err != nil {
 		return AuthoringPlan{}, err
 	}
-	return e.authoringPlan(OperationUpdate, workflowID, workflowPath, req, false, strings.TrimSpace(head)), nil
+	return e.authoringPlan(OperationUpdate, workflowID, workflowPath, req, false, head), nil
 }
 
 func (e *TemporalExecutor) authoringPlan(operation, workflowID, workflowPath string, req Request, removeOnFailure bool, restoreCommitHash string) AuthoringPlan {
@@ -768,6 +762,21 @@ func (e *TemporalExecutor) authoringPlan(operation, workflowID, workflowPath str
 		RemoveOnFailure:   removeOnFailure,
 		RestoreCommitHash: restoreCommitHash,
 	}
+}
+
+func checkpointWorkflowAuthoringBase(ctx context.Context, workflowID, workflowPath string) (string, error) {
+	head, err := gitOutput(ctx, workflowPath, "rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	status, err := gitOutput(ctx, workflowPath, "status", "--porcelain")
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(status) == "" {
+		return strings.TrimSpace(head), nil
+	}
+	return workflowbundle.CommitBundle(ctx, workflowPath, "Checkpoint local edits for workflow "+strings.TrimSpace(workflowID), nil)
 }
 
 func (e *TemporalExecutor) CleanupAuthoring(ctx context.Context, plan AuthoringPlan) error {
@@ -796,11 +805,14 @@ func (e *TemporalExecutor) CleanupAuthoring(ctx context.Context, plan AuthoringP
 	return nil
 }
 
-func defaultCommitMessage(operation, workflowID, commitMessage string) string {
-	if strings.TrimSpace(commitMessage) != "" {
-		return strings.TrimSpace(commitMessage)
+func defaultCommitMessage(ctx context.Context, workflowPath string, req Request, workflowID string) string {
+	if commitMessage := strings.TrimSpace(req.CommitMessage); commitMessage != "" {
+		return commitMessage
 	}
-	switch normalizeOperation(operation) {
+	if normalizeOperation(req.Operation) == OperationUpdate && strings.TrimSpace(req.Prompt) == "" && workflowHasUncommittedChanges(ctx, workflowPath) {
+		return "Apply manual edits to workflow " + strings.TrimSpace(workflowID)
+	}
+	switch normalizeOperation(req.Operation) {
 	case OperationCreate:
 		return "Create workflow " + strings.TrimSpace(workflowID)
 	case OperationUpdate:
@@ -808,6 +820,11 @@ func defaultCommitMessage(operation, workflowID, commitMessage string) string {
 	default:
 		return "Update workflow " + strings.TrimSpace(workflowID)
 	}
+}
+
+func workflowHasUncommittedChanges(ctx context.Context, workflowPath string) bool {
+	status, err := gitOutput(ctx, workflowPath, "status", "--porcelain")
+	return err == nil && strings.TrimSpace(status) != ""
 }
 
 func authoringAgentGoal(operation, workflowID string) string {

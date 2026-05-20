@@ -3856,6 +3856,82 @@ func TestPrepareWorkflowRunUsesExecutionRunID(t *testing.T) {
 	}
 }
 
+func TestPrepareWorkflowRunUsesPublishedLocalSource(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	workspaceRoot := t.TempDir()
+	workflowID := "finance-check"
+	workflowDir, err := workflowbundle.WorkflowDir(workspaceRoot, workflowID)
+	if err != nil {
+		t.Fatalf("workflow dir: %v", err)
+	}
+	manifest := workflowbundle.Manifest{
+		Name: "finance check",
+		Schedule: workflowbundle.Schedule{
+			Cron:          "0 9 * * *",
+			OverlapPolicy: workflowbundle.OverlapPolicySkip,
+			CatchupWindow: "10m",
+		},
+		Steps: []workflowbundle.Step{{
+			ID:                  "check",
+			Command:             "sh",
+			Args:                []string{"src/check.sh"},
+			StartToCloseTimeout: "1m",
+		}},
+	}
+	if err := workflowbundle.WriteBundle(ctx, workflowDir, manifest, []workflowbundle.File{{
+		Path:       "src/check.sh",
+		Content:    "echo old\n",
+		Executable: true,
+	}}); err != nil {
+		t.Fatalf("write bundle: %v", err)
+	}
+	oldCommit, err := workflowbundle.CommitBundle(ctx, workflowDir, "initial", nil)
+	if err != nil {
+		t.Fatalf("commit old bundle: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workflowDir, "src", "check.sh"), []byte("echo new\n"), 0o755); err != nil {
+		t.Fatalf("edit source: %v", err)
+	}
+	newCommit, err := workflowbundle.CommitBundle(ctx, workflowDir, "manual update", nil)
+	if err != nil {
+		t.Fatalf("commit new bundle: %v", err)
+	}
+	schedule := &fakeScheduleExecutor{result: scheduletool.Result{
+		WorkflowID:   workflowID,
+		CommitHash:   newCommit,
+		WorkflowPath: workflowDir,
+	}}
+
+	result, err := (&Activities{WorkspaceRoot: workspaceRoot, Schedule: schedule}).PrepareWorkflowRun(ctx, workflowrun.PrepareRequest{
+		Input: workflowrun.Input{
+			ProjectID:   "project-1",
+			WorkflowID:  workflowID,
+			CommitHash:  oldCommit,
+			ScheduledAt: time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC),
+		},
+		TemporalWorkflowID: "workflow-execution-id",
+		TemporalRunID:      "actual-run-id",
+	})
+	if err != nil {
+		t.Fatalf("prepare workflow run: %v", err)
+	}
+	if schedule.publishRequest.WorkflowID != workflowID || schedule.publishRequest.ProjectID != "project-1" {
+		t.Fatalf("unexpected publish request: %#v", schedule.publishRequest)
+	}
+	if result.CommitHash != newCommit {
+		t.Fatalf("expected prepared commit %q, got %q", newCommit, result.CommitHash)
+	}
+	source, err := os.ReadFile(filepath.Join(result.RunPath, "src", "check.sh"))
+	if err != nil {
+		t.Fatalf("read archived source: %v", err)
+	}
+	if string(source) != "echo new\n" {
+		t.Fatalf("expected archived latest source, got %q", string(source))
+	}
+}
+
 func TestCleanupWorkflowRunsKeepsLatestTenSnapshots(t *testing.T) {
 	t.Parallel()
 
@@ -4121,6 +4197,7 @@ type fakeScheduleExecutor struct {
 	updateRequest    scheduletool.UpdateRequest
 	deleteRequest    scheduletool.DeleteRequest
 	operationRequest scheduletool.OperationRequest
+	publishRequest   scheduletool.UpdateRequest
 }
 
 func (f *fakeScheduleExecutor) Create(_ context.Context, req scheduletool.CreateRequest) (scheduletool.Result, error) {
@@ -4140,5 +4217,10 @@ func (f *fakeScheduleExecutor) Delete(_ context.Context, req scheduletool.Delete
 
 func (f *fakeScheduleExecutor) Operation(_ context.Context, req scheduletool.OperationRequest) (scheduletool.Result, error) {
 	f.operationRequest = req
+	return f.result, f.err
+}
+
+func (f *fakeScheduleExecutor) PublishCurrentSource(_ context.Context, req scheduletool.UpdateRequest) (scheduletool.Result, error) {
+	f.publishRequest = req
 	return f.result, f.err
 }

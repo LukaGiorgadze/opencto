@@ -40,9 +40,10 @@ type PrepareRequest struct {
 }
 
 type PrepareResult struct {
-	RunID    string                  `json:"run_id"`
-	RunPath  string                  `json:"run_path"`
-	Manifest workflowbundle.Manifest `json:"manifest"`
+	RunID      string                  `json:"run_id"`
+	RunPath    string                  `json:"run_path"`
+	CommitHash string                  `json:"commit_hash"`
+	Manifest   workflowbundle.Manifest `json:"manifest"`
 }
 
 type CleanupRunsRequest struct {
