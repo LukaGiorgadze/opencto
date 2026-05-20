@@ -623,7 +623,7 @@ func TestWorkflowTriggerPublishesDirtyWorkflowRepo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read published subject: %v", err)
 	}
-	if strings.TrimSpace(subject) != "Publish local edits for workflow finance2049" {
+	if strings.TrimSpace(subject) != "Apply manual edits to workflow finance2049" {
 		t.Fatalf("unexpected published subject %q", strings.TrimSpace(subject))
 	}
 	if client.handle.triggered != 1 || client.handle.updated != 1 {

@@ -810,7 +810,7 @@ func defaultCommitMessage(ctx context.Context, workflowPath string, req Request,
 		return commitMessage
 	}
 	if normalizeOperation(req.Operation) == OperationUpdate && strings.TrimSpace(req.Prompt) == "" && workflowHasUncommittedChanges(ctx, workflowPath) {
-		return "Publish local edits for workflow " + strings.TrimSpace(workflowID)
+		return "Apply manual edits to workflow " + strings.TrimSpace(workflowID)
 	}
 	switch normalizeOperation(req.Operation) {
 	case OperationCreate:
