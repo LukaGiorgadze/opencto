@@ -542,7 +542,7 @@ func TestBuildNextActionMessagesIncludesCollaborationGuidance(t *testing.T) {
 		"ask one concise question",
 		"continue with the necessary work and verify before reporting success",
 		"Prefer first-class specialized tools over generic delegation",
-		"For scheduled workflow creation, source updates, manifest changes, or behavior changes, use `WorkflowCreate` or `WorkflowUpdate` with a self-contained prompt",
+		"For workflow creation, source updates, manifest changes, or behavior changes, use `WorkflowCreate` or `WorkflowUpdate` with a self-contained prompt",
 		"`workflows/`: scheduled workflow source repositories",
 		"`workflow-runs/`: per-run workflow snapshots",
 	} {

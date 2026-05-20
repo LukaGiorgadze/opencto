@@ -742,19 +742,11 @@ func (e *TemporalExecutor) prepareUpdateAuthoring(ctx context.Context, req Reque
 	} else if !exists {
 		return AuthoringPlan{}, fmt.Errorf("workflow %q source directory not found", workflowID)
 	}
-	if _, err := workflowbundle.LoadManifest(workflowPath); err != nil {
-		return AuthoringPlan{}, err
-	}
-	if status, err := gitOutput(ctx, workflowPath, "status", "--porcelain"); err != nil {
-		return AuthoringPlan{}, err
-	} else if strings.TrimSpace(status) != "" {
-		return AuthoringPlan{}, fmt.Errorf("workflow %q has uncommitted changes before authoring", workflowID)
-	}
-	head, err := gitOutput(ctx, workflowPath, "rev-parse", "HEAD")
+	head, err := checkpointWorkflowAuthoringBase(ctx, workflowID, workflowPath)
 	if err != nil {
 		return AuthoringPlan{}, err
 	}
-	return e.authoringPlan(OperationUpdate, workflowID, workflowPath, req, false, strings.TrimSpace(head)), nil
+	return e.authoringPlan(OperationUpdate, workflowID, workflowPath, req, false, head), nil
 }
 
 func (e *TemporalExecutor) authoringPlan(operation, workflowID, workflowPath string, req Request, removeOnFailure bool, restoreCommitHash string) AuthoringPlan {
@@ -768,6 +760,21 @@ func (e *TemporalExecutor) authoringPlan(operation, workflowID, workflowPath str
 		RemoveOnFailure:   removeOnFailure,
 		RestoreCommitHash: restoreCommitHash,
 	}
+}
+
+func checkpointWorkflowAuthoringBase(ctx context.Context, workflowID, workflowPath string) (string, error) {
+	head, err := gitOutput(ctx, workflowPath, "rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	status, err := gitOutput(ctx, workflowPath, "status", "--porcelain")
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(status) == "" {
+		return strings.TrimSpace(head), nil
+	}
+	return workflowbundle.CommitBundle(ctx, workflowPath, "Checkpoint local edits before updating workflow "+strings.TrimSpace(workflowID), nil)
 }
 
 func (e *TemporalExecutor) CleanupAuthoring(ctx context.Context, plan AuthoringPlan) error {
