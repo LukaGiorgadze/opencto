@@ -10,6 +10,7 @@ import (
 
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/runtime/workflowrun"
+	scheduletool "github.com/opencto/opencto/internal/tools/workflowschedule"
 	"github.com/opencto/opencto/internal/workflowbundle"
 )
 
@@ -23,11 +24,11 @@ func (a *Activities) PrepareWorkflowRun(ctx context.Context, request workflowrun
 	if err != nil {
 		return workflowrun.PrepareResult{}, err
 	}
-	commitHash := strings.TrimSpace(input.CommitHash)
-	if commitHash == "" {
-		return workflowrun.PrepareResult{}, fmt.Errorf("commit_hash is required")
-	}
 	repoDir, err := workflowbundle.WorkflowDir(a.WorkspaceRoot, workflowID)
+	if err != nil {
+		return workflowrun.PrepareResult{}, err
+	}
+	commitHash, err := a.resolveWorkflowRunCommit(ctx, projectID, workflowID, strings.TrimSpace(input.CommitHash), input.SourceEvent)
 	if err != nil {
 		return workflowrun.PrepareResult{}, err
 	}
@@ -83,5 +84,26 @@ func (a *Activities) PrepareWorkflowRun(ctx context.Context, request workflowrun
 			return workflowrun.PrepareResult{}, err
 		}
 	}
-	return workflowrun.PrepareResult{RunID: runID, RunPath: runDir, Manifest: manifest}, nil
+	return workflowrun.PrepareResult{RunID: runID, RunPath: runDir, CommitHash: commitHash, Manifest: manifest}, nil
+}
+
+func (a *Activities) resolveWorkflowRunCommit(ctx context.Context, projectID, workflowID, fallbackCommitHash string, sourceEvent domain.Event) (string, error) {
+	if publisher, ok := a.Schedule.(scheduletool.SourcePublisher); ok {
+		result, err := publisher.PublishCurrentSource(ctx, scheduletool.UpdateRequest{
+			ProjectID:   projectID,
+			WorkflowID:  workflowID,
+			SourceEvent: sourceEvent,
+		})
+		if err != nil {
+			return "", err
+		}
+		if commitHash := strings.TrimSpace(result.CommitHash); commitHash != "" {
+			return commitHash, nil
+		}
+	}
+	commitHash := strings.TrimSpace(fallbackCommitHash)
+	if commitHash == "" {
+		return "", fmt.Errorf("commit_hash is required")
+	}
+	return commitHash, nil
 }

@@ -35,6 +35,9 @@ func WorkflowRunWorkflow(ctx workflow.Context, input workflowrun.Input) error {
 	}).Get(ctx, &prepared); err != nil {
 		return err
 	}
+	if commitHash := strings.TrimSpace(prepared.CommitHash); commitHash != "" {
+		input.CommitHash = commitHash
+	}
 
 	cleanupOldWorkflowRuns(ctx, input.ProjectID, input.WorkflowID, prepared.RunID)
 

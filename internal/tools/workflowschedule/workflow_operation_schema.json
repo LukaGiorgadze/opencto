@@ -7,7 +7,7 @@
         "operation": {
             "type": "string",
             "enum": ["list", "describe", "trigger", "pause", "resume"],
-            "description": "Workflow control/read action. Use WorkflowUpdate, not this tool, for source or manifest changes."
+            "description": "Workflow control/read action. Trigger publishes current local source if needed before running. Use WorkflowUpdate, not this tool, for requested source or manifest changes."
         },
         "workflow_id": {
             "type": "string",
