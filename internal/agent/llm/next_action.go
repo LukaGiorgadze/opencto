@@ -423,7 +423,7 @@ func conversationSummaryContextMessage(summaries []domain.ConversationSummary, m
 	}
 	remaining := maxChars - len(header) - 1
 	summaries = conversationSummariesByPriority(summaries)
-	selected := make([]string, 0, len(summaries))
+	selected := make([]conversationSummaryContextEntry, 0, len(summaries))
 	for _, summary := range summaries {
 		if remaining <= 0 {
 			break
@@ -436,19 +436,35 @@ func conversationSummaryContextMessage(summaries []domain.ConversationSummary, m
 		if len(entry) > remaining {
 			entry = truncateText(entry, remaining)
 		}
-		selected = append(selected, entry)
+		selected = append(selected, conversationSummaryContextEntry{summary: summary, entry: entry})
 		remaining -= len(entry) + 1
 	}
 	if len(selected) == 0 {
 		return header
 	}
+	sort.SliceStable(selected, func(i, j int) bool {
+		left := selected[i].summary
+		right := selected[j].summary
+		if !left.ToCreatedAt.Equal(right.ToCreatedAt) {
+			return left.ToCreatedAt.Before(right.ToCreatedAt)
+		}
+		if left.ToMessageID != right.ToMessageID {
+			return left.ToMessageID < right.ToMessageID
+		}
+		return false
+	})
 	var builder strings.Builder
 	builder.WriteString(header)
-	for _, entry := range selected {
+	for _, item := range selected {
 		builder.WriteString("\n")
-		builder.WriteString(entry)
+		builder.WriteString(item.entry)
 	}
 	return strings.TrimSpace(builder.String())
+}
+
+type conversationSummaryContextEntry struct {
+	summary domain.ConversationSummary
+	entry   string
 }
 
 func conversationSummariesByPriority(summaries []domain.ConversationSummary) []domain.ConversationSummary {

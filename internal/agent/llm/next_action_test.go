@@ -826,6 +826,45 @@ func TestConversationSummaryContextPrioritizesNewestSummaryWithinScope(t *testin
 	}
 }
 
+func TestConversationSummaryContextRendersSelectedSummariesChronologically(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	summary := conversationSummaryContextMessage([]domain.ConversationSummary{
+		{
+			ID:          "thread-summary",
+			Scope:       domain.ConversationSummaryScopeThread,
+			Summary:     "THREAD-NEW selected first by scope priority.",
+			ToCreatedAt: base.Add(2 * time.Minute),
+			ToMessageID: "thread-new",
+		},
+		{
+			ID:          "channel-summary",
+			Scope:       domain.ConversationSummaryScopeChannel,
+			Summary:     "CHANNEL-OLD should render first.",
+			ToCreatedAt: base,
+			ToMessageID: "channel-old",
+		},
+		{
+			ID:          "project-summary",
+			Scope:       domain.ConversationSummaryScopeProject,
+			Summary:     "PROJECT-MIDDLE should render second.",
+			ToCreatedAt: base.Add(time.Minute),
+			ToMessageID: "project-middle",
+		},
+	}, 2000)
+
+	channelIndex := strings.Index(summary, "CHANNEL-OLD")
+	projectIndex := strings.Index(summary, "PROJECT-MIDDLE")
+	threadIndex := strings.Index(summary, "THREAD-NEW")
+	if channelIndex < 0 || projectIndex < 0 || threadIndex < 0 {
+		t.Fatalf("expected all selected summaries to render:\n%s", summary)
+	}
+	if !(channelIndex < projectIndex && projectIndex < threadIndex) {
+		t.Fatalf("expected selected summaries to render oldest-to-newest:\n%s", summary)
+	}
+}
+
 func TestConversationHistoryKeepsThreadRootBeforeExtraChannelRawHistory(t *testing.T) {
 	t.Parallel()
 
