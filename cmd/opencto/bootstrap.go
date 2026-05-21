@@ -20,6 +20,18 @@ const (
 	installedOpenCTOConfigFilename = "opencto.config"
 )
 
+func runBootstrapCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	configPath, err := parseConfigOnlyCommand("bootstrap", args)
+	if err != nil {
+		return err
+	}
+	env, err := loadCommandEnvironment(configPath, stdout)
+	if err != nil {
+		return err
+	}
+	return runBootstrap(ctx, env.Config, defaultProject, env.OpenCTORoot, env.ConfigPath, env.Logger)
+}
+
 func runBootstrap(ctx context.Context, cfg config.Config, project domain.Project, openCTORoot, configPath string, logger *slog.Logger) error {
 	if err := ensureWorkspaceDirs(cfg.General.WorkspaceRoot); err != nil {
 		return err

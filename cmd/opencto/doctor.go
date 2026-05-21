@@ -27,6 +27,18 @@ var requiredTemporalSearchAttributes = []string{
 	"opencto_project_id",
 }
 
+func runDoctorCommand(ctx context.Context, command string, args []string, stdout, stderr io.Writer) error {
+	configPath, err := parseConfigOnlyCommand(command, args)
+	if err != nil {
+		return err
+	}
+	env, err := loadCommandEnvironment(configPath, stdout)
+	if err != nil {
+		return err
+	}
+	return runDoctor(ctx, env.ConfigPath, env.Config, defaultProject, stdout)
+}
+
 type doctorResult struct {
 	status string
 	name   string
@@ -122,7 +134,7 @@ func checkSQLiteSchema(ctx context.Context, cfg config.Config) doctorResult {
 	dbPath := storage.DefaultDBPath(cfg.General.WorkspaceRoot)
 	if _, err := os.Stat(dbPath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return doctorResult{status: doctorWarn, name: "sqlite schema", detail: fmt.Sprintf("not bootstrapped yet; run task bootstrap (%s)", dbPath)}
+			return doctorResult{status: doctorWarn, name: "sqlite schema", detail: fmt.Sprintf("not bootstrapped yet; run opencto bootstrap (%s)", dbPath)}
 		}
 		return doctorResult{status: doctorFail, name: "sqlite schema", detail: fmt.Sprintf("stat %s: %v", dbPath, err)}
 	}
@@ -134,7 +146,7 @@ func checkSQLiteSchema(ctx context.Context, cfg config.Config) doctorResult {
 	defer store.Close()
 
 	if err := store.VerifySchema(ctx); err != nil {
-		return doctorResult{status: doctorWarn, name: "sqlite schema", detail: fmt.Sprintf("%v; run task bootstrap", err)}
+		return doctorResult{status: doctorWarn, name: "sqlite schema", detail: fmt.Sprintf("%v; run opencto bootstrap", err)}
 	}
 	return doctorResult{status: doctorOK, name: "sqlite schema", detail: dbPath}
 }

@@ -97,25 +97,42 @@ func TestParseReportCommandUsesRootConfigPath(t *testing.T) {
 	}
 }
 
-func TestLoadReportConfigRequiresRootConfigFile(t *testing.T) {
+func TestLoadConfigRequiresConfigFile(t *testing.T) {
 	t.Parallel()
 
-	_, err := loadReportConfig(filepath.Join(t.TempDir(), "config.json"))
+	_, _, err := loadConfig(filepath.Join(t.TempDir(), "config.json"), t.TempDir())
 	if err == nil {
-		t.Fatal("expected missing root config error")
+		t.Fatal("expected missing config error")
 	}
 }
 
-func TestResolveReportConfigPathFallsBackToResolvedRoot(t *testing.T) {
+func TestResolveDefaultConfigPathFallsBackToResolvedRoot(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	path, err := resolveReportConfigPath(root)
+	path, err := resolveDefaultConfigPath(root)
 	if err != nil {
-		t.Fatalf("resolve report config path: %v", err)
+		t.Fatalf("resolve default config path: %v", err)
 	}
 	if want := filepath.Join(root, "config.json"); path != want {
 		t.Fatalf("expected config path %q, got %q", want, path)
+	}
+}
+
+func TestParseReportCommandAllowsConfigOverride(t *testing.T) {
+	t.Parallel()
+
+	options, err := parseReportCommandArgs([]string{
+		"hello",
+		"-config", "/tmp/opencto/config.json",
+		"-channel_type", "cli",
+		"-channel_id", "default",
+	}, "/opencto/config.json")
+	if err != nil {
+		t.Fatalf("parse report command: %v", err)
+	}
+	if options.ConfigPath != "/tmp/opencto/config.json" {
+		t.Fatalf("expected overridden config path, got %q", options.ConfigPath)
 	}
 }
 

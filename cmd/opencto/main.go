@@ -2,320 +2,67 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
-	"log/slog"
+	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
-	goruntime "runtime"
 	"syscall"
-
-	"go.temporal.io/sdk/client"
-
-	"github.com/opencto/opencto/internal/agent"
-	agentllm "github.com/opencto/opencto/internal/agent/llm"
-	"github.com/opencto/opencto/internal/channels/local"
-	"github.com/opencto/opencto/internal/config"
-	"github.com/opencto/opencto/internal/domain"
-	"github.com/opencto/opencto/internal/embedding"
-	"github.com/opencto/opencto/internal/observability"
-	"github.com/opencto/opencto/internal/runtime"
-	"github.com/opencto/opencto/internal/runtime/activities"
-	"github.com/opencto/opencto/internal/tools/exec"
-	workflowscheduletool "github.com/opencto/opencto/internal/tools/workflowschedule"
 )
 
-var defaultProject = domain.Project{
-	ID:   "default",
-	Name: "OpenCTO",
-}
-
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "report" {
-		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-		defer stop()
-		if err := runReportCommand(ctx, os.Args[2:], os.Stdout, os.Stderr); err != nil {
-			fmt.Fprintf(os.Stderr, "report: %v\n", err)
-			os.Exit(1)
-		}
-		return
-	}
-
-	var (
-		configPath = flag.String("config", "config.json", "path to config file")
-		mode       = flag.String("mode", "validate", "validate|bootstrap|doctor|check-env|worker|inject|serve")
-		body       = flag.String("body", "", "event body for inject mode")
-		actor      = flag.String("actor", "local-user", "actor name for inject mode")
-	)
-	flag.Parse()
-
-	cfg, err := config.Load(*configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
-		os.Exit(1)
-	}
-	openCTORoot, err := resolveOpenCTORoot()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "resolve OpenCTO root: %v\n", err)
-		os.Exit(1)
-	}
-	logger := observability.NewLogger(cfg.Observability.LogLevel, cfg.Observability.JSONLogs, os.Stdout)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if *mode == "validate" {
-		logger.Info("configuration validated", slog.String("project_id", defaultProject.ID))
-		return
-	}
-
-	if *mode == "bootstrap" {
-		if err := runBootstrap(ctx, cfg, defaultProject, openCTORoot, *configPath, logger); err != nil {
-			logger.Error("bootstrap failed", slog.String("error", err.Error()))
-			os.Exit(1)
-		}
-		return
-	}
-
-	if *mode == "doctor" || *mode == "check-env" {
-		if err := runDoctor(ctx, *configPath, cfg, defaultProject, os.Stdout); err != nil {
-			os.Exit(1)
-		}
-		return
-	}
-
-	temporalClient, err := client.Dial(client.Options{
-		HostPort:  cfg.Temporal.HostPort,
-		Namespace: cfg.Temporal.Namespace,
-	})
-	if err != nil {
-		logger.Error("connect temporal", slog.String("error", err.Error()))
+	if err := runOpenCTO(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	defer temporalClient.Close()
+}
 
-	dispatcher := runtime.NewDispatcher(temporalClient, cfg.Temporal.TaskQueue, cfg.Temporal.ContinueAsNewAfterEvents)
+func runOpenCTO(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	if len(args) == 0 {
+		writeUsage(stderr)
+		return fmt.Errorf("missing command")
+	}
 
-	if *mode == "inject" {
-		injector := local.NewInjector(defaultProject.ID, dispatcher, logger)
-		if _, err := injector.Inject(ctx, *actor, *body); err != nil {
-			logger.Error("inject local event", slog.String("error", err.Error()))
-			os.Exit(1)
-		}
-		logger.Info("event injected", slog.String("project_id", defaultProject.ID))
+	command := args[0]
+	commandArgs := args[1:]
+	switch command {
+	case "help", "-h", "--help":
+		writeUsage(stdout)
+		return nil
+	case "serve":
+		return runServeCommand(ctx, commandArgs, stdout, stderr)
+	case "worker":
+		return runWorkerCommand(ctx, commandArgs, stdout, stderr)
+	case "bootstrap":
+		return runBootstrapCommand(ctx, commandArgs, stdout, stderr)
+	case "doctor", "check-env":
+		return runDoctorCommand(ctx, command, commandArgs, stdout, stderr)
+	case "validate":
+		return runValidateCommand(ctx, commandArgs, stdout, stderr)
+	case "inject":
+		return runInjectCommand(ctx, commandArgs, stdout, stderr)
+	case "report":
+		return runReportCommand(ctx, commandArgs, stdout, stderr)
+	default:
+		writeUsage(stderr)
+		return fmt.Errorf("unknown command %q", command)
+	}
+}
+
+func writeUsage(out io.Writer) {
+	if out == nil {
 		return
 	}
-
-	engine := buildNextActionEngine(cfg, logger)
-	memoryEmbedder := buildMemoryEmbedder(cfg, logger)
-	conversationCompressor := buildConversationCompressor(cfg, logger)
-	agentObservationCompressor := buildAgentObservationCompressor(cfg, logger)
-
-	if *mode == "worker" || *mode == "serve" {
-		store, dbPath, err := openRuntimeStore(ctx, cfg)
-		if err != nil {
-			logger.Error("open sqlite store", slog.String("path", dbPath), slog.String("error", err.Error()))
-			os.Exit(1)
-		}
-		defer store.Close()
-		if err := bootstrapRuntimeStore(ctx, store, dbPath, defaultProject, logger); err != nil {
-			logger.Error("bootstrap sqlite store", slog.String("path", dbPath), slog.String("error", err.Error()))
-			os.Exit(1)
-		}
-
-		reporters, err := newConfiguredChannelReporter(cfg, dispatcher, logger)
-		if err != nil {
-			logger.Error("create channel reporters", slog.String("error", err.Error()))
-			os.Exit(1)
-		}
-		defer reporters.Close()
-
-		activitySet := &activities.Activities{
-			Store:                       store,
-			Engine:                      engine,
-			Exec:                        exec.NewSafeExecutor(logger),
-			Schedule:                    workflowscheduletool.NewTemporalExecutor(temporalClient.ScheduleClient(), store, cfg.Temporal.TaskQueue, cfg.General.WorkspaceRoot, logger),
-			Reporter:                    reporters.Reporter,
-			EventEnqueuer:               dispatcher,
-			MemoryEmbedder:              memoryEmbedder,
-			ConversationCompressor:      conversationCompressor,
-			AgentObservationCompressor:  agentObservationCompressor,
-			Project:                     defaultProject,
-			WorkspaceRoot:               cfg.General.WorkspaceRoot,
-			OpenCTORoot:                 openCTORoot,
-			StateDir:                    cfg.Runtime.StateDir,
-			MemoryEnabled:               cfg.Memory.Enabled,
-			MemoryLimit:                 cfg.Memory.AutoContextLimit,
-			ConversationEnabled:         cfg.Conversation.Enabled,
-			ConversationLimit:           cfg.Conversation.HistoryLimit,
-			ConversationMaxContextChars: cfg.Conversation.MaxContextChars,
-			ConversationSummaryEnabled:  cfg.Conversation.SummaryEnabled,
-			ConversationSummaryTrigger:  cfg.Conversation.SummaryTriggerChars,
-			ConversationSummaryMaxChars: cfg.Conversation.SummaryMaxChars,
-			ConversationSummaryRecent:   cfg.Conversation.SummaryRecentMessages,
-			Logger:                      logger,
-		}
-
-		worker := runtime.NewWorker(temporalClient, cfg.Temporal.TaskQueue, activitySet)
-		if *mode == "worker" {
-			if err := worker.Run(); err != nil {
-				logger.Error("run worker", slog.String("error", err.Error()))
-				os.Exit(1)
-			}
-			return
-		}
-
-		go func() {
-			if err := worker.Run(); err != nil {
-				logger.Error("run worker", slog.String("error", err.Error()))
-				stop()
-			}
-		}()
-
-		for _, starter := range reporters.Starters {
-			if err := starter.Start(ctx); err != nil {
-				logger.Error("start channel adapter", slog.String("error", err.Error()))
-				os.Exit(1)
-			}
-			logger.Info("channel adapter started", slog.String("project_id", defaultProject.ID))
-		}
-
-		<-ctx.Done()
-		return
-	}
-
-	logger.Error("unknown mode", slog.String("mode", *mode))
-	os.Exit(1)
-}
-
-func resolveOpenCTORoot() (string, error) {
-	_, file, _, ok := goruntime.Caller(0)
-	if !ok {
-		return "", fmt.Errorf("resolve caller path")
-	}
-	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..")), nil
-}
-
-func buildNextActionEngine(cfg config.Config, logger *slog.Logger) agent.Engine {
-	unavailable := func(reason string) agent.Engine {
-		return agent.NewUnavailableEngine(reason)
-	}
-	if cfg.LLM.Provider != "" && cfg.LLM.Provider != "openai" {
-		logger.Warn("unsupported llm provider configured", slog.String("provider", cfg.LLM.Provider))
-		return unavailable("unsupported llm provider: " + cfg.LLM.Provider)
-	}
-	apiKey, source, err := agentllm.ResolveOpenAIAPIKey(cfg.LLM)
-	if err != nil {
-		logger.Warn("openai api key is not configured", slog.String("error", err.Error()))
-		return unavailable(err.Error())
-	}
-	if source == agentllm.APIKeySourceConfig {
-		logger.Warn("openai api key is loaded directly from config; prefer environment variables for local and production safety")
-	}
-
-	engine, err := agentllm.NewOpenAIEngine(apiKey, cfg.LLM.BaseURL, cfg.LLM.ModelReasoning, cfg.LLM.ModelFast, cfg.LLM.ModelTranscription, cfg.LLM.Bifrost.Enabled)
-	if err != nil {
-		logger.Warn("failed to initialize openai next action engine", slog.String("error", err.Error()))
-		return unavailable(err.Error())
-	}
-	logger.Info(
-		"openai next action engine configured",
-		slog.String("base_url", cfg.LLM.BaseURL),
-		slog.String("model_reasoning", cfg.LLM.ModelReasoning),
-		slog.String("model_fast", cfg.LLM.ModelFast),
-		slog.String("model_transcription", cfg.LLM.ModelTranscription),
-		slog.String("api_key_source", string(source)),
-		slog.Bool("bifrost_enabled", cfg.LLM.Bifrost.Enabled),
-	)
-	return engine
-}
-
-func buildMemoryEmbedder(cfg config.Config, logger *slog.Logger) embedding.Embedder {
-	if !cfg.Memory.Enabled || !cfg.Memory.Embedding.Enabled {
-		return nil
-	}
-	if cfg.Memory.Embedding.Provider != embedding.ProviderOpenAI {
-		logger.Warn("unsupported memory embedding provider configured", slog.String("provider", cfg.Memory.Embedding.Provider))
-		return nil
-	}
-	apiKey, source, err := agentllm.ResolveOpenAIAPIKey(cfg.LLM)
-	if err != nil {
-		logger.Warn("openai embedding api key is not configured", slog.String("error", err.Error()))
-		return nil
-	}
-	embedder, err := embedding.NewOpenAIEmbedder(embedding.OpenAIConfig{
-		APIKey:     apiKey,
-		BaseURL:    cfg.LLM.BaseURL,
-		Model:      cfg.Memory.Embedding.Model,
-		Dimensions: cfg.Memory.Embedding.Dimensions,
-	})
-	if err != nil {
-		logger.Warn("failed to initialize memory embedder", slog.String("error", err.Error()))
-		return nil
-	}
-	logger.Info(
-		"memory embedder configured",
-		slog.String("provider", cfg.Memory.Embedding.Provider),
-		slog.String("model", cfg.Memory.Embedding.Model),
-		slog.Int("dimensions", cfg.Memory.Embedding.Dimensions),
-		slog.String("api_key_source", string(source)),
-		slog.Bool("bifrost_enabled", cfg.LLM.Bifrost.Enabled),
-	)
-	return embedder
-}
-
-func buildConversationCompressor(cfg config.Config, logger *slog.Logger) agent.ConversationCompressor {
-	if !cfg.Conversation.Enabled || !cfg.Conversation.SummaryEnabled {
-		return nil
-	}
-	if cfg.LLM.Provider != "" && cfg.LLM.Provider != "openai" {
-		logger.Warn("unsupported conversation compression llm provider configured", slog.String("provider", cfg.LLM.Provider))
-		return nil
-	}
-	apiKey, source, err := agentllm.ResolveOpenAIAPIKey(cfg.LLM)
-	if err != nil {
-		logger.Warn("openai conversation compression api key is not configured", slog.String("error", err.Error()))
-		return nil
-	}
-	compressor, err := agentllm.NewOpenAIConversationCompressor(apiKey, cfg.LLM.BaseURL, cfg.LLM.ModelSummary, cfg.LLM.Bifrost.Enabled)
-	if err != nil {
-		logger.Warn("failed to initialize conversation compressor", slog.String("error", err.Error()))
-		return nil
-	}
-	logger.Info(
-		"conversation compressor configured",
-		slog.String("base_url", cfg.LLM.BaseURL),
-		slog.String("model", cfg.LLM.ModelSummary),
-		slog.String("api_key_source", string(source)),
-		slog.Bool("bifrost_enabled", cfg.LLM.Bifrost.Enabled),
-	)
-	return compressor
-}
-
-func buildAgentObservationCompressor(cfg config.Config, logger *slog.Logger) agent.AgentObservationCompressor {
-	if !cfg.Conversation.Enabled || !cfg.Conversation.SummaryEnabled {
-		return nil
-	}
-	if cfg.LLM.Provider != "" && cfg.LLM.Provider != "openai" {
-		logger.Warn("unsupported agent observation compression llm provider configured", slog.String("provider", cfg.LLM.Provider))
-		return nil
-	}
-	apiKey, source, err := agentllm.ResolveOpenAIAPIKey(cfg.LLM)
-	if err != nil {
-		logger.Warn("openai agent observation compression api key is not configured", slog.String("error", err.Error()))
-		return nil
-	}
-	compressor, err := agentllm.NewOpenAIAgentObservationCompressor(apiKey, cfg.LLM.BaseURL, cfg.LLM.ModelSummary, cfg.LLM.Bifrost.Enabled)
-	if err != nil {
-		logger.Warn("failed to initialize agent observation compressor", slog.String("error", err.Error()))
-		return nil
-	}
-	logger.Info(
-		"agent observation compressor configured",
-		slog.String("base_url", cfg.LLM.BaseURL),
-		slog.String("model", cfg.LLM.ModelSummary),
-		slog.String("api_key_source", string(source)),
-		slog.Bool("bifrost_enabled", cfg.LLM.Bifrost.Enabled),
-	)
-	return compressor
+	fmt.Fprintln(out, "Usage: opencto <command> [options]")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Commands:")
+	fmt.Fprintln(out, "  serve       run the worker and channel adapters")
+	fmt.Fprintln(out, "  worker      run only the Temporal worker")
+	fmt.Fprintln(out, "  bootstrap   initialize workspace state and install the CLI")
+	fmt.Fprintln(out, "  doctor      check local configuration and runtime dependencies")
+	fmt.Fprintln(out, "  validate    validate configuration")
+	fmt.Fprintln(out, "  inject      inject a local event")
+	fmt.Fprintln(out, "  report      send a one-shot channel report")
 }

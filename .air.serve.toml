@@ -4,7 +4,7 @@ tmp_dir = "tmp"
 [build]
 cmd = "env GOCACHE=$(pwd)/.gocache GOMODCACHE=$(pwd)/.gomodcache go build -o ./tmp/opencto ./cmd/opencto"
 bin = "tmp/opencto"
-full_bin = "./tmp/opencto -mode serve"
+full_bin = "./tmp/opencto serve"
 include_ext = ["go", "toml", "yaml", "yml", "json"]
 exclude_dir = [".git", ".gocache", ".gomodcache", "data", "dist", "node_modules", "tmp", "vendor"]
 exclude_regex = ["_test\\.go"]

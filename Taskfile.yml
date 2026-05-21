@@ -35,20 +35,20 @@ tasks:
 
   validate:
     desc: Validate the OpenCTO configuration.
-    cmd: go run ./cmd/opencto -config {{.CONFIG}} -mode validate
+    cmd: go run ./cmd/opencto validate -config {{.CONFIG}}
 
   bootstrap:
     desc: Initialize local OpenCTO runtime state.
-    cmd: go run ./cmd/opencto -config {{.CONFIG}} -mode bootstrap
+    cmd: go run ./cmd/opencto bootstrap -config {{.CONFIG}}
 
   doctor:
     aliases: [check-env]
     desc: Check local tools, runtime state, Discord env, and Temporal readiness.
-    cmd: go run ./cmd/opencto -config {{.CONFIG}} -mode doctor
+    cmd: go run ./cmd/opencto doctor -config {{.CONFIG}}
 
   inject:
     desc: Inject a local event. Override BODY and ACTOR as needed.
-    cmd: go run ./cmd/opencto -config {{.CONFIG}} -mode inject -actor '{{.ACTOR}}' -body '{{.BODY}}'
+    cmd: go run ./cmd/opencto inject -config {{.CONFIG}} -actor '{{.ACTOR}}' -body '{{.BODY}}'
 
   infra:up:
     aliases: [up]
