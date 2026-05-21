@@ -219,6 +219,28 @@ steps:
 	}
 }
 
+func TestValidateManifestAcceptsNotificationTarget(t *testing.T) {
+	t.Parallel()
+
+	manifest := testManifest()
+	manifest.NotificationPolicy.ChannelType = "discord"
+	manifest.NotificationPolicy.ChannelID = "1234567890"
+	if err := ValidateManifest(manifest); err != nil {
+		t.Fatalf("validate manifest: %v", err)
+	}
+}
+
+func TestValidateManifestRejectsUnsupportedNotificationChannelType(t *testing.T) {
+	t.Parallel()
+
+	manifest := testManifest()
+	manifest.NotificationPolicy.ChannelType = "email"
+	manifest.NotificationPolicy.ChannelID = "alerts"
+	if err := ValidateManifest(manifest); err == nil {
+		t.Fatal("expected unsupported channel_type error")
+	}
+}
+
 func TestLoadManifestDoesNotRequireVersion(t *testing.T) {
 	t.Parallel()
 

@@ -10,27 +10,35 @@ import (
 const stateDirName = ".state"
 
 func ResolveRoot(root string) (string, error) {
+	return ResolveRootWithBase(root, "")
+}
+
+func ResolveRootWithBase(root, baseDir string) (string, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
 		return "", fmt.Errorf("workspace root is required")
 	}
-	return resolvePath(root, "workspace root")
+	return resolvePath(root, baseDir, "workspace root")
 }
 
 func ResolveStateDir(stateDir, workspaceRoot string) (string, error) {
+	return ResolveStateDirWithBase(stateDir, workspaceRoot, "")
+}
+
+func ResolveStateDirWithBase(stateDir, workspaceRoot, baseDir string) (string, error) {
 	stateDir = strings.TrimSpace(stateDir)
 	if stateDir != "" {
-		return resolvePath(stateDir, "state dir")
+		return resolvePath(stateDir, baseDir, "state dir")
 	}
 
-	root, err := ResolveRoot(workspaceRoot)
+	root, err := ResolveRootWithBase(workspaceRoot, baseDir)
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(root, stateDirName), nil
 }
 
-func resolvePath(path, label string) (string, error) {
+func resolvePath(path, baseDir, label string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve user home: %w", err)
@@ -48,6 +56,9 @@ func resolvePath(path, label string) (string, error) {
 				return os.Getenv(key)
 			}
 		})
+	}
+	if baseDir = strings.TrimSpace(baseDir); baseDir != "" && !filepath.IsAbs(path) {
+		path = filepath.Join(baseDir, path)
 	}
 
 	absPath, err := filepath.Abs(path)

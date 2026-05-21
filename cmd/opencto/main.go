@@ -9,14 +9,12 @@ import (
 	"os/signal"
 	"path/filepath"
 	goruntime "runtime"
-	"strings"
 	"syscall"
 
 	"go.temporal.io/sdk/client"
 
 	"github.com/opencto/opencto/internal/agent"
 	agentllm "github.com/opencto/opencto/internal/agent/llm"
-	"github.com/opencto/opencto/internal/channels/discord"
 	"github.com/opencto/opencto/internal/channels/local"
 	"github.com/opencto/opencto/internal/config"
 	"github.com/opencto/opencto/internal/domain"
@@ -34,6 +32,16 @@ var defaultProject = domain.Project{
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "report" {
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		if err := runReportCommand(ctx, os.Args[2:], os.Stdout, os.Stderr); err != nil {
+			fmt.Fprintf(os.Stderr, "report: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	var (
 		configPath = flag.String("config", "config.json", "path to config file")
 		mode       = flag.String("mode", "validate", "validate|bootstrap|doctor|check-env|worker|inject|serve")
@@ -62,7 +70,7 @@ func main() {
 	}
 
 	if *mode == "bootstrap" {
-		if err := runBootstrap(ctx, cfg, defaultProject, logger); err != nil {
+		if err := runBootstrap(ctx, cfg, defaultProject, openCTORoot, *configPath, logger); err != nil {
 			logger.Error("bootstrap failed", slog.String("error", err.Error()))
 			os.Exit(1)
 		}
@@ -98,7 +106,6 @@ func main() {
 		return
 	}
 
-	var reporter activities.Reporter = local.NewReporter(logger)
 	engine := buildNextActionEngine(cfg, logger)
 	memoryEmbedder := buildMemoryEmbedder(cfg, logger)
 	conversationCompressor := buildConversationCompressor(cfg, logger)
@@ -116,42 +123,19 @@ func main() {
 			os.Exit(1)
 		}
 
-		var discordAdapter *discord.Adapter
-		if cfg.Channels.Discord.Enabled {
-			token := strings.TrimSpace(os.Getenv("DISCORD_TOKEN"))
-			appID := strings.TrimSpace(os.Getenv("DISCORD_APPLICATION_ID"))
-			if token == "" {
-				logger.Error("discord is enabled but the bot token is missing", slog.String("env", "DISCORD_TOKEN"))
-				os.Exit(1)
-			}
-			if appID == "" {
-				logger.Warn("discord application id is not set; continuing because the runtime does not require it yet", slog.String("env", "DISCORD_APPLICATION_ID"))
-			}
-			discordAdapter, err = discord.New(defaultProject.ID, token, appID, dispatcher, logger, discord.Options{
-				WorkspaceRoot: cfg.General.WorkspaceRoot,
-				MessageLimits: discord.MessageLimits{
-					MaxChars: cfg.Channels.Discord.OutboundMessages.MaxChars,
-				},
-				AttachmentLimits: discord.AttachmentLimits{
-					MaxFiles:      cfg.Channels.Discord.OutboundAttachments.MaxFiles,
-					MaxFileBytes:  cfg.Channels.Discord.OutboundAttachments.MaxFileBytes,
-					MaxTotalBytes: cfg.Channels.Discord.OutboundAttachments.MaxTotalBytes,
-				},
-			})
-			if err != nil {
-				logger.Error("create discord adapter", slog.String("error", err.Error()))
-				os.Exit(1)
-			}
-			defer discordAdapter.Close()
-			reporter = discordAdapter
+		reporters, err := newConfiguredChannelReporter(cfg, dispatcher, logger)
+		if err != nil {
+			logger.Error("create channel reporters", slog.String("error", err.Error()))
+			os.Exit(1)
 		}
+		defer reporters.Close()
 
 		activitySet := &activities.Activities{
 			Store:                       store,
 			Engine:                      engine,
 			Exec:                        exec.NewSafeExecutor(logger),
 			Schedule:                    workflowscheduletool.NewTemporalExecutor(temporalClient.ScheduleClient(), store, cfg.Temporal.TaskQueue, cfg.General.WorkspaceRoot, logger),
-			Reporter:                    reporter,
+			Reporter:                    reporters.Reporter,
 			EventEnqueuer:               dispatcher,
 			MemoryEmbedder:              memoryEmbedder,
 			ConversationCompressor:      conversationCompressor,
@@ -188,12 +172,12 @@ func main() {
 			}
 		}()
 
-		if discordAdapter != nil {
-			if err := discordAdapter.Start(ctx); err != nil {
-				logger.Error("start discord adapter", slog.String("error", err.Error()))
+		for _, starter := range reporters.Starters {
+			if err := starter.Start(ctx); err != nil {
+				logger.Error("start channel adapter", slog.String("error", err.Error()))
 				os.Exit(1)
 			}
-			logger.Info("discord adapter started", slog.String("project_id", defaultProject.ID))
+			logger.Info("channel adapter started", slog.String("project_id", defaultProject.ID))
 		}
 
 		<-ctx.Done()

@@ -119,7 +119,7 @@ func TestWorkflowCreateCommitsBundleAndCreatesTemporalSchedule(t *testing.T) {
 		ProjectID:   "project-1",
 		WorkflowID:  "daily-etl",
 		Prompt:      "publish authored test workflow",
-		SourceEvent: domain.Event{ID: "event-1", ProjectID: "project-1", ChannelID: "channel-1"},
+		SourceEvent: domain.Event{ID: "event-1", ProjectID: "project-1", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-1"},
 	})
 	if err != nil {
 		t.Fatalf("create workflow schedule: %v", err)
@@ -150,6 +150,14 @@ func TestWorkflowCreateCommitsBundleAndCreatesTemporalSchedule(t *testing.T) {
 	if strings.Contains(string(manifestData), "time_zone_name") {
 		t.Fatalf("workflow manifest should not persist time_zone_name:\n%s", string(manifestData))
 	}
+	createdManifest, err := workflowbundle.LoadManifest(workflowPath)
+	if err != nil {
+		t.Fatalf("load created manifest: %v", err)
+	}
+	if createdManifest.NotificationPolicy.ChannelType != string(domain.ChannelTypeDiscord) ||
+		createdManifest.NotificationPolicy.ChannelID != "channel-1" {
+		t.Fatalf("expected notification target to be backfilled, got %#v", createdManifest.NotificationPolicy)
+	}
 	action, ok := options.Action.(*temporalclient.ScheduleWorkflowAction)
 	if !ok {
 		t.Fatalf("expected workflow action, got %T", options.Action)
@@ -161,7 +169,10 @@ func TestWorkflowCreateCommitsBundleAndCreatesTemporalSchedule(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected workflow run input, got %T", action.Args[0])
 	}
-	if input.WorkflowID != "daily-etl" || input.CommitHash != result.CommitHash || input.SourceEvent.ChannelID != "channel-1" {
+	if input.WorkflowID != "daily-etl" || input.CommitHash != result.CommitHash ||
+		input.SourceEvent.ChannelType != domain.ChannelTypeDiscord ||
+		input.SourceEvent.ChannelID != "channel-1" ||
+		input.SourceEvent.ThreadID != "" {
 		t.Fatalf("unexpected workflow input: %#v", input)
 	}
 	workflow, ok, err := store.GetScheduledWorkflow(ctx, "project-1", "daily-etl")
@@ -260,6 +271,72 @@ func TestWorkflowUpdateCommitsDirtyWorkflowFiles(t *testing.T) {
 	}
 	if string(helper) != "print('helper')\n" {
 		t.Fatalf("expected new helper in commit, got %q", string(helper))
+	}
+}
+
+func TestWorkflowUpdatePreservesOriginalNotificationChannel(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	workspaceRoot := t.TempDir()
+	executor, _, client := newWorkflowTestExecutor(t, workspaceRoot)
+	manifest := testWorkflowManifest("finance2049 availability")
+	writeAuthoredWorkflow(t, ctx, workspaceRoot, "finance2049", manifest, []workflowbundle.File{{
+		Path:    "src/check_site.py",
+		Content: "print('old')\n",
+	}})
+	if _, err := executor.Create(ctx, CreateRequest{
+		ProjectID:  "project-1",
+		WorkflowID: "finance2049",
+		Prompt:     "publish authored test workflow",
+		SourceEvent: domain.Event{
+			ID:          "event-create",
+			ProjectID:   "project-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-original",
+		},
+	}); err != nil {
+		t.Fatalf("create workflow: %v", err)
+	}
+	workflowPath, err := workflowbundle.WorkflowDir(workspaceRoot, "finance2049")
+	if err != nil {
+		t.Fatalf("workflow dir: %v", err)
+	}
+	manifest.Description = "updated description"
+	if err := workflowbundle.WriteManifest(workflowPath, manifest); err != nil {
+		t.Fatalf("write authored manifest update: %v", err)
+	}
+
+	if _, err := executor.Update(ctx, UpdateRequest{
+		ProjectID:  "project-1",
+		WorkflowID: "finance2049",
+		Prompt:     "publish authored manifest update",
+		SourceEvent: domain.Event{
+			ID:          "event-update",
+			ProjectID:   "project-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-update",
+		},
+	}); err != nil {
+		t.Fatalf("update workflow: %v", err)
+	}
+	action, ok := client.handle.lastUpdate.Schedule.Action.(*temporalclient.ScheduleWorkflowAction)
+	if !ok {
+		t.Fatalf("expected workflow action, got %T", client.handle.lastUpdate.Schedule.Action)
+	}
+	input, ok := action.Args[0].(workflowrun.Input)
+	if !ok {
+		t.Fatalf("expected workflow input, got %T", action.Args[0])
+	}
+	if input.SourceEvent.ChannelID != "channel-original" {
+		t.Fatalf("expected update to preserve original channel, got %#v", input.SourceEvent)
+	}
+	updatedManifest, err := workflowbundle.LoadManifest(workflowPath)
+	if err != nil {
+		t.Fatalf("load updated manifest: %v", err)
+	}
+	if updatedManifest.NotificationPolicy.ChannelID != "channel-original" {
+		t.Fatalf("expected manifest target to remain original, got %#v", updatedManifest.NotificationPolicy)
 	}
 }
 

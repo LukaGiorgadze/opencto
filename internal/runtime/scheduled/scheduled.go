@@ -42,6 +42,7 @@ func EventFromDispatch(input DispatchWorkflowInput, eventID string, scheduledAt 
 	event.ProjectID = strings.TrimSpace(input.ProjectID)
 	event.Kind = domain.EventKindMessage
 	event.Body = strings.TrimSpace(input.Task)
+	event.ThreadID = ""
 	event.CreatedAt = scheduledAt.UTC()
 	event.Payload = nil
 	event.Metadata = mergeMetadata(event.Metadata, domain.Metadata{

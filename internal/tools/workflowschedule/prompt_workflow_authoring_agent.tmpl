@@ -80,6 +80,20 @@ OPENCTO_WORKFLOW_DATA_DIR          — persistent data directory for this workfl
 
 ---
 
+# Sending Reports
+
+If the user asks the workflow to send a conditional business message, call the OpenCTO CLI from step code:
+
+```sh
+opencto report "Metric reached 1000." -channel_type {{ .NotificationChannelType }} -channel_id "{{ .NotificationChannelID }}"
+```
+
+Attach generated files with repeatable `-file path` flags when the user asks for files, charts, images, logs, or artifacts to be sent.
+
+Only use `opencto report` when the workflow condition is met. Do not send unconditional success messages unless the user explicitly requested them.
+
+---
+
 # Directory Layout
 
 ```
@@ -138,6 +152,8 @@ schedule:
   pause_on_failure: false
 notification_policy:
   on_failure: true
+  channel_type: discord
+  channel_id: "1234567890"
 steps:
   - id: fetch
     command: python3

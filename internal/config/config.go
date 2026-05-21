@@ -3,7 +3,9 @@ package config
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/opencto/opencto/internal/workspace"
@@ -170,7 +172,11 @@ type ObservabilityConfig struct {
 }
 
 func Load(path string) (Config, error) {
-	data, err := os.ReadFile(path)
+	configPath, err := filepath.Abs(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("resolve config path: %w", err)
+	}
+	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return Config{}, err
 	}
@@ -214,11 +220,12 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 
-	cfg.General.WorkspaceRoot, err = workspace.ResolveRoot(cfg.General.WorkspaceRoot)
+	configDir := filepath.Dir(configPath)
+	cfg.General.WorkspaceRoot, err = workspace.ResolveRootWithBase(cfg.General.WorkspaceRoot, configDir)
 	if err != nil {
 		return Config{}, err
 	}
-	cfg.Runtime.StateDir, err = workspace.ResolveStateDir(cfg.Runtime.StateDir, cfg.General.WorkspaceRoot)
+	cfg.Runtime.StateDir, err = workspace.ResolveStateDirWithBase(cfg.Runtime.StateDir, cfg.General.WorkspaceRoot, configDir)
 	if err != nil {
 		return Config{}, err
 	}

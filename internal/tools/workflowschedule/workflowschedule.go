@@ -368,6 +368,7 @@ func (e *TemporalExecutor) create(ctx context.Context, req Request) (Result, err
 	}
 	req.WorkflowID = workflowID
 
+	req.SourceEvent = defaultWorkflowSourceEvent(req.SourceEvent)
 	manifest, commitHash, err := e.commitAuthoredBundle(ctx, req, workflowPath)
 	if err != nil {
 		return Result{}, err
@@ -418,6 +419,7 @@ func (e *TemporalExecutor) publishCurrentSource(ctx context.Context, req Request
 	req.Operation = OperationUpdate
 	req.WorkflowID = workflowID
 	req.Paused = status == domain.ScheduledWorkflowStatusPaused
+	req.SourceEvent = preservedWorkflowSourceEvent(existing.SourceEvent, req.SourceEvent)
 	manifest, commitHash, err := e.commitAuthoredBundle(ctx, req, workflowPath)
 	if err != nil {
 		return Result{}, err
@@ -658,12 +660,16 @@ func (e *TemporalExecutor) commitAuthoredBundle(ctx context.Context, req Request
 	if err != nil {
 		return workflowbundle.Manifest{}, "", ErrWorkflowIDRequired
 	}
-	commitMessage := defaultCommitMessage(ctx, workflowPath, req, workflowID)
-	commitHash, err := workflowbundle.CommitBundle(ctx, workflowPath, commitMessage, nil)
+	manifest, err := workflowbundle.LoadManifest(workflowPath)
 	if err != nil {
 		return workflowbundle.Manifest{}, "", err
 	}
-	manifest, err := workflowbundle.LoadManifest(workflowPath)
+	manifest, err = ensureManifestNotificationTarget(workflowPath, manifest, notificationTargetFromEvent(req.SourceEvent))
+	if err != nil {
+		return workflowbundle.Manifest{}, "", err
+	}
+	commitMessage := defaultCommitMessage(ctx, workflowPath, req, workflowID)
+	commitHash, err := workflowbundle.CommitBundle(ctx, workflowPath, commitMessage, nil)
 	if err != nil {
 		return workflowbundle.Manifest{}, "", err
 	}
@@ -722,7 +728,8 @@ func (e *TemporalExecutor) prepareCreateAuthoring(ctx context.Context, req Reque
 	if err := workflowbundle.InitializeBundle(ctx, workflowPath); err != nil {
 		return AuthoringPlan{}, err
 	}
-	return e.authoringPlan(OperationCreate, workflowID, workflowPath, req, true, ""), nil
+	target := notificationTargetFromEvent(req.SourceEvent)
+	return e.authoringPlan(OperationCreate, workflowID, workflowPath, req, true, "", target), nil
 }
 
 func (e *TemporalExecutor) prepareUpdateAuthoring(ctx context.Context, req Request) (AuthoringPlan, error) {
@@ -734,9 +741,11 @@ func (e *TemporalExecutor) prepareUpdateAuthoring(ctx context.Context, req Reque
 	if err != nil {
 		return AuthoringPlan{}, err
 	}
-	if _, ok, err := e.Store.GetScheduledWorkflow(ctx, strings.TrimSpace(req.ProjectID), workflowID); err != nil {
+	existing, ok, err := e.Store.GetScheduledWorkflow(ctx, strings.TrimSpace(req.ProjectID), workflowID)
+	if err != nil {
 		return AuthoringPlan{}, err
-	} else if !ok {
+	}
+	if !ok {
 		return AuthoringPlan{}, fmt.Errorf("workflow %q not found", workflowID)
 	}
 	if exists, err := pathExists(workflowPath); err != nil {
@@ -744,20 +753,26 @@ func (e *TemporalExecutor) prepareUpdateAuthoring(ctx context.Context, req Reque
 	} else if !exists {
 		return AuthoringPlan{}, fmt.Errorf("workflow %q source directory not found", workflowID)
 	}
+	target := notificationTargetFromEvent(preservedWorkflowSourceEvent(existing.SourceEvent, req.SourceEvent))
+	if manifest, err := workflowbundle.LoadManifest(workflowPath); err == nil {
+		if manifestTarget, ok := notificationTargetFromPolicy(manifest.NotificationPolicy); ok {
+			target = manifestTarget
+		}
+	}
 	head, err := checkpointWorkflowAuthoringBase(ctx, workflowID, workflowPath)
 	if err != nil {
 		return AuthoringPlan{}, err
 	}
-	return e.authoringPlan(OperationUpdate, workflowID, workflowPath, req, false, head), nil
+	return e.authoringPlan(OperationUpdate, workflowID, workflowPath, req, false, head, target), nil
 }
 
-func (e *TemporalExecutor) authoringPlan(operation, workflowID, workflowPath string, req Request, removeOnFailure bool, restoreCommitHash string) AuthoringPlan {
+func (e *TemporalExecutor) authoringPlan(operation, workflowID, workflowPath string, req Request, removeOnFailure bool, restoreCommitHash string, target notificationTarget) AuthoringPlan {
 	return AuthoringPlan{
 		Operation:         operation,
 		WorkflowID:        workflowID,
 		WorkflowPath:      workflowPath,
 		AgentGoal:         authoringAgentGoal(operation, workflowID),
-		AgentPrompt:       authoringAgentPrompt(operation, workflowID, workflowPath, req.Prompt, req.CommitMessage),
+		AgentPrompt:       authoringAgentPrompt(operation, workflowID, workflowPath, req.Prompt, req.CommitMessage, target),
 		CommitMessage:     req.CommitMessage,
 		RemoveOnFailure:   removeOnFailure,
 		RestoreCommitHash: restoreCommitHash,
@@ -838,8 +853,78 @@ func authoringAgentGoal(operation, workflowID string) string {
 	}
 }
 
-func authoringAgentPrompt(operation, workflowID, workflowPath, userPrompt, commitMessage string) string {
-	return PromptAuthoringAgent(normalizeOperation(operation), workflowID, workflowPath, userPrompt, commitMessage)
+func authoringAgentPrompt(operation, workflowID, workflowPath, userPrompt, commitMessage string, target notificationTarget) string {
+	return PromptAuthoringAgentWithNotificationTarget(normalizeOperation(operation), workflowID, workflowPath, userPrompt, commitMessage, target.ChannelType, target.ChannelID)
+}
+
+type notificationTarget struct {
+	ChannelType string
+	ChannelID   string
+}
+
+func ensureManifestNotificationTarget(workflowPath string, manifest workflowbundle.Manifest, fallback notificationTarget) (workflowbundle.Manifest, error) {
+	if target, ok := notificationTargetFromPolicy(manifest.NotificationPolicy); ok {
+		manifest.NotificationPolicy.ChannelType = target.ChannelType
+		manifest.NotificationPolicy.ChannelID = target.ChannelID
+		return manifest, nil
+	}
+	if strings.TrimSpace(manifest.NotificationPolicy.ChannelType) != "" || strings.TrimSpace(manifest.NotificationPolicy.ChannelID) != "" {
+		return workflowbundle.Manifest{}, fmt.Errorf("notification_policy.channel_type and notification_policy.channel_id must be set together")
+	}
+	manifest.NotificationPolicy.ChannelType = fallback.ChannelType
+	manifest.NotificationPolicy.ChannelID = fallback.ChannelID
+	if err := workflowbundle.WriteManifest(workflowPath, manifest); err != nil {
+		return workflowbundle.Manifest{}, err
+	}
+	return manifest, nil
+}
+
+func notificationTargetEvent(source domain.Event, policy workflowbundle.NotificationPolicy) domain.Event {
+	event := defaultWorkflowSourceEvent(source)
+	if target, ok := notificationTargetFromPolicy(policy); ok {
+		event.ChannelType = domain.ChannelType(target.ChannelType)
+		event.ChannelID = target.ChannelID
+	}
+	event.ThreadID = ""
+	return event
+}
+
+func notificationTargetFromPolicy(policy workflowbundle.NotificationPolicy) (notificationTarget, bool) {
+	channelType := strings.TrimSpace(policy.ChannelType)
+	channelID := strings.TrimSpace(policy.ChannelID)
+	if channelType == "" || channelID == "" {
+		return notificationTarget{}, false
+	}
+	normalized, err := workflowbundle.NormalizeNotificationChannelType(channelType)
+	if err != nil {
+		return notificationTarget{}, false
+	}
+	return notificationTarget{ChannelType: normalized, ChannelID: channelID}, true
+}
+
+func notificationTargetFromEvent(event domain.Event) notificationTarget {
+	event = defaultWorkflowSourceEvent(event)
+	return notificationTarget{
+		ChannelType: string(event.ChannelType),
+		ChannelID:   strings.TrimSpace(event.ChannelID),
+	}
+}
+
+func preservedWorkflowSourceEvent(existing, fallback domain.Event) domain.Event {
+	if strings.TrimSpace(existing.ID) != "" || strings.TrimSpace(existing.ChannelID) != "" || strings.TrimSpace(string(existing.ChannelType)) != "" {
+		return defaultWorkflowSourceEvent(existing)
+	}
+	return defaultWorkflowSourceEvent(fallback)
+}
+
+func defaultWorkflowSourceEvent(event domain.Event) domain.Event {
+	if strings.TrimSpace(string(event.ChannelType)) == "" {
+		event.ChannelType = domain.ChannelTypeCLI
+	}
+	if strings.TrimSpace(event.ChannelID) == "" {
+		event.ChannelID = "default"
+	}
+	return event
 }
 
 func (e *TemporalExecutor) workflowExists(ctx context.Context, projectID, workflowID, _ string) (bool, error) {
@@ -889,7 +974,7 @@ func (e *TemporalExecutor) scheduleOptions(req Request, workflowID, scheduleID, 
 		WorkflowName:     manifest.Name,
 		CommitHash:       commitHash,
 		ScheduleID:       scheduleID,
-		SourceEvent:      req.SourceEvent,
+		SourceEvent:      notificationTargetEvent(req.SourceEvent, manifest.NotificationPolicy),
 		CreatedByEventID: strings.TrimSpace(req.SourceEvent.ID),
 	}
 	return temporalclient.ScheduleOptions{

@@ -2,6 +2,7 @@ package domain
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -34,6 +35,17 @@ const (
 	ChannelTypeDiscord ChannelType = "discord"
 	ChannelTypeCLI     ChannelType = "cli"
 )
+
+func NormalizeChannelType(value string) (ChannelType, error) {
+	switch ChannelType(strings.ToLower(strings.TrimSpace(value))) {
+	case ChannelTypeDiscord:
+		return ChannelTypeDiscord, nil
+	case ChannelTypeCLI:
+		return ChannelTypeCLI, nil
+	default:
+		return "", fmt.Errorf("channel_type must be one of %q or %q", ChannelTypeDiscord, ChannelTypeCLI)
+	}
+}
 
 type EventKind string
 

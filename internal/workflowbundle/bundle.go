@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/opencto/opencto/internal/domain"
 	"gopkg.in/yaml.v3"
 )
 
@@ -61,7 +62,9 @@ type Schedule struct {
 }
 
 type NotificationPolicy struct {
-	OnFailure bool `json:"on_failure" yaml:"on_failure"`
+	OnFailure   bool   `json:"on_failure" yaml:"on_failure"`
+	ChannelType string `json:"channel_type,omitempty" yaml:"channel_type,omitempty"`
+	ChannelID   string `json:"channel_id,omitempty" yaml:"channel_id,omitempty"`
 }
 
 type Step struct {
@@ -505,6 +508,19 @@ func ValidateManifest(manifest Manifest) error {
 	if _, err := NormalizeOverlapPolicy(manifest.Schedule.OverlapPolicy); err != nil {
 		return err
 	}
+	channelType := strings.TrimSpace(manifest.NotificationPolicy.ChannelType)
+	channelID := strings.TrimSpace(manifest.NotificationPolicy.ChannelID)
+	if channelType != "" {
+		if _, err := NormalizeNotificationChannelType(channelType); err != nil {
+			return err
+		}
+	}
+	if channelType == "" && channelID != "" {
+		return fmt.Errorf("notification_policy.channel_type is required when notification_policy.channel_id is set")
+	}
+	if channelType != "" && channelID == "" {
+		return fmt.Errorf("notification_policy.channel_id is required when notification_policy.channel_type is set")
+	}
 	if len(manifest.Steps) == 0 {
 		return fmt.Errorf("at least one step is required")
 	}
@@ -629,6 +645,14 @@ func NormalizeOverlapPolicy(value string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported overlap_policy %q", value)
 	}
+}
+
+func NormalizeNotificationChannelType(value string) (string, error) {
+	channelType, err := domain.NormalizeChannelType(value)
+	if err != nil {
+		return "", fmt.Errorf("notification_policy.channel_type must be one of %q or %q", domain.ChannelTypeDiscord, domain.ChannelTypeCLI)
+	}
+	return string(channelType), nil
 }
 
 func ParseCatchupWindow(value string) (time.Duration, error) {

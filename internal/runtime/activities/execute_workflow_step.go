@@ -71,7 +71,7 @@ func (a *Activities) ExecuteWorkflowStep(ctx context.Context, request workflowru
 		return workflowrun.ExecuteStepResult{}, err
 	}
 
-	env, err := workflowStepEnvironment(a.WorkspaceRoot, request)
+	env, err := workflowStepEnvironment(a.WorkspaceRoot, a.OpenCTORoot, request)
 	if err != nil {
 		_ = stdoutFile.Close()
 		_ = stderrFile.Close()

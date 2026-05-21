@@ -1872,6 +1872,7 @@ func TestScheduledDispatchWorkflowEnqueuesSyntheticEvent(t *testing.T) {
 		enqueued = event.ProjectID == "project-1" &&
 			event.Body == "send hello" &&
 			event.ChannelID == "channel-1" &&
+			event.ThreadID == "" &&
 			event.Metadata[scheduled.EventMetadataScheduleID] == "schedule-1" &&
 			event.Metadata[scheduled.EventMetadataQueuePolicy] == scheduled.QueuePolicyScheduledTask &&
 			event.Provenance.Source == "schedule"
@@ -1889,6 +1890,7 @@ func TestScheduledDispatchWorkflowEnqueuesSyntheticEvent(t *testing.T) {
 			ProjectID:   "project-1",
 			ChannelID:   "channel-1",
 			ChannelType: domain.ChannelTypeDiscord,
+			ThreadID:    "thread-1",
 			ActorName:   "luka",
 		},
 	})

@@ -37,7 +37,7 @@ func workflowStepAttemptLogPaths(stateDir, workflowID, runID, stepID string, att
 	return filepath.Join(attemptDir, "stdout.log"), filepath.Join(attemptDir, "stderr.log")
 }
 
-func workflowStepEnvironment(workspaceRoot string, request workflowrun.ExecuteStepRequest) ([]string, error) {
+func workflowStepEnvironment(workspaceRoot, openCTORoot string, request workflowrun.ExecuteStepRequest) ([]string, error) {
 	env := withoutEnvPrefix(os.Environ(), "OPENCTO_")
 	workspaceRoot = strings.TrimSpace(workspaceRoot)
 	workflowsDir, err := workflowbundle.WorkflowsDir(workspaceRoot)
@@ -58,6 +58,10 @@ func workflowStepEnvironment(workspaceRoot string, request workflowrun.ExecuteSt
 	env = upsertEnv(env, "OPENCTO_WORKFLOW_DATA_DIR", dataDir)
 	env = upsertEnv(env, "OPENCTO_WORKFLOW_RUN_DIR", runPath)
 	env = upsertEnv(env, "OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR", runArtifactsDir)
+	if openCTORoot = strings.TrimSpace(openCTORoot); openCTORoot != "" {
+		env = upsertEnv(env, "OPENCTO_ROOT", openCTORoot)
+	}
+	env = prependEnvPath(env, filepath.Join(workspaceRoot, "bin"))
 	return env, nil
 }
 
@@ -82,6 +86,26 @@ func upsertEnv(env []string, name, value string) []string {
 		}
 	}
 	return append(env, entry)
+}
+
+func prependEnvPath(env []string, dir string) []string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return env
+	}
+	prefix := "PATH="
+	for index := range env {
+		if strings.HasPrefix(env[index], prefix) {
+			current := strings.TrimPrefix(env[index], prefix)
+			if current == "" {
+				env[index] = prefix + dir
+			} else {
+				env[index] = prefix + dir + string(os.PathListSeparator) + current
+			}
+			return env
+		}
+	}
+	return append(env, prefix+dir)
 }
 
 func tailWorkflowLog(path string, limit int64) (string, bool) {

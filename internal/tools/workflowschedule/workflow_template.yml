@@ -8,6 +8,8 @@ schedule:
     pause_on_failure: false
 notification_policy:
     on_failure: true
+    channel_type: {{ .NotificationChannelType }} # discord | cli
+    channel_id: "{{ .NotificationChannelID }}"
 steps:
     - id: step-id
       command: python3 # executable to run
