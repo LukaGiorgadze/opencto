@@ -50,3 +50,14 @@ func TestWriteDoctorResultsUsesStatusIcons(t *testing.T) {
 		t.Fatalf("expected icon statuses instead of plain labels:\n%s", output)
 	}
 }
+
+func TestMissingTemporalSearchAttributes(t *testing.T) {
+	if missing := missingTemporalSearchAttributes(map[string]struct{}{"opencto_project_id": {}}); len(missing) != 0 {
+		t.Fatalf("expected no missing search attributes, got %v", missing)
+	}
+
+	missing := missingTemporalSearchAttributes(map[string]struct{}{})
+	if len(missing) != 1 || missing[0] != "opencto_project_id" {
+		t.Fatalf("expected missing opencto_project_id, got %v", missing)
+	}
+}

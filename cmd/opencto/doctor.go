@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	operatorservice "go.temporal.io/api/operatorservice/v1"
 	temporalclient "go.temporal.io/sdk/client"
 
 	"github.com/opencto/opencto/internal/config"
@@ -231,7 +232,7 @@ func checkTemporal(ctx context.Context, cfg config.Config) []doctorResult {
 	}
 
 	results = append(results, checkTemporalNamespace(checkCtx, cfg))
-	results = append(results, checkTemporalSearchAttributes(checkCtx, temporal))
+	results = append(results, checkTemporalSearchAttributes(checkCtx, temporal, cfg.Temporal.Namespace))
 	return results
 }
 
@@ -250,22 +251,45 @@ func checkTemporalNamespace(ctx context.Context, cfg config.Config) doctorResult
 	return doctorResult{status: doctorOK, name: "temporal namespace", detail: cfg.Temporal.Namespace}
 }
 
-func checkTemporalSearchAttributes(ctx context.Context, temporal temporalclient.Client) doctorResult {
-	attributes, err := temporal.GetSearchAttributes(ctx)
+func checkTemporalSearchAttributes(ctx context.Context, temporal temporalclient.Client, namespace string) doctorResult {
+	attributes, err := temporalSearchAttributeKeys(ctx, temporal, namespace)
 	if err != nil {
 		return doctorResult{status: doctorFail, name: "temporal search attributes", detail: err.Error()}
 	}
 
+	missing := missingTemporalSearchAttributes(attributes)
+	if len(missing) > 0 {
+		return doctorResult{status: doctorFail, name: "temporal search attributes", detail: fmt.Sprintf("missing %s in namespace %s", strings.Join(missing, ", "), namespace)}
+	}
+	return doctorResult{status: doctorOK, name: "temporal search attributes", detail: strings.Join(requiredTemporalSearchAttributes, ", ")}
+}
+
+func temporalSearchAttributeKeys(ctx context.Context, temporal temporalclient.Client, namespace string) (map[string]struct{}, error) {
+	attributes, err := temporal.OperatorService().ListSearchAttributes(ctx, &operatorservice.ListSearchAttributesRequest{
+		Namespace: namespace,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	keys := map[string]struct{}{}
+	for attribute := range attributes.GetCustomAttributes() {
+		keys[attribute] = struct{}{}
+	}
+	for attribute := range attributes.GetSystemAttributes() {
+		keys[attribute] = struct{}{}
+	}
+	return keys, nil
+}
+
+func missingTemporalSearchAttributes(attributes map[string]struct{}) []string {
 	missing := []string{}
 	for _, attribute := range requiredTemporalSearchAttributes {
-		if _, ok := attributes.GetKeys()[attribute]; !ok {
+		if _, ok := attributes[attribute]; !ok {
 			missing = append(missing, attribute)
 		}
 	}
-	if len(missing) > 0 {
-		return doctorResult{status: doctorFail, name: "temporal search attributes", detail: "missing " + strings.Join(missing, ", ")}
-	}
-	return doctorResult{status: doctorOK, name: "temporal search attributes", detail: strings.Join(requiredTemporalSearchAttributes, ", ")}
+	return missing
 }
 
 func writeDoctorResults(out io.Writer, results []doctorResult) {
