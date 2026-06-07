@@ -299,29 +299,26 @@ run_interactive_configure() {
 
 print_success_screen() {
   echo
-  printf "${BOLD}${GREEN}%s${RESET}\n" "OpenCTO installed successfully"
-  printf "%s\n" "============================================================"
-  printf "  Binary:     %s\n" "$BIN_PATH"
-  printf "  Workspace:  %s\n" "$WORKSPACE_DIR"
-  printf "  Credentials: %s\n" "$WORKSPACE_DIR/.env"
-  printf "  Config:     %s\n" "$WORKSPACE_DIR/config.json"
-  echo
-  printf "%s\n" "$(bold "Configure credentials:")"
-  printf "  opencto configure\n"
-  echo
-  printf "%s\n" "$(bold "Start OpenCTO:")"
-  printf "  opencto start\n"
-  echo
-  printf "%s\n" "$(bold "Check setup:")"
-  printf "  opencto doctor\n"
-  echo
+  printf "%s\n" "┌────────────────────────────────────────────────────────────┐"
+  printf "│ ${BOLD}${GREEN}OpenCTO installed successfully${RESET}                         │\n"
+  printf "%s\n" "├────────────────────────────────────────────────────────────┤"
+  printf "│ Binary:      %-45s │\n" "$BIN_PATH"
+  printf "│ Workspace:   %-45s │\n" "$WORKSPACE_DIR"
+  printf "│ Credentials: %-45s │\n" "$WORKSPACE_DIR/.env"
+  printf "│ Config:      %-45s │\n" "$WORKSPACE_DIR/config.json"
+  printf "%s\n" "├────────────────────────────────────────────────────────────┤"
+  printf "│ Next steps:                                                │\n"
+  printf "│   1. opencto configure                                    │\n"
+  printf "│   2. ${BOLD}opencto start${RESET}                                        │\n"
+  printf "│   3. opencto doctor                                       │\n"
+  printf "%s\n" "├────────────────────────────────────────────────────────────┤"
   if [ -n "$PROFILE_PATH" ] && [ -n "$RELOAD_HINT" ]; then
-    printf "If your shell cannot find opencto, open a new terminal or run:\n"
-    printf "  %s\n" "$RELOAD_HINT"
+    printf "│ If opencto is not found, open a new terminal or run:       │\n"
+    printf "│   %-55s │\n" "$RELOAD_HINT"
   else
-    printf "If your shell cannot find opencto, open a new terminal and try again.\n"
+    printf "│ If opencto is not found, open a new terminal and try again.│\n"
   fi
-  printf "%s\n" "============================================================"
+  printf "%s\n" "└────────────────────────────────────────────────────────────┘"
   echo
 }
 
