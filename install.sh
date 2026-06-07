@@ -68,6 +68,8 @@ done
 BIN_DIR="$PREFIX/.local/bin"
 BIN_PATH="$BIN_DIR/opencto"
 ORIGINAL_PATH="${PATH:-}"
+PROFILE_PATH=""
+RELOAD_HINT=""
 
 detect_asset_target() {
   target_os=$(uname -s)
@@ -249,6 +251,8 @@ ensure_path_in_profile() {
   profile=$(detect_shell_profile)
   path_line=$(shell_path_line)
   reload_hint=$(shell_reload_hint "$profile")
+  PROFILE_PATH="$profile"
+  RELOAD_HINT="$reload_hint"
   active_bin=$(PATH="$ORIGINAL_PATH" command -v opencto 2>/dev/null || true)
 
   if [ -n "$active_bin" ] && [ "$active_bin" != "$BIN_PATH" ]; then
@@ -291,6 +295,34 @@ run_interactive_configure() {
   else
     warn "Interactive configuration skipped; run opencto configure"
   fi
+}
+
+print_success_screen() {
+  echo
+  printf "${BOLD}${GREEN}%s${RESET}\n" "OpenCTO installed successfully"
+  printf "%s\n" "============================================================"
+  printf "  Binary:     %s\n" "$BIN_PATH"
+  printf "  Workspace:  %s\n" "$WORKSPACE_DIR"
+  printf "  Credentials: %s\n" "$WORKSPACE_DIR/.env"
+  printf "  Config:     %s\n" "$WORKSPACE_DIR/config.json"
+  echo
+  printf "%s\n" "$(bold "Configure credentials:")"
+  printf "  opencto configure\n"
+  echo
+  printf "%s\n" "$(bold "Start OpenCTO:")"
+  printf "  opencto start\n"
+  echo
+  printf "%s\n" "$(bold "Check setup:")"
+  printf "  opencto doctor\n"
+  echo
+  if [ -n "$PROFILE_PATH" ] && [ -n "$RELOAD_HINT" ]; then
+    printf "If your shell cannot find opencto, open a new terminal or run:\n"
+    printf "  %s\n" "$RELOAD_HINT"
+  else
+    printf "If your shell cannot find opencto, open a new terminal and try again.\n"
+  fi
+  printf "%s\n" "============================================================"
+  echo
 }
 
 stop_managed_services() {
@@ -387,8 +419,4 @@ fi
 
 ensure_path_in_profile
 run_interactive_configure
-
-echo
-info "Done. Run $(bold "opencto start") to start OpenCTO."
-info "Run $(bold "opencto doctor") after configuration to check local dependencies."
-echo
+print_success_screen
