@@ -71,7 +71,7 @@
         "continue_as_new_after_events": 1000
     },
     "observability": {
-        "log_level": "INFO",
+        "log_level": "WARN",
         "json_logs": true
     }
 }

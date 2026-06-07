@@ -56,6 +56,7 @@ func runDoctor(ctx context.Context, configPath string, cfg config.Config, projec
 		checkCommand(ctx, "task", []string{"--version"}, "task"),
 		checkCommand(ctx, "air", []string{"-v"}, "air"),
 		checkCommand(ctx, "docker", []string{"compose", "version"}, "docker compose"),
+		checkDockerDaemonStatus(ctx),
 		checkWritableDir(cfg.General.WorkspaceRoot, "workspace root"),
 		checkWritableDir(cfg.Runtime.StateDir, "state dir"),
 		checkSQLiteSchema(ctx, cfg),
@@ -106,6 +107,16 @@ func checkCommand(ctx context.Context, name string, args []string, label string)
 	}
 
 	return doctorResult{status: doctorOK, name: label, detail: commandSummary(string(output))}
+}
+
+func checkDockerDaemonStatus(ctx context.Context) doctorResult {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return doctorResult{status: doctorFail, name: "docker daemon", detail: "docker is not on PATH"}
+	}
+	if err := checkDockerDaemon(ctx); err != nil {
+		return doctorResult{status: doctorFail, name: "docker daemon", detail: err.Error()}
+	}
+	return doctorResult{status: doctorOK, name: "docker daemon", detail: "running"}
 }
 
 func checkWritableDir(path, label string) doctorResult {
@@ -264,7 +275,20 @@ func writeDoctorResults(out io.Writer, results []doctorResult) {
 
 	fmt.Fprintln(out, "OpenCTO doctor")
 	for _, result := range results {
-		fmt.Fprintf(out, "%-6s %-28s %s\n", strings.ToUpper(result.status), result.name, result.detail)
+		fmt.Fprintf(out, "%-4s %-28s %s\n", doctorStatusIcon(result.status), result.name, result.detail)
+	}
+}
+
+func doctorStatusIcon(status string) string {
+	switch status {
+	case doctorOK:
+		return "✅"
+	case doctorWarn:
+		return "⚠️"
+	case doctorFail:
+		return "❌"
+	default:
+		return strings.ToUpper(status)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/url"
@@ -21,14 +22,19 @@ import (
 const serviceWaitTimeout = 2 * time.Minute
 const defaultManagedBifrostOpenAIBaseURL = "http://127.0.0.1:8081/openai"
 
-func ensureRuntimeServices(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
+func ensureRuntimeServices(ctx context.Context, cfg config.Config, logger *slog.Logger, progress io.Writer) error {
 	serviceDir, err := ensureRuntimeServiceFiles(cfg.General.WorkspaceRoot, cfg)
 	if err != nil {
 		return err
 	}
+	writeServiceProgress(progress, "Generated Docker Compose files: %s", filepath.Join(serviceDir, "compose.yaml"))
 	if _, err := exec.LookPath("docker"); err != nil {
 		return errors.New("Docker is required to run OpenCTO services. Install Docker Desktop or OrbStack, then run opencto start again")
 	}
+	if err := checkDockerDaemon(ctx); err != nil {
+		return err
+	}
+	writeServiceProgress(progress, "Docker daemon is running")
 
 	startBifrost, err := managedBifrostServiceEnabled(cfg)
 	if err != nil {
@@ -50,16 +56,59 @@ func ensureRuntimeServices(ctx context.Context, cfg config.Config, logger *slog.
 			slog.Bool("managed_bifrost_started", startBifrost),
 		)
 	}
-	if err := runDockerCompose(ctx, serviceDir, args); err != nil {
+	writeServiceProgress(progress, "Starting Postgres and Temporal with Docker Compose")
+	writeServiceProgress(progress, "Running: docker %s", strings.Join(args, " "))
+	if err := runDockerCompose(ctx, serviceDir, args, progress); err != nil {
+		return friendlyDockerComposeError(err)
+	}
+	if err := waitForRuntimeServices(ctx, cfg, startBifrost, progress); err != nil {
 		return err
 	}
-	if err := waitForRuntimeServices(ctx, cfg, startBifrost); err != nil {
-		return err
-	}
+	writeServiceProgress(progress, "OpenCTO services are ready")
 	if logger != nil {
 		logger.Info("OpenCTO services ready", slog.String("temporal", cfg.Temporal.HostPort))
 	}
 	return nil
+}
+
+func writeServiceProgress(out io.Writer, format string, args ...any) {
+	if out == nil {
+		return
+	}
+	fmt.Fprintf(out, "opencto: "+format+"\n", args...)
+}
+
+func checkDockerDaemon(ctx context.Context) error {
+	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(checkCtx, "docker", "info", "--format", "{{.ServerVersion}}")
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	if errors.Is(checkCtx.Err(), context.DeadlineExceeded) {
+		return errors.New("Docker is installed, but the daemon did not respond. Start Docker Desktop or OrbStack, then run opencto start again")
+	}
+	detail := strings.TrimSpace(string(output))
+	if detail == "" {
+		detail = err.Error()
+	}
+	return fmt.Errorf("Docker is installed, but it is not running or not reachable. Start Docker Desktop or OrbStack, then run opencto start again.\nDocker error: %s", detail)
+}
+
+func friendlyDockerComposeError(err error) error {
+	if err == nil {
+		return nil
+	}
+	message := err.Error()
+	if strings.Contains(message, "docker API") ||
+		strings.Contains(message, "docker.sock") ||
+		strings.Contains(message, "Cannot connect to the Docker daemon") ||
+		strings.Contains(message, "Is the docker daemon running") {
+		return fmt.Errorf("Docker is not running or not reachable. Start Docker Desktop or OrbStack, then run opencto start again.\nDocker error: %s", message)
+	}
+	return err
 }
 
 func ensureRuntimeServiceFiles(workspaceRoot string, cfg config.Config) (string, error) {
@@ -213,25 +262,36 @@ func managedBifrostHostPort(cfg config.Config) (string, bool, error) {
 	return net.JoinHostPort(host, port), true, nil
 }
 
-func runDockerCompose(ctx context.Context, serviceDir string, args []string) error {
+func runDockerCompose(ctx context.Context, serviceDir string, args []string, out io.Writer) error {
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Dir = serviceDir
-	output, err := cmd.CombinedOutput()
+	var output bytes.Buffer
+	if out == nil {
+		cmd.Stdout = &output
+		cmd.Stderr = &output
+	} else {
+		writer := io.MultiWriter(out, &output)
+		cmd.Stdout = writer
+		cmd.Stderr = writer
+	}
+	err := cmd.Run()
 	if err == nil {
 		return nil
 	}
-	detail := strings.TrimSpace(string(output))
+	detail := strings.TrimSpace(output.String())
 	if detail == "" {
 		detail = err.Error()
 	}
 	return fmt.Errorf("docker %s failed: %s", strings.Join(args, " "), detail)
 }
 
-func waitForRuntimeServices(ctx context.Context, cfg config.Config, waitForBifrost bool) error {
+func waitForRuntimeServices(ctx context.Context, cfg config.Config, waitForBifrost bool, progress io.Writer) error {
 	waitCtx, cancel := context.WithTimeout(ctx, serviceWaitTimeout)
 	defer cancel()
 
 	var last []doctorResult
+	nextProgress := time.Now()
+	writeServiceProgress(progress, "Waiting for Temporal at %s", cfg.Temporal.HostPort)
 	for {
 		last = checkTemporal(waitCtx, cfg)
 		if waitForBifrost {
@@ -240,9 +300,13 @@ func waitForRuntimeServices(ctx context.Context, cfg config.Config, waitForBifro
 		if doctorResultsOK(last) {
 			return nil
 		}
+		if time.Now().After(nextProgress) {
+			writeServiceProgress(progress, "Still waiting: %s", summarizeDoctorFailures(last))
+			nextProgress = time.Now().Add(10 * time.Second)
+		}
 		select {
 		case <-waitCtx.Done():
-			return fmt.Errorf("OpenCTO services did not become ready: %s", summarizeDoctorFailures(last))
+			return fmt.Errorf("OpenCTO services did not become ready: %s\nCheck logs with: docker compose -f %s logs", summarizeDoctorFailures(last), filepath.Join(cfg.General.WorkspaceRoot, "services", "compose.yaml"))
 		case <-time.After(2 * time.Second):
 		}
 	}

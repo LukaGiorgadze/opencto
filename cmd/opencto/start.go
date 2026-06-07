@@ -23,7 +23,7 @@ func runStartCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	if len(env.UserEditableCreated) > 0 {
 		return fmt.Errorf("created starter files:\n%s\n\nFill in %s, then run opencto start again", strings.Join(env.UserEditableCreated, "\n"), envPathForConfig(env))
 	}
-	return runStart(ctx, env)
+	return runStart(ctx, env, stderr)
 }
 
 func envPathForConfig(env commandEnvironment) string {
@@ -33,11 +33,11 @@ func envPathForConfig(env commandEnvironment) string {
 	return ".env"
 }
 
-func runStart(ctx context.Context, env commandEnvironment) error {
+func runStart(ctx context.Context, env commandEnvironment, progress io.Writer) error {
 	if err := runBootstrap(ctx, env.Config, defaultProject, env.Logger, env.SkillsRoot == ""); err != nil {
 		return err
 	}
-	if err := ensureRuntimeServices(ctx, env.Config, env.Logger); err != nil {
+	if err := ensureRuntimeServices(ctx, env.Config, env.Logger, progress); err != nil {
 		return err
 	}
 	return runServe(ctx, env)

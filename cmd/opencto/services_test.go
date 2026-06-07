@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,19 @@ import (
 
 	"github.com/opencto/opencto/internal/config"
 )
+
+func TestFriendlyDockerComposeErrorExplainsDockerDaemonFailure(t *testing.T) {
+	err := friendlyDockerComposeError(errors.New("failed to connect to the docker API at unix:///Users/luka/.docker/run/docker.sock"))
+	if err == nil {
+		t.Fatal("expected friendly error")
+	}
+	message := err.Error()
+	for _, want := range []string{"Docker is not running or not reachable", "Start Docker Desktop or OrbStack"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("expected friendly Docker guidance %q in:\n%s", want, message)
+		}
+	}
+}
 
 func TestEnsureRuntimeServiceFilesCreatesComposeAssets(t *testing.T) {
 	workspace := t.TempDir()
