@@ -1,0 +1,86 @@
+{
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "required": [
+        "-A",
+        "-B",
+        "-C",
+        "-i",
+        "-n",
+        "glob",
+        "path",
+        "type",
+        "offset",
+        "context",
+        "pattern",
+        "multiline",
+        "head_limit",
+        "output_mode"
+    ],
+    "properties": {
+        "-A": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of lines to show after each match (rg -A). Use 0 for no after-context. Requires output_mode: \"content\", ignored otherwise."
+        },
+        "-B": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of lines to show before each match (rg -B). Use 0 for no before-context. Requires output_mode: \"content\", ignored otherwise."
+        },
+        "-C": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Alias for context. Use 0 when not needed."
+        },
+        "-i": {
+            "type": "boolean",
+            "description": "Case insensitive search (rg -i). Use false for the default behavior."
+        },
+        "-n": {
+            "type": "boolean",
+            "description": "Show line numbers in output (rg -n). Use true for the default behavior. Requires output_mode: \"content\", ignored otherwise."
+        },
+        "glob": {
+            "type": "string",
+            "description": "Glob pattern to filter files (e.g. \"*.go\", \"*.{ts,tsx}\") - maps to rg --glob. Use an empty string for no glob filter."
+        },
+        "path": {
+            "type": "string",
+            "description": "Absolute file or directory path to search in (rg PATH). Use an empty string for the tool's configured working directory."
+        },
+        "type": {
+            "type": "string",
+            "description": "File type to search (rg --type). Common types: js, py, rust, go, java, etc. Use an empty string for all file types."
+        },
+        "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Skip first N lines/entries before applying head_limit, equivalent to \"| tail -n +N | head -N\". Use 0 for the default behavior."
+        },
+        "context": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of lines to show before and after each match (rg -C). Use 0 for no context. Requires output_mode: \"content\", ignored otherwise."
+        },
+        "pattern": {
+            "type": "string",
+            "description": "The regular expression pattern to search for in file contents"
+        },
+        "multiline": {
+            "type": "boolean",
+            "description": "Enable multiline mode where . matches newlines and patterns can span lines (rg -U --multiline-dotall). Use false for the default behavior."
+        },
+        "head_limit": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Limit output to first N lines/entries, equivalent to \"| head -N\". Works across all output modes. Use 250 for the default behavior. Pass 0 for unlimited."
+        },
+        "output_mode": {
+            "enum": ["content", "files_with_matches", "count"],
+            "type": "string",
+            "description": "Output mode: \"content\" shows matching lines, \"files_with_matches\" shows file paths, \"count\" shows match counts. Use \"files_with_matches\" for the default behavior."
+        }
+    },
+    "additionalProperties": false
+}

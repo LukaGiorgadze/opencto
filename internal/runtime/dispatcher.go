@@ -1,0 +1,72 @@
+package runtime
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
+	"go.temporal.io/sdk/client"
+
+	"github.com/opencto/opencto/internal/domain"
+	"github.com/opencto/opencto/internal/runtime/signals"
+	"github.com/opencto/opencto/internal/runtime/workflows"
+)
+
+type Dispatcher struct {
+	client                   client.Client
+	taskQueue                string
+	continueAsNewAfterEvents int
+}
+
+func NewDispatcher(client client.Client, taskQueue string, continueAsNewAfterEvents int) *Dispatcher {
+	return &Dispatcher{
+		client:                   client,
+		taskQueue:                taskQueue,
+		continueAsNewAfterEvents: continueAsNewAfterEvents,
+	}
+}
+
+func WorkflowID(projectID string) string {
+	return fmt.Sprintf("%s:project", projectID)
+}
+
+func (d *Dispatcher) EnsureProjectWorkflow(ctx context.Context, projectID string) error {
+	_, err := d.client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID:                    WorkflowID(projectID),
+		TaskQueue:             d.taskQueue,
+		WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,
+	}, workflows.ProjectWorkflowName, workflows.ProjectWorkflowInput{
+		ProjectID:                projectID,
+		ContinueAsNewAfterEvents: d.continueAsNewAfterEvents,
+	})
+	if err == nil {
+		return nil
+	}
+	var alreadyStarted *serviceerror.WorkflowExecutionAlreadyStarted
+	if errors.As(err, &alreadyStarted) {
+		return nil
+	}
+	return err
+}
+
+func (d *Dispatcher) EnqueueEvent(ctx context.Context, event domain.Event) error {
+	_, err := d.client.SignalWithStartWorkflow(
+		ctx,
+		WorkflowID(event.ProjectID),
+		workflows.SignalEnqueueEvent,
+		signals.EnqueueEventSignal{Event: event},
+		client.StartWorkflowOptions{
+			ID:                    WorkflowID(event.ProjectID),
+			TaskQueue:             d.taskQueue,
+			WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,
+		},
+		workflows.ProjectWorkflowName,
+		workflows.ProjectWorkflowInput{
+			ProjectID:                event.ProjectID,
+			ContinueAsNewAfterEvents: d.continueAsNewAfterEvents,
+		},
+	)
+	return err
+}

@@ -1,0 +1,11 @@
+.DS_Store
+.env
+/bin/
+/data/*
+!/data/.gitkeep
+/tmp/
+/coverage.out
+/dist/
+/.gocache/
+/.gomodcache/
+__pycache__/

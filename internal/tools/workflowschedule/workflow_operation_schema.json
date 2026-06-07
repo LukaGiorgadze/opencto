@@ -1,0 +1,31 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["operation"],
+    "additionalProperties": false,
+    "properties": {
+        "operation": {
+            "type": "string",
+            "enum": ["list", "describe", "trigger", "pause", "resume"],
+            "description": "Workflow control/read action. Trigger publishes current local source if needed before running. Use WorkflowUpdate, not this tool, for requested source or manifest changes."
+        },
+        "workflow_id": {
+            "type": "string",
+            "description": "Required for describe, trigger, pause, and resume. Not needed for list."
+        },
+        "note": {
+            "type": "string",
+            "description": "Optional schedule note for pause/resume or operator context."
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Maximum workflows to return for list."
+        },
+        "include_completed": {
+            "type": "boolean",
+            "description": "Include deleted/completed workflow records when listing if supported by storage."
+        }
+    }
+}

@@ -1,0 +1,5 @@
+{{- if .Reason }}
+Image attachment skipped: {{ .Label }}: {{ .Reason -}}
+{{- else }}
+Image attachment skipped: {{ .Label }}: image could not be validated
+{{- end -}}

@@ -1,0 +1,56 @@
+version: "3"
+
+dotenv:
+  - .env
+
+vars:
+  ACTOR: '{{default "local-user" .ACTOR}}'
+  BODY: '{{default "hello from task inject" .BODY}}'
+
+tasks:
+  default:
+    cmds:
+      - task: start
+
+  start:
+    desc: Run the OpenCTO app in start mode with Air reloads.
+    cmd: air --c .air.start.toml
+
+  serve:
+    aliases: [app]
+    desc: Run the OpenCTO dev serve mode with Air reloads.
+    cmd: air --c .air.serve.toml
+
+  worker:
+    desc: Run the OpenCTO dev worker-only mode with Air reloads.
+    cmd: air --c .air.worker.toml
+
+  doctor:
+    desc: Check local tools, runtime state, Discord env, and Temporal readiness.
+    cmd: go run ./cmd/opencto doctor
+
+  inject:
+    desc: Inject a local event. Override BODY and ACTOR as needed.
+    cmd: go run ./cmd/opencto inject -actor '{{.ACTOR}}' -body '{{.BODY}}'
+
+  infra:up:
+    aliases: [up]
+    desc: Start Temporal and supporting infrastructure.
+    cmd: docker compose up -d --remove-orphans
+
+  infra:down:
+    aliases: [down]
+    desc: Stop Temporal and supporting infrastructure.
+    cmd: docker compose down
+
+  infra:reset:
+    desc: Stop infrastructure and remove volumes.
+    cmd: docker compose down -v
+
+  infra:logs:
+    desc: Tail infrastructure logs.
+    cmd: docker compose logs -f postgresql temporal temporal-ui
+
+  test:
+    desc: Run the Go test suite with the race detector.
+    cmd: go test -race ./...

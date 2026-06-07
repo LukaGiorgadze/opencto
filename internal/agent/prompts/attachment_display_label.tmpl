@@ -1,0 +1,5 @@
+{{- if .Filename -}}{{ .Filename -}}
+{{- else if .SourceID -}}{{ .SourceID -}}
+{{- else if .URL -}}{{ .URL -}}
+{{- else if .LocalPath -}}{{ .LocalPath -}}
+{{- else -}}attachment{{- end -}}

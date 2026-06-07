@@ -1,0 +1,1 @@
+workflow {{ .Operation }}{{ if .Name }} {{ .Name }}{{ else if .WorkflowID }} {{ .WorkflowID }}{{ end }}{{ if .Description }}: {{ .Description }}{{ end -}}

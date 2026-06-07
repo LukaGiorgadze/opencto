@@ -1,0 +1,13 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["workflow_id"],
+    "additionalProperties": false,
+    "properties": {
+        "workflow_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Workflow id to delete. Deletes the schedule, workflow record, workflows/{workflow_id}, workflow-runs/{workflow_id}, and workflow data under workflows/{workflow_id}/data."
+        }
+    }
+}

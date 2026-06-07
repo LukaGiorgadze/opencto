@@ -1,0 +1,11 @@
+Project ID: {{ .ProjectID }}
+Goal: {{ .Goal }}
+Max summary chars: {{ .MaxSummaryChars }}
+
+{{- if .PreviousSummary }}
+Previous summary:
+{{ .PreviousSummary }}
+
+{{- end }}
+Tool observations to summarize:
+{{ .Source }}

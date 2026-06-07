@@ -1,0 +1,22 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["workflow_id", "prompt"],
+    "additionalProperties": false,
+    "properties": {
+        "workflow_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Existing workflow id. Source is authored under $OPENCTO_WORKSPACE/workflows/{workflow_id}."
+        },
+        "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Self-contained workflow update request. Include what should change, what must stay stable, schedule changes if any, and validation expectations."
+        },
+        "commit_message": {
+            "type": "string",
+            "description": "Optional commit message for the final authored workflow bundle."
+        }
+    }
+}

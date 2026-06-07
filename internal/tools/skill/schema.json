@@ -1,0 +1,12 @@
+{
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "required": ["skill_id"],
+    "properties": {
+        "skill_id": {
+            "type": "string",
+            "description": "Exact top-level skill ID from the skills reminder."
+        }
+    },
+    "additionalProperties": false
+}

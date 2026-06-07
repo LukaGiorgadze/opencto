@@ -1,0 +1,30 @@
+{
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "required": ["query", "scope", "limit", "tags"],
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": "Standalone, referent-resolved search query for remembered thread, channel, project, user, or global context. Resolve pronouns and follow-up phrases using the current conversation before calling this tool. Search before proposing memory changes when a related memory may already exist."
+        },
+        "scope": {
+            "type": "string",
+            "enum": ["thread", "channel", "project", "user", "global", "all"],
+            "description": "Memory scope to search. All searches visible memory in the current thread/channel/project/user/global context."
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "description": "Maximum number of memories to return."
+        },
+        "tags": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            },
+            "description": "Optional exact tags to filter results by. A memory must contain every listed tag."
+        }
+    },
+    "additionalProperties": false
+}

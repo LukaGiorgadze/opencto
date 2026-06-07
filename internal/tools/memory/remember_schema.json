@@ -1,0 +1,43 @@
+{
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "required": ["content", "scope", "kind", "tags", "confidence", "pinned", "reason"],
+    "properties": {
+        "content": {
+            "type": "string",
+            "description": "New durable memory content to propose. Keep it concise and factual; do not store transient task progress, command output, logs, or one-off errors. The backend validates, dedupes, saves, and embeds accepted proposals."
+        },
+        "scope": {
+            "type": "string",
+            "enum": ["thread", "channel", "project", "user", "global"],
+            "description": "Use thread for facts or preferences that apply only inside the current platform thread. Use channel for context shared by the current Slack/Discord/etc channel or group. Use project for project-shared facts. Use user for preferences or facts about the current user. Use global only for shared rules or facts that should apply across users."
+        },
+        "kind": {
+            "type": "string",
+            "enum": ["fact", "preference", "instruction", "decision", "constraint", "identity", "workflow", "reference", "feedback"],
+            "description": "Short category such as fact, preference, instruction, decision, constraint, identity, workflow, reference, or feedback."
+        },
+        "tags": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            },
+            "description": "Optional short lowercase tags for filtering and review. Prefer preference, decision, project, identity, workflow, or constraint when applicable."
+        },
+        "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Confidence that this memory should be reused later. Defaults to 1."
+        },
+        "pinned": {
+            "type": "boolean",
+            "description": "Whether this memory should be preferred in fallback context. Pin only high-value long-term memory."
+        },
+        "reason": {
+            "type": "string",
+            "description": "Why this should be remembered and reused later."
+        }
+    },
+    "additionalProperties": false
+}

@@ -1,0 +1,100 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "version": 2,
+  "client": {
+    "drop_excess_requests": false,
+    "enable_logging": true,
+    "enforce_auth_on_inference": true
+  },
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "id": "openai-primary",
+          "name": "openai-primary",
+          "value": "env.OPENAI_API_KEY",
+          "models": [
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.4-nano",
+            "text-embedding-3-small",
+            "gpt-4o-mini-transcribe"
+          ],
+          "weight": 1.0
+        }
+      ]
+    },
+    "anthropic": {
+      "keys": [
+        {
+          "id": "anthropic-primary",
+          "name": "anthropic-primary",
+          "value": "env.ANTHROPIC_API_KEY",
+          "models": [
+            "claude-haiku-4-5",
+            "claude-sonnet-4-5",
+            "claude-opus-4-5"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  },
+  "governance": {
+    "virtual_keys": [
+      {
+        "id": "opencto-local",
+        "name": "opencto-local",
+        "value": "env.BIFROST_API_KEY",
+        "is_active": true,
+        "provider_configs": [
+          {
+            "provider": "openai",
+            "allowed_models": [
+              "*"
+            ],
+            "key_ids": [
+              "openai-primary"
+            ],
+            "weight": 1.0
+          },
+          {
+            "provider": "anthropic",
+            "allowed_models": [
+              "*"
+            ],
+            "key_ids": [
+              "anthropic-primary"
+            ],
+            "weight": 1.0
+          }
+        ]
+      }
+    ]
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "postgresql",
+      "port": "5432",
+      "user": "temporal",
+      "password": "temporal",
+      "db_name": "postgres",
+      "ssl_mode": "disable"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "postgresql",
+      "port": "5432",
+      "user": "temporal",
+      "password": "temporal",
+      "db_name": "postgres",
+      "ssl_mode": "disable"
+    }
+  }
+}

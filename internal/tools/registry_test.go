@@ -1,0 +1,258 @@
+package tools
+
+import (
+	"bytes"
+	"encoding/json"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/opencto/opencto/internal/domain"
+)
+
+func TestDefinitionsIncludeDedicatedTools(t *testing.T) {
+	t.Parallel()
+
+	definitions := Definitions()
+	if len(definitions) != 17 {
+		t.Fatalf("expected seventeen tool definitions, got %d", len(definitions))
+	}
+
+	definition := definitions[0]
+	if definition.Name != CommandToolName {
+		t.Fatalf("expected tool name %q, got %q", CommandToolName, definition.Name)
+	}
+	if strings.Contains(definition.Name, "Bash") {
+		t.Fatalf("tool name should not assume Bash: %q", definition.Name)
+	}
+	description := strings.ToLower(definition.Description)
+	for _, disallowed := range []string{"bash", "unix", "linux"} {
+		if strings.Contains(description, disallowed) {
+			t.Fatalf("tool description should not assume %s: %q", disallowed, definition.Description)
+		}
+	}
+	if !strings.Contains(description, "project workspace") || !strings.Contains(description, "current operating system") {
+		t.Fatalf("tool description should state workspace and current OS execution: %q", definition.Description)
+	}
+
+	seen := map[domain.ToolType]bool{}
+	for _, definition := range definitions {
+		seen[definition.Type] = true
+	}
+	for _, toolType := range []domain.ToolType{
+		domain.ToolTypeAgent,
+		domain.ToolTypeExec,
+		domain.ToolTypeRead,
+		domain.ToolTypeEdit,
+		domain.ToolTypeWrite,
+		domain.ToolTypeGlob,
+		domain.ToolTypeGrep,
+		domain.ToolTypeMemoryProposeAdd,
+		domain.ToolTypeMemorySearch,
+		domain.ToolTypeMemoryList,
+		domain.ToolTypeMemoryProposeUpdate,
+		domain.ToolTypeMemoryProposeForget,
+		domain.ToolTypeWorkflowCreate,
+		domain.ToolTypeWorkflowUpdate,
+		domain.ToolTypeWorkflowDelete,
+		domain.ToolTypeWorkflowOperation,
+		domain.ToolTypeSkill,
+	} {
+		if !seen[toolType] {
+			t.Fatalf("missing tool type %q in registry", toolType)
+		}
+	}
+	if _, ok := DefinitionByName("WorkflowSchedule"); ok {
+		t.Fatalf("WorkflowSchedule should not be exposed as a model tool")
+	}
+}
+
+func TestLLMDefinitionsUseCommandNameAndDescription(t *testing.T) {
+	t.Parallel()
+
+	definitions := LLMDefinitions()
+	if len(definitions) != 17 || definitions[0].Function == nil {
+		t.Fatalf("expected seventeen function definitions, got %#v", definitions)
+	}
+
+	function := definitions[0].Function
+	if function.Name != CommandToolName {
+		t.Fatalf("expected LLM tool name %q, got %q", CommandToolName, function.Name)
+	}
+	if !strings.Contains(function.Description, "current operating system") {
+		t.Fatalf("LLM tool description should mention current OS: %q", function.Description)
+	}
+
+	var decodedSchema struct {
+		Properties map[string]struct {
+			Description string `json:"description"`
+		} `json:"properties"`
+	}
+	rawSchema, ok := function.Parameters.(json.RawMessage)
+	if !ok {
+		t.Fatalf("expected raw JSON schema, got %T", function.Parameters)
+	}
+	if err := json.Unmarshal(rawSchema, &decodedSchema); err != nil {
+		t.Fatalf("decode schema: %v", err)
+	}
+	commandDescription := decodedSchema.Properties["command"].Description
+	if !strings.Contains(commandDescription, "Do not assume Bash, sh, cmd, or PowerShell") {
+		t.Fatalf("command description should avoid exec assumptions: %q", commandDescription)
+	}
+}
+
+func TestDefinitionsDeepCopySchema(t *testing.T) {
+	t.Parallel()
+
+	first := Definitions()
+	second := Definitions()
+	if len(first) != len(second) || len(first) == 0 {
+		t.Fatalf("unexpected tool definitions: %#v %#v", first, second)
+	}
+
+	original := second[0].Schema[0]
+	first[0].Schema[0] = 'x'
+	if second[0].Schema[0] != original {
+		t.Fatalf("Definitions should deep-copy Schema")
+	}
+
+	third := Definitions()
+	if third[0].Schema[0] != original {
+		t.Fatalf("mutating cloned Schema should not alter registry state")
+	}
+}
+
+func TestLLMDefinitionsForTypesFiltersTools(t *testing.T) {
+	t.Parallel()
+
+	definitions := LLMDefinitionsForTypes([]domain.ToolType{domain.ToolTypeRead, domain.ToolTypeGrep})
+	if len(definitions) != 2 {
+		t.Fatalf("expected two definitions, got %d", len(definitions))
+	}
+	names := []string{definitions[0].Function.Name, definitions[1].Function.Name}
+	sort.Strings(names)
+	if strings.Join(names, ",") != "Grep,Read" {
+		t.Fatalf("unexpected filtered tool names: %v", names)
+	}
+}
+
+func TestModelToolTypesCanExcludeAgent(t *testing.T) {
+	t.Parallel()
+
+	for _, toolType := range ModelToolTypes(false) {
+		if toolType == domain.ToolTypeAgent {
+			t.Fatalf("Agent should be excluded from child model tool types")
+		}
+	}
+}
+
+func TestToolResultProcessorsEmptyByDefault(t *testing.T) {
+	t.Parallel()
+
+	processors := ToolResultProcessors()
+	if len(processors) != 0 {
+		t.Fatalf("expected no tool result processors, got %d", len(processors))
+	}
+}
+
+func TestDefinitionSchemasDoNotUseNullDefaults(t *testing.T) {
+	t.Parallel()
+
+	for _, definition := range Definitions() {
+		if bytes.Contains(definition.Schema, []byte("null")) {
+			t.Fatalf("%s schema should not use nullable fields or null defaults", definition.Name)
+		}
+	}
+}
+
+func TestLLMDefinitionSchemasAreStrictToolCompatible(t *testing.T) {
+	t.Parallel()
+
+	for _, definition := range LLMDefinitions() {
+		if definition.Function == nil {
+			t.Fatalf("tool %q is missing function definition", definition.Type)
+		}
+		rawSchema, ok := definition.Function.Parameters.(json.RawMessage)
+		if !ok {
+			t.Fatalf("tool %q parameters should be raw JSON schema, got %T", definition.Function.Name, definition.Function.Parameters)
+		}
+
+		var schema struct {
+			Properties           map[string]json.RawMessage `json:"properties"`
+			Required             []string                   `json:"required"`
+			AdditionalProperties bool                       `json:"additionalProperties"`
+		}
+		if err := json.Unmarshal(rawSchema, &schema); err != nil {
+			t.Fatalf("decode %s schema: %v", definition.Function.Name, err)
+		}
+		if len(schema.Properties) == 0 {
+			t.Fatalf("%s schema should declare properties", definition.Function.Name)
+		}
+		if schema.AdditionalProperties {
+			t.Fatalf("%s schema should set additionalProperties to false", definition.Function.Name)
+		}
+
+		required := map[string]bool{}
+		for _, field := range schema.Required {
+			required[field] = true
+		}
+		if definition.Function.Strict {
+			var missing []string
+			for field := range schema.Properties {
+				if !required[field] {
+					missing = append(missing, field)
+				}
+			}
+			sort.Strings(missing)
+			if len(missing) > 0 {
+				t.Fatalf("%s schema required array is missing properties: %s", definition.Function.Name, strings.Join(missing, ", "))
+			}
+		}
+		if _, ok := schema.Properties["work_item_id"]; ok {
+			t.Fatalf("%s schema should not expose internal work item ids", definition.Function.Name)
+		}
+		var extra []string
+		for field := range required {
+			if _, ok := schema.Properties[field]; !ok {
+				extra = append(extra, field)
+			}
+		}
+		sort.Strings(extra)
+		if len(extra) > 0 {
+			t.Fatalf("%s schema required array includes unknown properties: %s", definition.Function.Name, strings.Join(extra, ", "))
+		}
+	}
+}
+
+func TestWorkflowLLMDefinitionsAreOptionalFieldTools(t *testing.T) {
+	t.Parallel()
+
+	workflowTools := map[string]bool{
+		"WorkflowCreate":    false,
+		"WorkflowUpdate":    false,
+		"WorkflowDelete":    false,
+		"WorkflowOperation": false,
+	}
+	for _, definition := range LLMDefinitions() {
+		if _, ok := workflowTools[definition.Function.Name]; !ok {
+			continue
+		}
+		workflowTools[definition.Function.Name] = true
+		if definition.Function.Strict {
+			t.Fatalf("%s should not use strict schemas; update fields must be optional", definition.Function.Name)
+		}
+	}
+	for name, seen := range workflowTools {
+		if !seen {
+			t.Fatalf("missing workflow LLM tool %s", name)
+		}
+	}
+}
+
+func TestDefinitionByNameRejectsBashName(t *testing.T) {
+	t.Parallel()
+
+	if _, ok := DefinitionByName("Bash"); ok {
+		t.Fatalf("Bash should not resolve to a tool definition")
+	}
+}

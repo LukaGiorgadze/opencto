@@ -1,0 +1,61 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+        "command",
+        "args",
+        "cwd",
+        "timeout_ms",
+        "run_mode",
+        "idempotency",
+        "process_scope",
+        "description",
+        "destructive"
+    ],
+    "additionalProperties": false,
+    "properties": {
+        "command": {
+            "type": "string",
+            "description": "The executable to run for the next execution step, for example \"python\", \"go\", or \"pnpm\". Do not include arguments, quoted paths, or a full command line here. Do not assume Bash, sh, cmd, or PowerShell."
+        },
+        "args": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            },
+            "description": "Arguments for the executable. Put script paths, flags, and command arguments here. Use an empty array when there are no arguments."
+        },
+        "cwd": {
+            "type": "string",
+            "description": "Optional working directory for this command. Use this instead of shelling out to cd. Relative paths are resolved from the configured workspace; absolute paths are used as provided. Use an empty string for the configured workspace."
+        },
+        "timeout_ms": {
+            "type": "integer",
+            "description": "Maximum runtime for this execution step in milliseconds. Use 0 to accept the runtime default. For start_background, this is only the startup window before OpenCTO returns control.",
+            "maximum": 600000
+        },
+        "run_mode": {
+            "type": "string",
+            "enum": ["wait_for_exit", "start_background"],
+            "description": "Use wait_for_exit for commands expected to finish. Use start_background for servers, watchers, dev processes, or any command expected to keep running while the user continues chatting."
+        },
+        "idempotency": {
+            "type": "string",
+            "enum": ["read_only", "idempotent", "non_idempotent", "unknown"],
+            "description": "Classify whether rerunning this command is safe. Use read_only for inspection, idempotent for safe repeatable actions, non_idempotent for one-shot/mutating actions, and unknown when unsure."
+        },
+        "process_scope": {
+            "type": "string",
+            "enum": ["stop_on_finish", "project"],
+            "description": "For start_background only. Select the intended owner lifetime: stop_on_finish means OpenCTO starts the process in the background, then stops it when the task finishes. Do not use it when the user should be able to access the app, server, or watcher after your response; project means the process belongs to the project and remains running until an explicit stop, so use it when the user should be able to access the app, server, or watcher after your response."
+        },
+        "description": {
+            "type": "string",
+            "description": "One sentence describing what this command achieves. Use an empty string when the command itself is self-explanatory."
+        },
+        "destructive": {
+            "type": "boolean",
+            "description": "Set true when the command mutates state in a risky or hard-to-reverse way. Use false otherwise."
+        }
+    }
+}

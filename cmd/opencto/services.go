@@ -1,0 +1,609 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/opencto/opencto/internal/config"
+)
+
+const serviceWaitTimeout = 2 * time.Minute
+const defaultManagedBifrostOpenAIBaseURL = "http://127.0.0.1:8081/openai"
+
+func ensureRuntimeServices(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
+	serviceDir, err := ensureRuntimeServiceFiles(cfg.General.WorkspaceRoot, cfg)
+	if err != nil {
+		return err
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		return errors.New("Docker is required to run OpenCTO services. Install Docker Desktop or OrbStack, then run opencto start again")
+	}
+
+	startBifrost, err := managedBifrostServiceEnabled(cfg)
+	if err != nil {
+		return err
+	}
+	args := []string{"compose", "-f", filepath.Join(serviceDir, "compose.yaml")}
+	if startBifrost {
+		args = append(args, "--profile", "bifrost")
+	}
+	args = append(args, "up", "-d", "temporal-init")
+	if startBifrost {
+		args = append(args, "bifrost")
+	}
+
+	if logger != nil {
+		logger.Info("starting OpenCTO services",
+			slog.String("compose_dir", serviceDir),
+			slog.Bool("bifrost_enabled", cfg.LLM.Bifrost.Enabled),
+			slog.Bool("managed_bifrost_started", startBifrost),
+		)
+	}
+	if err := runDockerCompose(ctx, serviceDir, args); err != nil {
+		return err
+	}
+	if err := waitForRuntimeServices(ctx, cfg, startBifrost); err != nil {
+		return err
+	}
+	if logger != nil {
+		logger.Info("OpenCTO services ready", slog.String("temporal", cfg.Temporal.HostPort))
+	}
+	return nil
+}
+
+func ensureRuntimeServiceFiles(workspaceRoot string, cfg config.Config) (string, error) {
+	workspaceRoot = strings.TrimSpace(workspaceRoot)
+	if workspaceRoot == "" {
+		return "", fmt.Errorf("workspace root is required")
+	}
+	composeYAML, err := renderServiceComposeYAML(cfg)
+	if err != nil {
+		return "", err
+	}
+	serviceDir := filepath.Join(workspaceRoot, "services")
+	for _, dir := range []string{
+		serviceDir,
+		filepath.Join(serviceDir, "scripts"),
+		filepath.Join(serviceDir, "dynamicconfig"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return "", fmt.Errorf("create service directory %s: %w", dir, err)
+		}
+	}
+
+	files := []struct {
+		path string
+		data string
+		perm os.FileMode
+	}{
+		{path: filepath.Join(serviceDir, "compose.yaml"), data: composeYAML, perm: 0o644},
+		{path: filepath.Join(serviceDir, "bifrost.json"), data: serviceBifrostJSON, perm: 0o644},
+		{path: filepath.Join(serviceDir, "dynamicconfig", "development-sql.yml"), data: serviceTemporalDynamicConfigYAML, perm: 0o644},
+		{path: filepath.Join(serviceDir, "scripts", "setup-postgres.sh"), data: serviceSetupPostgresSH, perm: 0o755},
+		{path: filepath.Join(serviceDir, "scripts", "create-namespace.sh"), data: serviceCreateNamespaceSH, perm: 0o755},
+		{path: filepath.Join(serviceDir, "scripts", "temporal-init-entrypoint.sh"), data: serviceTemporalInitSH, perm: 0o755},
+	}
+	for _, file := range files {
+		if err := writeManagedServiceFile(file.path, []byte(file.data), file.perm); err != nil {
+			return "", err
+		}
+	}
+	return serviceDir, nil
+}
+
+func writeManagedServiceFile(path string, data []byte, perm os.FileMode) error {
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("read %s: %w", path, err)
+		}
+	} else if bytes.Equal(existing, data) {
+		if err := os.Chmod(path, perm); err != nil {
+			return fmt.Errorf("chmod %s: %w", path, err)
+		}
+		return nil
+	}
+
+	if err := os.WriteFile(path, data, perm); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := os.Chmod(path, perm); err != nil {
+		return fmt.Errorf("chmod %s: %w", path, err)
+	}
+	return nil
+}
+
+func renderServiceComposeYAML(cfg config.Config) (string, error) {
+	temporalHostPort, err := temporalComposeHostPort(cfg.Temporal.HostPort)
+	if err != nil {
+		return "", err
+	}
+	bifrostHostPort := "127.0.0.1:8081:8080"
+	if cfg.LLM.Bifrost.Enabled {
+		bifrostHostPort, _, err = managedBifrostComposeHostPort(cfg)
+		if err != nil {
+			return "", err
+		}
+	}
+	namespace := strings.TrimSpace(cfg.Temporal.Namespace)
+	if namespace == "" {
+		namespace = "default"
+	}
+	out := strings.ReplaceAll(serviceComposeYAMLTemplate, "{{TEMPORAL_HOST_PORT}}", strconv.Quote(temporalHostPort))
+	out = strings.ReplaceAll(out, "{{TEMPORAL_NAMESPACE}}", strconv.Quote(namespace))
+	out = strings.ReplaceAll(out, "{{BIFROST_HOST_PORT}}", strconv.Quote(bifrostHostPort))
+	return out, nil
+}
+
+func temporalComposeHostPort(hostPort string) (string, error) {
+	hostPort = strings.TrimSpace(hostPort)
+	if hostPort == "" {
+		hostPort = "127.0.0.1:7233"
+	}
+	host, port, err := net.SplitHostPort(hostPort)
+	if err != nil {
+		return "", fmt.Errorf("parse temporal.host_port %q: %w", hostPort, err)
+	}
+	port = strings.TrimSpace(port)
+	if port == "" {
+		return "", fmt.Errorf("temporal.host_port %q is missing a port", hostPort)
+	}
+	host = strings.TrimSpace(host)
+	if strings.EqualFold(host, "localhost") {
+		host = "127.0.0.1"
+	}
+	if host == "" {
+		return port + ":7233", nil
+	}
+	return net.JoinHostPort(host, port) + ":7233", nil
+}
+
+func managedBifrostServiceEnabled(cfg config.Config) (bool, error) {
+	if !cfg.LLM.Bifrost.Enabled {
+		return false, nil
+	}
+	_, managed, err := managedBifrostComposeHostPort(cfg)
+	return managed, err
+}
+
+func managedBifrostComposeHostPort(cfg config.Config) (string, bool, error) {
+	hostPort, managed, err := managedBifrostHostPort(cfg)
+	if err != nil {
+		return "", false, err
+	}
+	if !managed {
+		return "127.0.0.1:8081:8080", false, nil
+	}
+	return hostPort + ":8080", true, nil
+}
+
+func managedBifrostHostPort(cfg config.Config) (string, bool, error) {
+	baseURL := strings.TrimSpace(cfg.LLM.Bifrost.BaseURL)
+	if baseURL == "" {
+		baseURL = defaultManagedBifrostOpenAIBaseURL
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return "", false, fmt.Errorf("parse llm.bifrost.base_url %q: %w", baseURL, err)
+	}
+	if !strings.EqualFold(parsed.Scheme, "http") {
+		return "", false, nil
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	port := strings.TrimSpace(parsed.Port())
+	if strings.Trim(parsed.EscapedPath(), "/") != "openai" || host == "" || port == "" {
+		return "", false, nil
+	}
+	if strings.EqualFold(host, "localhost") {
+		host = "127.0.0.1"
+	} else if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		return "", false, nil
+	}
+	return net.JoinHostPort(host, port), true, nil
+}
+
+func runDockerCompose(ctx context.Context, serviceDir string, args []string) error {
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd.Dir = serviceDir
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	detail := strings.TrimSpace(string(output))
+	if detail == "" {
+		detail = err.Error()
+	}
+	return fmt.Errorf("docker %s failed: %s", strings.Join(args, " "), detail)
+}
+
+func waitForRuntimeServices(ctx context.Context, cfg config.Config, waitForBifrost bool) error {
+	waitCtx, cancel := context.WithTimeout(ctx, serviceWaitTimeout)
+	defer cancel()
+
+	var last []doctorResult
+	for {
+		last = checkTemporal(waitCtx, cfg)
+		if waitForBifrost {
+			last = append(last, checkManagedBifrost(waitCtx, cfg))
+		}
+		if doctorResultsOK(last) {
+			return nil
+		}
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("OpenCTO services did not become ready: %s", summarizeDoctorFailures(last))
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+func checkManagedBifrost(ctx context.Context, cfg config.Config) doctorResult {
+	hostPort, managed, err := managedBifrostHostPort(cfg)
+	if err != nil {
+		return doctorResult{status: doctorFail, name: "bifrost", detail: err.Error()}
+	}
+	if !managed {
+		return doctorResult{status: doctorOK, name: "bifrost", detail: "unmanaged"}
+	}
+	dialer := net.Dialer{Timeout: time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", hostPort)
+	if err != nil {
+		return doctorResult{status: doctorFail, name: "bifrost", detail: fmt.Sprintf("connect %s: %v", hostPort, err)}
+	}
+	_ = conn.Close()
+	return doctorResult{status: doctorOK, name: "bifrost", detail: hostPort}
+}
+
+func doctorResultsOK(results []doctorResult) bool {
+	for _, result := range results {
+		if result.status != doctorOK {
+			return false
+		}
+	}
+	return true
+}
+
+func summarizeDoctorFailures(results []doctorResult) string {
+	var parts []string
+	for _, result := range results {
+		if result.status == doctorOK {
+			continue
+		}
+		parts = append(parts, result.name+": "+result.detail)
+	}
+	if len(parts) == 0 {
+		return "unknown service readiness failure"
+	}
+	return strings.Join(parts, "; ")
+}
+
+const serviceComposeYAMLTemplate = `name: opencto
+
+services:
+  postgresql:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+    networks:
+      - opencto-network
+    volumes:
+      - postgresql_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 10s
+
+  temporal-admin-tools:
+    image: temporalio/admin-tools:latest
+    restart: on-failure:6
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: temporal
+      POSTGRES_SEEDS: postgresql
+      SQL_PLUGIN: postgres12
+    networks:
+      - opencto-network
+    volumes:
+      - ./scripts:/scripts:ro
+    entrypoint: ["/bin/sh", "/scripts/setup-postgres.sh"]
+
+  temporal:
+    image: temporalio/server:latest
+    restart: unless-stopped
+    depends_on:
+      temporal-admin-tools:
+        condition: service_completed_successfully
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: temporal
+      POSTGRES_SEEDS: postgresql
+      BIND_ON_IP: 0.0.0.0
+      DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig/development-sql.yml
+      TEMPORAL_CLI_ADDRESS: temporal:7233
+    networks:
+      - opencto-network
+    ports:
+      - {{TEMPORAL_HOST_PORT}}
+    volumes:
+      - ./dynamicconfig:/etc/temporal/config/dynamicconfig:ro
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "7233"]
+      interval: 5s
+      timeout: 3s
+      start_period: 20s
+      retries: 60
+
+  temporal-create-namespace:
+    image: temporalio/admin-tools:latest
+    restart: on-failure:5
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      DEFAULT_NAMESPACE: {{TEMPORAL_NAMESPACE}}
+      TEMPORAL_NAMESPACE_RETENTION: 24h
+    networks:
+      - opencto-network
+    volumes:
+      - ./scripts:/scripts:ro
+    entrypoint: ["/bin/sh", "/scripts/create-namespace.sh"]
+
+  temporal-init:
+    image: temporalio/admin-tools:latest
+    restart: on-failure:5
+    depends_on:
+      temporal-create-namespace:
+        condition: service_completed_successfully
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      DEFAULT_NAMESPACE: {{TEMPORAL_NAMESPACE}}
+      TEMPORAL_SEARCH_ATTRIBUTES: opencto_project_id
+    networks:
+      - opencto-network
+    volumes:
+      - ./scripts:/scripts:ro
+    entrypoint: ["/bin/sh", "/scripts/temporal-init-entrypoint.sh"]
+
+  bifrost:
+    profiles: ["bifrost"]
+    image: maximhq/bifrost:latest
+    restart: unless-stopped
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    volumes:
+      - ./bifrost.json:/app/data/config.json:ro
+    networks:
+      - opencto-network
+    ports:
+      - {{BIFROST_HOST_PORT}}
+
+networks:
+  opencto-network:
+    driver: bridge
+    name: opencto-network
+
+volumes:
+  postgresql_data:
+`
+
+const serviceTemporalDynamicConfigYAML = `limit.blobSize:
+  - value: 1048576
+    constraints: {}
+limit.maxIDLength:
+  - value: 255
+    constraints: {}
+system.forceSearchAttributesCacheRefreshOnRead:
+  - value: true
+    constraints: {}
+frontend.enableUpdateWorkflowExecution:
+  - value: true
+    constraints: {}
+`
+
+const serviceSetupPostgresSH = `#!/bin/sh
+set -eu
+
+: "${POSTGRES_SEEDS:?ERROR: POSTGRES_SEEDS environment variable is required}"
+: "${POSTGRES_USER:?ERROR: POSTGRES_USER environment variable is required}"
+: "${POSTGRES_PWD:?ERROR: POSTGRES_PWD environment variable is required}"
+
+SQL_PLUGIN="${SQL_PLUGIN:-postgres12}"
+SQL_PORT="${DB_PORT:-5432}"
+
+run_sql_tool() {
+  database="$1"
+  shift
+
+  temporal-sql-tool \
+    --plugin "${SQL_PLUGIN}" \
+    --ep "${POSTGRES_SEEDS}" \
+    -u "${POSTGRES_USER}" \
+    --pw "${POSTGRES_PWD}" \
+    -p "${SQL_PORT}" \
+    --db "${database}" \
+    "$@"
+}
+
+is_existing_schema_error() {
+  printf '%s\n' "$1" | grep -Eiq 'already exists|duplicate key value violates unique constraint'
+}
+
+run_sql_tool_idempotent() {
+  output="$(run_sql_tool "$@" 2>&1)" && {
+    [ -z "$output" ] || printf '%s\n' "$output"
+    return 0
+  }
+
+  if is_existing_schema_error "$output"; then
+    printf '%s\n' "$output"
+    return 0
+  fi
+
+  printf '%s\n' "$output" >&2
+  return 1
+}
+
+nc -z -w 10 "${POSTGRES_SEEDS}" "${SQL_PORT}"
+
+run_sql_tool_idempotent temporal --quiet create
+run_sql_tool_idempotent temporal --quiet setup-schema -v 0.0
+run_sql_tool temporal update-schema -d /etc/temporal/schema/postgresql/v12/temporal/versioned
+
+run_sql_tool_idempotent temporal_visibility --quiet create
+run_sql_tool_idempotent temporal_visibility --quiet setup-schema -v 0.0
+run_sql_tool temporal_visibility update-schema -d /etc/temporal/schema/postgresql/v12/visibility/versioned
+`
+
+const serviceCreateNamespaceSH = `#!/bin/sh
+set -eu
+
+namespace="${DEFAULT_NAMESPACE:-default}"
+retention="${TEMPORAL_NAMESPACE_RETENTION:-24h}"
+
+if temporal operator namespace describe --namespace "${namespace}" >/dev/null 2>&1; then
+  exit 0
+fi
+
+temporal operator namespace create \
+  --namespace "${namespace}" \
+  --retention "${retention}"
+`
+
+const serviceTemporalInitSH = `#!/bin/sh
+set -eu
+
+attributes="${TEMPORAL_SEARCH_ATTRIBUTES:-opencto_project_id}"
+old_ifs="$IFS"
+IFS=','
+set -- ${attributes}
+IFS="$old_ifs"
+
+for attribute in "$@"; do
+  while true; do
+    output="$(temporal operator search-attribute create --name "${attribute}" --type Keyword 2>&1)" && break
+    echo "${output}" | grep -qi "already exists" && break
+    sleep 1
+  done
+done
+`
+
+const serviceBifrostJSON = `{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "version": 2,
+  "client": {
+    "drop_excess_requests": false,
+    "enable_logging": true,
+    "enforce_auth_on_inference": true
+  },
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "id": "openai-primary",
+          "name": "openai-primary",
+          "value": "env.OPENAI_API_KEY",
+          "models": [
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.4-nano",
+            "text-embedding-3-small",
+            "gpt-4o-mini-transcribe"
+          ],
+          "weight": 1.0
+        }
+      ]
+    },
+    "anthropic": {
+      "keys": [
+        {
+          "id": "anthropic-primary",
+          "name": "anthropic-primary",
+          "value": "env.ANTHROPIC_API_KEY",
+          "models": [
+            "claude-haiku-4-5",
+            "claude-sonnet-4-5",
+            "claude-opus-4-5"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  },
+  "governance": {
+    "virtual_keys": [
+      {
+        "id": "opencto-local",
+        "name": "opencto-local",
+        "value": "env.BIFROST_API_KEY",
+        "is_active": true,
+        "provider_configs": [
+          {
+            "provider": "openai",
+            "allowed_models": ["*"],
+            "key_ids": ["openai-primary"],
+            "weight": 1.0
+          },
+          {
+            "provider": "anthropic",
+            "allowed_models": ["*"],
+            "key_ids": ["anthropic-primary"],
+            "weight": 1.0
+          }
+        ]
+      }
+    ]
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "postgresql",
+      "port": "5432",
+      "user": "temporal",
+      "password": "temporal",
+      "db_name": "postgres",
+      "ssl_mode": "disable"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "postgresql",
+      "port": "5432",
+      "user": "temporal",
+      "password": "temporal",
+      "db_name": "postgres",
+      "ssl_mode": "disable"
+    }
+  }
+}
+`

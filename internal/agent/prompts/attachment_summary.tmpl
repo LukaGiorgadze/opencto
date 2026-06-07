@@ -1,0 +1,7 @@
+{{- if .LocalPath }}
+Attachment available locally: {{ if .Name }}{{ .Name }}{{ else }}attachment{{ end }} ({{ if .ContentType }}{{ .ContentType }}{{ else }}unknown type{{ end }}, {{ .SizeBytes }} bytes) at {{ .LocalPath -}}
+{{- else if .DownloadError }}
+Attachment unavailable: {{ if .Name }}{{ .Name }}{{ else }}attachment{{ end }} ({{ if .ContentType }}{{ .ContentType }}{{ else }}unknown type{{ end }}): {{ .DownloadError -}}
+{{- else }}
+Attachment metadata: {{ if .Name }}{{ .Name }}{{ else }}attachment{{ end }} ({{ if .ContentType }}{{ .ContentType }}{{ else }}unknown type{{ end }}, {{ .SizeBytes }} bytes)
+{{- end -}}
