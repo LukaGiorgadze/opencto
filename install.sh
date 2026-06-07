@@ -276,6 +276,11 @@ ensure_path_in_profile() {
 }
 
 run_interactive_configure() {
+  if [ -f "$WORKSPACE_DIR/config.json" ] && [ -f "$WORKSPACE_DIR/.env" ]; then
+    info "Existing workspace preserved: $WORKSPACE_DIR"
+    return 0
+  fi
+
   if [ ! -r /dev/tty ]; then
     warn "No interactive terminal found; run opencto configure after install"
     return 0
@@ -305,6 +310,43 @@ stop_managed_services() {
   fi
 }
 
+confirm_remove_workspace() {
+  if [ ! -d "$WORKSPACE_DIR" ]; then
+    return 1
+  fi
+
+  echo
+  warn "OpenCTO workspace: $WORKSPACE_DIR"
+  warn "Contains config.json, .env credentials, local database, workflow data, and generated service files."
+
+  if [ ! -r /dev/tty ]; then
+    warn "No interactive terminal found; preserving workspace"
+    return 1
+  fi
+
+  printf "Remove the OpenCTO workspace completely? [y/N] " >/dev/tty
+  IFS= read -r answer </dev/tty || answer=
+  case "$answer" in
+  y | Y | yes | YES)
+    return 0
+    ;;
+  *)
+    return 1
+    ;;
+  esac
+}
+
+remove_workspace() {
+  case "$WORKSPACE_DIR" in
+  "" | "/" | "$HOME" | "$HOME/")
+    die "Refusing to remove unsafe workspace path: $WORKSPACE_DIR"
+    ;;
+  esac
+
+  rm -rf "$WORKSPACE_DIR"
+  info "Removed workspace $WORKSPACE_DIR"
+}
+
 do_uninstall() {
   echo
   printf "%s\n" "$(bold "Uninstalling OpenCTO")"
@@ -319,7 +361,11 @@ do_uninstall() {
   fi
 
   if [ -d "$WORKSPACE_DIR" ]; then
-    info "Workspace preserved at $WORKSPACE_DIR"
+    if confirm_remove_workspace; then
+      remove_workspace
+    else
+      info "Workspace preserved at $WORKSPACE_DIR"
+    fi
   fi
 
   exit 0

@@ -27,6 +27,15 @@ func TestUsageListsOnlyPublicCommands(t *testing.T) {
 	}
 }
 
+func TestConfigureUsesDefaultSignalHandling(t *testing.T) {
+	if commandNeedsSignalContext([]string{"configure"}) {
+		t.Fatal("configure should not install the global signal context")
+	}
+	if !commandNeedsSignalContext([]string{"start"}) {
+		t.Fatal("start should install the global signal context")
+	}
+}
+
 func TestPublicCommandsShowCommandHelp(t *testing.T) {
 	for _, command := range []string{"start", "doctor", "inject", "report"} {
 		command := command

@@ -47,31 +47,11 @@ Telegram: create a bot with BotFather. For group chats, disable the bot's privac
 
 ## Configuration
 
-Default workspace:
+Default workspace is `$HOME/.opencto`; set `OPENCTO_WORKSPACE` to use another path.
 
-```bash
-$HOME/.opencto
-```
+Credentials live in `$HOME/.opencto/.env`. Runtime config lives in `$HOME/.opencto/config.json`.
 
-Use a different workspace:
-
-```bash
-OPENCTO_WORKSPACE=/path/to/opencto opencto start
-```
-
-Credentials:
-
-```bash
-$HOME/.opencto/.env
-```
-
-Runtime config:
-
-```bash
-$HOME/.opencto/config.json
-```
-
-`config.json` controls LLM models, Temporal settings, Discord and Telegram channel settings, memory, conversation history, logging, and optional Bifrost.
+`config.json` controls LLM models, Temporal, channels, memory, conversation history, logging, and optional Bifrost.
 
 Uninstall:
 
