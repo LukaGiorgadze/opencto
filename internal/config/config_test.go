@@ -637,9 +637,6 @@ func TestLoadParsesTelegramConfig(t *testing.T) {
     "telegram": {
       "enabled": true,
       "webhook": {
-        "url": "https://example.com/opencto",
-        "listen_addr": "127.0.0.1:9090",
-        "path": "opencto",
         "max_connections": 20,
         "drop_pending_updates": true
       },
@@ -669,10 +666,7 @@ func TestLoadParsesTelegramConfig(t *testing.T) {
 	if !cfg.Channels.Telegram.Enabled {
 		t.Fatalf("expected telegram enabled: %#v", cfg.Channels.Telegram)
 	}
-	if cfg.Channels.Telegram.Webhook.URL != "https://example.com/opencto" ||
-		cfg.Channels.Telegram.Webhook.ListenAddr != "127.0.0.1:9090" ||
-		cfg.Channels.Telegram.Webhook.Path != "/opencto" ||
-		cfg.Channels.Telegram.Webhook.MaxConnections != 20 ||
+	if cfg.Channels.Telegram.Webhook.MaxConnections != 20 ||
 		!cfg.Channels.Telegram.Webhook.DropPendingUpdates {
 		t.Fatalf("unexpected webhook config: %#v", cfg.Channels.Telegram.Webhook)
 	}
@@ -713,7 +707,7 @@ func TestLoadIgnoresInvalidTelegramWebhookWhenDisabled(t *testing.T) {
     "telegram": {
       "enabled": false,
       "webhook": {
-        "url": "http://example.com/opencto"
+        "max_connections": 101
       }
     }
   },

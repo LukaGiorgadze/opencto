@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -194,14 +195,22 @@ func checkTelegramEnv(cfg config.Config) doctorResult {
 	if strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")) == "" {
 		missing = append(missing, "TELEGRAM_BOT_TOKEN")
 	}
-	if strings.TrimSpace(cfg.Channels.Telegram.Webhook.URL) == "" {
-		missing = append(missing, "channels.telegram.webhook.url")
+	webhookURL := strings.TrimSpace(os.Getenv("TELEGRAM_WEBHOOK_URL"))
+	if webhookURL == "" {
+		missing = append(missing, "TELEGRAM_WEBHOOK_URL")
 	}
 	if strings.TrimSpace(os.Getenv("TELEGRAM_WEBHOOK_SECRET")) == "" {
 		missing = append(missing, "TELEGRAM_WEBHOOK_SECRET")
 	}
 	if len(missing) > 0 {
 		return doctorResult{status: doctorFail, name: "telegram env", detail: "missing " + strings.Join(missing, ", ")}
+	}
+	parsed, err := url.Parse(webhookURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return doctorResult{status: doctorFail, name: "telegram env", detail: "TELEGRAM_WEBHOOK_URL must be an absolute URL"}
+	}
+	if parsed.Scheme != "https" {
+		return doctorResult{status: doctorFail, name: "telegram env", detail: "TELEGRAM_WEBHOOK_URL must use https"}
 	}
 	return doctorResult{status: doctorOK, name: "telegram env", detail: "required Telegram variables are set"}
 }

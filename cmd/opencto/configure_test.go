@@ -37,7 +37,7 @@ func TestRunConfigureUpdatesTelegramEnvOnly(t *testing.T) {
 	t.Parallel()
 
 	workspaceRoot := t.TempDir()
-	input := strings.NewReader("sk-test\ntelegram\ntelegram-token\ntelegram-secret\n")
+	input := strings.NewReader("sk-test\ntelegram\ntelegram-token\nhttps://example.com/telegram/webhook\ntelegram-secret\n")
 	var output bytes.Buffer
 
 	if err := runConfigure(workspaceRoot, input, &output); err != nil {
@@ -48,6 +48,7 @@ func TestRunConfigureUpdatesTelegramEnvOnly(t *testing.T) {
 	for _, want := range []string{
 		"OPENAI_API_KEY=sk-test",
 		"TELEGRAM_BOT_TOKEN=telegram-token",
+		"TELEGRAM_WEBHOOK_URL=https://example.com/telegram/webhook",
 		"TELEGRAM_WEBHOOK_SECRET=telegram-secret",
 	} {
 		if !strings.Contains(envText, want) {

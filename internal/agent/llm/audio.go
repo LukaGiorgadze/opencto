@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -26,6 +27,7 @@ type openAICompatibleAudioTranscriber struct {
 	baseURL    string
 	model      string
 	httpClient *http.Client
+	convert    func(context.Context, string) (string, error)
 }
 
 func newOpenAICompatibleAudioTranscriber(apiKey, baseURL, model string, httpClient *http.Client) *openAICompatibleAudioTranscriber {
@@ -38,6 +40,7 @@ func newOpenAICompatibleAudioTranscriber(apiKey, baseURL, model string, httpClie
 		baseURL:    strings.TrimRight(strings.TrimSpace(baseURL), "/"),
 		model:      model,
 		httpClient: httpClient,
+		convert:    convertOggAudioToWav,
 	}
 }
 
@@ -55,12 +58,31 @@ func (t *openAICompatibleAudioTranscriber) TranscribeAudio(ctx context.Context, 
 	}
 	defer file.Close()
 
+	filename := firstNonEmpty(attachment.Filename, filepath.Base(path))
+	if shouldConvertAudioForTranscription(attachment, path) {
+		if t.convert == nil {
+			return "", fmt.Errorf("audio converter is not configured")
+		}
+		convertedPath, err := t.convert(ctx, path)
+		if err != nil {
+			return "", fmt.Errorf("convert audio attachment: %w", err)
+		}
+		defer os.Remove(convertedPath)
+		file.Close()
+		file, err = os.Open(filepath.Clean(convertedPath))
+		if err != nil {
+			return "", fmt.Errorf("open converted audio attachment: %w", err)
+		}
+		defer file.Close()
+		filename = convertedAudioFilename(filename)
+	}
+
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	if err := writer.WriteField("model", t.model); err != nil {
 		return "", err
 	}
-	part, err := writer.CreateFormFile("file", firstNonEmpty(attachment.Filename, filepath.Base(path)))
+	part, err := writer.CreateFormFile("file", filename)
 	if err != nil {
 		return "", err
 	}
@@ -109,6 +131,50 @@ func (t *openAICompatibleAudioTranscriber) audioTranscriptionURL() string {
 		return "https://api.openai.com/v1/audio/transcriptions"
 	}
 	return t.baseURL + "/audio/transcriptions"
+}
+
+func shouldConvertAudioForTranscription(attachment domain.EventAttachment, path string) bool {
+	contentType := strings.ToLower(strings.TrimSpace(attachment.ContentType))
+	name := strings.ToLower(strings.TrimSpace(firstNonEmpty(attachment.Filename, filepath.Base(path))))
+	ext := filepath.Ext(name)
+	return contentType == "audio/ogg" || contentType == "audio/opus" || ext == ".oga" || ext == ".ogg" || ext == ".opus"
+}
+
+func convertedAudioFilename(filename string) string {
+	filename = strings.TrimSpace(filename)
+	if filename == "" {
+		return "audio.wav"
+	}
+	ext := filepath.Ext(filename)
+	if ext == "" {
+		return filename + ".wav"
+	}
+	return strings.TrimSuffix(filename, ext) + ".wav"
+}
+
+func convertOggAudioToWav(ctx context.Context, path string) (string, error) {
+	input := filepath.Clean(path)
+	output, err := os.CreateTemp("", "opencto-audio-*.wav")
+	if err != nil {
+		return "", err
+	}
+	outputPath := output.Name()
+	if err := output.Close(); err != nil {
+		_ = os.Remove(outputPath)
+		return "", err
+	}
+
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", input, "-ac", "1", "-ar", "16000", outputPath)
+	data, err := cmd.CombinedOutput()
+	if err != nil {
+		_ = os.Remove(outputPath)
+		detail := strings.TrimSpace(string(data))
+		if detail == "" {
+			detail = err.Error()
+		}
+		return "", fmt.Errorf("ffmpeg failed: %s", detail)
+	}
+	return outputPath, nil
 }
 
 func (e *OpenAIEngine) enrichInputWithAttachmentTranscripts(ctx context.Context, input agent.NextActionInput) (agent.NextActionInput, error) {

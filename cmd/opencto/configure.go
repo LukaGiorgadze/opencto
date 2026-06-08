@@ -80,12 +80,19 @@ func runConfigure(workspaceRoot string, stdin io.Reader, stdout io.Writer) error
 		if err != nil {
 			return err
 		}
+		webhookURL, err := promptValue(reader, stdout, "Telegram webhook URL", envValues["TELEGRAM_WEBHOOK_URL"], false)
+		if err != nil {
+			return err
+		}
 		secret, err := promptValue(reader, stdout, "Telegram webhook secret", envValues["TELEGRAM_WEBHOOK_SECRET"], true)
 		if err != nil {
 			return err
 		}
 		if token != "" {
 			envUpdates["TELEGRAM_BOT_TOKEN"] = token
+		}
+		if webhookURL != "" {
+			envUpdates["TELEGRAM_WEBHOOK_URL"] = webhookURL
 		}
 		if secret != "" {
 			envUpdates["TELEGRAM_WEBHOOK_SECRET"] = secret

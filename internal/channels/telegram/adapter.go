@@ -38,7 +38,9 @@ const telegramTypingTimeout = 3 * time.Second
 const telegramWebhookReadHeaderTimeout = 5 * time.Second
 const telegramWebhookShutdownTimeout = 5 * time.Second
 const telegramWebhookMaxBodyBytes int64 = 2 << 20
+const telegramDefaultWebhookListenAddr = "127.0.0.1:8082"
 const telegramDefaultWebhookPath = "/telegram/webhook"
+const telegramDefaultWebhookMaxConnections = 40
 const telegramReferencedContentMaxChars = 2000
 
 type AttachmentLimits = channels.AttachmentLimits
@@ -158,6 +160,9 @@ func defaultOptions() Options {
 func normalizeWebhookOptions(options WebhookOptions) WebhookOptions {
 	options.URL = strings.TrimSpace(options.URL)
 	options.ListenAddr = strings.TrimSpace(options.ListenAddr)
+	if options.ListenAddr == "" {
+		options.ListenAddr = telegramDefaultWebhookListenAddr
+	}
 	options.Path = strings.TrimSpace(options.Path)
 	if options.Path == "" {
 		options.Path = telegramDefaultWebhookPath
@@ -167,7 +172,7 @@ func normalizeWebhookOptions(options WebhookOptions) WebhookOptions {
 	}
 	options.SecretToken = strings.TrimSpace(options.SecretToken)
 	if options.MaxConnections == 0 {
-		options.MaxConnections = 40
+		options.MaxConnections = telegramDefaultWebhookMaxConnections
 	}
 	return options
 }

@@ -357,9 +357,6 @@ func defaultConfig() config.Config {
 			Telegram: config.TelegramConfig{
 				Enabled: false,
 				Webhook: config.TelegramWebhookConfig{
-					URL:                "",
-					ListenAddr:         "127.0.0.1:8082",
-					Path:               "/telegram/webhook",
 					MaxConnections:     40,
 					DropPendingUpdates: false,
 				},
@@ -386,6 +383,7 @@ BIFROST_API_KEY=sk-bf-opencto-local
 DISCORD_TOKEN=
 DISCORD_APPLICATION_ID=
 TELEGRAM_BOT_TOKEN=
+TELEGRAM_WEBHOOK_URL=
 TELEGRAM_WEBHOOK_SECRET=
 `
 }

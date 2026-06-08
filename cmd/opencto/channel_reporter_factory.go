@@ -84,6 +84,10 @@ func newConfiguredChannelReporter(cfg config.Config, dispatcher *runtime.Dispatc
 		if token == "" {
 			return channelReporterSet{}, fmt.Errorf("TELEGRAM_BOT_TOKEN is required when telegram channel is enabled")
 		}
+		webhookURL := strings.TrimSpace(os.Getenv("TELEGRAM_WEBHOOK_URL"))
+		if dispatcher != nil && webhookURL == "" {
+			return channelReporterSet{}, fmt.Errorf("TELEGRAM_WEBHOOK_URL is required when telegram channel is enabled for runtime webhooks")
+		}
 		webhookSecret := strings.TrimSpace(os.Getenv("TELEGRAM_WEBHOOK_SECRET"))
 		if dispatcher != nil && webhookSecret == "" {
 			return channelReporterSet{}, fmt.Errorf("TELEGRAM_WEBHOOK_SECRET is required when telegram channel is enabled for runtime webhooks")
@@ -91,9 +95,7 @@ func newConfiguredChannelReporter(cfg config.Config, dispatcher *runtime.Dispatc
 		adapter, err := telegram.New(defaultProject.ID, token, dispatcher, logger, telegram.Options{
 			WorkspaceRoot: cfg.General.WorkspaceRoot,
 			Webhook: telegram.WebhookOptions{
-				URL:                cfg.Channels.Telegram.Webhook.URL,
-				ListenAddr:         cfg.Channels.Telegram.Webhook.ListenAddr,
-				Path:               cfg.Channels.Telegram.Webhook.Path,
+				URL:                webhookURL,
 				SecretToken:        webhookSecret,
 				MaxConnections:     cfg.Channels.Telegram.Webhook.MaxConnections,
 				DropPendingUpdates: cfg.Channels.Telegram.Webhook.DropPendingUpdates,

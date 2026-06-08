@@ -13,15 +13,13 @@ import (
 
 func TestConfiguredTelegramRuntimeRequiresWebhookSecret(t *testing.T) {
 	t.Setenv("TELEGRAM_BOT_TOKEN", "123:token")
+	t.Setenv("TELEGRAM_WEBHOOK_URL", "https://example.com/telegram/webhook")
 	t.Setenv("TELEGRAM_WEBHOOK_SECRET", "")
 
 	cfg := config.Config{
 		Channels: config.ChannelsConfig{
 			Telegram: config.TelegramConfig{
 				Enabled: true,
-				Webhook: config.TelegramWebhookConfig{
-					URL: "https://example.com/telegram/webhook",
-				},
 			},
 		},
 	}

@@ -10,15 +10,13 @@ import (
 
 func TestCheckTelegramEnvRequiresWebhookSecret(t *testing.T) {
 	t.Setenv("TELEGRAM_BOT_TOKEN", "123:token")
+	t.Setenv("TELEGRAM_WEBHOOK_URL", "https://example.com/telegram/webhook")
 	t.Setenv("TELEGRAM_WEBHOOK_SECRET", "")
 
 	result := checkTelegramEnv(config.Config{
 		Channels: config.ChannelsConfig{
 			Telegram: config.TelegramConfig{
 				Enabled: true,
-				Webhook: config.TelegramWebhookConfig{
-					URL: "https://example.com/telegram/webhook",
-				},
 			},
 		},
 	})
@@ -28,6 +26,27 @@ func TestCheckTelegramEnvRequiresWebhookSecret(t *testing.T) {
 	}
 	if !strings.Contains(result.detail, "TELEGRAM_WEBHOOK_SECRET") {
 		t.Fatalf("expected missing webhook secret detail, got %#v", result)
+	}
+}
+
+func TestCheckTelegramEnvRequiresHTTPSWebhookURL(t *testing.T) {
+	t.Setenv("TELEGRAM_BOT_TOKEN", "123:token")
+	t.Setenv("TELEGRAM_WEBHOOK_URL", "http://example.com/telegram/webhook")
+	t.Setenv("TELEGRAM_WEBHOOK_SECRET", "secret")
+
+	result := checkTelegramEnv(config.Config{
+		Channels: config.ChannelsConfig{
+			Telegram: config.TelegramConfig{
+				Enabled: true,
+			},
+		},
+	})
+
+	if result.status != doctorFail {
+		t.Fatalf("expected telegram env failure, got %#v", result)
+	}
+	if !strings.Contains(result.detail, "TELEGRAM_WEBHOOK_URL must use https") {
+		t.Fatalf("expected invalid webhook URL detail, got %#v", result)
 	}
 }
 

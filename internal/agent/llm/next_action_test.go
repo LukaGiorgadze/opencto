@@ -2114,11 +2114,11 @@ func TestNextActionTranscribesAudioAttachmentsBeforePlanning(t *testing.T) {
 		t.Fatalf("expected system and user messages, got %d", len(model.messages))
 	}
 	systemText := messageText(model.messages[0])
-	if strings.Contains(systemText, "Voice message transcript") {
+	if strings.Contains(systemText, "run tests") {
 		t.Fatalf("system prompt should not contain task transcript: %s", systemText)
 	}
 	userText := messageText(model.messages[1])
-	if !strings.Contains(userText, "Voice message transcript (voice-message.ogg): run tests") {
+	if !strings.Contains(userText, "Transcribed voice message for internal context (voice-message.ogg): run tests") {
 		t.Fatalf("user message missing transcript: %s", userText)
 	}
 }
@@ -2192,7 +2192,7 @@ func TestNextActionIncludesImageAndAudioTranscript(t *testing.T) {
 		t.Fatalf("expected image part, got %#v", model.messages[1].Parts)
 	}
 	userText := messageText(model.messages[1])
-	if !strings.Contains(userText, "Voice message transcript (voice-message.ogg): run tests") ||
+	if !strings.Contains(userText, "Transcribed voice message for internal context (voice-message.ogg): run tests") ||
 		!strings.Contains(userText, "Attachment available locally: screenshot.png (image/png") {
 		t.Fatalf("user message missing image/audio context:\n%s", userText)
 	}

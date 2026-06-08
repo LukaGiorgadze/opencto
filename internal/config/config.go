@@ -25,8 +25,6 @@ const (
 	defaultTelegramOutboundMaxFiles      = 10
 	defaultTelegramOutboundMaxFileBytes  = 50 << 20
 	defaultTelegramOutboundMaxTotalBytes = 50 << 20
-	defaultTelegramWebhookListenAddr     = "127.0.0.1:8082"
-	defaultTelegramWebhookPath           = "/telegram/webhook"
 	defaultTelegramWebhookMaxConnections = 40
 	defaultMemoryEmbeddingProvider       = "openai"
 	defaultMemoryEmbeddingModel          = "text-embedding-3-small"
@@ -175,11 +173,8 @@ type TelegramConfig struct {
 }
 
 type TelegramWebhookConfig struct {
-	URL                string `json:"url"`
-	ListenAddr         string `json:"listen_addr"`
-	Path               string `json:"path"`
-	MaxConnections     int    `json:"max_connections"`
-	DropPendingUpdates bool   `json:"drop_pending_updates"`
+	MaxConnections     int  `json:"max_connections"`
+	DropPendingUpdates bool `json:"drop_pending_updates"`
 }
 
 type MessageLimitsConfig struct {
@@ -523,18 +518,6 @@ func normalizeAttachmentLimits(value, defaults AttachmentLimitsConfig) Attachmen
 }
 
 func normalizeTelegramWebhook(value TelegramWebhookConfig) TelegramWebhookConfig {
-	value.URL = strings.TrimSpace(value.URL)
-	value.ListenAddr = strings.TrimSpace(value.ListenAddr)
-	if value.ListenAddr == "" {
-		value.ListenAddr = defaultTelegramWebhookListenAddr
-	}
-	value.Path = strings.TrimSpace(value.Path)
-	if value.Path == "" {
-		value.Path = defaultTelegramWebhookPath
-	}
-	if !strings.HasPrefix(value.Path, "/") {
-		value.Path = "/" + value.Path
-	}
 	if value.MaxConnections == 0 {
 		value.MaxConnections = defaultTelegramWebhookMaxConnections
 	}
@@ -567,23 +550,8 @@ func validateDiscordAttachmentLimits(value AttachmentLimitsConfig) error {
 
 func validateTelegramWebhook(value TelegramWebhookConfig) error {
 	var errs []error
-	if strings.TrimSpace(value.ListenAddr) == "" {
-		errs = append(errs, errors.New("channels.telegram.webhook.listen_addr is required"))
-	}
-	path := strings.TrimSpace(value.Path)
-	if path == "" || !strings.HasPrefix(path, "/") {
-		errs = append(errs, errors.New("channels.telegram.webhook.path must start with /"))
-	}
 	if value.MaxConnections < 1 || value.MaxConnections > 100 {
 		errs = append(errs, errors.New("channels.telegram.webhook.max_connections must be between 1 and 100"))
-	}
-	if rawURL := strings.TrimSpace(value.URL); rawURL != "" {
-		parsed, err := url.Parse(rawURL)
-		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-			errs = append(errs, errors.New("channels.telegram.webhook.url must be an absolute URL"))
-		} else if parsed.Scheme != "https" {
-			errs = append(errs, errors.New("channels.telegram.webhook.url must use https"))
-		}
 	}
 	return errors.Join(errs...)
 }
