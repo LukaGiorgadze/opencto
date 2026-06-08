@@ -35,7 +35,7 @@
     },
     "channels": {
         "discord": {
-            "enabled": true,
+            "enabled": false,
             "outbound_messages": {
                 "max_chars": 2000
             },
@@ -46,7 +46,7 @@
             }
         },
         "telegram": {
-            "enabled": true,
+            "enabled": false,
             "webhook": {
                 "max_connections": 40,
                 "drop_pending_updates": false
