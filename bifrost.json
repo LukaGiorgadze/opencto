@@ -24,21 +24,6 @@
           "weight": 1.0
         }
       ]
-    },
-    "anthropic": {
-      "keys": [
-        {
-          "id": "anthropic-primary",
-          "name": "anthropic-primary",
-          "value": "env.ANTHROPIC_API_KEY",
-          "models": [
-            "claude-haiku-4-5",
-            "claude-sonnet-4-5",
-            "claude-opus-4-5"
-          ],
-          "weight": 1.0
-        }
-      ]
     }
   },
   "governance": {
@@ -58,16 +43,6 @@
               "openai-primary"
             ],
             "weight": 1.0
-          },
-          {
-            "provider": "anthropic",
-            "allowed_models": [
-              "*"
-            ],
-            "key_ids": [
-              "anthropic-primary"
-            ],
-            "weight": 1.0
           }
         ]
       }
@@ -77,11 +52,11 @@
     "enabled": true,
     "type": "postgres",
     "config": {
-      "host": "postgresql",
-      "port": "5432",
-      "user": "temporal",
-      "password": "temporal",
-      "db_name": "postgres",
+      "host": "env.POSTGRES_HOST",
+      "port": "env.POSTGRES_PORT",
+      "user": "env.POSTGRES_USER",
+      "password": "env.POSTGRES_PASSWORD",
+      "db_name": "env.POSTGRES_DB",
       "ssl_mode": "disable"
     }
   },
@@ -89,11 +64,11 @@
     "enabled": true,
     "type": "postgres",
     "config": {
-      "host": "postgresql",
-      "port": "5432",
-      "user": "temporal",
-      "password": "temporal",
-      "db_name": "postgres",
+      "host": "env.POSTGRES_HOST",
+      "port": "env.POSTGRES_PORT",
+      "user": "env.POSTGRES_USER",
+      "password": "env.POSTGRES_PASSWORD",
+      "db_name": "env.POSTGRES_DB",
       "ssl_mode": "disable"
     }
   }

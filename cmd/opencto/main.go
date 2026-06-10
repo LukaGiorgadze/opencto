@@ -28,7 +28,7 @@ func commandNeedsSignalContext(args []string) bool {
 		return false
 	}
 	switch args[0] {
-	case "-h", "--help", "help", "configure":
+	case "-h", "--help", "help", "configure", "config":
 		return false
 	default:
 		return true
@@ -60,6 +60,8 @@ func runOpenCTO(ctx context.Context, args []string, stdout, stderr io.Writer) er
 		return runStartCommand(ctx, commandArgs, stdout, stderr)
 	case "configure":
 		return runConfigureCommand(commandArgs, os.Stdin, stdout, stderr)
+	case "config":
+		return runConfigCommand(ctx, commandArgs, stdout, stderr)
 	case "serve":
 		return runServeCommand(ctx, commandArgs, stdout, stderr)
 	case "worker":
@@ -83,7 +85,7 @@ func writeUsage(out io.Writer) {
 	fmt.Fprintln(out, "Usage: opencto <command> [options]")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Commands:")
-	for _, command := range []string{"start", "doctor", "inject", "report"} {
+	for _, command := range []string{"start", "config", "doctor", "inject", "report"} {
 		help := commandHelpByName[command]
 		fmt.Fprintf(out, "  %-10s %s\n", command, help.Summary)
 	}

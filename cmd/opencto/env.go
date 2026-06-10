@@ -383,6 +383,11 @@ func defaultConfig() config.Config {
 func defaultEnvFile() string {
 	return `OPENAI_API_KEY=
 BIFROST_API_KEY=sk-bf-opencto-local
+POSTGRES_HOST=postgresql
+POSTGRES_PORT=5432
+POSTGRES_USER=temporal
+POSTGRES_PASSWORD=temporal
+POSTGRES_DB=postgres
 DISCORD_TOKEN=
 DISCORD_APPLICATION_ID=
 TELEGRAM_BOT_TOKEN=

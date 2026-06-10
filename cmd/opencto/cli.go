@@ -4,11 +4,16 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/opencto/opencto/internal/domain"
 )
+
+var openFileWithDefaultApp = openFileWithSystemDefault
 
 type reportCommandOptions struct {
 	ChannelType string
@@ -16,6 +21,34 @@ type reportCommandOptions struct {
 	ThreadID    string
 	Message     string
 	Attachments []domain.ReportAttachment
+}
+
+func runConfigCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	if commandHelpRequested(args) {
+		writeCommandHelp(stdout, "config")
+		return nil
+	}
+	if err := parseNoArgCommand("config", args); err != nil {
+		return commandUsageError(stderr, "config", err.Error())
+	}
+	workspaceRoot, err := defaultWorkspaceRoot()
+	if err != nil {
+		return err
+	}
+	return openFileWithDefaultApp(ctx, filepath.Join(workspaceRoot, "config.json"))
+}
+
+func openFileWithSystemDefault(ctx context.Context, path string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.CommandContext(ctx, "open", path)
+	case "windows":
+		cmd = exec.CommandContext(ctx, "rundll32", "url.dll,FileProtocolHandler", path)
+	default:
+		cmd = exec.CommandContext(ctx, "xdg-open", path)
+	}
+	return cmd.Start()
 }
 
 func runReportCommand(ctx context.Context, args []string, stdout, stderr io.Writer) error {

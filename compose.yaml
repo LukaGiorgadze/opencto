@@ -6,17 +6,17 @@ services:
     container_name: opencto-postgresql
     restart: unless-stopped
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     environment:
-      POSTGRES_DB: postgres
-      POSTGRES_USER: temporal
-      POSTGRES_PASSWORD: temporal
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-temporal}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-temporal}
     networks:
       - opencto-network
     volumes:
       - postgresql_data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U temporal -d postgres"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-temporal} -d ${POSTGRES_DB:-postgres}"]
       interval: 5s
       timeout: 5s
       retries: 60
@@ -31,10 +31,10 @@ services:
         condition: service_healthy
     environment:
       DB: postgres12
-      DB_PORT: "5432"
-      POSTGRES_USER: temporal
-      POSTGRES_PWD: temporal
-      POSTGRES_SEEDS: postgresql
+      DB_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_USER: ${POSTGRES_USER:-temporal}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:-temporal}
+      POSTGRES_SEEDS: ${POSTGRES_HOST:-postgresql}
       SQL_PLUGIN: postgres12
     networks:
       - opencto-network
@@ -51,10 +51,10 @@ services:
         condition: service_completed_successfully
     environment:
       DB: postgres12
-      DB_PORT: "5432"
-      POSTGRES_USER: temporal
-      POSTGRES_PWD: temporal
-      POSTGRES_SEEDS: postgresql
+      DB_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_USER: ${POSTGRES_USER:-temporal}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:-temporal}
+      POSTGRES_SEEDS: ${POSTGRES_HOST:-postgresql}
       BIND_ON_IP: 0.0.0.0
       DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig/development-sql.yml
       TEMPORAL_CLI_ADDRESS: temporal:7233
@@ -129,8 +129,6 @@ services:
         condition: service_healthy
     env_file:
       - .env
-    environment:
-      BIFROST_API_KEY: ${BIFROST_API_KEY:-sk-bf-opencto-local}
     volumes:
       - ./bifrost.json:/app/data/config.json:ro
     networks:

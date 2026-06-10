@@ -61,6 +61,21 @@ var commandHelpByName = map[string]commandHelp{
 			"OPENCTO_WORKSPACE=$HOME/.opencto opencto configure",
 		},
 	},
+	"config": {
+		Summary: "open config.json",
+		Usage:   []string{"opencto config"},
+		Description: []string{
+			"Opens the workspace config.json with the default app.",
+			"By default, the workspace is $HOME/.opencto. Set OPENCTO_WORKSPACE to override it.",
+		},
+		Options: []string{
+			"-h, --help    show this help",
+		},
+		Examples: []string{
+			"opencto config",
+			"OPENCTO_WORKSPACE=$HOME/.opencto opencto config",
+		},
+	},
 	"inject": {
 		Summary: "inject a local event",
 		Usage:   []string{`opencto inject -body "message" [-actor "name"]`},

@@ -359,15 +359,15 @@ services:
     image: postgres:18
     restart: unless-stopped
     environment:
-      POSTGRES_DB: postgres
-      POSTGRES_USER: temporal
-      POSTGRES_PASSWORD: temporal
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-temporal}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-temporal}
     networks:
       - opencto-network
     volumes:
       - postgresql_data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U temporal -d postgres"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-temporal} -d ${POSTGRES_DB:-postgres}"]
       interval: 5s
       timeout: 5s
       retries: 60
@@ -381,10 +381,10 @@ services:
         condition: service_healthy
     environment:
       DB: postgres12
-      DB_PORT: "5432"
-      POSTGRES_USER: temporal
-      POSTGRES_PWD: temporal
-      POSTGRES_SEEDS: postgresql
+      DB_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_USER: ${POSTGRES_USER:-temporal}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:-temporal}
+      POSTGRES_SEEDS: ${POSTGRES_HOST:-postgresql}
       SQL_PLUGIN: postgres12
     networks:
       - opencto-network
@@ -400,10 +400,10 @@ services:
         condition: service_completed_successfully
     environment:
       DB: postgres12
-      DB_PORT: "5432"
-      POSTGRES_USER: temporal
-      POSTGRES_PWD: temporal
-      POSTGRES_SEEDS: postgresql
+      DB_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_USER: ${POSTGRES_USER:-temporal}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:-temporal}
+      POSTGRES_SEEDS: ${POSTGRES_HOST:-postgresql}
       BIND_ON_IP: 0.0.0.0
       DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig/development-sql.yml
       TEMPORAL_CLI_ADDRESS: temporal:7233
@@ -604,21 +604,6 @@ const serviceBifrostJSON = `{
           "weight": 1.0
         }
       ]
-    },
-    "anthropic": {
-      "keys": [
-        {
-          "id": "anthropic-primary",
-          "name": "anthropic-primary",
-          "value": "env.ANTHROPIC_API_KEY",
-          "models": [
-            "claude-haiku-4-5",
-            "claude-sonnet-4-5",
-            "claude-opus-4-5"
-          ],
-          "weight": 1.0
-        }
-      ]
     }
   },
   "governance": {
@@ -634,12 +619,6 @@ const serviceBifrostJSON = `{
             "allowed_models": ["*"],
             "key_ids": ["openai-primary"],
             "weight": 1.0
-          },
-          {
-            "provider": "anthropic",
-            "allowed_models": ["*"],
-            "key_ids": ["anthropic-primary"],
-            "weight": 1.0
           }
         ]
       }
@@ -649,11 +628,11 @@ const serviceBifrostJSON = `{
     "enabled": true,
     "type": "postgres",
     "config": {
-      "host": "postgresql",
-      "port": "5432",
-      "user": "temporal",
-      "password": "temporal",
-      "db_name": "postgres",
+      "host": "env.POSTGRES_HOST",
+      "port": "env.POSTGRES_PORT",
+      "user": "env.POSTGRES_USER",
+      "password": "env.POSTGRES_PASSWORD",
+      "db_name": "env.POSTGRES_DB",
       "ssl_mode": "disable"
     }
   },
@@ -661,11 +640,11 @@ const serviceBifrostJSON = `{
     "enabled": true,
     "type": "postgres",
     "config": {
-      "host": "postgresql",
-      "port": "5432",
-      "user": "temporal",
-      "password": "temporal",
-      "db_name": "postgres",
+      "host": "env.POSTGRES_HOST",
+      "port": "env.POSTGRES_PORT",
+      "user": "env.POSTGRES_USER",
+      "password": "env.POSTGRES_PASSWORD",
+      "db_name": "env.POSTGRES_DB",
       "ssl_mode": "disable"
     }
   }

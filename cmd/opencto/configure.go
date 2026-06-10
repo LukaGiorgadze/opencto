@@ -38,6 +38,9 @@ func runConfigure(workspaceRoot string, stdin io.Reader, stdout io.Writer) error
 
 	envPath := filepath.Join(workspaceRoot, ".env")
 	configPath := filepath.Join(workspaceRoot, "config.json")
+	if err := ensureDefaultDotEnvValues(envPath); err != nil {
+		return err
+	}
 	envValues, err := readDotEnvValues(envPath)
 	if err != nil {
 		return err
@@ -291,6 +294,54 @@ func writeDotEnvValues(path string, updates map[string]string) error {
 		}
 	}
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
+}
+
+func ensureDefaultDotEnvValues(path string) error {
+	current, err := readDotEnvValues(path)
+	if err != nil {
+		return err
+	}
+	defaults, err := dotEnvDefaults()
+	if err != nil {
+		return err
+	}
+
+	var missing []string
+	for _, item := range defaults {
+		if _, ok := current[item.name]; !ok {
+			missing = append(missing, item.name+"="+dotEnvValue(item.value))
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	text := strings.TrimRight(string(data), "\n")
+	if text != "" {
+		text += "\n"
+	}
+	text += strings.Join(missing, "\n") + "\n"
+	return os.WriteFile(path, []byte(text), 0o600)
+}
+
+type dotEnvDefault struct {
+	name  string
+	value string
+}
+
+func dotEnvDefaults() ([]dotEnvDefault, error) {
+	var defaults []dotEnvDefault
+	for _, line := range strings.Split(defaultEnvFile(), "\n") {
+		name, value, ok := parseDotEnvLine(line)
+		if ok {
+			defaults = append(defaults, dotEnvDefault{name: name, value: value})
+		}
+	}
+	return defaults, nil
 }
 
 func dotEnvValue(value string) string {

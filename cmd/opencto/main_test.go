@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -15,7 +16,7 @@ func TestUsageListsOnlyPublicCommands(t *testing.T) {
 	}
 
 	usage := stdout.String()
-	for _, command := range []string{"start", "doctor", "inject", "report"} {
+	for _, command := range []string{"start", "config", "doctor", "inject", "report"} {
 		if !strings.Contains(usage, "  "+command+" ") {
 			t.Fatalf("expected usage to list %q:\n%s", command, usage)
 		}
@@ -31,13 +32,16 @@ func TestConfigureUsesDefaultSignalHandling(t *testing.T) {
 	if commandNeedsSignalContext([]string{"configure"}) {
 		t.Fatal("configure should not install the global signal context")
 	}
+	if commandNeedsSignalContext([]string{"config"}) {
+		t.Fatal("config should not install the global signal context")
+	}
 	if !commandNeedsSignalContext([]string{"start"}) {
 		t.Fatal("start should install the global signal context")
 	}
 }
 
 func TestPublicCommandsShowCommandHelp(t *testing.T) {
-	for _, command := range []string{"start", "doctor", "inject", "report"} {
+	for _, command := range []string{"start", "config", "doctor", "inject", "report"} {
 		command := command
 		t.Run(command, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
@@ -52,6 +56,32 @@ func TestPublicCommandsShowCommandHelp(t *testing.T) {
 				t.Fatalf("expected examples for %q:\n%s", command, output)
 			}
 		})
+	}
+}
+
+func TestConfigCommandOpensWorkspaceConfig(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	t.Setenv("OPENCTO_WORKSPACE", workspaceRoot)
+
+	var opened string
+	oldOpen := openFileWithDefaultApp
+	openFileWithDefaultApp = func(_ context.Context, path string) error {
+		opened = path
+		return nil
+	}
+	t.Cleanup(func() {
+		openFileWithDefaultApp = oldOpen
+	})
+
+	var stdout, stderr bytes.Buffer
+	if err := runOpenCTO(context.Background(), []string{"config"}, &stdout, &stderr); err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	if want := filepath.Join(workspaceRoot, "config.json"); opened != want {
+		t.Fatalf("expected opened path %q, got %q", want, opened)
+	}
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Fatalf("expected no command output, got stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }
 
