@@ -405,6 +405,8 @@ services:
       POSTGRES_PWD: ${POSTGRES_PASSWORD:-temporal}
       POSTGRES_SEEDS: ${POSTGRES_HOST:-postgresql}
       BIND_ON_IP: 0.0.0.0
+      DBNAME: opencto
+      VISIBILITY_DBNAME: temporal_visibility
       DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig/development-sql.yml
       TEMPORAL_CLI_ADDRESS: temporal:7233
     networks:
@@ -536,9 +538,9 @@ run_sql_tool_idempotent() {
 
 nc -z -w 10 "${POSTGRES_SEEDS}" "${SQL_PORT}"
 
-run_sql_tool_idempotent temporal --quiet create
-run_sql_tool_idempotent temporal --quiet setup-schema -v 0.0
-run_sql_tool temporal update-schema -d /etc/temporal/schema/postgresql/v12/temporal/versioned
+run_sql_tool_idempotent opencto --quiet create
+run_sql_tool_idempotent opencto --quiet setup-schema -v 0.0
+run_sql_tool opencto update-schema -d /etc/temporal/schema/postgresql/v12/temporal/versioned
 
 run_sql_tool_idempotent temporal_visibility --quiet create
 run_sql_tool_idempotent temporal_visibility --quiet setup-schema -v 0.0

@@ -76,8 +76,8 @@ func TestEnsureRuntimeServiceFilesCreatesComposeAssets(t *testing.T) {
 	setupPostgresText := string(setupPostgres)
 	for _, want := range []string{
 		"is_existing_schema_error()",
-		"run_sql_tool_idempotent temporal --quiet create",
-		"run_sql_tool_idempotent temporal --quiet setup-schema -v 0.0",
+		"run_sql_tool_idempotent opencto --quiet create",
+		"run_sql_tool_idempotent opencto --quiet setup-schema -v 0.0",
 		"run_sql_tool_idempotent temporal_visibility --quiet create",
 		"run_sql_tool_idempotent temporal_visibility --quiet setup-schema -v 0.0",
 	} {

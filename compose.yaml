@@ -56,6 +56,8 @@ services:
       POSTGRES_PWD: ${POSTGRES_PASSWORD:-temporal}
       POSTGRES_SEEDS: ${POSTGRES_HOST:-postgresql}
       BIND_ON_IP: 0.0.0.0
+      DBNAME: opencto
+      VISIBILITY_DBNAME: temporal_visibility
       DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig/development-sql.yml
       TEMPORAL_CLI_ADDRESS: temporal:7233
     networks:

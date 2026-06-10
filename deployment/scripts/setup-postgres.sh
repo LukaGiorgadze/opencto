@@ -29,10 +29,10 @@ echo 'Waiting for PostgreSQL port to be available...'
 nc -z -w 10 "${POSTGRES_SEEDS}" "${SQL_PORT}"
 echo 'PostgreSQL port is available'
 
-# Create and setup temporal database
-run_sql_tool temporal --quiet create
-run_sql_tool temporal --quiet setup-schema -v 0.0
-run_sql_tool temporal update-schema -d /etc/temporal/schema/postgresql/v12/temporal/versioned
+# Create and setup workflow database
+run_sql_tool opencto --quiet create
+run_sql_tool opencto --quiet setup-schema -v 0.0
+run_sql_tool opencto update-schema -d /etc/temporal/schema/postgresql/v12/temporal/versioned
 
 # Create and setup visibility database
 run_sql_tool temporal_visibility --quiet create
