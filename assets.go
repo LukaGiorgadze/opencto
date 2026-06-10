@@ -5,7 +5,7 @@ import (
 	"io/fs"
 )
 
-//go:embed skills
+//go:embed skills config.json
 var embeddedFS embed.FS
 
 func SkillsFS() fs.FS {
@@ -14,4 +14,12 @@ func SkillsFS() fs.FS {
 		panic(err)
 	}
 	return skillsFS
+}
+
+func DefaultConfigJSON() []byte {
+	data, err := embeddedFS.ReadFile("config.json")
+	if err != nil {
+		panic(err)
+	}
+	return append([]byte(nil), data...)
 }

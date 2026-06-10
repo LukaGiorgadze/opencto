@@ -2,13 +2,14 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestRunConfigureUpdatesDiscordEnvOnly(t *testing.T) {
+func TestRunConfigureUpdatesDiscordEnvAndConfig(t *testing.T) {
 	t.Parallel()
 
 	workspaceRoot := t.TempDir()
@@ -30,10 +31,10 @@ func TestRunConfigureUpdatesDiscordEnvOnly(t *testing.T) {
 		}
 	}
 
-	assertDefaultConfig(t, workspaceRoot)
+	assertChannelConfig(t, workspaceRoot, true, false)
 }
 
-func TestRunConfigureUpdatesTelegramEnvOnly(t *testing.T) {
+func TestRunConfigureUpdatesTelegramEnvAndConfig(t *testing.T) {
 	t.Parallel()
 
 	workspaceRoot := t.TempDir()
@@ -56,7 +57,7 @@ func TestRunConfigureUpdatesTelegramEnvOnly(t *testing.T) {
 		}
 	}
 
-	assertDefaultConfig(t, workspaceRoot)
+	assertChannelConfig(t, workspaceRoot, false, true)
 }
 
 func TestRunConfigureKeepsExistingSecretOnBlankInput(t *testing.T) {
@@ -86,6 +87,44 @@ func TestRunConfigureKeepsExistingSecretOnBlankInput(t *testing.T) {
 			t.Fatalf("expected .env to keep %q:\n%s", want, envText)
 		}
 	}
+}
+
+func TestRunConfigureDefaultsInterfaceFromExistingConfig(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	if _, err := ensureStarterFiles(workspaceRoot); err != nil {
+		t.Fatalf("starter files: %v", err)
+	}
+	if err := writeConfiguredInterface(filepath.Join(workspaceRoot, "config.json"), "telegram"); err != nil {
+		t.Fatalf("write configured interface: %v", err)
+	}
+
+	input := strings.NewReader("\n\n\n\n\n")
+	if err := runConfigure(workspaceRoot, input, ioDiscard{}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	assertChannelConfig(t, workspaceRoot, false, true)
+}
+
+func TestRunConfigureSwitchesChannelConfig(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	if _, err := ensureStarterFiles(workspaceRoot); err != nil {
+		t.Fatalf("starter files: %v", err)
+	}
+	if err := writeConfiguredInterface(filepath.Join(workspaceRoot, "config.json"), "discord"); err != nil {
+		t.Fatalf("write configured interface: %v", err)
+	}
+
+	input := strings.NewReader("\ntelegram\ntelegram-token\nhttps://example.com/telegram/webhook\ntelegram-secret\n")
+	if err := runConfigure(workspaceRoot, input, ioDiscard{}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	assertChannelConfig(t, workspaceRoot, false, true)
 }
 
 func TestRunConfigureAllowsSkippingAllValues(t *testing.T) {
@@ -125,5 +164,32 @@ func assertDefaultConfig(t *testing.T, workspaceRoot string) {
 	configText := readConfigureTestFile(t, filepath.Join(workspaceRoot, "config.json"))
 	if configText != string(defaultConfigJSON()) {
 		t.Fatalf("expected config.json to keep default values:\n%s", configText)
+	}
+}
+
+func assertChannelConfig(t *testing.T, workspaceRoot string, wantDiscord, wantTelegram bool) {
+	t.Helper()
+	configText := readConfigureTestFile(t, filepath.Join(workspaceRoot, "config.json"))
+	var parsed struct {
+		Channels struct {
+			Discord struct {
+				Enabled bool `json:"enabled"`
+			} `json:"discord"`
+			Telegram struct {
+				Enabled bool `json:"enabled"`
+			} `json:"telegram"`
+		} `json:"channels"`
+	}
+	if err := json.Unmarshal([]byte(configText), &parsed); err != nil {
+		t.Fatalf("parse config.json: %v", err)
+	}
+	if parsed.Channels.Discord.Enabled != wantDiscord || parsed.Channels.Telegram.Enabled != wantTelegram {
+		t.Fatalf("expected discord=%t telegram=%t, got discord=%t telegram=%t:\n%s",
+			wantDiscord,
+			wantTelegram,
+			parsed.Channels.Discord.Enabled,
+			parsed.Channels.Telegram.Enabled,
+			configText,
+		)
 	}
 }

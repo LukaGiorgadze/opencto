@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -36,7 +37,12 @@ func runConfigure(workspaceRoot string, stdin io.Reader, stdout io.Writer) error
 	}
 
 	envPath := filepath.Join(workspaceRoot, ".env")
+	configPath := filepath.Join(workspaceRoot, "config.json")
 	envValues, err := readDotEnvValues(envPath)
+	if err != nil {
+		return err
+	}
+	interfaceChoice, err := readConfiguredInterface(configPath)
 	if err != nil {
 		return err
 	}
@@ -54,7 +60,7 @@ func runConfigure(workspaceRoot string, stdin io.Reader, stdout io.Writer) error
 		envUpdates["OPENAI_API_KEY"] = openAIKey
 	}
 
-	channel, err := promptChoice(reader, stdout, "Interface", []string{"discord", "telegram", "none"}, "discord")
+	channel, err := promptChoice(reader, stdout, "Interface", []string{"discord", "telegram", "none"}, interfaceChoice)
 	if err != nil {
 		return err
 	}
@@ -102,9 +108,94 @@ func runConfigure(workspaceRoot string, stdin io.Reader, stdout io.Writer) error
 	if err := writeDotEnvValues(envPath, envUpdates); err != nil {
 		return err
 	}
+	if err := writeConfiguredInterface(configPath, channel); err != nil {
+		return err
+	}
 
 	fmt.Fprintf(stdout, "\nConfigured %s\n", workspaceRoot)
 	return nil
+}
+
+func readConfiguredInterface(path string) (string, error) {
+	doc, err := readConfigDocument(path)
+	if err != nil {
+		return "", err
+	}
+	channels, _ := doc["channels"].(map[string]any)
+	if channelEnabled(channels, "discord") {
+		return "discord", nil
+	}
+	if channelEnabled(channels, "telegram") {
+		return "telegram", nil
+	}
+	return "none", nil
+}
+
+func writeConfiguredInterface(path, choice string) error {
+	doc, err := readConfigDocument(path)
+	if err != nil {
+		return err
+	}
+	channels := ensureJSONObject(doc, "channels")
+	discord := ensureJSONObject(channels, "discord")
+	telegram := ensureJSONObject(channels, "telegram")
+
+	discordEnabled := choice == "discord"
+	telegramEnabled := choice == "telegram"
+	if jsonBool(discord["enabled"]) == discordEnabled && jsonBool(telegram["enabled"]) == telegramEnabled {
+		return nil
+	}
+	discord["enabled"] = discordEnabled
+	telegram["enabled"] = telegramEnabled
+
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode %s: %w", path, err)
+	}
+	mode := os.FileMode(0o644)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	return os.WriteFile(path, append(data, '\n'), mode)
+}
+
+func readConfigDocument(path string) (map[string]any, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if doc == nil {
+		doc = map[string]any{}
+	}
+	return doc, nil
+}
+
+func channelEnabled(channels map[string]any, name string) bool {
+	if channels == nil {
+		return false
+	}
+	channel, _ := channels[name].(map[string]any)
+	return jsonBool(channel["enabled"])
+}
+
+func ensureJSONObject(parent map[string]any, key string) map[string]any {
+	if value, ok := parent[key].(map[string]any); ok {
+		return value
+	}
+	value := map[string]any{}
+	parent[key] = value
+	return value
+}
+
+func jsonBool(value any) bool {
+	enabled, _ := value.(bool)
+	return enabled
 }
 
 func promptValue(reader *bufio.Reader, out io.Writer, label, current string, secret bool) (string, error) {

@@ -50,7 +50,7 @@ var commandHelpByName = map[string]commandHelp{
 		Summary: "configure workspace credentials",
 		Usage:   []string{"opencto configure"},
 		Description: []string{
-			"Creates starter files if needed and writes local secrets to .env.",
+			"Creates starter files if needed, writes local secrets to .env, and updates the enabled channel in config.json.",
 			"By default, the workspace is $HOME/.opencto. Set OPENCTO_WORKSPACE to override it.",
 		},
 		Options: []string{

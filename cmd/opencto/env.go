@@ -293,6 +293,9 @@ func writeFileIfMissing(path string, data []byte, perm os.FileMode) (bool, error
 }
 
 func defaultConfigJSON() []byte {
+	if data := opencto.DefaultConfigJSON(); len(data) > 0 {
+		return data
+	}
 	data, err := json.MarshalIndent(defaultConfig(), "", "  ")
 	if err != nil {
 		return []byte("{}\n")
