@@ -138,7 +138,7 @@ func TestRunConfigureAllowsSkippingAllValues(t *testing.T) {
 	}
 
 	envText := readConfigureTestFile(t, filepath.Join(workspaceRoot, ".env"))
-	if envText != defaultEnvFile() {
+	if envText != string(defaultEnvFile()) {
 		t.Fatalf("expected default .env when all values are skipped:\n%s", envText)
 	}
 	assertDefaultConfig(t, workspaceRoot)

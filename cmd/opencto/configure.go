@@ -335,7 +335,7 @@ type dotEnvDefault struct {
 
 func dotEnvDefaults() ([]dotEnvDefault, error) {
 	var defaults []dotEnvDefault
-	for _, line := range strings.Split(defaultEnvFile(), "\n") {
+	for _, line := range strings.Split(string(defaultEnvFile()), "\n") {
 		name, value, ok := parseDotEnvLine(line)
 		if ok {
 			defaults = append(defaults, dotEnvDefault{name: name, value: value})

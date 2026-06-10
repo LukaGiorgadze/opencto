@@ -195,7 +195,7 @@ func ensureStarterFiles(workspaceRoot string) (starterFiles, error) {
 		starter.Created = append(starter.Created, configPath)
 		starter.UserEditableCreated = append(starter.UserEditableCreated, configPath)
 	}
-	if ok, err := writeFileIfMissing(envPath, []byte(defaultEnvFile()), 0o600); err != nil {
+	if ok, err := writeFileIfMissing(envPath, defaultEnvFile(), 0o600); err != nil {
 		return starterFiles{}, err
 	} else if ok {
 		starter.Created = append(starter.Created, envPath)
@@ -380,20 +380,8 @@ func defaultConfig() config.Config {
 	}
 }
 
-func defaultEnvFile() string {
-	return `OPENAI_API_KEY=
-BIFROST_API_KEY=sk-bf-opencto-local
-POSTGRES_HOST=postgresql
-POSTGRES_PORT=5432
-POSTGRES_USER=temporal
-POSTGRES_PASSWORD=temporal
-POSTGRES_DB=postgres
-DISCORD_TOKEN=
-DISCORD_APPLICATION_ID=
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_WEBHOOK_URL=
-TELEGRAM_WEBHOOK_SECRET=
-`
+func defaultEnvFile() []byte {
+	return opencto.DefaultEnvExample()
 }
 
 func loadDotEnv(dir string) error {
