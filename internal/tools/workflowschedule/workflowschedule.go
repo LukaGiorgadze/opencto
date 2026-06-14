@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/opencto/opencto/internal/runtime/workflowrun"
 	"github.com/opencto/opencto/internal/storage"
 	"github.com/opencto/opencto/internal/workflowbundle"
+	"github.com/opencto/opencto/internal/workspace"
 )
 
 const (
@@ -76,6 +78,7 @@ type DeleteRequest struct {
 	ToolCallID  string       `json:"-"`
 	Intent      string       `json:"-"`
 	SourceEvent domain.Event `json:"-"`
+	StateDir    string       `json:"-"`
 
 	WorkflowID string `json:"workflow_id"`
 }
@@ -100,6 +103,7 @@ type Request struct {
 	ToolCallID  string       `json:"-"`
 	Intent      string       `json:"-"`
 	SourceEvent domain.Event `json:"-"`
+	StateDir    string       `json:"-"`
 
 	Operation        string `json:"operation"`
 	WorkflowID       string `json:"workflow_id"`
@@ -189,6 +193,7 @@ type TemporalExecutor struct {
 	Store           storage.RuntimeStore
 	TaskQueue       string
 	WorkspaceRoot   string
+	StateDir        string
 	Now             func() time.Time
 	ResolveTimeZone TimeZoneResolver
 	Logger          *slog.Logger
@@ -330,6 +335,7 @@ func requestFromDelete(req DeleteRequest) Request {
 		ToolCallID:  req.ToolCallID,
 		Intent:      req.Intent,
 		SourceEvent: req.SourceEvent,
+		StateDir:    req.StateDir,
 		Operation:   OperationDelete,
 		WorkflowID:  req.WorkflowID,
 	}
@@ -540,7 +546,26 @@ func (e *TemporalExecutor) delete(ctx context.Context, req Request) (Result, err
 	if err := os.RemoveAll(runsPath); err != nil {
 		return Result{}, err
 	}
+	logsPath, err := e.workflowLogsDir(req, workflowID)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := os.RemoveAll(logsPath); err != nil {
+		return Result{}, err
+	}
 	return Result{Operation: OperationDelete, WorkflowID: workflowID, ScheduleID: scheduleID, Message: "workflow schedule deleted"}, nil
+}
+
+func (e *TemporalExecutor) workflowLogsDir(req Request, workflowID string) (string, error) {
+	stateDir := strings.TrimSpace(req.StateDir)
+	if stateDir == "" {
+		stateDir = strings.TrimSpace(e.StateDir)
+	}
+	resolvedStateDir, err := workspace.ResolveStateDir(stateDir, e.WorkspaceRoot)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(resolvedStateDir, "workflow-logs", strings.TrimSpace(workflowID)), nil
 }
 
 func (e *TemporalExecutor) pause(ctx context.Context, req Request) (Result, error) {

@@ -2616,6 +2616,24 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 		scheduleExecutor.createRequest.SourceEvent.ChannelID != "channel-1" {
 		t.Fatalf("unexpected schedule result: %#v request=%#v", scheduleResult, scheduleExecutor.createRequest)
 	}
+
+	scheduleExecutor.result = scheduletool.Result{
+		Operation:  scheduletool.OperationDelete,
+		WorkflowID: "daily-hello",
+		ScheduleID: "opencto:project-1:workflow-schedule:daily-hello",
+		Message:    "schedule deleted",
+	}
+	deleteResult, err := activities.ExecuteTool(ctx, executeRequest(domain.ToolTypeWorkflowDelete, "schedule-delete-1", map[string]any{
+		"workflow_id": "daily-hello",
+	}))
+	if err != nil {
+		t.Fatalf("workflow delete tool: %v", err)
+	}
+	if deleteResult.Status != domain.ExecutionStatusSucceeded ||
+		scheduleExecutor.deleteRequest.WorkflowID != "daily-hello" ||
+		scheduleExecutor.deleteRequest.StateDir != filepath.Join(dir, ".state") {
+		t.Fatalf("unexpected workflow delete result: %#v request=%#v", deleteResult, scheduleExecutor.deleteRequest)
+	}
 }
 
 func TestExecuteAgentToolIsNotRunInsideActivity(t *testing.T) {
@@ -3927,12 +3945,16 @@ func TestCleanupWorkflowRunsKeepsLatestTenSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("workflow runs dir: %v", err)
 	}
+	logsDir := filepath.Join(workspaceRoot, ".state", "workflow-logs", workflowID)
 	baseTime := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
 	for i := 0; i < 12; i++ {
 		runID := fmt.Sprintf("run-%02d", i)
 		runDir := filepath.Join(runsDir, runID)
 		if err := os.MkdirAll(runDir, 0o755); err != nil {
 			t.Fatalf("mkdir run %s: %v", runID, err)
+		}
+		if err := os.MkdirAll(filepath.Join(logsDir, runID, "download", "attempt-1"), 0o755); err != nil {
+			t.Fatalf("mkdir workflow logs %s: %v", runID, err)
 		}
 		modTime := baseTime.Add(time.Duration(i) * time.Minute)
 		if err := os.Chtimes(runDir, modTime, modTime); err != nil {
@@ -3955,10 +3977,16 @@ func TestCleanupWorkflowRunsKeepsLatestTenSnapshots(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(runsDir, runID)); !os.IsNotExist(err) {
 			t.Fatalf("expected %s to be deleted, stat err=%v", runID, err)
 		}
+		if _, err := os.Stat(filepath.Join(logsDir, runID)); !os.IsNotExist(err) {
+			t.Fatalf("expected %s workflow logs to be deleted, stat err=%v", runID, err)
+		}
 	}
 	for _, runID := range []string{"run-02", "run-11"} {
 		if _, err := os.Stat(filepath.Join(runsDir, runID)); err != nil {
 			t.Fatalf("expected %s to be kept: %v", runID, err)
+		}
+		if _, err := os.Stat(filepath.Join(logsDir, runID)); err != nil {
+			t.Fatalf("expected %s workflow logs to be kept: %v", runID, err)
 		}
 	}
 }
@@ -3972,12 +4000,16 @@ func TestCleanupWorkflowRunsDoesNotDeleteActiveOlderSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("workflow runs dir: %v", err)
 	}
+	logsDir := filepath.Join(workspaceRoot, ".state", "workflow-logs", workflowID)
 	baseTime := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
 	for i := 0; i < 12; i++ {
 		runID := fmt.Sprintf("run-%02d", i)
 		runDir := filepath.Join(runsDir, runID)
 		if err := os.MkdirAll(runDir, 0o755); err != nil {
 			t.Fatalf("mkdir run %s: %v", runID, err)
+		}
+		if err := os.MkdirAll(filepath.Join(logsDir, runID, "download", "attempt-1"), 0o755); err != nil {
+			t.Fatalf("mkdir workflow logs %s: %v", runID, err)
 		}
 		modTime := baseTime.Add(time.Duration(i) * time.Minute)
 		if err := os.Chtimes(runDir, modTime, modTime); err != nil {
@@ -4007,6 +4039,12 @@ func TestCleanupWorkflowRunsDoesNotDeleteActiveOlderSnapshot(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(runsDir, "run-00")); err != nil {
 		t.Fatalf("expected active old run to be kept: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(logsDir, "run-00")); err != nil {
+		t.Fatalf("expected active old run logs to be kept: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(logsDir, "run-01")); !os.IsNotExist(err) {
+		t.Fatalf("expected inactive old run logs to be deleted, stat err=%v", err)
 	}
 }
 

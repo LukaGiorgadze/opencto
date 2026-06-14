@@ -32,8 +32,16 @@ func workflowStepAttemptLogPaths(stateDir, workflowID, runID, stepID string, att
 	if stateDir == "" {
 		stateDir = os.TempDir()
 	}
-	attemptDir := filepath.Join(stateDir, "workflow-logs", strings.TrimSpace(workflowID), strings.TrimSpace(runID), strings.TrimSpace(stepID), fmt.Sprintf("attempt-%d", attempt))
+	attemptDir := filepath.Join(workflowRunLogDir(stateDir, workflowID, runID), strings.TrimSpace(stepID), fmt.Sprintf("attempt-%d", attempt))
 	return filepath.Join(attemptDir, "stdout.log"), filepath.Join(attemptDir, "stderr.log")
+}
+
+func workflowRunLogDir(stateDir, workflowID, runID string) string {
+	stateDir = strings.TrimSpace(stateDir)
+	if stateDir == "" {
+		stateDir = os.TempDir()
+	}
+	return filepath.Join(stateDir, "workflow-logs", strings.TrimSpace(workflowID), strings.TrimSpace(runID))
 }
 
 func workflowStepEnvironment(workspaceRoot string, request workflowrun.ExecuteStepRequest) ([]string, error) {

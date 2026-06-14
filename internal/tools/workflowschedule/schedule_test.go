@@ -598,6 +598,10 @@ func TestWorkflowDeleteHardDeletesScheduleStoreAndFiles(t *testing.T) {
 	if err := os.MkdirAll(runPath, 0o755); err != nil {
 		t.Fatalf("mkdir workflow run: %v", err)
 	}
+	logsPath := filepath.Join(workspaceRoot, ".state", "workflow-logs", "finance2049")
+	if err := os.MkdirAll(filepath.Join(logsPath, "run-1", "download", "attempt-1"), 0o755); err != nil {
+		t.Fatalf("mkdir workflow logs: %v", err)
+	}
 
 	result, err := executor.Delete(ctx, DeleteRequest{ProjectID: "project-1", WorkflowID: "finance2049"})
 	if err != nil {
@@ -614,6 +618,9 @@ func TestWorkflowDeleteHardDeletesScheduleStoreAndFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Dir(runPath)); !os.IsNotExist(err) {
 		t.Fatalf("expected workflow runs path to be deleted, stat err=%v", err)
+	}
+	if _, err := os.Stat(logsPath); !os.IsNotExist(err) {
+		t.Fatalf("expected workflow logs path to be deleted, stat err=%v", err)
 	}
 }
 

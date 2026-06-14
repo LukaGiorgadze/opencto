@@ -38,6 +38,7 @@ func (a *Activities) CleanupWorkflowRuns(ctx context.Context, request workflowru
 	if err != nil {
 		return workflowrun.CleanupRunsResult{}, err
 	}
+	stateDir := a.runtimeStateDir()
 
 	runs := make([]workflowRunDirectory, 0, len(entries))
 	for _, entry := range entries {
@@ -84,6 +85,9 @@ func (a *Activities) CleanupWorkflowRuns(ctx context.Context, request workflowru
 			return workflowrun.CleanupRunsResult{DeletedRunIDs: deleted}, err
 		}
 		if err := os.RemoveAll(run.path); err != nil {
+			return workflowrun.CleanupRunsResult{DeletedRunIDs: deleted}, err
+		}
+		if err := os.RemoveAll(workflowRunLogDir(stateDir, workflowID, run.id)); err != nil {
 			return workflowrun.CleanupRunsResult{DeletedRunIDs: deleted}, err
 		}
 		deleted = append(deleted, run.id)

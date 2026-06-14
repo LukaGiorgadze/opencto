@@ -392,6 +392,7 @@ func (a *Activities) runWorkflowTool(ctx context.Context, choice agent.ToolChoic
 		req.ToolCallID = execution.ToolCallID
 		req.Intent = choice.Intent
 		req.SourceEvent = execution.SourceEvent
+		req.StateDir = a.runtimeStateDir()
 		result, err = executor.Delete(ctx, req)
 	case domain.ToolTypeWorkflowOperation:
 		var req scheduletool.OperationRequest

@@ -7,7 +7,7 @@
         "workflow_id": {
             "type": "string",
             "minLength": 1,
-            "description": "Workflow id to delete. Deletes the schedule, workflow record, workflows/{workflow_id}, workflow-runs/{workflow_id}, and workflow data under workflows/{workflow_id}/data."
+            "description": "Workflow id to delete. Deletes the schedule, workflow record, workflows/{workflow_id}, workflow-runs/{workflow_id}, runtime state workflow-logs/{workflow_id}, and workflow data under workflows/{workflow_id}/data."
         }
     }
 }
