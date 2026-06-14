@@ -4010,7 +4010,7 @@ func TestCleanupWorkflowRunsDoesNotDeleteActiveOlderSnapshot(t *testing.T) {
 	}
 }
 
-func TestWorkflowStepEnvironmentSetsRunPaths(t *testing.T) {
+func TestWorkflowStepEnvironmentSetsWorkspace(t *testing.T) {
 	t.Setenv("OPENCTO_WORKSPACE", "/inherited")
 	t.Setenv("OPENCTO_RUN_DIR", "/old-run")
 	t.Setenv("PATH", "/usr/bin")
@@ -4021,18 +4021,12 @@ func TestWorkflowStepEnvironmentSetsRunPaths(t *testing.T) {
 		RunID:      "run-1",
 		RunPath:    runPath,
 	}
-	artifactsDir := filepath.Join(runPath, "artifacts")
-
 	env, err := workflowStepEnvironment("/workspace", request)
 	if err != nil {
 		t.Fatalf("workflow step environment: %v", err)
 	}
 	for name, want := range map[string]string{
-		"OPENCTO_WORKSPACE":                  "/workspace",
-		"OPENCTO_WORKFLOWS_DIR":              filepath.Join("/workspace", "workflows"),
-		"OPENCTO_WORKFLOW_RUN_DIR":           runPath,
-		"OPENCTO_WORKFLOW_DATA_DIR":          filepath.Join("/workspace", "workflows", "finance-check", "data"),
-		"OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR": artifactsDir,
+		"OPENCTO_WORKSPACE": "/workspace",
 	} {
 		if got := envValue(env, name); got != want {
 			t.Fatalf("expected %s=%q, got %q", name, want, got)
@@ -4048,7 +4042,7 @@ func TestWorkflowStepEnvironmentSetsRunPaths(t *testing.T) {
 	}
 }
 
-func TestExecuteWorkflowStepCreatesStepArtifactDirectory(t *testing.T) {
+func TestExecuteWorkflowStepUsesRunDirectory(t *testing.T) {
 	t.Parallel()
 
 	workspaceRoot := t.TempDir()
@@ -4063,7 +4057,7 @@ func TestExecuteWorkflowStepCreatesStepArtifactDirectory(t *testing.T) {
 			Command: "sh",
 			Args: []string{
 				"-c",
-				`dir="$OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR" && test -d "$dir" && printf '{"ok":true}\n' > "$dir/payload.json"`,
+				`test -d artifacts && printf '{"ok":true}\n' > artifacts/payload.json`,
 			},
 		},
 	})

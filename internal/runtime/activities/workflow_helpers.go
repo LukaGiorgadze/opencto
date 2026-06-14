@@ -12,7 +12,6 @@ import (
 
 	"github.com/opencto/opencto/internal/config"
 	"github.com/opencto/opencto/internal/runtime/workflowrun"
-	"github.com/opencto/opencto/internal/workflowbundle"
 )
 
 func activityAttempt(ctx context.Context) int {
@@ -40,24 +39,10 @@ func workflowStepAttemptLogPaths(stateDir, workflowID, runID, stepID string, att
 func workflowStepEnvironment(workspaceRoot string, request workflowrun.ExecuteStepRequest) ([]string, error) {
 	env := withoutEnvPrefix(os.Environ(), "OPENCTO_")
 	workspaceRoot = strings.TrimSpace(workspaceRoot)
-	workflowsDir, err := workflowbundle.WorkflowsDir(workspaceRoot)
-	if err != nil {
-		return nil, err
-	}
-	dataDir, err := workflowbundle.WorkflowDataDir(workspaceRoot, request.WorkflowID)
-	if err != nil {
-		return nil, err
-	}
-	runPath := strings.TrimSpace(request.RunPath)
-	runArtifactsDir := ""
-	if runPath != "" {
-		runArtifactsDir = filepath.Join(runPath, "artifacts")
+	if workspaceRoot == "" {
+		return nil, fmt.Errorf("workspace root is required")
 	}
 	env = upsertEnv(env, config.EnvOpenCTOWorkspace, workspaceRoot)
-	env = upsertEnv(env, "OPENCTO_WORKFLOWS_DIR", workflowsDir)
-	env = upsertEnv(env, "OPENCTO_WORKFLOW_DATA_DIR", dataDir)
-	env = upsertEnv(env, "OPENCTO_WORKFLOW_RUN_DIR", runPath)
-	env = upsertEnv(env, "OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR", runArtifactsDir)
 	return env, nil
 }
 

@@ -161,8 +161,6 @@ func TestBuildNextActionMessagesUsesOpenAIToolTranscript(t *testing.T) {
 		"`$OPENCTO_WORKSPACE`: /tmp/opencto",
 		"Projects, scheduled workflow source and run snapshots, artifacts, data/db, screenshots, logs, and related files.",
 		"Default working directory for all user project work",
-		"`$OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR`: writable same-run artifact directory",
-		"`$OPENCTO_WORKFLOW_DATA_DIR`: writable persistent data directory",
 		"PATH: /usr/bin:/bin",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -453,7 +451,7 @@ func TestBuildNextActionMessagesAddsSkillReminderAsUserMessage(t *testing.T) {
 		t.Fatalf("expected skill reminder as human message, got %q", messages[1].Role)
 	}
 	systemPrompt := messageText(messages[0])
-	if !strings.Contains(systemPrompt, "read an advertised top-level skill by exact ID") {
+	if !strings.Contains(systemPrompt, "Run `LoadSkill` by exact ID before applying an advertised skill") {
 		t.Fatalf("system prompt should include concise skill loading rule:\n%s", systemPrompt)
 	}
 	if strings.Contains(systemPrompt, "go-testing") || strings.Contains(systemPrompt, "Use when adding or fixing Go tests.") {
@@ -493,22 +491,21 @@ func TestBuildNextActionMessagesIncludesMemoryCrudPolicy(t *testing.T) {
 	}
 	systemPrompt := messageText(messages[0])
 	for _, expected := range []string{
-		"Search memory using `MemorySearch` before proposing changes",
-		"Use `MemoryProposeUpdate` when an existing memory's content, scope, tags, pinning, or confidence should change",
-		"Use `MemoryProposeAdd` for new durable facts",
-		"Use `MemoryProposeForget` only when the user asks to forget/delete memory",
-		"Use `MemoryList` for read-only memory inspection",
-		"Store durable preferences even when the user does not literally say \"remember\"",
-		"Prefer thread scope for context",
-		"Prefer project scope for current repo",
-		"Prefer user scope for identity",
-		"Prefer global scope only for shared rules",
-		"Do not save temporary task details",
-		"Do not save task-scoped choices",
+		"Run `MemorySearch` before proposing changes",
+		"`MemoryProposeUpdate` — when you know the `memory_id`",
+		"`MemoryProposeAdd` — new durable facts",
+		"`MemoryProposeForget` — only when the user asks to forget",
+		"`MemoryList` — read-only inspection",
+		"Store reusable preferences even without an explicit \"remember\"",
+		"Scope — narrowest first",
+		"project for repo/stack/architecture",
+		"user for cross-project identity",
+		"global only for rules that span users",
+		"Do not save: task-scoped choices",
 		"Pin only high-value long-term memory",
-		"User: \"use pnpm\"",
-		"User: \"use raw SQL for this migration\"",
-		"User: \"never deploy without asking me first\"",
+		"\"use pnpm\"",
+		"\"use raw SQL for this migration\"",
+		"\"never deploy without asking me first\"",
 	} {
 		if !strings.Contains(systemPrompt, expected) {
 			t.Fatalf("system prompt should include memory CRUD policy %q:\n%s", expected, systemPrompt)
@@ -534,11 +531,11 @@ func TestBuildNextActionMessagesIncludesCollaborationGuidance(t *testing.T) {
 	}
 	prompt := messageText(messages[0])
 	for _, expected := range []string{
-		"For non-trivial work, use read-only tools first",
+		"For non-trivial work: use read-only tools first",
 		"ask one concise question",
-		"continue with the necessary work and verify before reporting success",
-		"Prefer first-class specialized tools over generic delegation",
-		"For workflow creation, source updates, manifest changes, or behavior changes, use `WorkflowCreate` or `WorkflowUpdate` with a self-contained prompt",
+		"Otherwise proceed, then verify",
+		"Use dedicated, specialized tools",
+		"Use `WorkflowCreate` or `WorkflowUpdate` with a self-contained prompt",
 		"`workflows/`: scheduled workflow source repositories",
 		"`workflow-runs/`: per-run workflow snapshots",
 	} {

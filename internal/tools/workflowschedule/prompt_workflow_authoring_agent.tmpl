@@ -21,7 +21,7 @@ Create `workflow.yml` and all source files required by its steps. The workflow d
 Update `workflow.yml` and source files as needed to satisfy the user request. Read the current state of the workflow directory before making changes.
 {{- end }}
 
-Work only inside `{{ .WorkflowPath }}`. Do not touch any path outside it, except writing to `OPENCTO_WORKFLOW_DATA_DIR` or `OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR` from step scripts at runtime.
+Work only inside `{{ .WorkflowPath }}`. Do not touch any path outside it.
 
 Do not commit, register schedules, or run schedulers, workers, or daemons.
 
@@ -33,49 +33,6 @@ Use this exact shape:
 
 ```yaml
 {{ template "workflow_template.yml" . }}
-```
-
----
-
-# Step State Passing
-
-OpenCTO does not pass business data between steps automatically.
-
-**Same-run sharing** — write to `OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR/`:
-
-```sh
-mkdir -p "$OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR"
-printf '{"result":"value"}\n' > "$OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR/payload.json"
-```
-
-Read from a later step in the same run:
-
-```sh
-cat "$OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR/payload.json"
-```
-
-**Cross-run persistence** — write and read under `OPENCTO_WORKFLOW_DATA_DIR/`. Each run starts with fresh process state; cross-run memory must be explicit file I/O. Always handle missing or invalid files gracefully.
-
----
-
-# Runtime Environment Variables
-
-Set by OpenCTO at step execution time. Do not hardcode their values in source files.
-
-```
-OPENCTO_WORKFLOWS_DIR              — root of all workflow source repos
-                                     Each workflow: OPENCTO_WORKFLOWS_DIR/{workflow_id}/
-                                     Read-only during step execution
-
-OPENCTO_WORKFLOW_RUN_DIR           — current run snapshot and step working directory
-                                     Runtime evidence only — not available to future runs
-
-OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR — writable artifact directory for same-run step sharing
-                                     Not available to future runs
-
-OPENCTO_WORKFLOW_DATA_DIR          — persistent data directory for this workflow
-                                     Git-ignored, writable at step runtime
-                                     Survives WorkflowUpdate, deleted by WorkflowDelete
 ```
 
 ---
@@ -179,8 +136,7 @@ steps:
 
 Why this is good:
 - Each step has one responsibility and is safe to retry independently.
-- `fetch` writes to `OPENCTO_WORKFLOW_RUN_ARTIFACTS_DIR/` for same-run sharing.
-- `append` reads that artifact and writes durable state to `OPENCTO_WORKFLOW_DATA_DIR/`.
+- `fetch` and `append` keep state flow explicit in workflow-owned files.
 - No source files under `data/`, `artifacts/`, or ignored paths.
 
 ### Bad workflow.yml

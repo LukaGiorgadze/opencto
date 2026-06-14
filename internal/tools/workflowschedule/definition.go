@@ -24,7 +24,7 @@ Do not provide workflow.yml, step definitions, or source files in this tool call
 
 	WorkflowDeleteToolDescription = `Hard-delete an existing scheduled workflow.
 
-Removes the schedule, workflow record, {OPENCTO_WORKFLOWS_DIR}/{workflow_id}/, and all run snapshots under $OPENCTO_WORKSPACE/workflow-runs/{workflow_id}/, including the workflow's data/ directory. This is irreversible.`
+Removes the schedule, workflow record, $OPENCTO_WORKSPACE/workflows/{workflow_id}/, and all run snapshots under $OPENCTO_WORKSPACE/workflow-runs/{workflow_id}/, including the workflow's data/ directory. This is irreversible.`
 
 	WorkflowOperationToolDescription = `Run control and read operations on scheduled workflows.
 
