@@ -35,7 +35,7 @@
     },
     "channels": {
         "discord": {
-            "enabled": false,
+            "enabled": true,
             "outbound_messages": {
                 "max_chars": 2000
             },
@@ -68,7 +68,7 @@
         "continue_as_new_after_events": 1000
     },
     "observability": {
-        "log_level": "WARN",
+        "log_level": "DEBUG",
         "json_logs": true
     }
 }

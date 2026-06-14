@@ -17,7 +17,11 @@ func TestPromptAuthoringAgentRendersWorkflowGuidance(t *testing.T) {
 		"User request:\nbuild daily etl",
 		"Work only inside `/tmp/workflows/daily-etl`",
 		"# workflow.yml Requirements",
-		"After your final response, OpenCTO automatically publishes the bundle",
+		"# Step Boundaries",
+		"Each `steps:` entry is an independent activity with its own logs, timeout, and retry policy.",
+		"Do not collapse distinct operations into one step.",
+		"Reserve non-zero exits for technical failures that should halt the workflow.",
+		"OpenCTO publishes via `create` automatically.",
 		"Commit message: create daily workflow",
 	} {
 		if !strings.Contains(prompt, expected) {
