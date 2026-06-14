@@ -14,7 +14,12 @@ import (
 )
 
 const (
-	EnvOpenCTOWorkspace = "OPENCTO_WORKSPACE"
+	EnvOpenCTOWorkspace    = "OPENCTO_WORKSPACE"
+	EnvOpenCTORunDir       = "OPENCTO_RUN_DIR"
+	EnvOpenCTOArtifactsDir = "OPENCTO_ARTIFACTS_DIR"
+	EnvOpenCTODataDir      = "OPENCTO_DATA_DIR"
+	EnvOpenCTOStepID       = "OPENCTO_STEP_ID"
+	EnvOpenCTOStepOutput   = "OPENCTO_STEP_OUTPUT"
 
 	localBifrostOpenAIBaseURL            = "http://127.0.0.1:8081/openai"
 	defaultDiscordOutboundMaxChars       = 2000

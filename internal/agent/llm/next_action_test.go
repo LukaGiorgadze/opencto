@@ -536,6 +536,10 @@ func TestBuildNextActionMessagesIncludesCollaborationGuidance(t *testing.T) {
 		"Otherwise proceed, then verify",
 		"Use dedicated, specialized tools",
 		"Use `WorkflowCreate` or `WorkflowUpdate` with a self-contained prompt",
+		"Include logical step boundaries and state handoff requirements",
+		"# Reporting",
+		"Use `opencto report` only when a command, script, scheduled workflow, monitor, or background process must send a separate channel notification",
+		"opencto report \"Message.\" -channel_type <discord|telegram|cli> -channel_id \"<id>\"",
 		"`workflows/`: scheduled workflow source repositories",
 		"`workflow-runs/`: per-run workflow snapshots",
 	} {

@@ -14,12 +14,12 @@ const (
 	WorkflowCreateToolDescription = `Create a new scheduled workflow by delegating authoring to a durable agent.
 
 Only for new workflows. Fails if workflow_id is already registered.
-Provide a self-contained prompt with the desired schedule, behavior, state handling, credential requirements, and validation expectations.
+Provide a self-contained prompt with the desired schedule, logical steps, state handling, credential requirements, and validation expectations. The authoring agent can share state between manifest steps with OpenCTO runtime artifact/data env vars.
 Do not provide workflow.yml, step definitions, or source files in this tool call. The sub agent authors workflow.yml and source files on disk; OpenCTO validates, commits, and schedules the final bundle.`
 
 	WorkflowUpdateToolDescription = `Update an existing scheduled workflow by delegating authoring to a durable agent.
 
-Provide a self-contained prompt describing what should change and what must stay stable.
+Provide a self-contained prompt describing what should change, what must stay stable, logical step boundaries, and state handling. The authoring agent can share state between manifest steps with OpenCTO runtime artifact/data env vars.
 Do not provide workflow.yml, step definitions, or source files in this tool call. The sub agent edits workflow.yml and source files on disk; OpenCTO validates, commits, and repoints the schedule to the final bundle.`
 
 	WorkflowDeleteToolDescription = `Hard-delete an existing scheduled workflow.

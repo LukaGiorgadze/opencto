@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 
 	"github.com/opencto/opencto/internal/agent"
@@ -2653,6 +2654,81 @@ func TestExecuteAgentToolIsNotRunInsideActivity(t *testing.T) {
 	}
 }
 
+func TestPrepareWorkflowAuthoringReturnsNonRetryableValidationError(t *testing.T) {
+	t.Parallel()
+
+	activities := &Activities{
+		Schedule: &fakeScheduleExecutor{
+			authoringErr: fmt.Errorf("wrapped validation: %w", scheduletool.ErrWorkflowExists),
+		},
+	}
+	_, err := activities.PrepareWorkflowAuthoring(context.Background(), scheduletool.AuthoringRequest{
+		ProjectID:  "project-1",
+		Operation:  scheduletool.OperationCreate,
+		WorkflowID: "daily-hello",
+		Prompt:     "create workflow",
+	})
+	if err == nil {
+		t.Fatal("expected authoring validation error")
+	}
+	var applicationErr *temporal.ApplicationError
+	if !errors.As(err, &applicationErr) {
+		t.Fatalf("expected Temporal application error, got %T %v", err, err)
+	}
+	if !applicationErr.NonRetryable() {
+		t.Fatalf("expected non-retryable error, got %v", err)
+	}
+	if applicationErr.Type() != scheduletool.WorkflowAuthoringValidationErrorType {
+		t.Fatalf("unexpected application error type %q", applicationErr.Type())
+	}
+	if !errors.Is(err, scheduletool.ErrWorkflowExists) {
+		t.Fatalf("expected original validation cause, got %v", err)
+	}
+}
+
+func TestPrepareWorkflowAuthoringKeepsTransientErrorsRetryable(t *testing.T) {
+	t.Parallel()
+
+	transientErr := errors.New("temporary store unavailable")
+	activities := &Activities{
+		Schedule: &fakeScheduleExecutor{authoringErr: transientErr},
+	}
+	_, err := activities.PrepareWorkflowAuthoring(context.Background(), scheduletool.AuthoringRequest{
+		ProjectID:  "project-1",
+		Operation:  scheduletool.OperationUpdate,
+		WorkflowID: "daily-hello",
+		Prompt:     "update workflow",
+	})
+	if !errors.Is(err, transientErr) {
+		t.Fatalf("expected transient error, got %v", err)
+	}
+	var applicationErr *temporal.ApplicationError
+	if errors.As(err, &applicationErr) {
+		t.Fatalf("expected transient error to stay retryable, got Temporal application error %v", err)
+	}
+}
+
+func TestPrepareWorkflowAuthoringConfigurationErrorsAreNonRetryable(t *testing.T) {
+	t.Parallel()
+
+	_, err := (&Activities{}).PrepareWorkflowAuthoring(context.Background(), scheduletool.AuthoringRequest{
+		ProjectID:  "project-1",
+		Operation:  scheduletool.OperationUpdate,
+		WorkflowID: "daily-hello",
+		Prompt:     "update workflow",
+	})
+	if err == nil {
+		t.Fatal("expected configuration error")
+	}
+	var applicationErr *temporal.ApplicationError
+	if !errors.As(err, &applicationErr) {
+		t.Fatalf("expected Temporal application error, got %T %v", err, err)
+	}
+	if !applicationErr.NonRetryable() || applicationErr.Type() != workflowAuthoringConfigurationErrorType {
+		t.Fatalf("unexpected application error: type=%q non_retryable=%t", applicationErr.Type(), applicationErr.NonRetryable())
+	}
+}
+
 func TestCompressAgentObservationsSummarizesOlderHistory(t *testing.T) {
 	t.Parallel()
 
@@ -4048,9 +4124,13 @@ func TestCleanupWorkflowRunsDoesNotDeleteActiveOlderSnapshot(t *testing.T) {
 	}
 }
 
-func TestWorkflowStepEnvironmentSetsWorkspace(t *testing.T) {
+func TestWorkflowStepEnvironmentSetsStepPaths(t *testing.T) {
 	t.Setenv("OPENCTO_WORKSPACE", "/inherited")
 	t.Setenv("OPENCTO_RUN_DIR", "/old-run")
+	t.Setenv("OPENCTO_ARTIFACTS_DIR", "/old-artifacts")
+	t.Setenv("OPENCTO_DATA_DIR", "/old-data")
+	t.Setenv("OPENCTO_STEP_ID", "old-step")
+	t.Setenv("OPENCTO_STEP_OUTPUT", "/old-output.json")
 	t.Setenv("PATH", "/usr/bin")
 
 	runPath := filepath.Join(t.TempDir(), "run-1")
@@ -4058,13 +4138,21 @@ func TestWorkflowStepEnvironmentSetsWorkspace(t *testing.T) {
 		WorkflowID: "finance-check",
 		RunID:      "run-1",
 		RunPath:    runPath,
+		Step: workflowbundle.Step{
+			ID: "check",
+		},
 	}
 	env, err := workflowStepEnvironment("/workspace", request)
 	if err != nil {
 		t.Fatalf("workflow step environment: %v", err)
 	}
 	for name, want := range map[string]string{
-		"OPENCTO_WORKSPACE": "/workspace",
+		"OPENCTO_WORKSPACE":     "/workspace",
+		"OPENCTO_RUN_DIR":       runPath,
+		"OPENCTO_ARTIFACTS_DIR": filepath.Join(runPath, "artifacts"),
+		"OPENCTO_DATA_DIR":      filepath.Join("/workspace", "workflows", "finance-check", "data"),
+		"OPENCTO_STEP_ID":       "check",
+		"OPENCTO_STEP_OUTPUT":   filepath.Join(runPath, "artifacts", "steps", "check", "output.json"),
 	} {
 		if got := envValue(env, name); got != want {
 			t.Fatalf("expected %s=%q, got %q", name, want, got)
@@ -4072,11 +4160,6 @@ func TestWorkflowStepEnvironmentSetsWorkspace(t *testing.T) {
 	}
 	if got := envValue(env, "PATH"); got != "/usr/bin" {
 		t.Fatalf("expected PATH to be preserved, got %q", got)
-	}
-	for _, name := range []string{"OPENCTO_RUN_DIR"} {
-		if got := envValue(env, name); got != "" {
-			t.Fatalf("expected %s to be stripped, got %q", name, got)
-		}
 	}
 }
 
@@ -4095,7 +4178,7 @@ func TestExecuteWorkflowStepUsesRunDirectory(t *testing.T) {
 			Command: "sh",
 			Args: []string{
 				"-c",
-				`test -d artifacts && printf '{"ok":true}\n' > artifacts/payload.json`,
+				`test -d "$OPENCTO_ARTIFACTS_DIR" && test -d "$OPENCTO_DATA_DIR" && test "$OPENCTO_STEP_ID" = check && printf '{"ok":true}\n' > "$OPENCTO_STEP_OUTPUT"`,
 			},
 		},
 	})
@@ -4105,7 +4188,7 @@ func TestExecuteWorkflowStepUsesRunDirectory(t *testing.T) {
 	if result.ExitCode != 0 {
 		t.Fatalf("expected successful step, got %#v", result)
 	}
-	artifactPath := filepath.Join(runPath, "artifacts", "payload.json")
+	artifactPath := filepath.Join(runPath, "artifacts", "steps", "check", "output.json")
 	data, err := os.ReadFile(artifactPath)
 	if err != nil {
 		t.Fatalf("read step artifact: %v", err)
@@ -4215,11 +4298,16 @@ func (f fakeGrepExecutor) Run(context.Context, greptool.Request) (greptool.Resul
 type fakeScheduleExecutor struct {
 	result           scheduletool.Result
 	err              error
+	authoringPlan    scheduletool.AuthoringPlan
+	authoringErr     error
 	createRequest    scheduletool.CreateRequest
 	updateRequest    scheduletool.UpdateRequest
 	deleteRequest    scheduletool.DeleteRequest
 	operationRequest scheduletool.OperationRequest
 	publishRequest   scheduletool.UpdateRequest
+	authoringRequest scheduletool.AuthoringRequest
+	cleanupPlan      scheduletool.AuthoringPlan
+	cleanupErr       error
 }
 
 func (f *fakeScheduleExecutor) Create(_ context.Context, req scheduletool.CreateRequest) (scheduletool.Result, error) {
@@ -4245,4 +4333,14 @@ func (f *fakeScheduleExecutor) Operation(_ context.Context, req scheduletool.Ope
 func (f *fakeScheduleExecutor) PublishCurrentSource(_ context.Context, req scheduletool.UpdateRequest) (scheduletool.Result, error) {
 	f.publishRequest = req
 	return f.result, f.err
+}
+
+func (f *fakeScheduleExecutor) PrepareAuthoring(_ context.Context, req scheduletool.AuthoringRequest) (scheduletool.AuthoringPlan, error) {
+	f.authoringRequest = req
+	return f.authoringPlan, f.authoringErr
+}
+
+func (f *fakeScheduleExecutor) CleanupAuthoring(_ context.Context, plan scheduletool.AuthoringPlan) error {
+	f.cleanupPlan = plan
+	return f.cleanupErr
 }

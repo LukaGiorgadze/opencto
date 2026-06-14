@@ -36,17 +36,71 @@ const (
 )
 
 var (
-	ErrClientRequired      = errors.New("schedule client is required")
-	ErrStoreRequired       = errors.New("runtime store is required")
-	ErrWorkspaceRequired   = errors.New("workspace root is required")
-	ErrTaskQueueRequired   = errors.New("task queue is required")
-	ErrOperationRequired   = errors.New("workflow schedule operation is required")
-	ErrWorkflowIDRequired  = errors.New("workflow_id is required")
-	ErrWorkflowExists      = errors.New("workflow already exists")
-	ErrScheduleSpecMissing = errors.New("schedule.cron or schedule.one_shot_at is required")
-	ErrScheduleSpecMixed   = errors.New("schedule.cron and schedule.one_shot_at cannot both be set")
-	ErrPastOneShot         = errors.New("schedule.one_shot_at must be in the future")
+	ErrClientRequired                = errors.New("schedule client is required")
+	ErrStoreRequired                 = errors.New("runtime store is required")
+	ErrWorkspaceRequired             = errors.New("workspace root is required")
+	ErrTaskQueueRequired             = errors.New("task queue is required")
+	ErrOperationRequired             = errors.New("workflow schedule operation is required")
+	ErrWorkflowIDRequired            = errors.New("workflow_id is required")
+	ErrWorkflowExists                = errors.New("workflow already exists")
+	ErrWorkflowNotFound              = errors.New("workflow not found")
+	ErrWorkflowSourceNotFound        = errors.New("workflow source directory not found")
+	ErrUnsupportedAuthoringOperation = errors.New("unsupported workflow authoring operation")
+	ErrScheduleSpecMissing           = errors.New("schedule.cron or schedule.one_shot_at is required")
+	ErrScheduleSpecMixed             = errors.New("schedule.cron and schedule.one_shot_at cannot both be set")
+	ErrPastOneShot                   = errors.New("schedule.one_shot_at must be in the future")
 )
+
+const WorkflowAuthoringValidationErrorType = "WorkflowAuthoringValidation"
+
+type workflowNotFoundError struct {
+	workflowID string
+}
+
+func (e workflowNotFoundError) Error() string {
+	return fmt.Sprintf("workflow %q not found", e.workflowID)
+}
+
+func (e workflowNotFoundError) Is(target error) bool {
+	return target == ErrWorkflowNotFound
+}
+
+type workflowSourceNotFoundError struct {
+	workflowID string
+}
+
+func (e workflowSourceNotFoundError) Error() string {
+	return fmt.Sprintf("workflow %q source directory not found", e.workflowID)
+}
+
+func (e workflowSourceNotFoundError) Is(target error) bool {
+	return target == ErrWorkflowSourceNotFound
+}
+
+type unsupportedAuthoringOperationError struct {
+	operation string
+}
+
+func (e unsupportedAuthoringOperationError) Error() string {
+	return fmt.Sprintf("unsupported workflow authoring operation %q", e.operation)
+}
+
+func (e unsupportedAuthoringOperationError) Is(target error) bool {
+	return target == ErrUnsupportedAuthoringOperation
+}
+
+func IsNonRetryableAuthoringError(err error) bool {
+	return errors.Is(err, ErrClientRequired) ||
+		errors.Is(err, ErrStoreRequired) ||
+		errors.Is(err, ErrWorkspaceRequired) ||
+		errors.Is(err, ErrTaskQueueRequired) ||
+		errors.Is(err, ErrOperationRequired) ||
+		errors.Is(err, ErrWorkflowIDRequired) ||
+		errors.Is(err, ErrWorkflowExists) ||
+		errors.Is(err, ErrWorkflowNotFound) ||
+		errors.Is(err, ErrWorkflowSourceNotFound) ||
+		errors.Is(err, ErrUnsupportedAuthoringOperation)
+}
 
 type CreateRequest struct {
 	ProjectID   string       `json:"-"`
@@ -415,7 +469,7 @@ func (e *TemporalExecutor) publishCurrentSource(ctx context.Context, req Request
 		return Result{}, err
 	}
 	if !ok {
-		return Result{}, fmt.Errorf("workflow %q not found", workflowID)
+		return Result{}, workflowNotFoundError{workflowID: workflowID}
 	}
 	scheduleID := firstNonEmpty(strings.TrimSpace(existing.TemporalScheduleID), workflowrun.ScheduleID(req.ProjectID, workflowID))
 	status := existing.Status
@@ -499,7 +553,7 @@ func (e *TemporalExecutor) describe(ctx context.Context, req Request) (Result, e
 		return Result{}, err
 	}
 	if !ok {
-		return Result{}, fmt.Errorf("workflow %q not found", workflowID)
+		return Result{}, workflowNotFoundError{workflowID: workflowID}
 	}
 	result := Result{
 		Operation:    OperationDescribe,
@@ -725,7 +779,7 @@ func (e *TemporalExecutor) PrepareAuthoring(ctx context.Context, req AuthoringRe
 	case OperationUpdate:
 		return e.prepareUpdateAuthoring(ctx, request)
 	default:
-		return AuthoringPlan{}, fmt.Errorf("unsupported workflow authoring operation %q", req.Operation)
+		return AuthoringPlan{}, unsupportedAuthoringOperationError{operation: req.Operation}
 	}
 }
 
@@ -771,12 +825,12 @@ func (e *TemporalExecutor) prepareUpdateAuthoring(ctx context.Context, req Reque
 		return AuthoringPlan{}, err
 	}
 	if !ok {
-		return AuthoringPlan{}, fmt.Errorf("workflow %q not found", workflowID)
+		return AuthoringPlan{}, workflowNotFoundError{workflowID: workflowID}
 	}
 	if exists, err := pathExists(workflowPath); err != nil {
 		return AuthoringPlan{}, err
 	} else if !exists {
-		return AuthoringPlan{}, fmt.Errorf("workflow %q source directory not found", workflowID)
+		return AuthoringPlan{}, workflowSourceNotFoundError{workflowID: workflowID}
 	}
 	target := notificationTargetFromEvent(preservedWorkflowSourceEvent(existing.SourceEvent, req.SourceEvent))
 	if manifest, err := workflowbundle.LoadManifest(workflowPath); err == nil {

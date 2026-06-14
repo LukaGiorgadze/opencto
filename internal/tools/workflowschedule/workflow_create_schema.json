@@ -12,7 +12,7 @@
     "prompt": {
       "type": "string",
       "minLength": 1,
-      "description": "Self-contained workflow authoring request. Include: goal description, trigger and schedule, step-by-step desired behavior, state rules and expected inputs and outputs, credential and service requirements, error handling expectations, and validation criteria."
+      "description": "Self-contained workflow authoring request. Include: goal description, trigger and schedule, logical step-by-step behavior, state rules and expected inputs and outputs, credential and service requirements, error handling expectations, and validation criteria. Describe distinct operations so the authoring agent can create separate manifest steps and use OpenCTO runtime artifact/data env vars for state sharing."
     },
     "commit_message": {
       "type": "string",

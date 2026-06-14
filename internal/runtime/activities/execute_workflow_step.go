@@ -27,7 +27,7 @@ func (a *Activities) ExecuteWorkflowStep(ctx context.Context, request workflowru
 	if runPath == "" {
 		return workflowrun.ExecuteStepResult{}, fmt.Errorf("run_path is required")
 	}
-	if err := os.MkdirAll(filepath.Join(runPath, "artifacts"), 0o755); err != nil {
+	if err := os.MkdirAll(workflowRunArtifactsDir(runPath), 0o755); err != nil {
 		return workflowrun.ExecuteStepResult{}, err
 	}
 	dataDir, err := workflowbundle.WorkflowDataDir(a.WorkspaceRoot, request.WorkflowID)
@@ -35,6 +35,9 @@ func (a *Activities) ExecuteWorkflowStep(ctx context.Context, request workflowru
 		return workflowrun.ExecuteStepResult{}, err
 	}
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		return workflowrun.ExecuteStepResult{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(workflowStepOutputPath(runPath, stepID)), 0o755); err != nil {
 		return workflowrun.ExecuteStepResult{}, err
 	}
 	startedAt := time.Now().UTC()

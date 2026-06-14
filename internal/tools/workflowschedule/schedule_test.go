@@ -407,6 +407,69 @@ func TestPrepareCreateAuthoringReplacesUnregisteredLocalBundle(t *testing.T) {
 	}
 }
 
+func TestPrepareUpdateAuthoringMissingWorkflowIsNonRetryable(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	executor, _, _ := newWorkflowTestExecutor(t, t.TempDir())
+	_, err := executor.PrepareAuthoring(ctx, AuthoringRequest{
+		ProjectID:  "project-1",
+		Operation:  OperationUpdate,
+		WorkflowID: "missing-workflow",
+		Prompt:     "update workflow",
+	})
+	if err == nil {
+		t.Fatal("expected missing workflow error")
+	}
+	if !errors.Is(err, ErrWorkflowNotFound) {
+		t.Fatalf("expected ErrWorkflowNotFound, got %v", err)
+	}
+	if !IsNonRetryableAuthoringError(err) {
+		t.Fatalf("expected non-retryable authoring error, got %v", err)
+	}
+	if err.Error() != `workflow "missing-workflow" not found` {
+		t.Fatalf("unexpected error message %q", err.Error())
+	}
+}
+
+func TestPrepareUpdateAuthoringMissingSourceIsNonRetryable(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	workspaceRoot := t.TempDir()
+	executor, store, _ := newWorkflowTestExecutor(t, workspaceRoot)
+	if err := store.UpsertScheduledWorkflow(ctx, domain.ScheduledWorkflow{
+		ID:                 "orphan-workflow",
+		ProjectID:          "project-1",
+		Name:               "orphan workflow",
+		Status:             domain.ScheduledWorkflowStatusActive,
+		CurrentCommitHash:  "abc123",
+		TemporalScheduleID: "project-1:workflow:orphan-workflow",
+		WorkflowPath:       filepath.Join(workspaceRoot, "workflows", "orphan-workflow"),
+	}); err != nil {
+		t.Fatalf("upsert scheduled workflow: %v", err)
+	}
+
+	_, err := executor.PrepareAuthoring(ctx, AuthoringRequest{
+		ProjectID:  "project-1",
+		Operation:  OperationUpdate,
+		WorkflowID: "orphan-workflow",
+		Prompt:     "update workflow",
+	})
+	if err == nil {
+		t.Fatal("expected missing source error")
+	}
+	if !errors.Is(err, ErrWorkflowSourceNotFound) {
+		t.Fatalf("expected ErrWorkflowSourceNotFound, got %v", err)
+	}
+	if !IsNonRetryableAuthoringError(err) {
+		t.Fatalf("expected non-retryable authoring error, got %v", err)
+	}
+	if err.Error() != `workflow "orphan-workflow" source directory not found` {
+		t.Fatalf("unexpected error message %q", err.Error())
+	}
+}
+
 func TestPrepareUpdateAuthoringCheckpointsDirtyWorkflowFiles(t *testing.T) {
 	t.Parallel()
 

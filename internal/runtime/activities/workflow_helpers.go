@@ -12,6 +12,7 @@ import (
 
 	"github.com/opencto/opencto/internal/config"
 	"github.com/opencto/opencto/internal/runtime/workflowrun"
+	"github.com/opencto/opencto/internal/workflowbundle"
 )
 
 func activityAttempt(ctx context.Context) int {
@@ -50,8 +51,30 @@ func workflowStepEnvironment(workspaceRoot string, request workflowrun.ExecuteSt
 	if workspaceRoot == "" {
 		return nil, fmt.Errorf("workspace root is required")
 	}
+	dataDir, err := workflowbundle.WorkflowDataDir(workspaceRoot, request.WorkflowID)
+	if err != nil {
+		return nil, err
+	}
+	runDir := strings.TrimSpace(request.RunPath)
+	if runDir == "" {
+		return nil, fmt.Errorf("run_path is required")
+	}
+	stepID := strings.TrimSpace(request.Step.ID)
 	env = upsertEnv(env, config.EnvOpenCTOWorkspace, workspaceRoot)
+	env = upsertEnv(env, config.EnvOpenCTORunDir, runDir)
+	env = upsertEnv(env, config.EnvOpenCTOArtifactsDir, workflowRunArtifactsDir(runDir))
+	env = upsertEnv(env, config.EnvOpenCTODataDir, dataDir)
+	env = upsertEnv(env, config.EnvOpenCTOStepID, stepID)
+	env = upsertEnv(env, config.EnvOpenCTOStepOutput, workflowStepOutputPath(runDir, stepID))
 	return env, nil
+}
+
+func workflowRunArtifactsDir(runDir string) string {
+	return filepath.Join(strings.TrimSpace(runDir), "artifacts")
+}
+
+func workflowStepOutputPath(runDir, stepID string) string {
+	return filepath.Join(workflowRunArtifactsDir(runDir), "steps", strings.TrimSpace(stepID), "output.json")
 }
 
 func withoutEnvPrefix(env []string, prefix string) []string {

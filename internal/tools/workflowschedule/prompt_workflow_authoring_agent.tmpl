@@ -20,7 +20,9 @@ Create `workflow.yml` and all required source files from scratch. The workflow d
 Read the current workflow directory, then update `workflow.yml` and source files as needed.
 {{- end }}
 
-Work only inside `{{ .WorkflowPath }}`. Do not commit, register schedules, or run schedulers or daemons.
+Authoring-time file edits must stay inside `{{ .WorkflowPath }}`. Step scripts may write runtime state only through the OpenCTO runtime environment variables documented below.
+
+Do not commit, register schedules, or run schedulers or daemons.
 
 ---
 
@@ -38,20 +40,49 @@ Use this exact shape:
 
 - Each `steps:` entry is an independent activity with its own logs, timeout, and retry policy. Use separate steps for distinct retry/observability boundaries: external fetches, checks, transforms, state updates, artifact generation, notifications.
 - Do not collapse distinct operations into one step. A single step is only appropriate when the behavior is truly atomic or the user explicitly requests it.
-- Pass data between steps via workflow-owned files: run directory, `artifacts/`, or `data/` for cross-run state.
+- Pass data between steps with the runtime env vars below. Do not add `env`, `inputs`, `outputs`, or template expressions to `workflow.yml`; those fields are unsupported.
 - Business-level failures: write the result and exit 0. Reserve non-zero exits for technical failures that should halt the workflow.
 
 ---
 
-# Sending Reports
+# Runtime State Sharing
 
-To send a conditional business message from a step:
+OpenCTO sets these environment variables for every step. Use them instead of hardcoded workspace or run paths.
+
+```
+OPENCTO_WORKSPACE     root workspace directory
+OPENCTO_RUN_DIR       current run snapshot and step working directory
+OPENCTO_ARTIFACTS_DIR writable artifacts directory for this run
+OPENCTO_DATA_DIR      persistent data directory for this workflow across runs
+OPENCTO_STEP_ID       current manifest step id
+OPENCTO_STEP_OUTPUT   JSON output file for the current step:
+                      $OPENCTO_ARTIFACTS_DIR/steps/$OPENCTO_STEP_ID/output.json
+```
+
+For same-run handoff, write compact JSON to `OPENCTO_STEP_OUTPUT`. Later steps read `OPENCTO_ARTIFACTS_DIR/steps/<step-id>/output.json`.
+
+Use `OPENCTO_DATA_DIR` only for cross-run persistent state. Always handle missing or invalid files gracefully.
+
+---
+
+# Reporting
+
+Use the final response only to summarize authored files and checks. Generated workflow code should call `opencto report` only when the workflow behavior requires a separate channel notification.
+
+Default workflow report target:
 
 ```sh
 opencto report "Message." -channel_type {{ .NotificationChannelType }} -channel_id "{{ .NotificationChannelID }}"
 ```
 
-Use repeatable `-file path` flags to attach generated files. Call `opencto report` only when the workflow condition is met — no unconditional success messages unless explicitly requested.
+Use repeatable `-file path` flags to attach generated files. Provide message text, at least one file, or both.
+
+When reporting from workflow step code:
+- Put reporting in its own `report` or `notify` step when it is a distinct retry/observability boundary.
+- Read same-run result data from `OPENCTO_ARTIFACTS_DIR/steps/<step-id>/output.json`.
+- Send reports only to the rendered target above unless the user explicitly requested another known target.
+- For conditional notifications, call `opencto report` only when the condition is met. Do not send unconditional success or no-op messages unless the user explicitly requested them.
+- Keep messages concise and human-facing. Put raw logs, payloads, screenshots, charts, and larger artifacts in files attached with `-file`.
 
 ---
 
@@ -68,7 +99,8 @@ $OPENCTO_WORKSPACE/
   workflow-runs/{workflow_id}/{run_id}/
     workflow.yml
     src/
-    artifacts/            ← runtime only, never edit
+    artifacts/
+      steps/{step_id}/output.json  ← same-run step handoff
 ```
 
 Source may live anywhere in the workflow directory except reserved or ignored paths.
@@ -81,9 +113,10 @@ Run in order — do not skip:
 
 1. Read back `workflow.yml` and verify it matches the intended design.
 2. Confirm each distinct retry/observability boundary has its own step. Document why any combined step must be atomic.
-3. Run each source file directly and confirm it executes without errors.
-4. If execution fails, fix and rerun until it passes.
-5. If a script has irreversible external effects, dry-run or mock instead. Document what was skipped.
+3. Confirm same-run handoffs use `OPENCTO_STEP_OUTPUT` and `OPENCTO_ARTIFACTS_DIR/steps/<step-id>/output.json`, not manifest expressions.
+4. Run each source file directly and confirm it executes without errors.
+5. If execution fails, fix and rerun until it passes.
+6. If a script has irreversible external effects, dry-run or mock instead. Document what was skipped.
 
 **Publish loop:** After your final response, OpenCTO publishes via `{{ .Operation }}` automatically. Do not call `WorkflowCreate` or `WorkflowUpdate` yourself. If a publish error appears in tool results, treat it as validation feedback — fix files, re-read `workflow.yml`, rerun checks, and finish again.
 
@@ -135,7 +168,7 @@ steps:
       non_retryable_error_types: []
 ```
 
-Each step has one responsibility and is safe to retry independently. State flows through workflow-owned files.
+Each step has one responsibility and is safe to retry independently. `fetch` writes JSON to `OPENCTO_STEP_OUTPUT`; `append` reads `OPENCTO_ARTIFACTS_DIR/steps/fetch/output.json`.
 
 ### Bad
 

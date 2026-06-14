@@ -12,7 +12,7 @@
         "prompt": {
             "type": "string",
             "minLength": 1,
-            "description": "Self-contained workflow update request. Include what should change, what must stay stable, schedule changes if any, and validation expectations."
+            "description": "Self-contained workflow update request. Include what should change, what must stay stable, logical step boundaries, state handling, schedule changes if any, and validation expectations. Describe distinct operations so the authoring agent can create separate manifest steps and use OpenCTO runtime artifact/data env vars for state sharing."
         },
         "commit_message": {
             "type": "string",
