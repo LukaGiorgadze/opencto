@@ -42,6 +42,7 @@ const telegramDefaultWebhookListenAddr = "127.0.0.1:8082"
 const telegramDefaultWebhookPath = "/telegram/webhook"
 const telegramDefaultWebhookMaxConnections = 40
 const telegramReferencedContentMaxChars = 2000
+const telegramResetCommandDescription = "Start a new OpenCTO conversation"
 
 type AttachmentLimits = channels.AttachmentLimits
 type MessageLimits = channels.MessageLimits
@@ -64,6 +65,7 @@ type Options struct {
 
 type telegramBot interface {
 	SetWebhookWithContext(ctx context.Context, url string, opts *gotgbot.SetWebhookOpts) (bool, error)
+	SetMyCommandsWithContext(ctx context.Context, commands []gotgbot.BotCommand, opts *gotgbot.SetMyCommandsOpts) (bool, error)
 	GetFileWithContext(ctx context.Context, fileID string, opts *gotgbot.GetFileOpts) (*gotgbot.File, error)
 	SendMessageWithContext(ctx context.Context, chatID int64, text string, opts *gotgbot.SendMessageOpts) (*gotgbot.Message, error)
 	SendDocumentWithContext(ctx context.Context, chatID int64, document gotgbot.InputFileOrString, opts *gotgbot.SendDocumentOpts) (*gotgbot.Message, error)
@@ -242,6 +244,9 @@ func (a *Adapter) Start(ctx context.Context) error {
 		_ = server.Close()
 		return fmt.Errorf("set telegram webhook: %w", err)
 	}
+	if err := a.registerCommands(ctx); err != nil {
+		a.log().Warn("register telegram bot commands", slog.String("error", err.Error()))
+	}
 
 	go func() {
 		<-ctx.Done()
@@ -256,6 +261,17 @@ func (a *Adapter) Start(ctx context.Context) error {
 		slog.String("url", webhookURL),
 	)
 	return nil
+}
+
+func (a *Adapter) registerCommands(ctx context.Context) error {
+	if a == nil || a.bot == nil {
+		return nil
+	}
+	_, err := a.bot.SetMyCommandsWithContext(ctx, []gotgbot.BotCommand{{
+		Command:     strings.TrimPrefix(domain.ConversationResetSlashCommand, "/"),
+		Description: telegramResetCommandDescription,
+	}}, nil)
+	return err
 }
 
 func (a *Adapter) Close() error {
@@ -341,8 +357,10 @@ func (a *Adapter) handleUpdate(ctx context.Context, update gotgbot.Update) error
 		)
 		return nil
 	}
-	if err := a.NotifyTyping(ctx, event); err != nil {
-		a.log().Warn("notify telegram typing", slog.String("error", err.Error()), slog.String("event_id", event.ID))
+	if !domain.IsConversationResetCommand(event.Body) {
+		if err := a.NotifyTyping(ctx, event); err != nil {
+			a.log().Warn("notify telegram typing", slog.String("error", err.Error()), slog.String("event_id", event.ID))
+		}
 	}
 	if a.dispatcher == nil {
 		return nil

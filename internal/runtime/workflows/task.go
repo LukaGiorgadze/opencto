@@ -74,6 +74,9 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 	persistenceCtx := workflow.WithActivityOptions(ctx, persistenceAO)
 	conversationCompressionCtx := workflow.WithActivityOptions(ctx, conversationCompressionAO)
 	sessionCtx := workflow.WithActivityOptions(ctx, sessionAO)
+	if domain.IsConversationResetCommand(input.Event.Body) {
+		return resetConversationTask(persistenceCtx, input.ProjectID, input.Event)
+	}
 	session := startResponseSession(ctx, sessionCtx, input.ProjectID, input.Event)
 	defer func() {
 		stopResponseSession(ctx, session)
@@ -222,6 +225,12 @@ func persistEvent(ctx workflow.Context, request activities.PersistEventRequest) 
 
 func compressConversation(ctx workflow.Context, request activities.CompressConversationRequest) error {
 	return workflow.ExecuteActivity(ctx, "Activities.CompressConversation", request).Get(ctx, nil)
+}
+
+func resetConversationContext(ctx workflow.Context, request activities.ResetConversationContextRequest) (activities.ResetConversationContextResult, error) {
+	var result activities.ResetConversationContextResult
+	err := workflow.ExecuteActivity(ctx, "Activities.ResetConversationContext", request).Get(ctx, &result)
+	return result, err
 }
 
 func persistNextAction(ctx workflow.Context, request activities.PersistNextActionRequest) error {
@@ -540,6 +549,29 @@ func resultFromNextAction(event domain.Event, next activities.NextActionResult) 
 		ResponseAttachments: attachments,
 		Report:              next.Status != activities.NextActionStatusIgnored && (message != "" || len(attachments) > 0),
 	}
+}
+
+func resetConversationTask(ctx workflow.Context, projectID string, event domain.Event) (TaskWorkflowResult, error) {
+	if strings.TrimSpace(event.ProjectID) == "" {
+		event.ProjectID = strings.TrimSpace(projectID)
+	}
+	if _, err := resetConversationContext(ctx, activities.ResetConversationContextRequest{Event: event}); err != nil {
+		return TaskWorkflowResult{}, err
+	}
+	return TaskWorkflowResult{
+		Completed:       true,
+		Status:          activities.NextActionStatusCompleted,
+		Event:           event,
+		ResponseMessage: "Started a new conversation.",
+		Report:          !commandResponseAcknowledged(event),
+	}, nil
+}
+
+func commandResponseAcknowledged(event domain.Event) bool {
+	if len(event.Metadata) == 0 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(event.Metadata[domain.MetadataKeyCommandResponseAcknowledged]), "true")
 }
 
 func reportTargetEvent(base domain.Event, additionalEvents []domain.Event) domain.Event {

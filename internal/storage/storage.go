@@ -46,6 +46,7 @@ type RuntimeStore interface {
 	ListConversationMessages(context.Context, ConversationQuery) ([]domain.ConversationMessage, error)
 	UpsertConversationSummary(context.Context, domain.ConversationSummary) error
 	ListConversationSummaries(context.Context, ConversationSummaryQuery) ([]domain.ConversationSummary, error)
+	ResetContext(context.Context, domain.ContextResetRequest) (domain.ContextResetResult, error)
 	RememberMemory(context.Context, domain.Memory) (domain.Memory, error)
 	SearchMemories(context.Context, domain.MemorySearchRequest) ([]domain.Memory, error)
 	ListMemories(context.Context, domain.MemoryListRequest) ([]domain.Memory, error)

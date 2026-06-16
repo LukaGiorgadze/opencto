@@ -1547,6 +1547,188 @@ func scanConversationSummaries(rows *sql.Rows) ([]domain.ConversationSummary, er
 	return summaries, rows.Err()
 }
 
+func (s *Store) ResetContext(ctx context.Context, request domain.ContextResetRequest) (domain.ContextResetResult, error) {
+	request.ProjectID = strings.TrimSpace(request.ProjectID)
+	request.UserID = strings.TrimSpace(request.UserID)
+	request.ChannelID = strings.TrimSpace(request.ChannelID)
+	request.ThreadID = strings.TrimSpace(request.ThreadID)
+	if request.ProjectID == "" {
+		return domain.ContextResetResult{}, fmt.Errorf("context reset project id is required")
+	}
+	if request.ChannelType == "" {
+		return domain.ContextResetResult{}, fmt.Errorf("context reset channel type is required")
+	}
+	if request.ChannelID == "" {
+		return domain.ContextResetResult{}, fmt.Errorf("context reset channel id is required")
+	}
+	switch request.Scope {
+	case domain.ContextResetScopeThread:
+		if request.ThreadID == "" {
+			return domain.ContextResetResult{}, fmt.Errorf("thread context reset requires thread id")
+		}
+	case domain.ContextResetScopeChannel:
+		request.ThreadID = ""
+	default:
+		return domain.ContextResetResult{}, fmt.Errorf("unsupported context reset scope %q", request.Scope)
+	}
+
+	memoryIDs, err := s.contextResetMemoryIDs(ctx, request)
+	if err != nil {
+		return domain.ContextResetResult{}, err
+	}
+	memoryIDs = cleanMemoryIDs(memoryIDs)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.ContextResetResult{}, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	result := domain.ContextResetResult{
+		Scope:            request.Scope,
+		DeletedMemoryIDs: memoryIDs,
+	}
+	if count, err := execRowsAffected(ctx, tx, contextResetDeleteMessagesSQL(request), contextResetDeleteMessagesArgs(request)...); err != nil {
+		return domain.ContextResetResult{}, err
+	} else {
+		result.DeletedConversationMessages = count
+	}
+	if count, err := execRowsAffected(ctx, tx, contextResetDeleteSummariesSQL(request), contextResetDeleteSummariesArgs(request)...); err != nil {
+		return domain.ContextResetResult{}, err
+	} else {
+		result.DeletedConversationSummaries = count
+	}
+	if request.Scope == domain.ContextResetScopeChannel {
+		if count, err := execRowsAffected(ctx, tx, `
+DELETE FROM conversation_threads
+WHERE project_id = ? AND channel_type = ? AND channel_id = ?
+`, request.ProjectID, string(request.ChannelType), request.ChannelID); err != nil {
+			return domain.ContextResetResult{}, err
+		} else {
+			result.DeletedConversationThreads = count
+		}
+	}
+	if len(memoryIDs) > 0 {
+		if err := deleteMemoryEmbeddingsTx(ctx, tx, memoryIDs); err != nil {
+			return domain.ContextResetResult{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `
+DELETE FROM memories
+WHERE id IN (`+sqlPlaceholders(len(memoryIDs))+`)
+`, stringAnySlice(memoryIDs)...); err != nil {
+			return domain.ContextResetResult{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `
+DELETE FROM memory_fts
+WHERE memory_id IN (`+sqlPlaceholders(len(memoryIDs))+`)
+`, stringAnySlice(memoryIDs)...); err != nil {
+			return domain.ContextResetResult{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.ContextResetResult{}, err
+	}
+	return result, nil
+}
+
+func (s *Store) contextResetMemoryIDs(ctx context.Context, request domain.ContextResetRequest) ([]string, error) {
+	var clauses []string
+	var args []any
+	switch request.Scope {
+	case domain.ContextResetScopeThread:
+		clauses = append(clauses, `(scope = 'thread' AND project_id = ? AND channel_type = ? AND channel_id = ? AND thread_id = ?)`)
+		args = append(args, request.ProjectID, string(request.ChannelType), request.ChannelID, request.ThreadID)
+		if request.UserID != "" {
+			clauses = append(clauses, `(scope = 'user' AND user_id = ? AND COALESCE(json_extract(metadata, '$.channel_type'), '') = ? AND COALESCE(json_extract(metadata, '$.channel_id'), '') = ? AND COALESCE(json_extract(metadata, '$.thread_id'), '') = ?)`)
+			args = append(args, request.UserID, string(request.ChannelType), request.ChannelID, request.ThreadID)
+		}
+	case domain.ContextResetScopeChannel:
+		clauses = append(clauses, `(scope IN ('channel', 'thread') AND project_id = ? AND channel_type = ? AND channel_id = ?)`)
+		args = append(args, request.ProjectID, string(request.ChannelType), request.ChannelID)
+		if request.UserID != "" {
+			clauses = append(clauses, `(scope = 'user' AND user_id = ? AND COALESCE(json_extract(metadata, '$.channel_type'), '') = ? AND COALESCE(json_extract(metadata, '$.channel_id'), '') = ?)`)
+			args = append(args, request.UserID, string(request.ChannelType), request.ChannelID)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported context reset scope %q", request.Scope)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id
+FROM memories
+WHERE `+strings.Join(clauses, " OR ")+`
+ORDER BY updated_at DESC
+`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func contextResetDeleteMessagesSQL(request domain.ContextResetRequest) string {
+	if request.Scope == domain.ContextResetScopeThread {
+		return `
+DELETE FROM conversation_messages
+WHERE project_id = ? AND channel_type = ? AND channel_id = ? AND thread_id = ?
+`
+	}
+	return `
+DELETE FROM conversation_messages
+WHERE project_id = ? AND channel_type = ? AND channel_id = ?
+`
+}
+
+func contextResetDeleteMessagesArgs(request domain.ContextResetRequest) []any {
+	args := []any{request.ProjectID, string(request.ChannelType), request.ChannelID}
+	if request.Scope == domain.ContextResetScopeThread {
+		args = append(args, request.ThreadID)
+	}
+	return args
+}
+
+func contextResetDeleteSummariesSQL(request domain.ContextResetRequest) string {
+	if request.Scope == domain.ContextResetScopeThread {
+		return `
+DELETE FROM conversation_summaries
+WHERE project_id = ? AND channel_type = ? AND channel_id = ? AND thread_id = ? AND scope = 'thread'
+`
+	}
+	return `
+DELETE FROM conversation_summaries
+WHERE project_id = ? AND channel_type = ? AND channel_id = ?
+`
+}
+
+func contextResetDeleteSummariesArgs(request domain.ContextResetRequest) []any {
+	args := []any{request.ProjectID, string(request.ChannelType), request.ChannelID}
+	if request.Scope == domain.ContextResetScopeThread {
+		args = append(args, request.ThreadID)
+	}
+	return args
+}
+
+func execRowsAffected(ctx context.Context, tx *sql.Tx, query string, args ...any) (int, error) {
+	result, err := tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return int(count), nil
+}
+
 func (s *Store) RememberMemory(ctx context.Context, memory domain.Memory) (domain.Memory, error) {
 	memory.ID = strings.TrimSpace(memory.ID)
 	if memory.ID == "" {

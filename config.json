@@ -46,7 +46,7 @@
             }
         },
         "telegram": {
-            "enabled": false,
+            "enabled": true,
             "webhook": {
                 "max_connections": 40,
                 "drop_pending_updates": false

@@ -81,6 +81,18 @@ type CompressConversationResult struct {
 	SourceChars  int    `json:"source_chars,omitempty"`
 }
 
+type ResetConversationContextRequest struct {
+	Event domain.Event `json:"event"`
+}
+
+type ResetConversationContextResult struct {
+	Scope                        string   `json:"scope,omitempty"`
+	DeletedConversationMessages  int      `json:"deleted_conversation_messages,omitempty"`
+	DeletedConversationSummaries int      `json:"deleted_conversation_summaries,omitempty"`
+	DeletedConversationThreads   int      `json:"deleted_conversation_threads,omitempty"`
+	DeletedMemoryIDs             []string `json:"deleted_memory_ids,omitempty"`
+}
+
 type PersistNextActionRequest struct {
 	Event            domain.Event     `json:"event"`
 	NextAction       agent.NextAction `json:"next_action"`

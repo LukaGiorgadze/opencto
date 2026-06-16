@@ -29,6 +29,8 @@ const discordDefaultOutboundMaxTotalBytes int64 = 25 << 20
 const discordAttachmentPayloadKey = "attachments"
 const discordTypingTimeout = 3 * time.Second
 const discordReferencedContentMaxChars = 2000
+const discordResetCommandName = "new"
+const discordResetCommandDescription = "Start a new OpenCTO conversation"
 
 type AttachmentLimits = channels.AttachmentLimits
 type MessageLimits = channels.MessageLimits
@@ -127,6 +129,9 @@ func normalizeAttachmentLimits(limits AttachmentLimits) AttachmentLimits {
 }
 
 func (a *Adapter) Start(ctx context.Context) error {
+	a.session.AddHandler(func(session *discordgo.Session, interaction *discordgo.InteractionCreate) {
+		a.handleInteractionCreate(ctx, session, interaction)
+	})
 	a.session.AddHandler(func(session *discordgo.Session, message *discordgo.MessageCreate) {
 		if message.Author == nil || message.Author.Bot {
 			return
@@ -145,14 +150,207 @@ func (a *Adapter) Start(ctx context.Context) error {
 			)
 			return
 		}
-		if err := a.NotifyTyping(ctx, event); err != nil {
-			a.logger.Warn("notify discord typing", slog.String("error", err.Error()), slog.String("event_id", event.ID))
+		if !domain.IsConversationResetCommand(event.Body) {
+			if err := a.NotifyTyping(ctx, event); err != nil {
+				a.logger.Warn("notify discord typing", slog.String("error", err.Error()), slog.String("event_id", event.ID))
+			}
 		}
 		if err := a.dispatcher.EnqueueEvent(ctx, event); err != nil {
 			a.logger.Error("enqueue discord event", slog.String("error", err.Error()), slog.String("event_id", event.ID))
 		}
 	})
-	return a.session.Open()
+	if err := a.session.Open(); err != nil {
+		return err
+	}
+	if err := a.registerApplicationCommands(ctx); err != nil {
+		a.logger.Warn("register discord application commands", slog.String("error", err.Error()))
+	}
+	return nil
+}
+
+func (a *Adapter) handleInteractionCreate(ctx context.Context, session *discordgo.Session, interaction *discordgo.InteractionCreate) {
+	if interaction == nil || interaction.Interaction == nil || interaction.Type != discordgo.InteractionApplicationCommand {
+		return
+	}
+	data := interaction.ApplicationCommandData()
+	if strings.TrimSpace(data.Name) != discordResetCommandName {
+		return
+	}
+	event, err := a.resetEventFromInteraction(ctx, session, interaction)
+	if err != nil {
+		a.logger.Error("normalize discord reset interaction", slog.String("error", err.Error()))
+		_ = respondDiscordInteraction(session, interaction.Interaction, "I couldn't start a new conversation.")
+		return
+	}
+	if a.dispatcher != nil {
+		if err := a.dispatcher.EnqueueEvent(ctx, event); err != nil {
+			a.logger.Error("enqueue discord reset interaction", slog.String("error", err.Error()), slog.String("event_id", event.ID))
+			_ = respondDiscordInteraction(session, interaction.Interaction, "I couldn't start a new conversation.")
+			return
+		}
+	}
+	if err := respondDiscordInteraction(session, interaction.Interaction, "Started a new conversation."); err != nil {
+		a.logger.Warn("respond discord reset interaction", slog.String("error", err.Error()), slog.String("event_id", event.ID))
+	}
+}
+
+func respondDiscordInteraction(session *discordgo.Session, interaction *discordgo.Interaction, content string) error {
+	if session == nil || interaction == nil {
+		return nil
+	}
+	return session.InteractionRespond(interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Content: strings.TrimSpace(content),
+		},
+	})
+}
+
+func (a *Adapter) resetEventFromInteraction(ctx context.Context, session *discordgo.Session, interaction *discordgo.InteractionCreate) (domain.Event, error) {
+	id, err := domain.NewID()
+	if err != nil {
+		return domain.Event{}, err
+	}
+	now := time.Now().UTC()
+	channelID := strings.TrimSpace(interaction.ChannelID)
+	threadID, parentID := a.discordChannelThreadContext(ctx, session, channelID)
+	if threadID != "" && parentID != "" {
+		channelID = parentID
+	}
+	actorID, actorName := discordInteractionActor(interaction)
+	return domain.Event{
+		ID:          id,
+		ProjectID:   a.projectID,
+		Kind:        domain.EventKindMessage,
+		ChannelID:   channelID,
+		ChannelType: domain.ChannelTypeDiscord,
+		ThreadID:    threadID,
+		ActorID:     actorID,
+		ActorName:   actorName,
+		Body:        domain.ConversationResetSlashCommand,
+		Metadata: domain.Metadata{
+			domain.MetadataKeyCommandResponseAcknowledged: "true",
+		},
+		Payload: map[string]any{
+			"interaction_id": interaction.ID,
+			"guild_id":       interaction.GuildID,
+			"channel_id":     interaction.ChannelID,
+		},
+		Provenance: domain.Provenance{
+			Source:     string(domain.ChannelTypeDiscord),
+			SourceID:   interaction.ID,
+			Actor:      actorName,
+			ObservedAt: now,
+		},
+		CreatedAt: now,
+	}, nil
+}
+
+func discordInteractionActor(interaction *discordgo.InteractionCreate) (string, string) {
+	if interaction == nil || interaction.Interaction == nil {
+		return "", ""
+	}
+	if interaction.Member != nil && interaction.Member.User != nil {
+		return strings.TrimSpace(interaction.Member.User.ID), strings.TrimSpace(interaction.Member.User.Username)
+	}
+	if interaction.User != nil {
+		return strings.TrimSpace(interaction.User.ID), strings.TrimSpace(interaction.User.Username)
+	}
+	return "", ""
+}
+
+func (a *Adapter) registerApplicationCommands(ctx context.Context) error {
+	if a == nil || a.session == nil {
+		return nil
+	}
+	appID, err := a.discordApplicationID(ctx)
+	if err != nil {
+		return err
+	}
+	command := &discordgo.ApplicationCommand{
+		Name:        discordResetCommandName,
+		Description: discordResetCommandDescription,
+		Type:        discordgo.ChatApplicationCommand,
+	}
+	commands, err := a.session.ApplicationCommands(appID, "", discordgo.WithContext(ctx))
+	if err != nil {
+		return err
+	}
+	for _, existing := range commands {
+		if existing == nil || existing.Name != command.Name || existing.Type != command.Type {
+			continue
+		}
+		if existing.Description == command.Description {
+			return nil
+		}
+		_, err := a.session.ApplicationCommandEdit(appID, "", existing.ID, command, discordgo.WithContext(ctx))
+		return err
+	}
+	_, err = a.session.ApplicationCommandCreate(appID, "", command, discordgo.WithContext(ctx))
+	return err
+}
+
+func (a *Adapter) discordApplicationID(ctx context.Context) (string, error) {
+	if a.session.State != nil && a.session.State.User != nil {
+		if id := strings.TrimSpace(a.session.State.User.ID); id != "" {
+			return id, nil
+		}
+	}
+	user, err := a.session.User("@me", discordgo.WithContext(ctx))
+	if err != nil {
+		return "", err
+	}
+	if user == nil || strings.TrimSpace(user.ID) == "" {
+		return "", fmt.Errorf("discord application id is unavailable")
+	}
+	return strings.TrimSpace(user.ID), nil
+}
+
+func (a *Adapter) discordChannelThreadContext(ctx context.Context, session *discordgo.Session, channelID string) (string, string) {
+	channelID = strings.TrimSpace(channelID)
+	if channelID == "" {
+		return "", ""
+	}
+	a.channelMu.Lock()
+	if a.threadChannels != nil {
+		if threadID, ok := a.threadChannels[channelID]; ok {
+			parentID := ""
+			if a.threadParents != nil {
+				parentID = a.threadParents[channelID]
+			}
+			a.channelMu.Unlock()
+			return threadID, parentID
+		}
+	}
+	a.channelMu.Unlock()
+	if session == nil {
+		return "", ""
+	}
+	if session.State != nil {
+		if channel, err := session.State.Channel(channelID); err == nil && channel != nil {
+			return a.cacheAndReturnDiscordChannelThreadContext(channelID, channel)
+		}
+	}
+	channel, err := session.Channel(channelID, discordgo.WithContext(ctx))
+	if err != nil {
+		a.log().Warn("discord interaction channel lookup failed",
+			slog.String("channel_id", channelID),
+			slog.String("error", err.Error()),
+		)
+		return "", ""
+	}
+	return a.cacheAndReturnDiscordChannelThreadContext(channelID, channel)
+}
+
+func (a *Adapter) cacheAndReturnDiscordChannelThreadContext(channelID string, channel *discordgo.Channel) (string, string) {
+	threadID := ""
+	parentID := ""
+	if channel != nil && channel.IsThread() {
+		threadID = strings.TrimSpace(channel.ID)
+		parentID = strings.TrimSpace(channel.ParentID)
+	}
+	a.cacheDiscordThreadContext(channelID, threadID, parentID)
+	return threadID, parentID
 }
 
 func (a *Adapter) Close() error {

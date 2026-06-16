@@ -253,6 +253,41 @@ func TestNotifyTypingUsesThreadTarget(t *testing.T) {
 	}
 }
 
+func TestResetEventFromInteractionUsesThreadParent(t *testing.T) {
+	t.Parallel()
+
+	adapter := &Adapter{
+		projectID:      "project-1",
+		threadChannels: map[string]string{"thread-1": "thread-1"},
+		threadParents:  map[string]string{"thread-1": "channel-1"},
+	}
+	event, err := adapter.resetEventFromInteraction(context.Background(), nil, &discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{
+			ID:        "interaction-1",
+			Type:      discordgo.InteractionApplicationCommand,
+			GuildID:   "guild-1",
+			ChannelID: "thread-1",
+			Member: &discordgo.Member{User: &discordgo.User{
+				ID:       "user-1",
+				Username: "luka",
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("reset interaction event: %v", err)
+	}
+	if event.ProjectID != "project-1" ||
+		event.ChannelType != domain.ChannelTypeDiscord ||
+		event.ChannelID != "channel-1" ||
+		event.ThreadID != "thread-1" ||
+		event.Body != domain.ConversationResetSlashCommand ||
+		event.ActorID != "user-1" ||
+		event.ActorName != "luka" ||
+		event.Metadata[domain.MetadataKeyCommandResponseAcknowledged] != "true" {
+		t.Fatalf("unexpected reset event: %#v", event)
+	}
+}
+
 func TestNormalizeMessageUsesStateThreadChannel(t *testing.T) {
 	t.Parallel()
 

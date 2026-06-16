@@ -23,6 +23,7 @@ type fakeTelegramBot struct {
 	chatActions   []fakeTelegramChatAction
 	webhookURL    string
 	webhookOpts   *gotgbot.SetWebhookOpts
+	commands      []gotgbot.BotCommand
 	nextMessageID int64
 }
 
@@ -46,6 +47,11 @@ type fakeTelegramChatAction struct {
 func (b *fakeTelegramBot) SetWebhookWithContext(_ context.Context, url string, opts *gotgbot.SetWebhookOpts) (bool, error) {
 	b.webhookURL = url
 	b.webhookOpts = opts
+	return true, nil
+}
+
+func (b *fakeTelegramBot) SetMyCommandsWithContext(_ context.Context, commands []gotgbot.BotCommand, _ *gotgbot.SetMyCommandsOpts) (bool, error) {
+	b.commands = append([]gotgbot.BotCommand(nil), commands...)
 	return true, nil
 }
 
@@ -115,6 +121,24 @@ func TestNewAdapterStoresAttachmentsUnderWorkspaceRoot(t *testing.T) {
 	want := filepath.Join(root, "data", "attachments", "project-1", "telegram")
 	if adapter.attachmentDir != want {
 		t.Fatalf("expected attachment dir %q, got %q", want, adapter.attachmentDir)
+	}
+}
+
+func TestRegisterCommandsAddsNewCommand(t *testing.T) {
+	t.Parallel()
+
+	bot := &fakeTelegramBot{}
+	adapter, err := newAdapter("project-1", "123:token", bot, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+	if err := adapter.registerCommands(context.Background()); err != nil {
+		t.Fatalf("register commands: %v", err)
+	}
+	if len(bot.commands) != 1 ||
+		bot.commands[0].Command != "new" ||
+		bot.commands[0].Description != telegramResetCommandDescription {
+		t.Fatalf("unexpected commands: %#v", bot.commands)
 	}
 }
 

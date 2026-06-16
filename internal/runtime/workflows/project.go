@@ -243,6 +243,16 @@ func handleProjectEventSignal(ctx workflow.Context, state *ProjectWorkflowState,
 		state.Queue = append(state.Queue, event)
 		return
 	}
+	if domain.IsConversationResetCommand(event.Body) {
+		workflow.GetLogger(ctx).Info("project route reset command as new task",
+			"event_id", event.ID,
+			"source_message_id", strings.TrimSpace(event.Provenance.SourceID),
+			"channel_id", strings.TrimSpace(event.ChannelID),
+			"thread_id", strings.TrimSpace(event.ThreadID),
+		)
+		state.Queue = append(state.Queue, event)
+		return
+	}
 
 	if owner := taskRouteOwnerByReply(messageOwners, event); owner.WorkflowID != "" {
 		registerRoutedEventOwnership(messageOwners, threadOwners, event, routeOwner{WorkflowID: owner.WorkflowID})

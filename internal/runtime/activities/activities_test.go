@@ -52,6 +52,8 @@ type stubProjectStore struct {
 	upsertedSummaries    *[]domain.ConversationSummary
 	upsertedThreads      *[]domain.ConversationThread
 	upsertedConversation *[]domain.ConversationMessage
+	resetResult          domain.ContextResetResult
+	resetRequests        *[]domain.ContextResetRequest
 }
 
 type stubEngine struct {
@@ -335,6 +337,13 @@ func (s stubProjectStore) ListConversationSummaries(_ context.Context, query sto
 	return append([]domain.ConversationSummary(nil), filtered[:limit]...), nil
 }
 
+func (s stubProjectStore) ResetContext(_ context.Context, request domain.ContextResetRequest) (domain.ContextResetResult, error) {
+	if s.resetRequests != nil {
+		*s.resetRequests = append(*s.resetRequests, request)
+	}
+	return s.resetResult, nil
+}
+
 func (s stubProjectStore) RememberMemory(_ context.Context, memory domain.Memory) (domain.Memory, error) {
 	if s.remembered != nil {
 		*s.remembered = append(*s.remembered, memory)
@@ -386,6 +395,71 @@ func (s stubProjectStore) ForgetMemories(_ context.Context, request domain.Memor
 		*s.forgetRequests = append(*s.forgetRequests, request)
 	}
 	return s.forgetResult, nil
+}
+
+func TestResetConversationContextUsesThreadScope(t *testing.T) {
+	t.Parallel()
+
+	resetRequests := []domain.ContextResetRequest{}
+	activity := Activities{
+		Project: domain.Project{ID: "project-1"},
+		Store: stubProjectStore{
+			resetRequests: &resetRequests,
+			resetResult: domain.ContextResetResult{
+				Scope:                       domain.ContextResetScopeThread,
+				DeletedConversationMessages: 2,
+				DeletedMemoryIDs:            []string{"memory-thread"},
+			},
+		},
+	}
+	result, err := activity.ResetConversationContext(context.Background(), ResetConversationContextRequest{Event: domain.Event{
+		ChannelType: domain.ChannelTypeTelegram,
+		ChannelID:   "channel-1",
+		ThreadID:    "thread-1",
+		ActorID:     "user-1",
+	}})
+	if err != nil {
+		t.Fatalf("reset context: %v", err)
+	}
+	if len(resetRequests) != 1 {
+		t.Fatalf("expected one reset request, got %#v", resetRequests)
+	}
+	request := resetRequests[0]
+	if request.Scope != domain.ContextResetScopeThread ||
+		request.ProjectID != "project-1" ||
+		request.UserID != "telegram:user-1" ||
+		request.ChannelType != domain.ChannelTypeTelegram ||
+		request.ChannelID != "channel-1" ||
+		request.ThreadID != "thread-1" {
+		t.Fatalf("unexpected reset request: %#v", request)
+	}
+	if result.Scope != string(domain.ContextResetScopeThread) || result.DeletedConversationMessages != 2 || len(result.DeletedMemoryIDs) != 1 {
+		t.Fatalf("unexpected reset result: %#v", result)
+	}
+}
+
+func TestResetConversationContextUsesChannelScopeWithoutThread(t *testing.T) {
+	t.Parallel()
+
+	resetRequests := []domain.ContextResetRequest{}
+	activity := Activities{
+		Store: stubProjectStore{resetRequests: &resetRequests},
+	}
+	_, err := activity.ResetConversationContext(context.Background(), ResetConversationContextRequest{Event: domain.Event{
+		ProjectID:   "project-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-1",
+		ActorID:     "user-1",
+	}})
+	if err != nil {
+		t.Fatalf("reset context: %v", err)
+	}
+	if len(resetRequests) != 1 {
+		t.Fatalf("expected one reset request, got %#v", resetRequests)
+	}
+	if resetRequests[0].Scope != domain.ContextResetScopeChannel || resetRequests[0].ThreadID != "" || resetRequests[0].UserID != "discord:user-1" {
+		t.Fatalf("unexpected reset request: %#v", resetRequests[0])
+	}
 }
 
 func (s stubProjectStore) UpsertScheduledWorkflow(context.Context, domain.ScheduledWorkflow) error {

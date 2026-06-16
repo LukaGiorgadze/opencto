@@ -1017,6 +1017,223 @@ WHERE project_id = ? AND channel_type = ? AND channel_id = ? AND thread_id = ?
 	}
 }
 
+func TestResetContextThreadScopeClearsOnlyThreadContext(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	seedResetContextData(t, ctx, store)
+
+	result, err := store.ResetContext(ctx, domain.ContextResetRequest{
+		ProjectID:   "default",
+		UserID:      "discord:user-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-a",
+		ThreadID:    "thread-a",
+		Scope:       domain.ContextResetScopeThread,
+	})
+	if err != nil {
+		t.Fatalf("reset thread context: %v", err)
+	}
+	if result.Scope != domain.ContextResetScopeThread ||
+		result.DeletedConversationMessages != 1 ||
+		result.DeletedConversationSummaries != 1 ||
+		result.DeletedConversationThreads != 0 {
+		t.Fatalf("unexpected reset result: %#v", result)
+	}
+	requireMemoryIDs(t, result.DeletedMemoryIDs, "thread-a-memory", "thread-a-user-memory")
+
+	threadMessages, err := store.ListConversationMessages(ctx, storage.ConversationQuery{
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-a",
+		ThreadID:    "thread-a",
+		Scope:       storage.ConversationScopeThread,
+		Limit:       10,
+	})
+	if err != nil {
+		t.Fatalf("list reset thread messages: %v", err)
+	}
+	if len(threadMessages) != 0 {
+		t.Fatalf("expected reset thread messages to be deleted, got %#v", threadMessages)
+	}
+	otherThreadMessages, err := store.ListConversationMessages(ctx, storage.ConversationQuery{
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-a",
+		ThreadID:    "thread-b",
+		Scope:       storage.ConversationScopeThread,
+		Limit:       10,
+	})
+	if err != nil {
+		t.Fatalf("list other thread messages: %v", err)
+	}
+	if len(otherThreadMessages) != 1 || otherThreadMessages[0].ID != "thread-b-message" {
+		t.Fatalf("expected other thread message to remain, got %#v", otherThreadMessages)
+	}
+	channelMessages, err := store.ListConversationMessages(ctx, storage.ConversationQuery{
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-a",
+		Scope:       storage.ConversationScopeChannel,
+		Limit:       10,
+	})
+	if err != nil {
+		t.Fatalf("list channel messages: %v", err)
+	}
+	if len(channelMessages) != 1 || channelMessages[0].ID != "channel-message" {
+		t.Fatalf("expected channel parent/root message to remain, got %#v", channelMessages)
+	}
+	thread, ok, err := store.GetConversationThread(ctx, storage.ConversationThreadQuery{
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-a",
+		ThreadID:    "thread-a",
+	})
+	if err != nil {
+		t.Fatalf("get thread after reset: %v", err)
+	}
+	if !ok || thread.RootMessageID != "channel-message" {
+		t.Fatalf("expected thread boundary/root to remain, got ok=%v thread=%#v", ok, thread)
+	}
+	requireMemoryIDs(t, allStoredMemoryIDs(t, ctx, store),
+		"channel-a-memory",
+		"channel-a-user-memory",
+		"global-memory",
+		"other-channel-thread-memory",
+		"other-user-session-memory",
+		"project-memory",
+		"thread-b-memory",
+		"user-memory",
+	)
+}
+
+func TestResetContextChannelScopeClearsChannelAndThreadContext(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	seedResetContextData(t, ctx, store)
+
+	result, err := store.ResetContext(ctx, domain.ContextResetRequest{
+		ProjectID:   "default",
+		UserID:      "discord:user-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-a",
+		Scope:       domain.ContextResetScopeChannel,
+	})
+	if err != nil {
+		t.Fatalf("reset channel context: %v", err)
+	}
+	if result.Scope != domain.ContextResetScopeChannel ||
+		result.DeletedConversationMessages != 3 ||
+		result.DeletedConversationSummaries != 3 ||
+		result.DeletedConversationThreads != 2 {
+		t.Fatalf("unexpected reset result: %#v", result)
+	}
+	requireMemoryIDs(t, result.DeletedMemoryIDs, "channel-a-memory", "channel-a-user-memory", "thread-a-memory", "thread-a-user-memory", "thread-b-memory")
+
+	for _, query := range []storage.ConversationQuery{
+		{ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-a", Scope: storage.ConversationScopeChannel, Limit: 10},
+		{ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-a", ThreadID: "thread-a", Scope: storage.ConversationScopeThread, Limit: 10},
+		{ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-a", ThreadID: "thread-b", Scope: storage.ConversationScopeThread, Limit: 10},
+	} {
+		messages, err := store.ListConversationMessages(ctx, query)
+		if err != nil {
+			t.Fatalf("list reset messages: %v", err)
+		}
+		if len(messages) != 0 {
+			t.Fatalf("expected reset messages to be deleted for query %#v, got %#v", query, messages)
+		}
+	}
+	otherThreadMessages, err := store.ListConversationMessages(ctx, storage.ConversationQuery{
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-b",
+		ThreadID:    "thread-c",
+		Scope:       storage.ConversationScopeThread,
+		Limit:       10,
+	})
+	if err != nil {
+		t.Fatalf("list other channel messages: %v", err)
+	}
+	if len(otherThreadMessages) != 1 || otherThreadMessages[0].ID != "other-channel-thread-message" {
+		t.Fatalf("expected other channel thread message to remain, got %#v", otherThreadMessages)
+	}
+	if _, ok, err := store.GetConversationThread(ctx, storage.ConversationThreadQuery{
+		ProjectID:   "default",
+		ChannelType: domain.ChannelTypeDiscord,
+		ChannelID:   "channel-a",
+		ThreadID:    "thread-a",
+	}); err != nil {
+		t.Fatalf("get reset thread: %v", err)
+	} else if ok {
+		t.Fatalf("expected channel thread row to be deleted")
+	}
+	requireMemoryIDs(t, allStoredMemoryIDs(t, ctx, store),
+		"global-memory",
+		"other-channel-thread-memory",
+		"other-user-session-memory",
+		"project-memory",
+		"user-memory",
+	)
+}
+
+func seedResetContextData(t *testing.T, ctx context.Context, store *Store) {
+	t.Helper()
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	messages := []domain.ConversationMessage{
+		{ID: "channel-message", ProjectID: "default", Role: domain.ConversationRoleUser, ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-a", Body: "channel root", CreatedAt: base},
+		{ID: "thread-a-message", ProjectID: "default", Role: domain.ConversationRoleUser, ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-a", ThreadID: "thread-a", Body: "thread a", CreatedAt: base.Add(time.Minute)},
+		{ID: "thread-b-message", ProjectID: "default", Role: domain.ConversationRoleUser, ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-a", ThreadID: "thread-b", Body: "thread b", CreatedAt: base.Add(2 * time.Minute)},
+		{ID: "other-channel-thread-message", ProjectID: "default", Role: domain.ConversationRoleUser, ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-b", ThreadID: "thread-c", Body: "thread c", CreatedAt: base.Add(3 * time.Minute)},
+	}
+	for _, message := range messages {
+		if err := store.UpsertConversationMessage(ctx, message); err != nil {
+			t.Fatalf("upsert conversation message %s: %v", message.ID, err)
+		}
+	}
+	summaries := []domain.ConversationSummary{
+		{ID: "channel-summary", ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-a", Scope: domain.ConversationSummaryScopeChannel, Summary: "channel", FromMessageID: "channel-message", ToMessageID: "channel-message", FromCreatedAt: base, ToCreatedAt: base, MessageCount: 1, CreatedAt: base, UpdatedAt: base},
+		{ID: "thread-a-summary", ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-a", ThreadID: "thread-a", Scope: domain.ConversationSummaryScopeThread, Summary: "thread a", FromMessageID: "thread-a-message", ToMessageID: "thread-a-message", FromCreatedAt: base.Add(time.Minute), ToCreatedAt: base.Add(time.Minute), MessageCount: 1, CreatedAt: base, UpdatedAt: base},
+		{ID: "thread-b-summary", ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-a", ThreadID: "thread-b", Scope: domain.ConversationSummaryScopeThread, Summary: "thread b", FromMessageID: "thread-b-message", ToMessageID: "thread-b-message", FromCreatedAt: base.Add(2 * time.Minute), ToCreatedAt: base.Add(2 * time.Minute), MessageCount: 1, CreatedAt: base, UpdatedAt: base},
+		{ID: "project-summary", ProjectID: "default", Scope: domain.ConversationSummaryScopeProject, Summary: "project", FromMessageID: "project-a", ToMessageID: "project-b", FromCreatedAt: base, ToCreatedAt: base.Add(time.Minute), MessageCount: 2, CreatedAt: base, UpdatedAt: base},
+		{ID: "other-channel-thread-summary", ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-b", ThreadID: "thread-c", Scope: domain.ConversationSummaryScopeThread, Summary: "thread c", FromMessageID: "other-channel-thread-message", ToMessageID: "other-channel-thread-message", FromCreatedAt: base.Add(3 * time.Minute), ToCreatedAt: base.Add(3 * time.Minute), MessageCount: 1, CreatedAt: base, UpdatedAt: base},
+	}
+	for _, summary := range summaries {
+		if err := store.UpsertConversationSummary(ctx, summary); err != nil {
+			t.Fatalf("upsert conversation summary %s: %v", summary.ID, err)
+		}
+	}
+	threads := []domain.ConversationThread{
+		{ID: "thread-a-row", ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-a", ThreadID: "thread-a", RootMessageID: "channel-message", CreatedAt: base, UpdatedAt: base, LastMessageAt: base},
+		{ID: "thread-b-row", ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-a", ThreadID: "thread-b", RootMessageID: "channel-message", CreatedAt: base, UpdatedAt: base, LastMessageAt: base},
+		{ID: "thread-c-row", ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-b", ThreadID: "thread-c", RootMessageID: "other-channel-thread-message", CreatedAt: base, UpdatedAt: base, LastMessageAt: base},
+	}
+	for _, thread := range threads {
+		if err := store.UpsertConversationThread(ctx, thread); err != nil {
+			t.Fatalf("upsert conversation thread %s: %v", thread.ID, err)
+		}
+	}
+	memories := []domain.Memory{
+		{ID: "channel-a-memory", ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-a", Scope: domain.MemoryScopeChannel, Kind: "fact", Content: "Channel A should remember its deployment discussion.", CreatedAt: base, UpdatedAt: base},
+		{ID: "thread-a-memory", ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-a", ThreadID: "thread-a", Scope: domain.MemoryScopeThread, Kind: "fact", Content: "Thread A should remember its scoped implementation decision.", CreatedAt: base, UpdatedAt: base},
+		{ID: "thread-b-memory", ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-a", ThreadID: "thread-b", Scope: domain.MemoryScopeThread, Kind: "fact", Content: "Thread B should remember its separate planning decision.", CreatedAt: base, UpdatedAt: base},
+		{ID: "other-channel-thread-memory", ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-b", ThreadID: "thread-c", Scope: domain.MemoryScopeThread, Kind: "fact", Content: "Thread C in another channel should remain untouched.", CreatedAt: base, UpdatedAt: base},
+		{ID: "project-memory", ProjectID: "default", Scope: domain.MemoryScopeProject, Kind: "fact", Content: "Project memory should remain after scoped resets.", CreatedAt: base, UpdatedAt: base},
+		{ID: "global-memory", Scope: domain.MemoryScopeGlobal, Kind: "fact", Content: "Global memory should remain after scoped resets.", CreatedAt: base, UpdatedAt: base},
+		{ID: "user-memory", UserID: "discord:user-1", Scope: domain.MemoryScopeUser, Kind: "fact", Content: "User memory should remain after channel and thread resets.", CreatedAt: base, UpdatedAt: base},
+		{ID: "channel-a-user-memory", UserID: "discord:user-1", Scope: domain.MemoryScopeUser, Kind: "fact", Content: "User memory tagged with Channel A should reset with Channel A.", Metadata: domain.Metadata{"channel_type": "discord", "channel_id": "channel-a", "actor_id": "user-1"}, CreatedAt: base, UpdatedAt: base},
+		{ID: "thread-a-user-memory", UserID: "discord:user-1", Scope: domain.MemoryScopeUser, Kind: "fact", Content: "User memory tagged with Thread A should reset with Thread A.", Metadata: domain.Metadata{"channel_type": "discord", "channel_id": "channel-a", "thread_id": "thread-a", "actor_id": "user-1"}, CreatedAt: base, UpdatedAt: base},
+		{ID: "other-user-session-memory", UserID: "discord:user-2", Scope: domain.MemoryScopeUser, Kind: "fact", Content: "Another user's session memory should remain for this user's reset.", Metadata: domain.Metadata{"channel_type": "discord", "channel_id": "channel-a", "thread_id": "thread-a", "actor_id": "user-2"}, CreatedAt: base, UpdatedAt: base},
+	}
+	for _, memory := range memories {
+		if _, err := store.RememberMemory(ctx, memory); err != nil {
+			t.Fatalf("remember memory %s: %v", memory.ID, err)
+		}
+	}
+}
+
 func TestMemoryRememberSearchAndForget(t *testing.T) {
 	t.Parallel()
 
@@ -2135,6 +2352,27 @@ func requireMemoryIDs(t *testing.T, actual []string, expected ...string) {
 	if strings.Join(got, ",") != strings.Join(expected, ",") {
 		t.Fatalf("unexpected memory ids: got %#v want %#v", got, expected)
 	}
+}
+
+func allStoredMemoryIDs(t *testing.T, ctx context.Context, store *Store) []string {
+	t.Helper()
+	rows, err := store.db.QueryContext(ctx, `SELECT id FROM memories ORDER BY id`)
+	if err != nil {
+		t.Fatalf("query stored memory ids: %v", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan stored memory id: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("stored memory id rows: %v", err)
+	}
+	return ids
 }
 
 func memoryIDs(memories []domain.Memory) []string {

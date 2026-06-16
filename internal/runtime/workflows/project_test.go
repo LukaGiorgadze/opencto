@@ -25,6 +25,7 @@ func registerTaskWorkflowActivities(env *testsuite.TestWorkflowEnvironment) {
 	env.RegisterActivityWithOptions((&activities.Activities{}).ExecuteTool, activity.RegisterOptions{Name: "Activities.ExecuteTool"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).ExecuteMemoryTool, activity.RegisterOptions{Name: "Activities.ExecuteMemoryTool"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).PersistEvent, activity.RegisterOptions{Name: "Activities.PersistEvent"})
+	env.RegisterActivityWithOptions((&activities.Activities{}).ResetConversationContext, activity.RegisterOptions{Name: "Activities.ResetConversationContext"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).CompressAgentObservations, activity.RegisterOptions{Name: "Activities.CompressAgentObservations"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).PersistNextAction, activity.RegisterOptions{Name: "Activities.PersistNextAction"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).PersistToolResult, activity.RegisterOptions{Name: "Activities.PersistToolResult"})
@@ -114,6 +115,81 @@ func TestTaskWorkflowAlternatesNextActionAndExecuteTool(t *testing.T) {
 	}
 	if !result.Completed {
 		t.Fatalf("expected workflow to complete")
+	}
+	env.AssertExpectations(t)
+}
+
+func TestTaskWorkflowResetsConversationContextForNewCommand(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.TaskWorkflow)
+	registerTaskWorkflowActivities(env)
+
+	env.OnActivity("Activities.ResetConversationContext", mock.Anything, mock.MatchedBy(func(request activities.ResetConversationContextRequest) bool {
+		return request.Event.ID == "event-reset" &&
+			request.Event.Body == domain.ConversationResetSlashCommand &&
+			request.Event.ChannelID == "channel-1"
+	})).Return(activities.ResetConversationContextResult{Scope: string(domain.ContextResetScopeChannel)}, nil).Once()
+
+	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{
+		ProjectID: "project-1",
+		Event: domain.Event{
+			ID:          "event-reset",
+			ProjectID:   "project-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			Body:        domain.ConversationResetSlashCommand,
+		},
+	})
+
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("task workflow failed: %v", err)
+	}
+	var result workflows.TaskWorkflowResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatalf("get result: %v", err)
+	}
+	if !result.Completed || result.Status != activities.NextActionStatusCompleted || result.ResponseMessage != "Started a new conversation." || !result.Report {
+		t.Fatalf("unexpected reset result: %#v", result)
+	}
+	env.AssertExpectations(t)
+}
+
+func TestTaskWorkflowSkipsResetReportWhenCommandWasAcknowledged(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.TaskWorkflow)
+	registerTaskWorkflowActivities(env)
+
+	env.OnActivity("Activities.ResetConversationContext", mock.Anything, mock.Anything).Return(activities.ResetConversationContextResult{Scope: string(domain.ContextResetScopeChannel)}, nil).Once()
+
+	env.ExecuteWorkflow(workflows.TaskWorkflow, workflows.TaskWorkflowInput{
+		ProjectID: "project-1",
+		Event: domain.Event{
+			ID:          "event-reset",
+			ProjectID:   "project-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			Body:        domain.ConversationResetSlashCommand,
+			Metadata: domain.Metadata{
+				domain.MetadataKeyCommandResponseAcknowledged: "true",
+			},
+		},
+	})
+
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("task workflow failed: %v", err)
+	}
+	var result workflows.TaskWorkflowResult
+	if err := env.GetWorkflowResult(&result); err != nil {
+		t.Fatalf("get result: %v", err)
+	}
+	if result.Report {
+		t.Fatalf("expected reset report to be suppressed after interaction ack: %#v", result)
 	}
 	env.AssertExpectations(t)
 }
@@ -1535,6 +1611,54 @@ func TestProjectWorkflowRoutesThreadMessageToOwnedTask(t *testing.T) {
 	}
 	if strings.Join(seen, ",") != "event-1" {
 		t.Fatalf("thread message should not start a separate task, got %#v", seen)
+	}
+}
+
+func TestProjectWorkflowStartsResetCommandAsNewTaskInOwnedThread(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ProjectWorkflow)
+	var seen []string
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context, input workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		seen = append(seen, input.Event.ID)
+		if input.Event.ID == "event-1" {
+			_ = workflow.Sleep(ctx, 10*365*24*time.Hour)
+		}
+		return workflows.TaskWorkflowResult{Completed: true}, nil
+	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "project-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			ThreadID:    "thread-1",
+			Body:        "do work",
+		}})
+	}, 0)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:          "event-reset",
+			ProjectID:   "project-1",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			ThreadID:    "thread-1",
+			Body:        domain.ConversationResetSlashCommand,
+		}})
+	}, time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.CancelWorkflow()
+	}, 5*time.Millisecond)
+
+	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	if strings.Join(seen, ",") != "event-1,event-reset" {
+		t.Fatalf("reset command should start a separate task, got %#v", seen)
 	}
 }
 

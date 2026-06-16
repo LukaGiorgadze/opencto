@@ -21,6 +21,25 @@ const (
 	MetadataControlTaskReply = "task_reply"
 )
 
+const (
+	MetadataKeyCommandResponseAcknowledged = "command_response_acknowledged"
+)
+
+const (
+	ConversationResetSlashCommand = "/new"
+)
+
+const conversationResetEmojiCommand = "\U0001F576\uFE0F\U0001F526"
+
+func IsConversationResetCommand(body string) bool {
+	switch strings.TrimSpace(body) {
+	case ConversationResetSlashCommand, conversationResetEmojiCommand:
+		return true
+	default:
+		return false
+	}
+}
+
 type Provenance struct {
 	Source     string    `json:"source"`
 	SourceID   string    `json:"source_id,omitempty"`
@@ -478,6 +497,30 @@ type MemoryForgetRequest struct {
 
 type MemoryForgetResult struct {
 	DeletedMemoryIDs []string `json:"deleted_memory_ids,omitempty"`
+}
+
+type ContextResetScope string
+
+const (
+	ContextResetScopeThread  ContextResetScope = "thread"
+	ContextResetScopeChannel ContextResetScope = "channel"
+)
+
+type ContextResetRequest struct {
+	ProjectID   string            `json:"project_id,omitempty"`
+	UserID      string            `json:"user_id,omitempty"`
+	ChannelType ChannelType       `json:"channel_type,omitempty"`
+	ChannelID   string            `json:"channel_id,omitempty"`
+	ThreadID    string            `json:"thread_id,omitempty"`
+	Scope       ContextResetScope `json:"scope"`
+}
+
+type ContextResetResult struct {
+	Scope                        ContextResetScope `json:"scope"`
+	DeletedConversationMessages  int               `json:"deleted_conversation_messages,omitempty"`
+	DeletedConversationSummaries int               `json:"deleted_conversation_summaries,omitempty"`
+	DeletedConversationThreads   int               `json:"deleted_conversation_threads,omitempty"`
+	DeletedMemoryIDs             []string          `json:"deleted_memory_ids,omitempty"`
 }
 
 type MemoryEmbedding struct {
