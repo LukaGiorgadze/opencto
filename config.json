@@ -26,12 +26,12 @@
     },
     "conversation": {
         "enabled": true,
-        "history_limit": 20,
-        "max_context_chars": 20000,
+        "history_limit": 50,
+        "max_context_chars": 50000,
         "summary_enabled": true,
-        "summary_trigger_chars": 24000,
-        "summary_max_chars": 6000,
-        "summary_recent_messages": 10
+        "summary_trigger_chars": 60000,
+        "summary_max_chars": 20000,
+        "summary_recent_messages": 30
     },
     "channels": {
         "discord": {
