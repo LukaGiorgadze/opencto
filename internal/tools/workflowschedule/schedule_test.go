@@ -9,9 +9,13 @@ import (
 	"testing"
 	"time"
 
+	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
+	workflowpb "go.temporal.io/api/workflow/v1"
+	workflowservice "go.temporal.io/api/workflowservice/v1"
 	temporalclient "go.temporal.io/sdk/client"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/runtime/workflowrun"
@@ -80,10 +84,11 @@ func TestWorkflowCreateCommitsBundleAndCreatesTemporalSchedule(t *testing.T) {
 	}
 	client := &fakeScheduleClient{}
 	executor := &TemporalExecutor{
-		Client:        client,
-		Store:         store,
-		TaskQueue:     "opencto",
-		WorkspaceRoot: workspaceRoot,
+		Client:         client,
+		WorkflowLister: client,
+		Store:          store,
+		TaskQueue:      "opencto",
+		WorkspaceRoot:  workspaceRoot,
 		Now: func() time.Time {
 			return time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC)
 		},
@@ -199,10 +204,11 @@ func TestWorkflowUpdateCommitsDirtyWorkflowFiles(t *testing.T) {
 	}
 	client := &fakeScheduleClient{}
 	executor := &TemporalExecutor{
-		Client:        client,
-		Store:         store,
-		TaskQueue:     "opencto",
-		WorkspaceRoot: workspaceRoot,
+		Client:         client,
+		WorkflowLister: client,
+		Store:          store,
+		TaskQueue:      "opencto",
+		WorkspaceRoot:  workspaceRoot,
 		Now: func() time.Time {
 			return time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC)
 		},
@@ -721,6 +727,113 @@ func TestWorkflowDeleteHardDeletesWhenScheduleIsAlreadyMissing(t *testing.T) {
 	}
 }
 
+func TestWorkflowOperationListUsesTemporalExecutions(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	executor, _, client := newWorkflowTestExecutor(t, t.TempDir())
+	client.workflowExecutions = []*workflowpb.WorkflowExecutionInfo{{
+		Execution: &commonpb.WorkflowExecution{
+			WorkflowId: "default:project",
+			RunId:      "run-project",
+		},
+		Type:      &commonpb.WorkflowType{Name: "ProjectWorkflow"},
+		Status:    enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
+		TaskQueue: "opencto",
+		StartTime: timestamppb.New(time.Date(2026, 6, 14, 10, 0, 0, 0, time.UTC)),
+	}}
+
+	result, err := executor.Operation(ctx, OperationRequest{ProjectID: "project-1", Operation: OperationList})
+	if err != nil {
+		t.Fatalf("list workflows: %v", err)
+	}
+	if len(result.Workflows) != 1 {
+		t.Fatalf("expected one Temporal workflow, got %#v", result.Workflows)
+	}
+	entry := result.Workflows[0]
+	if entry.ID != "default:project" || entry.TemporalWorkflowID != "default:project" || entry.TemporalRunID != "run-project" {
+		t.Fatalf("unexpected workflow execution ids: %#v", entry)
+	}
+	if entry.WorkflowType != "ProjectWorkflow" || entry.ExecutionStatus != "running" || entry.Status != "running" {
+		t.Fatalf("unexpected workflow execution metadata: %#v", entry)
+	}
+	if client.lastListWorkflowRequest == nil || client.lastListWorkflowRequest.Query != "CloseTime is null" {
+		t.Fatalf("expected open-workflow Temporal query, got %#v", client.lastListWorkflowRequest)
+	}
+	if !strings.Contains(result.Observation(), "default:project [ProjectWorkflow] (running)") {
+		t.Fatalf("expected Temporal workflow in observation, got %q", result.Observation())
+	}
+}
+
+func TestWorkflowOperationListEnrichesTemporalExecutionsFromScheduledWorkflowStore(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	executor, _, client := newWorkflowTestExecutor(t, t.TempDir())
+	created := createAuthoredWorkflow(t, ctx, executor, "finance2049", testWorkflowManifest("finance2049 availability"), []workflowbundle.File{{Path: "src/check_site.py", Content: "print('ok')\n"}})
+	client.workflowExecutions = []*workflowpb.WorkflowExecutionInfo{{
+		Execution: &commonpb.WorkflowExecution{
+			WorkflowId: created.ScheduleID + ":run",
+			RunId:      "run-finance",
+		},
+		Type:      &commonpb.WorkflowType{Name: workflowrun.WorkflowName},
+		Status:    enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
+		TaskQueue: "opencto",
+		StartTime: timestamppb.New(time.Date(2026, 6, 14, 10, 0, 0, 0, time.UTC)),
+	}}
+
+	result, err := executor.Operation(ctx, OperationRequest{ProjectID: "project-1", Operation: OperationList, IncludeCompleted: true})
+	if err != nil {
+		t.Fatalf("list workflows: %v", err)
+	}
+	if len(result.Workflows) != 1 {
+		t.Fatalf("expected one Temporal workflow, got %#v", result.Workflows)
+	}
+	entry := result.Workflows[0]
+	if entry.ID != "finance2049" || entry.Name != "finance2049 availability" || entry.TemporalScheduleID != created.ScheduleID {
+		t.Fatalf("expected scheduled workflow metadata, got %#v", entry)
+	}
+	if entry.Status != string(domain.ScheduledWorkflowStatusActive) || entry.ExecutionStatus != "running" {
+		t.Fatalf("expected registered and execution statuses, got %#v", entry)
+	}
+	if client.lastListWorkflowRequest == nil || client.lastListWorkflowRequest.Query != "" {
+		t.Fatalf("expected include_completed list to omit open-only query, got %#v", client.lastListWorkflowRequest)
+	}
+	expectedObservation := "finance2049 availability [" + workflowrun.WorkflowName + "] temporal_workflow_id=" + created.ScheduleID + ":run (active/running)"
+	if !strings.Contains(result.Observation(), expectedObservation) {
+		t.Fatalf("expected enriched workflow in observation, got %q", result.Observation())
+	}
+}
+
+func TestWorkflowOperationListIncludesIdleScheduledWorkflowRecords(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	executor, _, _ := newWorkflowTestExecutor(t, t.TempDir())
+	created := createAuthoredWorkflow(t, ctx, executor, "finance2049", testWorkflowManifest("finance2049 availability"), []workflowbundle.File{{Path: "src/check_site.py", Content: "print('ok')\n"}})
+
+	result, err := executor.Operation(ctx, OperationRequest{ProjectID: "project-1", Operation: OperationList})
+	if err != nil {
+		t.Fatalf("list workflows: %v", err)
+	}
+	if len(result.Workflows) != 1 {
+		t.Fatalf("expected one idle scheduled workflow, got %#v", result.Workflows)
+	}
+	entry := result.Workflows[0]
+	if entry.ID != "finance2049" || entry.Name != "finance2049 availability" || entry.TemporalScheduleID != created.ScheduleID {
+		t.Fatalf("expected scheduled workflow metadata, got %#v", entry)
+	}
+	if entry.TemporalWorkflowID != "" || entry.TemporalRunID != "" || entry.WorkflowType != "" {
+		t.Fatalf("expected no Temporal execution metadata for idle scheduled workflow, got %#v", entry)
+	}
+	if entry.Status != string(domain.ScheduledWorkflowStatusActive) || entry.ExecutionStatus != "idle" {
+		t.Fatalf("expected active/idle statuses, got %#v", entry)
+	}
+	if !strings.Contains(result.Observation(), "finance2049 availability (active/idle)") {
+		t.Fatalf("expected idle scheduled workflow in observation, got %q", result.Observation())
+	}
+}
+
 func TestWorkflowOperationDispatchesControlActions(t *testing.T) {
 	t.Parallel()
 
@@ -849,9 +962,12 @@ func TestWorkflowPauseReturnsStoreErrors(t *testing.T) {
 }
 
 type fakeScheduleClient struct {
-	created []temporalclient.ScheduleOptions
-	handle  *fakeScheduleHandle
-	entries []*temporalclient.ScheduleListEntry
+	created                 []temporalclient.ScheduleOptions
+	handle                  *fakeScheduleHandle
+	entries                 []*temporalclient.ScheduleListEntry
+	workflowExecutions      []*workflowpb.WorkflowExecutionInfo
+	lastListWorkflowRequest *workflowservice.ListWorkflowExecutionsRequest
+	listWorkflowErr         error
 }
 
 type failingScheduledWorkflowStore struct {
@@ -889,10 +1005,11 @@ func newWorkflowTestExecutor(t *testing.T, workspaceRoot string) (*TemporalExecu
 	}
 	client := &fakeScheduleClient{}
 	executor := &TemporalExecutor{
-		Client:        client,
-		Store:         store,
-		TaskQueue:     "opencto",
-		WorkspaceRoot: workspaceRoot,
+		Client:         client,
+		WorkflowLister: client,
+		Store:          store,
+		TaskQueue:      "opencto",
+		WorkspaceRoot:  workspaceRoot,
 		Now: func() time.Time {
 			return time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC)
 		},
@@ -927,6 +1044,18 @@ func (f *fakeScheduleClient) GetHandle(_ context.Context, id string) temporalcli
 	}
 	handle.id = id
 	return handle
+}
+
+func (f *fakeScheduleClient) ListWorkflow(_ context.Context, request *workflowservice.ListWorkflowExecutionsRequest) (*workflowservice.ListWorkflowExecutionsResponse, error) {
+	f.lastListWorkflowRequest = request
+	if f.listWorkflowErr != nil {
+		return nil, f.listWorkflowErr
+	}
+	executions := f.workflowExecutions
+	if request != nil && request.PageSize > 0 && int(request.PageSize) < len(executions) {
+		executions = executions[:int(request.PageSize)]
+	}
+	return &workflowservice.ListWorkflowExecutionsResponse{Executions: executions}, nil
 }
 
 func scheduleFromOptions(options temporalclient.ScheduleOptions) temporalclient.Schedule {

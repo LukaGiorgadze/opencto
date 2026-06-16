@@ -13,6 +13,8 @@ import (
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
+	workflowpb "go.temporal.io/api/workflow/v1"
+	workflowservice "go.temporal.io/api/workflowservice/v1"
 	temporalclient "go.temporal.io/sdk/client"
 
 	"github.com/opencto/opencto/internal/domain"
@@ -218,6 +220,13 @@ type WorkflowEntry struct {
 	Status             string `json:"status,omitempty"`
 	CommitHash         string `json:"commit_hash,omitempty"`
 	TemporalScheduleID string `json:"temporal_schedule_id,omitempty"`
+	TemporalWorkflowID string `json:"temporal_workflow_id,omitempty"`
+	TemporalRunID      string `json:"temporal_run_id,omitempty"`
+	WorkflowType       string `json:"workflow_type,omitempty"`
+	ExecutionStatus    string `json:"execution_status,omitempty"`
+	TaskQueue          string `json:"task_queue,omitempty"`
+	StartedAt          string `json:"started_at,omitempty"`
+	ClosedAt           string `json:"closed_at,omitempty"`
 }
 
 type Executor interface {
@@ -236,14 +245,19 @@ type AuthoringExecutor interface {
 	CleanupAuthoring(context.Context, AuthoringPlan) error
 }
 
-type Client interface {
+type ScheduleClient interface {
 	Create(context.Context, temporalclient.ScheduleOptions) (temporalclient.ScheduleHandle, error)
 	List(context.Context, temporalclient.ScheduleListOptions) (temporalclient.ScheduleListIterator, error)
 	GetHandle(context.Context, string) temporalclient.ScheduleHandle
 }
 
+type WorkflowLister interface {
+	ListWorkflow(context.Context, *workflowservice.ListWorkflowExecutionsRequest) (*workflowservice.ListWorkflowExecutionsResponse, error)
+}
+
 type TemporalExecutor struct {
-	Client          Client
+	Client          ScheduleClient
+	WorkflowLister  WorkflowLister
 	Store           storage.RuntimeStore
 	TaskQueue       string
 	WorkspaceRoot   string
@@ -255,12 +269,19 @@ type TemporalExecutor struct {
 
 type TimeZoneResolver func() (*time.Location, string, error)
 
-func NewTemporalExecutor(client Client, store storage.RuntimeStore, taskQueue, workspaceRoot string, logger *slog.Logger) *TemporalExecutor {
+func NewTemporalExecutor(client temporalclient.Client, store storage.RuntimeStore, taskQueue, workspaceRoot string, logger *slog.Logger) *TemporalExecutor {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	var scheduleClient ScheduleClient
+	var workflowLister WorkflowLister
+	if client != nil {
+		scheduleClient = client.ScheduleClient()
+		workflowLister = client
+	}
 	return &TemporalExecutor{
-		Client:          client,
+		Client:          scheduleClient,
+		WorkflowLister:  workflowLister,
 		Store:           store,
 		TaskQueue:       taskQueue,
 		WorkspaceRoot:   workspaceRoot,
@@ -521,26 +542,170 @@ func (e *TemporalExecutor) list(ctx context.Context, req Request) (Result, error
 	if limit <= 0 {
 		limit = defaultListLimit
 	}
-	items, err := e.Store.ListScheduledWorkflows(ctx, storage.ScheduledWorkflowQuery{
-		ProjectID:      strings.TrimSpace(req.ProjectID),
-		IncludeDeleted: req.IncludeCompleted,
-		Limit:          limit,
-	})
+	entries, err := e.listTemporalWorkflowEntries(ctx, req, limit)
 	if err != nil {
 		return Result{}, err
 	}
-	entries := make([]WorkflowEntry, 0, len(items))
-	for _, item := range items {
-		entries = append(entries, WorkflowEntry{
-			ID:                 item.ID,
-			Name:               item.Name,
-			Description:        item.Description,
-			Status:             string(item.Status),
-			CommitHash:         item.CurrentCommitHash,
-			TemporalScheduleID: item.TemporalScheduleID,
-		})
-	}
 	return Result{Operation: OperationList, Message: fmt.Sprintf("found %d workflow(s)", len(entries)), Workflows: entries}, nil
+}
+
+func (e *TemporalExecutor) listTemporalWorkflowEntries(ctx context.Context, req Request, limit int) ([]WorkflowEntry, error) {
+	if e.WorkflowLister == nil {
+		return nil, fmt.Errorf("workflow lister is required")
+	}
+	records, recordsByWorkflowID, recordsByTemporalWorkflowID, err := e.scheduledWorkflowMetadata(ctx, req.ProjectID, req.IncludeCompleted, limit)
+	if err != nil {
+		return nil, err
+	}
+	seenScheduledWorkflows := map[string]struct{}{}
+	query := ""
+	if !req.IncludeCompleted {
+		query = "CloseTime is null"
+	}
+	entries := make([]WorkflowEntry, 0, limit)
+	var nextPageToken []byte
+	for len(entries) < limit {
+		response, err := e.WorkflowLister.ListWorkflow(ctx, &workflowservice.ListWorkflowExecutionsRequest{
+			PageSize:      int32(limit - len(entries)),
+			NextPageToken: nextPageToken,
+			Query:         query,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if response == nil {
+			break
+		}
+		for _, execution := range response.Executions {
+			if len(entries) >= limit {
+				break
+			}
+			entry := workflowEntryFromTemporalExecution(execution)
+			if record, ok := recordsByTemporalWorkflowID[entry.TemporalWorkflowID]; ok {
+				enrichWorkflowEntry(&entry, record)
+				seenScheduledWorkflows[strings.TrimSpace(record.ID)] = struct{}{}
+			} else if workflowID, ok := workflowIDFromScheduledRunExecutionID(req.ProjectID, entry.TemporalWorkflowID); ok {
+				if record, ok := recordsByWorkflowID[workflowID]; ok {
+					enrichWorkflowEntry(&entry, record)
+					seenScheduledWorkflows[strings.TrimSpace(record.ID)] = struct{}{}
+				}
+			}
+			entries = append(entries, entry)
+		}
+		if len(response.NextPageToken) == 0 {
+			break
+		}
+		nextPageToken = response.NextPageToken
+	}
+	for _, record := range records {
+		if len(entries) >= limit {
+			break
+		}
+		workflowID := strings.TrimSpace(record.ID)
+		if workflowID == "" {
+			continue
+		}
+		if _, ok := seenScheduledWorkflows[workflowID]; ok {
+			continue
+		}
+		entries = append(entries, workflowEntryFromScheduledWorkflow(record))
+	}
+	return entries, nil
+}
+
+func (e *TemporalExecutor) scheduledWorkflowMetadata(ctx context.Context, projectID string, includeDeleted bool, limit int) ([]domain.ScheduledWorkflow, map[string]domain.ScheduledWorkflow, map[string]domain.ScheduledWorkflow, error) {
+	metadataLimit := limit
+	if metadataLimit < 100 {
+		metadataLimit = 100
+	}
+	items, err := e.Store.ListScheduledWorkflows(ctx, storage.ScheduledWorkflowQuery{
+		ProjectID:      strings.TrimSpace(projectID),
+		IncludeDeleted: includeDeleted,
+		Limit:          metadataLimit,
+	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	byWorkflowID := make(map[string]domain.ScheduledWorkflow, len(items))
+	byTemporalWorkflowID := make(map[string]domain.ScheduledWorkflow, len(items))
+	for _, item := range items {
+		if workflowID := strings.TrimSpace(item.ID); workflowID != "" {
+			byWorkflowID[workflowID] = item
+		}
+		if scheduleID := strings.TrimSpace(item.TemporalScheduleID); scheduleID != "" {
+			byTemporalWorkflowID[scheduleID+":run"] = item
+		}
+	}
+	return items, byWorkflowID, byTemporalWorkflowID, nil
+}
+
+func workflowEntryFromTemporalExecution(info *workflowpb.WorkflowExecutionInfo) WorkflowEntry {
+	if info == nil {
+		return WorkflowEntry{}
+	}
+	temporalWorkflowID := strings.TrimSpace(info.GetExecution().GetWorkflowId())
+	executionStatus := temporalExecutionStatus(info.GetStatus())
+	return WorkflowEntry{
+		ID:                 temporalWorkflowID,
+		Status:             executionStatus,
+		TemporalWorkflowID: temporalWorkflowID,
+		TemporalRunID:      strings.TrimSpace(info.GetExecution().GetRunId()),
+		WorkflowType:       strings.TrimSpace(info.GetType().GetName()),
+		ExecutionStatus:    executionStatus,
+		TaskQueue:          strings.TrimSpace(info.GetTaskQueue()),
+		StartedAt:          timestampString(info.GetStartTime()),
+		ClosedAt:           timestampString(info.GetCloseTime()),
+	}
+}
+
+func enrichWorkflowEntry(entry *WorkflowEntry, item domain.ScheduledWorkflow) {
+	if entry == nil {
+		return
+	}
+	entry.ID = firstNonEmpty(strings.TrimSpace(item.ID), entry.ID)
+	entry.Name = firstNonEmpty(strings.TrimSpace(item.Name), entry.Name)
+	entry.Description = firstNonEmpty(strings.TrimSpace(item.Description), entry.Description)
+	entry.Status = firstNonEmpty(string(item.Status), entry.Status)
+	entry.CommitHash = firstNonEmpty(strings.TrimSpace(item.CurrentCommitHash), entry.CommitHash)
+	entry.TemporalScheduleID = firstNonEmpty(strings.TrimSpace(item.TemporalScheduleID), entry.TemporalScheduleID)
+}
+
+func workflowEntryFromScheduledWorkflow(item domain.ScheduledWorkflow) WorkflowEntry {
+	return WorkflowEntry{
+		ID:                 strings.TrimSpace(item.ID),
+		Name:               strings.TrimSpace(item.Name),
+		Description:        strings.TrimSpace(item.Description),
+		Status:             string(item.Status),
+		CommitHash:         strings.TrimSpace(item.CurrentCommitHash),
+		TemporalScheduleID: strings.TrimSpace(item.TemporalScheduleID),
+		ExecutionStatus:    "idle",
+	}
+}
+
+func workflowIDFromScheduledRunExecutionID(projectID, temporalWorkflowID string) (string, bool) {
+	prefix := workflowrun.ScheduleID(projectID, "")
+	suffix := ":run"
+	if !strings.HasPrefix(temporalWorkflowID, prefix) || !strings.HasSuffix(temporalWorkflowID, suffix) {
+		return "", false
+	}
+	workflowID := strings.TrimSuffix(strings.TrimPrefix(temporalWorkflowID, prefix), suffix)
+	return workflowID, workflowID != ""
+}
+
+func temporalExecutionStatus(status enumspb.WorkflowExecutionStatus) string {
+	value := strings.TrimPrefix(status.String(), "WORKFLOW_EXECUTION_STATUS_")
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+type timestamp interface {
+	AsTime() time.Time
+}
+
+func timestampString(value timestamp) string {
+	if value == nil {
+		return ""
+	}
+	return value.AsTime().UTC().Format(time.RFC3339Nano)
 }
 
 func (e *TemporalExecutor) describe(ctx context.Context, req Request) (Result, error) {
@@ -1239,10 +1404,27 @@ func (r Result) Observation() string {
 	if len(r.Workflows) > 0 {
 		lines = append(lines, "workflows:")
 		for index, entry := range r.Workflows {
-			lines = append(lines, fmt.Sprintf("%d. %s (%s)", index+1, firstNonEmpty(entry.Name, entry.ID), entry.Status))
+			label := firstNonEmpty(entry.Name, entry.ID, entry.TemporalWorkflowID)
+			status := workflowEntryStatusLabel(entry)
+			if entry.WorkflowType != "" {
+				label += " [" + entry.WorkflowType + "]"
+			}
+			if entry.TemporalWorkflowID != "" && entry.TemporalWorkflowID != entry.ID {
+				label += " temporal_workflow_id=" + entry.TemporalWorkflowID
+			}
+			lines = append(lines, fmt.Sprintf("%d. %s (%s)", index+1, label, status))
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+func workflowEntryStatusLabel(entry WorkflowEntry) string {
+	status := strings.TrimSpace(entry.Status)
+	executionStatus := strings.TrimSpace(entry.ExecutionStatus)
+	if status != "" && executionStatus != "" && status != executionStatus {
+		return status + "/" + executionStatus
+	}
+	return firstNonEmpty(status, executionStatus)
 }
 
 func normalizeOperation(operation string) string {

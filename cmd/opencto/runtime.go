@@ -51,7 +51,7 @@ func newRuntimeComponents(ctx context.Context, env commandEnvironment) (*runtime
 		Store:                       store,
 		Engine:                      buildNextActionEngine(cfg, logger),
 		Exec:                        exec.NewSafeExecutor(logger),
-		Schedule:                    workflowscheduletool.NewTemporalExecutor(temporalClient.ScheduleClient(), store, cfg.Temporal.TaskQueue, cfg.General.WorkspaceRoot, logger),
+		Schedule:                    workflowscheduletool.NewTemporalExecutor(temporalClient, store, cfg.Temporal.TaskQueue, cfg.General.WorkspaceRoot, logger),
 		Reporter:                    reporters.Reporter,
 		EventEnqueuer:               dispatcher,
 		MemoryEmbedder:              buildMemoryEmbedder(cfg, logger),

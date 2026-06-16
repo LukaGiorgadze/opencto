@@ -7,7 +7,7 @@
         "operation": {
             "type": "string",
             "enum": ["list", "describe", "trigger", "pause", "resume"],
-            "description": "Workflow control/read action. Trigger publishes current local source if needed before running. Use WorkflowUpdate, not this tool, for requested source or manifest changes."
+            "description": "Workflow control/read action. List returns Temporal workflow executions plus registered scheduled workflows that have no current execution. Trigger publishes current local source if needed before running. Use WorkflowUpdate, not this tool, for requested source or manifest changes."
         },
         "workflow_id": {
             "type": "string",
@@ -25,7 +25,7 @@
         },
         "include_completed": {
             "type": "boolean",
-            "description": "Include deleted/completed workflow records when listing if supported by storage."
+            "description": "Include completed/closed Temporal workflow executions and deleted scheduled-workflow records when listing. By default list includes open Temporal executions and active/paused scheduled workflows."
         }
     }
 }

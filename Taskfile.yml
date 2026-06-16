@@ -38,18 +38,24 @@ tasks:
     desc: Start Temporal and supporting infrastructure.
     cmd: docker compose up -d --remove-orphans
 
+  infra:bifrost:
+    aliases: [bifrost]
+    desc: Start Bifrost and its Compose dependencies.
+    cmd: docker compose up -d --remove-orphans bifrost
+
+  infra:temporal-ui:
+    aliases: [temporal-ui]
+    desc: Start Temporal UI and its Compose dependencies.
+    cmd: docker compose up -d --remove-orphans temporal-ui
+
   infra:down:
     aliases: [down]
     desc: Stop Temporal and supporting infrastructure.
     cmd: docker compose down
 
-  infra:reset:
-    desc: Stop infrastructure and remove volumes.
-    cmd: docker compose down -v
-
   infra:logs:
     desc: Tail infrastructure logs.
-    cmd: docker compose logs -f postgresql temporal temporal-ui
+    cmd: docker compose logs -f postgresql temporal temporal-ui bifrost
 
   test:
     desc: Run the Go test suite with the race detector.

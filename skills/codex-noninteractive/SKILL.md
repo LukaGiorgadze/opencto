@@ -7,155 +7,183 @@ compatibility: Requires Codex CLI
 
 # Codex Non-Interactive Mode
 
-Install: `npm i -g @openai/codex`
+## Use this skill for
 
-Delegate repository code work to `codex exec`. It runs Codex headlessly against
-the target project; progress streams to `stderr`, and the final agent message
-goes to `stdout`.
+Use this skill when designing, reviewing, or generating commands and workflows around `codex exec`.
 
-## Basic Invocation
+Good matches include CI jobs, release-note generation, repo triage, automated fixes, log summarization, structured JSON output, stdin piping, schema-constrained output, sandbox configuration, API-key handling, and non-interactive session resume.
+
+## Core model
+
+`codex exec` runs Codex without opening the interactive TUI. It is meant for scripts, pipelines, scheduled jobs, and automation.
+
+Default behavior:
+
+- Progress streams to `stderr`.
+- The final assistant message prints to `stdout`.
+- Piped stdin can be used as task context.
+- `codex exec -` makes stdin the full prompt.
+- The default sandbox is read-only.
+- Runs normally require a Git repository unless `--skip-git-repo-check` is used.
+- `codex e` is the short alias for `codex exec`.
+
+## Standard procedure
+
+1. Identify the automation shape: one-off shell command, CI step, JSONL event stream, schema output, or resumed multi-stage run.
+2. Choose the safest permission level that can complete the task.
+3. Choose the input pattern: prompt only, prompt plus stdin context, or stdin-as-prompt with `-`.
+4. Choose output handling: final stdout, `--output-last-message`, JSONL with `--json`, or `--output-schema`.
+5. For CI, keep credentials out of untrusted setup/build/test steps.
+6. When generating a workflow that writes changes, separate read-only Codex generation from write-permission PR creation.
+
+## Common commands
+
+Prompt only:
 
 ```bash
-# Read-only analysis
-codex exec --cd "$PROJECT_ROOT" "explain what the AuthService class does and identify any issues"
-
-# Write or edit code
-codex exec --cd "$PROJECT_ROOT" --sandbox workspace-write "add a rate-limiting middleware to the Express app"
-
-# Skip persisting session files
-codex exec --cd "$PROJECT_ROOT" --ephemeral --sandbox workspace-write "rename the user_id field to userId across the codebase"
+codex exec "summarize the repository structure and list the top 5 risky areas"
 ```
 
-Be specific in the prompt: include file names, function names, failing command
-output, or expected behavior when available.
-
-## Prompt Safety
-
-OpenCTO should invoke `codex` with argv, not by concatenating user text into a
-shell command string. If the prompt includes user-controlled content and a shell
-is unavoidable, pass the prompt through stdin:
+Redirect final output:
 
 ```bash
-codex exec --cd "$PROJECT_ROOT" --sandbox workspace-write -
+codex exec "generate release notes for the last 10 commits" | tee release-notes.md
 ```
 
-Do not interpolate raw user text into quoted shell commands.
+Avoid persisted rollout files:
 
-## Sandbox Choice
+```bash
+codex exec --ephemeral "triage this repository and suggest next steps"
+```
 
-Default sandbox is read-only. For any task that writes files, use
-`--sandbox workspace-write`.
+Allow workspace edits:
 
-| Task type | Flag |
+```bash
+codex exec --sandbox workspace-write "fix the failing tests"
+```
+
+Emit JSONL events:
+
+```bash
+codex exec --json "summarize the repo structure" | jq
+```
+
+Write only the final message to a file:
+
+```bash
+codex exec "summarize the repo structure" -o summary.md
+```
+
+Resume the last non-interactive session:
+
+```bash
+codex exec "review the change for race conditions"
+codex exec resume --last "fix the race conditions you found"
+```
+
+## Permissions and safety
+
+Use least privilege.
+
+| Need | Command pattern |
 |---|---|
-| Read, analyze, explain | no sandbox flag |
-| Write, edit, create, fix files | `--sandbox workspace-write` |
-| Write outside the project | prefer `--add-dir <dir>` with `workspace-write` |
-| Needs network or full system access | `--sandbox danger-full-access` only after explicit approval in an isolated environment |
+| Inspect only | `codex exec "<task>"` |
+| Modify workspace files | `codex exec --sandbox workspace-write "<task>"` |
+| Broader system access | `codex exec --sandbox danger-full-access "<task>"` |
+| No saved rollout files | `codex exec --ephemeral "<task>"` |
+| Ignore local user config | `codex exec --ignore-user-config "<task>"` |
+| Ignore execpolicy rules | `codex exec --ignore-rules "<task>"` |
+| Outside Git repository | `codex exec --skip-git-repo-check "<task>"` |
 
-Prefer explicit sandbox flags over `--full-auto` so the permission level is
-auditable.
+Avoid `danger-full-access` unless the runner is isolated. Treat `--full-auto` as deprecated compatibility behavior; prefer explicit `--sandbox workspace-write`.
 
-## Machine-Readable Output
+If an enabled MCP server has `required = true` and cannot initialize, expect `codex exec` to exit with an error.
 
-Use JSONL when OpenCTO needs to inspect or forward the result programmatically:
+## Input patterns
 
-```bash
-codex exec --cd "$PROJECT_ROOT" --json --sandbox workspace-write "add input validation to the signup endpoint"
-```
-
-Useful event types:
-
-- `item.completed` where `item.type == "agent_message"`: final text response
-- `item.completed` where `item.type == "file_change"`: file Codex edited
-- `turn.completed`: completed turn and token usage
-- `turn.failed` or `error`: failed run
-
-Always check the process exit code before treating the run as successful.
-
-## Piping Context
-
-Pipe relevant logs or command output into Codex as context, with the instruction
-as the prompt argument:
+Prompt plus stdin context:
 
 ```bash
-npm test 2>&1 \
-  | codex exec --cd "$PROJECT_ROOT" --sandbox workspace-write "fix the failing tests"
-
-npx eslint src/ 2>&1 \
-  | codex exec --cd "$PROJECT_ROOT" --sandbox workspace-write "fix all lint errors"
-
-generate_task_prompt.sh \
-  | codex exec --cd "$PROJECT_ROOT" --sandbox workspace-write -
+npm test 2>&1   | codex exec "summarize the failing tests and propose the smallest likely fix"   | tee test-summary.md
 ```
 
-## Code Reviews
-
-Use the dedicated review subcommand for review-only tasks:
+Stdin as the full prompt:
 
 ```bash
-# Review all local changes
-codex exec --cd "$PROJECT_ROOT" review --uncommitted
-
-# Review changes against a base branch
-codex exec --cd "$PROJECT_ROOT" review --base main
-
-# Review one commit
-codex exec --cd "$PROJECT_ROOT" review --commit <SHA>
+cat prompt.txt | codex exec -
 ```
 
-Use normal `codex exec --sandbox workspace-write` only when the user wants fixes
-implemented after the review.
-
-## Multi-Turn Tasks
-
-For larger tasks, investigate first in read-only mode, then resume with write
-access:
+Dynamic generated prompt:
 
 ```bash
-codex exec --cd "$PROJECT_ROOT" "identify all places where async errors are not handled"
-
-codex exec --cd "$PROJECT_ROOT" --sandbox workspace-write resume --last "add proper error handling to every location you found"
-
-codex exec --cd "$PROJECT_ROOT" --sandbox workspace-write resume <SESSION_ID> "implement the plan"
+generate_prompt.sh | codex exec - --json > result.jsonl
 ```
 
-`resume --last` is scoped to the current working directory. Add `--all` only when
-resuming a session started from a different project root.
+Use prompt-plus-stdin when command output is context and the instruction is known. Use `codex exec -` when another script or file generates the full instruction.
 
-## Key Flags
+## Structured and machine-readable output
 
-For the fuller `codex exec`, `resume`, and `review` option reference, read `references/command-line-options.md` when adding CLI flags or/and different commands.
+Use `--json` when downstream tooling needs progress/events. JSONL event types include `thread.started`, `turn.started`, `turn.completed`, `turn.failed`, `item.*`, and `error`.
 
-| Flag | Effect |
-|---|---|
-| `--cd <dir>` | Set the project root Codex should operate on |
-| `--sandbox workspace-write` | Allow file edits in the project workspace |
-| `--add-dir <dir>` | Add another writable directory with `workspace-write` |
-| `--sandbox danger-full-access` | Full system and network access |
-| `--ephemeral` | Do not persist session files to disk |
-| `--json` | Emit JSONL events on stdout |
-| `-o <path>` | Write final message to a file and stdout |
-| `--output-schema <path>` | Constrain the final response to a JSON schema |
-| `--ignore-user-config` | Do not load `$CODEX_HOME/config.toml` |
-| `--ignore-rules` | Skip `.rules` execpolicy files |
-| `--skip-git-repo-check` | Allow running outside a git repo |
+Use `--output-schema` when downstream tooling needs a stable final JSON shape:
 
-## Gotchas
+```bash
+codex exec "Extract project metadata"   --output-schema ./schema.json   -o ./project-metadata.json
+```
 
-- Always use `--sandbox workspace-write` for code-changing tasks.
-- Use `--cd "$PROJECT_ROOT"` so Codex does not operate on OpenCTO's process cwd.
-- Use `OPENCTO_WORKSPACE` only for OpenCTO data/artifacts. Do not pass it to
-  `--cd` for repository code work.
-- Pass user-controlled prompts through argv or stdin, not shell interpolation.
-- `danger-full-access` removes the important guardrails; require explicit
-  approval and isolation before using it.
-- Progress is on `stderr`; the final message is on `stdout`.
-- `--json` replaces normal stdout with JSONL; filter for the agent message when
-  only the final text is needed.
+Keep schemas strict: require needed fields and set `additionalProperties: false`.
 
+## Authentication in automation
 
-## Command line options
+`codex exec` reuses saved CLI authentication by default.
 
-See `references/command-line-options.md` under this skill directory for options
-and flags for the Codex terminal client.
+For GitHub Actions, prefer `openai/codex-action` over installing the CLI and exposing an API key to a shell step.
+
+Do not set `OPENAI_API_KEY` or `CODEX_API_KEY` as a job-level environment variable in workflows that check out or run repository-controlled code.
+
+For non-GitHub automation, scope `CODEX_API_KEY` to the single `codex exec` invocation:
+
+```bash
+CODEX_API_KEY=<api-key> codex exec --json "triage open bug reports"
+```
+
+`CODEX_API_KEY` is supported only by `codex exec`.
+
+Treat `~/.codex/auth.json` like a password. Do not use ChatGPT-managed auth files in public or open-source repository runners.
+
+## GitHub Actions autofix pattern
+
+When asked to auto-fix CI failures in GitHub Actions, use this security pattern:
+
+1. Trigger a follow-up workflow from failed CI.
+2. Check out the failing commit with `contents: read`.
+3. Run setup and tests before exposing OpenAI credentials.
+4. Run `openai/codex-action`.
+5. Save Codex changes as a patch artifact.
+6. In a separate job with write permissions, apply the patch and open a PR.
+
+Read `references/github-actions-autofix.md` when a full workflow is needed.
+
+## Resources
+
+Load these only when the task needs the extra detail:
+
+- `references/codex-exec-flags.md`: full `codex exec` and `codex exec resume` flag table.
+- `references/structured-output.md`: JSONL events and schema-constrained output patterns.
+- `references/stdin-piping.md`: prompt-plus-stdin and stdin-as-prompt examples.
+- `references/auth-and-ci-security.md`: API-key handling and CI auth guidance.
+- `references/github-actions-autofix.md`: full secure GitHub Actions auto-fix workflow.
+- `references/full-non-interactive-reference.md`: complete cleaned source reference.
+- `references/agentskills-practices-used.md`: Agent Skills design choices used in this package.
+
+## Response checklist
+
+Before returning a command or workflow, verify:
+
+- The command uses `codex exec` or `codex exec resume`, not the interactive TUI.
+- The sandbox is the least-permissive viable option.
+- Secrets are scoped only to the Codex invocation or protected action.
+- Untrusted repository code does not run with API keys in its environment.
+- Output mode matches the caller's downstream consumer.
+- Stdin mode matches whether stdin is context or the full prompt.
+- The Git repository requirement is handled explicitly.
