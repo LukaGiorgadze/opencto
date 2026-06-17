@@ -19,6 +19,7 @@ import (
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/embedding"
+	"github.com/opencto/opencto/internal/runtime/scheduled"
 	"github.com/opencto/opencto/internal/runtime/workflowrun"
 	skillcatalog "github.com/opencto/opencto/internal/skills"
 	"github.com/opencto/opencto/internal/storage"
@@ -54,6 +55,8 @@ type stubProjectStore struct {
 	upsertedConversation *[]domain.ConversationMessage
 	resetResult          domain.ContextResetResult
 	resetRequests        *[]domain.ContextResetRequest
+	onboardingState      *domain.OnboardingState
+	onboardingUpserts    *[]domain.OnboardingState
 }
 
 type stubEngine struct {
@@ -182,6 +185,23 @@ func (s stubProjectStore) VerifySchema(context.Context) error {
 }
 
 func (s stubProjectStore) EnsureProject(context.Context, domain.Project) error {
+	return nil
+}
+
+func (s stubProjectStore) GetOnboardingState(context.Context, string) (domain.OnboardingState, bool, error) {
+	if s.onboardingState == nil {
+		return domain.OnboardingState{}, false, nil
+	}
+	return *s.onboardingState, true, nil
+}
+
+func (s stubProjectStore) UpsertOnboardingState(_ context.Context, state domain.OnboardingState) error {
+	if s.onboardingUpserts != nil {
+		*s.onboardingUpserts = append(*s.onboardingUpserts, state)
+	}
+	if s.onboardingState != nil {
+		*s.onboardingState = state
+	}
 	return nil
 }
 
@@ -344,6 +364,189 @@ func (s stubProjectStore) ResetContext(_ context.Context, request domain.Context
 	return s.resetResult, nil
 }
 
+func TestPrepareOnboardingMarksAutomaticPrompted(t *testing.T) {
+	t.Parallel()
+
+	upserts := []domain.OnboardingState{}
+	activities := Activities{
+		Project: domain.Project{ID: "default"},
+		Store:   stubProjectStore{onboardingUpserts: &upserts},
+	}
+	result, err := activities.PrepareOnboarding(context.Background(), PrepareOnboardingRequest{
+		ProjectID: "default",
+		Event:     domain.Event{ID: "event-1", ProjectID: "default", Body: "deploy the app"},
+	})
+	if err != nil {
+		t.Fatalf("prepare onboarding: %v", err)
+	}
+	if !result.Onboarding.Active || result.Onboarding.Source != onboardingSourceAutomatic || result.Onboarding.Status != string(domain.OnboardingStatusPrompted) {
+		t.Fatalf("expected automatic onboarding context, got %#v", result.Onboarding)
+	}
+	if len(upserts) != 1 || upserts[0].Status != domain.OnboardingStatusPrompted || upserts[0].Source != onboardingSourceAutomatic {
+		t.Fatalf("expected prompted onboarding upsert, got %#v", upserts)
+	}
+}
+
+func TestPrepareOnboardingSkipsScheduledTask(t *testing.T) {
+	t.Parallel()
+
+	upserts := []domain.OnboardingState{}
+	activities := Activities{
+		Project: domain.Project{ID: "default"},
+		Store:   stubProjectStore{onboardingUpserts: &upserts},
+	}
+	result, err := activities.PrepareOnboarding(context.Background(), PrepareOnboardingRequest{
+		ProjectID: "default",
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "default",
+			Body:      "scheduled task",
+			Metadata: domain.Metadata{
+				scheduled.EventMetadataQueuePolicy: scheduled.QueuePolicyScheduledTask,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepare onboarding: %v", err)
+	}
+	if result.Onboarding.Active {
+		t.Fatalf("expected scheduled task onboarding to be inactive, got %#v", result.Onboarding)
+	}
+	if len(upserts) != 0 {
+		t.Fatalf("expected scheduled task not to upsert onboarding state, got %#v", upserts)
+	}
+}
+
+func TestPrepareOnboardingKeepsPromptedActiveForAnswer(t *testing.T) {
+	t.Parallel()
+
+	state := domain.OnboardingState{ProjectID: "default", Status: domain.OnboardingStatusPrompted}
+	upserts := []domain.OnboardingState{}
+	activities := Activities{
+		Project: domain.Project{ID: "default"},
+		Store:   stubProjectStore{onboardingState: &state, onboardingUpserts: &upserts},
+	}
+	result, err := activities.PrepareOnboarding(context.Background(), PrepareOnboardingRequest{
+		ProjectID: "default",
+		Event:     domain.Event{ID: "event-1", ProjectID: "default", Body: "deploy the app"},
+	})
+	if err != nil {
+		t.Fatalf("prepare onboarding: %v", err)
+	}
+	if !result.Onboarding.Active || result.Onboarding.Source != onboardingSourceAnswer || result.Onboarding.Status != string(domain.OnboardingStatusPrompted) {
+		t.Fatalf("expected onboarding answer context, got %#v", result.Onboarding)
+	}
+	if len(upserts) != 0 {
+		t.Fatalf("expected no onboarding update, got %#v", upserts)
+	}
+}
+
+func TestPrepareOnboardingSkipsTerminalStatus(t *testing.T) {
+	t.Parallel()
+
+	state := domain.OnboardingState{ProjectID: "default", Status: domain.OnboardingStatusCompleted}
+	upserts := []domain.OnboardingState{}
+	activities := Activities{
+		Project: domain.Project{ID: "default"},
+		Store:   stubProjectStore{onboardingState: &state, onboardingUpserts: &upserts},
+	}
+	result, err := activities.PrepareOnboarding(context.Background(), PrepareOnboardingRequest{
+		ProjectID: "default",
+		Event:     domain.Event{ID: "event-1", ProjectID: "default", Body: "deploy the app"},
+	})
+	if err != nil {
+		t.Fatalf("prepare onboarding: %v", err)
+	}
+	if result.Onboarding.Active {
+		t.Fatalf("expected onboarding to be inactive, got %#v", result.Onboarding)
+	}
+	if len(upserts) != 0 {
+		t.Fatalf("expected no onboarding update, got %#v", upserts)
+	}
+}
+
+func TestPrepareOnboardingCommandAlwaysActive(t *testing.T) {
+	t.Parallel()
+
+	state := domain.OnboardingState{ProjectID: "default", Status: domain.OnboardingStatusCompleted}
+	upserts := []domain.OnboardingState{}
+	activities := Activities{
+		Project: domain.Project{ID: "default"},
+		Store:   stubProjectStore{onboardingState: &state, onboardingUpserts: &upserts},
+	}
+	result, err := activities.PrepareOnboarding(context.Background(), PrepareOnboardingRequest{
+		ProjectID: "default",
+		Event:     domain.Event{ID: "event-1", ProjectID: "default", Body: domain.OnboardingSlashCommand},
+	})
+	if err != nil {
+		t.Fatalf("prepare onboarding: %v", err)
+	}
+	if !result.Onboarding.Active || result.Onboarding.Source != onboardingSourceCommand || result.Onboarding.Status != string(domain.OnboardingStatusPrompted) {
+		t.Fatalf("expected command onboarding context, got %#v", result.Onboarding)
+	}
+	if len(upserts) != 1 || upserts[0].Status != domain.OnboardingStatusPrompted || upserts[0].Source != onboardingSourceCommand {
+		t.Fatalf("expected command onboarding prompt upsert, got %#v", upserts)
+	}
+}
+
+func TestFinalizeOnboardingSkipsPromptedAnswerWithoutMemory(t *testing.T) {
+	t.Parallel()
+
+	state := domain.OnboardingState{ProjectID: "default", Status: domain.OnboardingStatusPrompted}
+	upserts := []domain.OnboardingState{}
+	activities := Activities{
+		Project: domain.Project{ID: "default"},
+		Store:   stubProjectStore{onboardingState: &state, onboardingUpserts: &upserts},
+	}
+	err := activities.FinalizeOnboarding(context.Background(), FinalizeOnboardingRequest{
+		ProjectID: "default",
+		Event:     domain.Event{ID: "event-2", ProjectID: "default", Body: "skip for now"},
+		Onboarding: agent.OnboardingContext{
+			Active: true,
+			Source: onboardingSourceAnswer,
+			Status: string(domain.OnboardingStatusPrompted),
+		},
+	})
+	if err != nil {
+		t.Fatalf("finalize onboarding: %v", err)
+	}
+	if len(upserts) != 1 || upserts[0].Status != domain.OnboardingStatusSkipped || upserts[0].Source != onboardingSourceAnswer {
+		t.Fatalf("expected skipped onboarding upsert, got %#v", upserts)
+	}
+}
+
+func TestFinalizeOnboardingKeepsInitialCommandPromptPending(t *testing.T) {
+	t.Parallel()
+
+	for _, body := range []string{domain.OnboardingSlashCommand, domain.OnboardingSlashCommand + "@OpenCTOBot"} {
+		body := body
+		t.Run(body, func(t *testing.T) {
+			t.Parallel()
+			state := domain.OnboardingState{ProjectID: "default", Status: domain.OnboardingStatusPrompted}
+			upserts := []domain.OnboardingState{}
+			activities := Activities{
+				Project: domain.Project{ID: "default"},
+				Store:   stubProjectStore{onboardingState: &state, onboardingUpserts: &upserts},
+			}
+			err := activities.FinalizeOnboarding(context.Background(), FinalizeOnboardingRequest{
+				ProjectID: "default",
+				Event:     domain.Event{ID: "event-1", ProjectID: "default", Body: body},
+				Onboarding: agent.OnboardingContext{
+					Active: true,
+					Source: onboardingSourceCommand,
+					Status: string(domain.OnboardingStatusPrompted),
+				},
+			})
+			if err != nil {
+				t.Fatalf("finalize onboarding: %v", err)
+			}
+			if len(upserts) != 0 {
+				t.Fatalf("expected command-only prompt to stay pending, got %#v", upserts)
+			}
+		})
+	}
+}
+
 func (s stubProjectStore) RememberMemory(_ context.Context, memory domain.Memory) (domain.Memory, error) {
 	if s.remembered != nil {
 		*s.remembered = append(*s.remembered, memory)
@@ -427,7 +630,6 @@ func TestResetConversationContextUsesThreadScope(t *testing.T) {
 	request := resetRequests[0]
 	if request.Scope != domain.ContextResetScopeThread ||
 		request.ProjectID != "project-1" ||
-		request.UserID != "telegram:user-1" ||
 		request.ChannelType != domain.ChannelTypeTelegram ||
 		request.ChannelID != "channel-1" ||
 		request.ThreadID != "thread-1" {
@@ -457,7 +659,7 @@ func TestResetConversationContextUsesChannelScopeWithoutThread(t *testing.T) {
 	if len(resetRequests) != 1 {
 		t.Fatalf("expected one reset request, got %#v", resetRequests)
 	}
-	if resetRequests[0].Scope != domain.ContextResetScopeChannel || resetRequests[0].ThreadID != "" || resetRequests[0].UserID != "discord:user-1" {
+	if resetRequests[0].Scope != domain.ContextResetScopeChannel || resetRequests[0].ThreadID != "" {
 		t.Fatalf("unexpected reset request: %#v", resetRequests[0])
 	}
 }
@@ -1748,6 +1950,143 @@ func TestExecuteMemoryToolRememberUpsertsEmbedding(t *testing.T) {
 	}
 	if request.ContentHash == "" {
 		t.Fatalf("expected content hash in embedding request")
+	}
+}
+
+func TestExecuteMemoryToolCompletesOnboardingWhenTagged(t *testing.T) {
+	t.Parallel()
+
+	remembered := []domain.Memory{}
+	upserts := []domain.OnboardingState{}
+	activities := Activities{
+		Store:         stubProjectStore{remembered: &remembered, onboardingUpserts: &upserts},
+		MemoryEnabled: true,
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "default",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			ActorID:     "discord-user-1",
+			ActorName:   "luka",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemoryProposeAdd,
+			Intent:     "remember onboarding preference",
+			Input:      []byte(`{"content":"User prefers concise deployment reports.","scope":"user","kind":"preference","tags":["onboarding","preference"],"confidence":1,"pinned":false,"reason":"onboarding answer"}`),
+			Metadata: map[string]string{
+				"execution_cycle":   "1",
+				"onboarding":        "true",
+				"onboarding_source": onboardingSourceAutomatic,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute memory remember: %v", err)
+	}
+	if result.Status != domain.ExecutionStatusSucceeded || len(remembered) != 1 {
+		t.Fatalf("unexpected memory result=%#v remembered=%#v", result, remembered)
+	}
+	if len(upserts) != 1 || upserts[0].Status != domain.OnboardingStatusCompleted || upserts[0].Source != onboardingSourceAutomatic {
+		t.Fatalf("expected onboarding completion upsert, got %#v", upserts)
+	}
+}
+
+func TestExecuteMemoryToolDoesNotCompleteOnboardingForUntaggedMemory(t *testing.T) {
+	t.Parallel()
+
+	remembered := []domain.Memory{}
+	upserts := []domain.OnboardingState{}
+	activities := Activities{
+		Store:         stubProjectStore{remembered: &remembered, onboardingUpserts: &upserts},
+		MemoryEnabled: true,
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:          "event-1",
+			ProjectID:   "default",
+			ChannelType: domain.ChannelTypeDiscord,
+			ChannelID:   "channel-1",
+			ActorID:     "discord-user-1",
+			ActorName:   "luka",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemoryProposeAdd,
+			Intent:     "remember project deployment fact",
+			Input:      []byte(`{"content":"Project uses Docker Compose for local services.","scope":"project","kind":"fact","tags":["deployment"],"confidence":1,"pinned":false,"reason":"current task context"}`),
+			Metadata: map[string]string{
+				"execution_cycle":   "1",
+				"onboarding":        "true",
+				"onboarding_source": onboardingSourceAutomatic,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute memory remember: %v", err)
+	}
+	if result.Status != domain.ExecutionStatusSucceeded || len(remembered) != 1 {
+		t.Fatalf("unexpected memory result=%#v remembered=%#v", result, remembered)
+	}
+	if len(upserts) != 0 {
+		t.Fatalf("expected ordinary memory write not to complete onboarding, got %#v", upserts)
+	}
+}
+
+func TestExecuteMemoryToolCompletesOnboardingFromPersistedUpdateTags(t *testing.T) {
+	t.Parallel()
+
+	upserts := []domain.OnboardingState{}
+	activities := Activities{
+		Store: stubProjectStore{
+			updateResult: domain.MemoryUpdateResult{
+				Updated: true,
+				Memory: domain.Memory{
+					ID:      "memory-1",
+					Scope:   domain.MemoryScopeUser,
+					Kind:    "identity",
+					Content: "User is Luka.",
+					Tags:    []string{"identity", "onboarding"},
+				},
+			},
+			onboardingUpserts: &upserts,
+		},
+		MemoryEnabled: true,
+	}
+	result, err := activities.ExecuteMemoryTool(context.Background(), ExecuteToolRequest{
+		ProjectID:  "default",
+		WorkItemID: "work-1",
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "default",
+			ActorName: "luka",
+		},
+		ToolChoice: agent.ToolChoice{
+			ToolCallID: "toolu_memory",
+			Type:       domain.ToolTypeMemoryProposeUpdate,
+			Intent:     "update onboarding identity",
+			Input:      []byte(`{"memory_id":"memory-1","content":"User is Luka.","kind":"identity","tags_mode":"keep","tags":[],"confidence_mode":"keep","confidence":0,"pinned_mode":"keep","pinned":false,"reason":"onboarding answer"}`),
+			Metadata: map[string]string{
+				"execution_cycle":   "1",
+				"onboarding":        "true",
+				"onboarding_source": onboardingSourceAnswer,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute memory update: %v", err)
+	}
+	if result.Status != domain.ExecutionStatusSucceeded {
+		t.Fatalf("unexpected memory update result: %#v", result)
+	}
+	if len(upserts) != 1 || upserts[0].Status != domain.OnboardingStatusCompleted || upserts[0].Source != onboardingSourceAnswer {
+		t.Fatalf("expected onboarding completion from persisted tags, got %#v", upserts)
 	}
 }
 

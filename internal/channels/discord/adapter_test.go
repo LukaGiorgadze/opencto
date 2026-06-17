@@ -253,7 +253,7 @@ func TestNotifyTypingUsesThreadTarget(t *testing.T) {
 	}
 }
 
-func TestResetEventFromInteractionUsesThreadParent(t *testing.T) {
+func TestCommandEventFromInteractionUsesThreadParent(t *testing.T) {
 	t.Parallel()
 
 	adapter := &Adapter{
@@ -261,7 +261,7 @@ func TestResetEventFromInteractionUsesThreadParent(t *testing.T) {
 		threadChannels: map[string]string{"thread-1": "thread-1"},
 		threadParents:  map[string]string{"thread-1": "channel-1"},
 	}
-	event, err := adapter.resetEventFromInteraction(context.Background(), nil, &discordgo.InteractionCreate{
+	event, err := adapter.commandEventFromInteraction(context.Background(), nil, &discordgo.InteractionCreate{
 		Interaction: &discordgo.Interaction{
 			ID:        "interaction-1",
 			Type:      discordgo.InteractionApplicationCommand,
@@ -272,7 +272,7 @@ func TestResetEventFromInteractionUsesThreadParent(t *testing.T) {
 				Username: "luka",
 			}},
 		},
-	})
+	}, domain.ConversationResetSlashCommand)
 	if err != nil {
 		t.Fatalf("reset interaction event: %v", err)
 	}
@@ -285,6 +285,29 @@ func TestResetEventFromInteractionUsesThreadParent(t *testing.T) {
 		event.ActorName != "luka" ||
 		event.Metadata[domain.MetadataKeyCommandResponseAcknowledged] != "true" {
 		t.Fatalf("unexpected reset event: %#v", event)
+	}
+}
+
+func TestCommandEventFromInteractionSupportsOnboarding(t *testing.T) {
+	t.Parallel()
+
+	adapter := &Adapter{projectID: "project-1"}
+	event, err := adapter.commandEventFromInteraction(context.Background(), nil, &discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{
+			ID:        "interaction-1",
+			Type:      discordgo.InteractionApplicationCommand,
+			ChannelID: "channel-1",
+			User:      &discordgo.User{ID: "user-1", Username: "luka"},
+		},
+	}, domain.OnboardingSlashCommand)
+	if err != nil {
+		t.Fatalf("onboarding interaction event: %v", err)
+	}
+	if event.Body != domain.OnboardingSlashCommand ||
+		event.ChannelID != "channel-1" ||
+		event.ActorID != "user-1" ||
+		event.Metadata[domain.MetadataKeyCommandResponseAcknowledged] != "true" {
+		t.Fatalf("unexpected onboarding event: %#v", event)
 	}
 }
 

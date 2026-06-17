@@ -43,6 +43,7 @@ const telegramDefaultWebhookPath = "/telegram/webhook"
 const telegramDefaultWebhookMaxConnections = 40
 const telegramReferencedContentMaxChars = 2000
 const telegramResetCommandDescription = "Start a new OpenCTO conversation"
+const telegramOnboardingCommandDescription = "Update OpenCTO onboarding memory"
 
 type AttachmentLimits = channels.AttachmentLimits
 type MessageLimits = channels.MessageLimits
@@ -267,10 +268,16 @@ func (a *Adapter) registerCommands(ctx context.Context) error {
 	if a == nil || a.bot == nil {
 		return nil
 	}
-	_, err := a.bot.SetMyCommandsWithContext(ctx, []gotgbot.BotCommand{{
-		Command:     strings.TrimPrefix(domain.ConversationResetSlashCommand, "/"),
-		Description: telegramResetCommandDescription,
-	}}, nil)
+	_, err := a.bot.SetMyCommandsWithContext(ctx, []gotgbot.BotCommand{
+		{
+			Command:     strings.TrimPrefix(domain.ConversationResetSlashCommand, "/"),
+			Description: telegramResetCommandDescription,
+		},
+		{
+			Command:     strings.TrimPrefix(domain.OnboardingSlashCommand, "/"),
+			Description: telegramOnboardingCommandDescription,
+		},
+	}, nil)
 	return err
 }
 

@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	currentSchemaVersion = 11
+	currentSchemaVersion = 12
 	memoryVectorDims     = 1536
 )
 
@@ -170,6 +170,7 @@ var migrations = []migration{
 	{version: 9, sql: migrationV9},
 	{version: 10, sql: migrationV10},
 	{version: 11, apply: applyTemporalRunIDMigration},
+	{version: 12, sql: migrationV12},
 }
 
 func applyMigration(ctx context.Context, db *sql.DB, migration migration) error {
@@ -763,6 +764,17 @@ DROP TABLE IF EXISTS conversation_threads;
 
 const migrationV10 = scheduledWorkflowsSchemaSQL
 
+const migrationV12 = `
+CREATE TABLE IF NOT EXISTS onboarding_state (
+	project_id TEXT PRIMARY KEY,
+	status TEXT CHECK (status IS NULL OR status IN ('prompted', 'completed', 'skipped')),
+	source TEXT NOT NULL DEFAULT '',
+	metadata TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata)),
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+`
+
 func applyTemporalRunIDMigration(ctx context.Context, db *sql.DB, migration migration) error {
 	hasTemporalRunID, err := tableHasColumn(ctx, db, "scheduled_workflow_runs", "temporal_run_id")
 	if err != nil {
@@ -812,6 +824,93 @@ VALUES (?, ?, ?, json(?), ?, ?)
 ON CONFLICT(id) DO NOTHING
 `, project.ID, project.Name, strings.TrimSpace(project.Description), metadata, formatTime(project.CreatedAt), formatTime(project.UpdatedAt))
 	return err
+}
+
+func (s *Store) GetOnboardingState(ctx context.Context, projectID string) (domain.OnboardingState, bool, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return domain.OnboardingState{}, false, nil
+	}
+	var state domain.OnboardingState
+	var status sql.NullString
+	var metadata string
+	var createdAt string
+	var updatedAt string
+	err := s.db.QueryRowContext(ctx, `
+SELECT project_id, status, source, metadata, created_at, updated_at
+FROM onboarding_state
+WHERE project_id = ?
+`, projectID).Scan(&state.ProjectID, &status, &state.Source, &metadata, &createdAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.OnboardingState{}, false, nil
+	}
+	if err != nil {
+		return domain.OnboardingState{}, false, err
+	}
+	if status.Valid {
+		normalized, err := normalizeOnboardingStatus(domain.OnboardingStatus(status.String))
+		if err != nil {
+			return domain.OnboardingState{}, false, err
+		}
+		state.Status = normalized
+	}
+	if err := decodeJSON(metadata, &state.Metadata); err != nil {
+		return domain.OnboardingState{}, false, err
+	}
+	state.CreatedAt = parseTime(createdAt)
+	state.UpdatedAt = parseTime(updatedAt)
+	return state, true, nil
+}
+
+func (s *Store) UpsertOnboardingState(ctx context.Context, state domain.OnboardingState) error {
+	state.ProjectID = strings.TrimSpace(state.ProjectID)
+	if state.ProjectID == "" {
+		return fmt.Errorf("onboarding project id is required")
+	}
+	status, err := normalizeOnboardingStatus(state.Status)
+	if err != nil {
+		return err
+	}
+	var statusValue any
+	if status != "" {
+		statusValue = string(status)
+	}
+	now := time.Now().UTC()
+	if state.CreatedAt.IsZero() {
+		state.CreatedAt = now
+	}
+	if state.UpdatedAt.IsZero() {
+		state.UpdatedAt = now
+	}
+	metadata, err := encodeJSON(state.Metadata, "{}")
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO onboarding_state(project_id, status, source, metadata, created_at, updated_at)
+VALUES (?, ?, ?, json(?), ?, ?)
+ON CONFLICT(project_id) DO UPDATE SET
+	status = excluded.status,
+	source = excluded.source,
+	metadata = excluded.metadata,
+	updated_at = excluded.updated_at
+`, state.ProjectID, statusValue, strings.TrimSpace(state.Source), metadata, formatTime(state.CreatedAt), formatTime(state.UpdatedAt))
+	return err
+}
+
+func normalizeOnboardingStatus(status domain.OnboardingStatus) (domain.OnboardingStatus, error) {
+	switch domain.OnboardingStatus(strings.ToLower(strings.TrimSpace(string(status)))) {
+	case "":
+		return "", nil
+	case domain.OnboardingStatusPrompted:
+		return domain.OnboardingStatusPrompted, nil
+	case domain.OnboardingStatusCompleted:
+		return domain.OnboardingStatusCompleted, nil
+	case domain.OnboardingStatusSkipped:
+		return domain.OnboardingStatusSkipped, nil
+	default:
+		return "", fmt.Errorf("unsupported onboarding status %q", status)
+	}
 }
 
 func (s *Store) AppendEvent(ctx context.Context, event domain.Event) (storage.EventAppendResult, error) {
@@ -1549,7 +1648,6 @@ func scanConversationSummaries(rows *sql.Rows) ([]domain.ConversationSummary, er
 
 func (s *Store) ResetContext(ctx context.Context, request domain.ContextResetRequest) (domain.ContextResetResult, error) {
 	request.ProjectID = strings.TrimSpace(request.ProjectID)
-	request.UserID = strings.TrimSpace(request.UserID)
 	request.ChannelID = strings.TrimSpace(request.ChannelID)
 	request.ThreadID = strings.TrimSpace(request.ThreadID)
 	if request.ProjectID == "" {
@@ -1634,30 +1732,21 @@ WHERE memory_id IN (`+sqlPlaceholders(len(memoryIDs))+`)
 }
 
 func (s *Store) contextResetMemoryIDs(ctx context.Context, request domain.ContextResetRequest) ([]string, error) {
-	var clauses []string
-	var args []any
+	where := []string{"project_id = ?", "channel_type = ?", "channel_id = ?"}
+	args := []any{request.ProjectID, string(request.ChannelType), request.ChannelID}
 	switch request.Scope {
 	case domain.ContextResetScopeThread:
-		clauses = append(clauses, `(scope = 'thread' AND project_id = ? AND channel_type = ? AND channel_id = ? AND thread_id = ?)`)
-		args = append(args, request.ProjectID, string(request.ChannelType), request.ChannelID, request.ThreadID)
-		if request.UserID != "" {
-			clauses = append(clauses, `(scope = 'user' AND user_id = ? AND COALESCE(json_extract(metadata, '$.channel_type'), '') = ? AND COALESCE(json_extract(metadata, '$.channel_id'), '') = ? AND COALESCE(json_extract(metadata, '$.thread_id'), '') = ?)`)
-			args = append(args, request.UserID, string(request.ChannelType), request.ChannelID, request.ThreadID)
-		}
+		where = append(where, "scope = 'thread'", "thread_id = ?")
+		args = append(args, request.ThreadID)
 	case domain.ContextResetScopeChannel:
-		clauses = append(clauses, `(scope IN ('channel', 'thread') AND project_id = ? AND channel_type = ? AND channel_id = ?)`)
-		args = append(args, request.ProjectID, string(request.ChannelType), request.ChannelID)
-		if request.UserID != "" {
-			clauses = append(clauses, `(scope = 'user' AND user_id = ? AND COALESCE(json_extract(metadata, '$.channel_type'), '') = ? AND COALESCE(json_extract(metadata, '$.channel_id'), '') = ?)`)
-			args = append(args, request.UserID, string(request.ChannelType), request.ChannelID)
-		}
+		where = append(where, "scope IN ('channel', 'thread')")
 	default:
 		return nil, fmt.Errorf("unsupported context reset scope %q", request.Scope)
 	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id
 FROM memories
-WHERE `+strings.Join(clauses, " OR ")+`
+WHERE `+strings.Join(where, " AND ")+`
 ORDER BY updated_at DESC
 `, args...)
 	if err != nil {

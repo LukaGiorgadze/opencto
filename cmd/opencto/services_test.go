@@ -87,6 +87,78 @@ func TestEnsureRuntimeServiceFilesCreatesComposeAssets(t *testing.T) {
 	}
 }
 
+func TestEnsureRuntimeServiceFilesCreatesMissingWorkspaceEnvFile(t *testing.T) {
+	workspace := t.TempDir()
+
+	if _, err := ensureRuntimeServiceFiles(workspace, testServiceConfig()); err != nil {
+		t.Fatalf("ensure service files: %v", err)
+	}
+
+	envPath := filepath.Join(workspace, ".env")
+	env, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read generated env: %v", err)
+	}
+	if string(env) != string(defaultEnvFile()) {
+		t.Fatalf("expected generated env to match default template:\n%s", env)
+	}
+	info, err := os.Stat(envPath)
+	if err != nil {
+		t.Fatalf("stat generated env: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("expected generated env mode 0600, got %o", got)
+	}
+}
+
+func TestEnsureRuntimeServiceFilesKeepsExistingWorkspaceEnvFile(t *testing.T) {
+	workspace := t.TempDir()
+	envPath := filepath.Join(workspace, ".env")
+	if err := os.WriteFile(envPath, []byte("OPENAI_API_KEY=existing\n"), 0o600); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+
+	if _, err := ensureRuntimeServiceFiles(workspace, testServiceConfig()); err != nil {
+		t.Fatalf("ensure service files: %v", err)
+	}
+
+	env, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if got := string(env); got != "OPENAI_API_KEY=existing\n" {
+		t.Fatalf("expected existing env to be preserved, got:\n%s", got)
+	}
+}
+
+func TestEnsureRuntimeServiceFilesUsesProvidedDotEnvPath(t *testing.T) {
+	workspace := t.TempDir()
+	envPath := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(envPath, []byte("OPENAI_API_KEY=repo\n"), 0o600); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+
+	serviceDir, err := ensureRuntimeServiceFilesWithDotEnv(workspace, testServiceConfig(), envPath)
+	if err != nil {
+		t.Fatalf("ensure service files: %v", err)
+	}
+
+	compose, err := os.ReadFile(filepath.Join(serviceDir, "compose.yaml"))
+	if err != nil {
+		t.Fatalf("read compose: %v", err)
+	}
+	if composeText := string(compose); !strings.Contains(composeText, envPath) {
+		t.Fatalf("expected compose to reference provided env path %q:\n%s", envPath, composeText)
+	}
+	env, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if got := string(env); got != "OPENAI_API_KEY=repo\n" {
+		t.Fatalf("expected provided env to be preserved, got:\n%s", got)
+	}
+}
+
 func TestEnsureRuntimeServiceFilesUsesConfiguredLocalBifrostPort(t *testing.T) {
 	workspace := t.TempDir()
 	cfg := testServiceConfig()

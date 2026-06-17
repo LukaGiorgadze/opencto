@@ -22,8 +22,8 @@ import (
 const serviceWaitTimeout = 2 * time.Minute
 const defaultManagedBifrostOpenAIBaseURL = "http://127.0.0.1:8081/openai"
 
-func ensureRuntimeServices(ctx context.Context, cfg config.Config, logger *slog.Logger, progress io.Writer) error {
-	serviceDir, err := ensureRuntimeServiceFiles(cfg.General.WorkspaceRoot, cfg)
+func ensureRuntimeServices(ctx context.Context, cfg config.Config, dotEnvPath string, logger *slog.Logger, progress io.Writer) error {
+	serviceDir, err := ensureRuntimeServiceFilesWithDotEnv(cfg.General.WorkspaceRoot, cfg, dotEnvPath)
 	if err != nil {
 		return err
 	}
@@ -112,11 +112,19 @@ func friendlyDockerComposeError(err error) error {
 }
 
 func ensureRuntimeServiceFiles(workspaceRoot string, cfg config.Config) (string, error) {
+	return ensureRuntimeServiceFilesWithDotEnv(workspaceRoot, cfg, "")
+}
+
+func ensureRuntimeServiceFilesWithDotEnv(workspaceRoot string, cfg config.Config, dotEnvPath string) (string, error) {
 	workspaceRoot = strings.TrimSpace(workspaceRoot)
 	if workspaceRoot == "" {
 		return "", fmt.Errorf("workspace root is required")
 	}
-	composeYAML, err := renderServiceComposeYAML(cfg)
+	dotEnvPath, composeDotEnvPath, err := resolveRuntimeServiceDotEnv(workspaceRoot, dotEnvPath)
+	if err != nil {
+		return "", err
+	}
+	composeYAML, err := renderServiceComposeYAML(cfg, composeDotEnvPath)
 	if err != nil {
 		return "", err
 	}
@@ -129,6 +137,9 @@ func ensureRuntimeServiceFiles(workspaceRoot string, cfg config.Config) (string,
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return "", fmt.Errorf("create service directory %s: %w", dir, err)
 		}
+	}
+	if _, err := writeFileIfMissing(dotEnvPath, defaultEnvFile(), 0o600); err != nil {
+		return "", err
 	}
 
 	files := []struct {
@@ -149,6 +160,18 @@ func ensureRuntimeServiceFiles(workspaceRoot string, cfg config.Config) (string,
 		}
 	}
 	return serviceDir, nil
+}
+
+func resolveRuntimeServiceDotEnv(workspaceRoot, dotEnvPath string) (string, string, error) {
+	dotEnvPath = strings.TrimSpace(dotEnvPath)
+	if dotEnvPath == "" {
+		return filepath.Join(workspaceRoot, ".env"), "../.env", nil
+	}
+	resolved, err := filepath.Abs(dotEnvPath)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve .env path: %w", err)
+	}
+	return resolved, resolved, nil
 }
 
 func writeManagedServiceFile(path string, data []byte, perm os.FileMode) error {
@@ -173,7 +196,7 @@ func writeManagedServiceFile(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
-func renderServiceComposeYAML(cfg config.Config) (string, error) {
+func renderServiceComposeYAML(cfg config.Config, dotEnvPath string) (string, error) {
 	temporalHostPort, err := temporalComposeHostPort(cfg.Temporal.HostPort)
 	if err != nil {
 		return "", err
@@ -192,6 +215,7 @@ func renderServiceComposeYAML(cfg config.Config) (string, error) {
 	out := strings.ReplaceAll(serviceComposeYAMLTemplate, "{{TEMPORAL_HOST_PORT}}", strconv.Quote(temporalHostPort))
 	out = strings.ReplaceAll(out, "{{TEMPORAL_NAMESPACE}}", strconv.Quote(namespace))
 	out = strings.ReplaceAll(out, "{{BIFROST_HOST_PORT}}", strconv.Quote(bifrostHostPort))
+	out = strings.ReplaceAll(out, "{{DOT_ENV_PATH}}", strconv.Quote(dotEnvPath))
 	return out, nil
 }
 
@@ -462,7 +486,7 @@ services:
       postgresql:
         condition: service_healthy
     env_file:
-      - ../.env
+      - {{DOT_ENV_PATH}}
     volumes:
       - ./bifrost.json:/app/data/config.json:ro
     networks:

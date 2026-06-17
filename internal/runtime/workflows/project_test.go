@@ -25,6 +25,8 @@ func registerTaskWorkflowActivities(env *testsuite.TestWorkflowEnvironment) {
 	env.RegisterActivityWithOptions((&activities.Activities{}).ExecuteTool, activity.RegisterOptions{Name: "Activities.ExecuteTool"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).ExecuteMemoryTool, activity.RegisterOptions{Name: "Activities.ExecuteMemoryTool"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).PersistEvent, activity.RegisterOptions{Name: "Activities.PersistEvent"})
+	env.RegisterActivityWithOptions((&activities.Activities{}).PrepareOnboarding, activity.RegisterOptions{Name: "Activities.PrepareOnboarding"})
+	env.RegisterActivityWithOptions((&activities.Activities{}).FinalizeOnboarding, activity.RegisterOptions{Name: "Activities.FinalizeOnboarding"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).ResetConversationContext, activity.RegisterOptions{Name: "Activities.ResetConversationContext"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).CompressAgentObservations, activity.RegisterOptions{Name: "Activities.CompressAgentObservations"})
 	env.RegisterActivityWithOptions((&activities.Activities{}).PersistNextAction, activity.RegisterOptions{Name: "Activities.PersistNextAction"})
@@ -151,7 +153,7 @@ func TestTaskWorkflowResetsConversationContextForNewCommand(t *testing.T) {
 	if err := env.GetWorkflowResult(&result); err != nil {
 		t.Fatalf("get result: %v", err)
 	}
-	if !result.Completed || result.Status != activities.NextActionStatusCompleted || result.ResponseMessage != "Started a new conversation." || !result.Report {
+	if !result.Completed || result.Status != activities.NextActionStatusCompleted || result.ResponseMessage != domain.ConversationResetConfirmation || !result.Report {
 		t.Fatalf("unexpected reset result: %#v", result)
 	}
 	env.AssertExpectations(t)
@@ -1431,6 +1433,52 @@ func TestProjectWorkflowRoutesReplyToOwnedMessageAsAdditionalContext(t *testing.
 	}
 	if strings.Join(seen, ",") != "event-1" {
 		t.Fatalf("reply should not start a separate task, got %#v", seen)
+	}
+}
+
+func TestProjectWorkflowRoutesOnboardingReplyAsSeparateTask(t *testing.T) {
+	t.Parallel()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflows.ProjectWorkflow)
+	var seen []string
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context, input workflows.TaskWorkflowInput) (workflows.TaskWorkflowResult, error) {
+		seen = append(seen, input.Event.ID)
+		if input.Event.ID == "event-1" {
+			_ = workflow.Sleep(ctx, 10*365*24*time.Hour)
+		}
+		return workflows.TaskWorkflowResult{Completed: true}, nil
+	}, workflow.RegisterOptions{Name: workflows.TaskWorkflowName})
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "project-1",
+			Body:      "do work",
+			Provenance: domain.Provenance{
+				SourceID: "source-message-1",
+			},
+		}})
+	}, 0)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(workflows.SignalEnqueueEvent, workflows.EnqueueEventSignal{Event: domain.Event{
+			ID:        "event-2",
+			ProjectID: "project-1",
+			Body:      domain.OnboardingSlashCommand,
+			Metadata:  domain.Metadata{domain.MetadataKeyReplyToMessageID: "source-message-1"},
+		}})
+	}, time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		env.CancelWorkflow()
+	}, 5*time.Millisecond)
+
+	env.ExecuteWorkflow(workflows.ProjectWorkflow, workflows.ProjectWorkflowInput{ProjectID: "project-1"})
+	if err := env.GetWorkflowError(); err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	if strings.Join(seen, ",") != "event-1,event-2" {
+		t.Fatalf("expected onboarding reply to start a separate task, got %#v", seen)
 	}
 }
 

@@ -37,7 +37,7 @@ func runStart(ctx context.Context, env commandEnvironment, progress io.Writer) e
 	if err := runBootstrap(ctx, env.Config, defaultProject, env.Logger, env.SkillsRoot == ""); err != nil {
 		return err
 	}
-	if err := ensureRuntimeServices(ctx, env.Config, env.Logger, progress); err != nil {
+	if err := ensureRuntimeServices(ctx, env.Config, env.DotEnvPath, env.Logger, progress); err != nil {
 		return err
 	}
 	return runServe(ctx, env)

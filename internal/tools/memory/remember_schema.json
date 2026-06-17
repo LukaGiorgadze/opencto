@@ -5,7 +5,7 @@
     "properties": {
         "content": {
             "type": "string",
-            "description": "New durable memory content to propose. Keep it concise and factual; do not store transient task progress, command output, logs, or one-off errors. The backend validates, dedupes, saves, and embeds accepted proposals."
+            "description": "New durable memory content to propose. Keep it concise, factual, and atomic: one reusable fact/preference/constraint/decision/identity/workflow note with one scope and one primary kind. Do not combine facts with different scopes or kinds; use multiple MemoryProposeAdd calls instead. Do not store transient task progress, command output, logs, or one-off errors. The backend validates, dedupes, saves, and embeds accepted proposals."
         },
         "scope": {
             "type": "string",
@@ -22,7 +22,7 @@
             "items": {
                 "type": "string"
             },
-            "description": "Optional short lowercase tags for filtering and review. Prefer preference, decision, project, identity, workflow, or constraint when applicable."
+            "description": "Optional short lowercase tags for filtering and review. Prefer preference, decision, project, identity, workflow, or constraint when applicable. During onboarding, include onboarding only on memories that store onboarding answers and should complete onboarding."
         },
         "confidence": {
             "type": "number",

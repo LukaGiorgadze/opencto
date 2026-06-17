@@ -33,6 +33,44 @@ func TestStoreMigratesAndVerifiesSchema(t *testing.T) {
 	}
 }
 
+func TestOnboardingStatePersistsStatus(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openTestStore(t)
+	if _, ok, err := store.GetOnboardingState(ctx, "default"); err != nil || ok {
+		t.Fatalf("expected no onboarding state, ok=%t err=%v", ok, err)
+	}
+	state := domain.OnboardingState{
+		ProjectID: "default",
+		Status:    domain.OnboardingStatusPrompted,
+		Source:    "automatic",
+		Metadata:  domain.Metadata{"event_id": "event-1"},
+	}
+	if err := store.UpsertOnboardingState(ctx, state); err != nil {
+		t.Fatalf("upsert onboarding state: %v", err)
+	}
+	stored, ok, err := store.GetOnboardingState(ctx, "default")
+	if err != nil || !ok {
+		t.Fatalf("get onboarding state: ok=%t err=%v", ok, err)
+	}
+	if stored.Status != domain.OnboardingStatusPrompted || stored.Source != "automatic" || stored.Metadata["event_id"] != "event-1" {
+		t.Fatalf("unexpected onboarding state: %#v", stored)
+	}
+	state.Status = domain.OnboardingStatusCompleted
+	state.Source = "command"
+	if err := store.UpsertOnboardingState(ctx, state); err != nil {
+		t.Fatalf("update onboarding state: %v", err)
+	}
+	stored, ok, err = store.GetOnboardingState(ctx, "default")
+	if err != nil || !ok {
+		t.Fatalf("get updated onboarding state: ok=%t err=%v", ok, err)
+	}
+	if stored.Status != domain.OnboardingStatusCompleted || stored.Source != "command" {
+		t.Fatalf("unexpected updated onboarding state: %#v", stored)
+	}
+}
+
 func TestMigrateAddsUserMemoryScopeToExistingSchema(t *testing.T) {
 	t.Parallel()
 
@@ -1026,7 +1064,6 @@ func TestResetContextThreadScopeClearsOnlyThreadContext(t *testing.T) {
 
 	result, err := store.ResetContext(ctx, domain.ContextResetRequest{
 		ProjectID:   "default",
-		UserID:      "discord:user-1",
 		ChannelType: domain.ChannelTypeDiscord,
 		ChannelID:   "channel-a",
 		ThreadID:    "thread-a",
@@ -1041,7 +1078,7 @@ func TestResetContextThreadScopeClearsOnlyThreadContext(t *testing.T) {
 		result.DeletedConversationThreads != 0 {
 		t.Fatalf("unexpected reset result: %#v", result)
 	}
-	requireMemoryIDs(t, result.DeletedMemoryIDs, "thread-a-memory", "thread-a-user-memory")
+	requireMemoryIDs(t, result.DeletedMemoryIDs, "thread-a-memory")
 
 	threadMessages, err := store.ListConversationMessages(ctx, storage.ConversationQuery{
 		ProjectID:   "default",
@@ -1103,6 +1140,7 @@ func TestResetContextThreadScopeClearsOnlyThreadContext(t *testing.T) {
 		"other-channel-thread-memory",
 		"other-user-session-memory",
 		"project-memory",
+		"thread-a-user-memory",
 		"thread-b-memory",
 		"user-memory",
 	)
@@ -1117,7 +1155,6 @@ func TestResetContextChannelScopeClearsChannelAndThreadContext(t *testing.T) {
 
 	result, err := store.ResetContext(ctx, domain.ContextResetRequest{
 		ProjectID:   "default",
-		UserID:      "discord:user-1",
 		ChannelType: domain.ChannelTypeDiscord,
 		ChannelID:   "channel-a",
 		Scope:       domain.ContextResetScopeChannel,
@@ -1131,7 +1168,7 @@ func TestResetContextChannelScopeClearsChannelAndThreadContext(t *testing.T) {
 		result.DeletedConversationThreads != 2 {
 		t.Fatalf("unexpected reset result: %#v", result)
 	}
-	requireMemoryIDs(t, result.DeletedMemoryIDs, "channel-a-memory", "channel-a-user-memory", "thread-a-memory", "thread-a-user-memory", "thread-b-memory")
+	requireMemoryIDs(t, result.DeletedMemoryIDs, "channel-a-memory", "thread-a-memory", "thread-b-memory")
 
 	for _, query := range []storage.ConversationQuery{
 		{ProjectID: "default", ChannelType: domain.ChannelTypeDiscord, ChannelID: "channel-a", Scope: storage.ConversationScopeChannel, Limit: 10},
@@ -1171,10 +1208,12 @@ func TestResetContextChannelScopeClearsChannelAndThreadContext(t *testing.T) {
 		t.Fatalf("expected channel thread row to be deleted")
 	}
 	requireMemoryIDs(t, allStoredMemoryIDs(t, ctx, store),
+		"channel-a-user-memory",
 		"global-memory",
 		"other-channel-thread-memory",
 		"other-user-session-memory",
 		"project-memory",
+		"thread-a-user-memory",
 		"user-memory",
 	)
 }
@@ -1223,9 +1262,9 @@ func seedResetContextData(t *testing.T, ctx context.Context, store *Store) {
 		{ID: "project-memory", ProjectID: "default", Scope: domain.MemoryScopeProject, Kind: "fact", Content: "Project memory should remain after scoped resets.", CreatedAt: base, UpdatedAt: base},
 		{ID: "global-memory", Scope: domain.MemoryScopeGlobal, Kind: "fact", Content: "Global memory should remain after scoped resets.", CreatedAt: base, UpdatedAt: base},
 		{ID: "user-memory", UserID: "discord:user-1", Scope: domain.MemoryScopeUser, Kind: "fact", Content: "User memory should remain after channel and thread resets.", CreatedAt: base, UpdatedAt: base},
-		{ID: "channel-a-user-memory", UserID: "discord:user-1", Scope: domain.MemoryScopeUser, Kind: "fact", Content: "User memory tagged with Channel A should reset with Channel A.", Metadata: domain.Metadata{"channel_type": "discord", "channel_id": "channel-a", "actor_id": "user-1"}, CreatedAt: base, UpdatedAt: base},
-		{ID: "thread-a-user-memory", UserID: "discord:user-1", Scope: domain.MemoryScopeUser, Kind: "fact", Content: "User memory tagged with Thread A should reset with Thread A.", Metadata: domain.Metadata{"channel_type": "discord", "channel_id": "channel-a", "thread_id": "thread-a", "actor_id": "user-1"}, CreatedAt: base, UpdatedAt: base},
-		{ID: "other-user-session-memory", UserID: "discord:user-2", Scope: domain.MemoryScopeUser, Kind: "fact", Content: "Another user's session memory should remain for this user's reset.", Metadata: domain.Metadata{"channel_type": "discord", "channel_id": "channel-a", "thread_id": "thread-a", "actor_id": "user-2"}, CreatedAt: base, UpdatedAt: base},
+		{ID: "channel-a-user-memory", UserID: "discord:user-1", Scope: domain.MemoryScopeUser, Kind: "fact", Content: "User memory with Channel A provenance should remain after reset.", Metadata: domain.Metadata{"channel_type": "discord", "channel_id": "channel-a", "actor_id": "user-1"}, CreatedAt: base, UpdatedAt: base},
+		{ID: "thread-a-user-memory", UserID: "discord:user-1", Scope: domain.MemoryScopeUser, Kind: "fact", Content: "User memory with Thread A provenance should remain after reset.", Metadata: domain.Metadata{"channel_type": "discord", "channel_id": "channel-a", "thread_id": "thread-a", "actor_id": "user-1"}, CreatedAt: base, UpdatedAt: base},
+		{ID: "other-user-session-memory", UserID: "discord:user-2", Scope: domain.MemoryScopeUser, Kind: "fact", Content: "Another user's memory with session provenance should remain after reset.", Metadata: domain.Metadata{"channel_type": "discord", "channel_id": "channel-a", "thread_id": "thread-a", "actor_id": "user-2"}, CreatedAt: base, UpdatedAt: base},
 	}
 	for _, memory := range memories {
 		if _, err := store.RememberMemory(ctx, memory); err != nil {

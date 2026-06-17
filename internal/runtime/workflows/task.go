@@ -25,6 +25,8 @@ const (
 	responseSessionMaxDuration   = maxExecutionCycles*(nextActionActivityTimeout+toolActivityTimeout) + nextActionActivityTimeout + responseSessionGracePeriod
 	responseSessionHeartbeatGap  = 30 * time.Second
 	responseSessionRetryInitial  = responseSessionHeartbeatGap + 5*time.Second
+	taskOnboardingChangeID       = "task-workflow-onboarding-v1"
+	taskOnboardingVersion        = 1
 )
 
 func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowResult, error) {
@@ -99,6 +101,18 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			workflow.GetLogger(ctx).Warn("conversation compression failed", "error", err)
 		}
 	}
+	onboarding := agent.OnboardingContext{}
+	onboardingEnabled := workflow.GetVersion(ctx, taskOnboardingChangeID, workflow.DefaultVersion, taskOnboardingVersion) == taskOnboardingVersion
+	if onboardingEnabled {
+		onboardingResult, err := prepareOnboarding(persistenceCtx, activities.PrepareOnboardingRequest{
+			ProjectID: input.ProjectID,
+			Event:     input.Event,
+		})
+		if err != nil {
+			return TaskWorkflowResult{}, err
+		}
+		onboarding = onboardingResult.Onboarding
+	}
 
 	for cycle := 1; cycle <= maxExecutionCycles; cycle++ {
 		if err := persistTaskSignalEvents(persistenceCtx, drainTaskSignals(ctx, &additionalEvents)); err != nil {
@@ -114,6 +128,7 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			Processes:          processes,
 			ExecutionCycle:     cycle,
 			ResumedFromPause:   input.ResumedFromPause,
+			Onboarding:         onboarding,
 		})
 		if err != nil {
 			return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)
@@ -133,6 +148,15 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 			return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)
 		}
 		if next.IsTerminal() {
+			if onboardingEnabled {
+				if err := finalizeOnboarding(persistenceCtx, activities.FinalizeOnboardingRequest{
+					ProjectID:  input.ProjectID,
+					Event:      input.Event,
+					Onboarding: onboarding,
+				}); err != nil {
+					return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)
+				}
+			}
 			return resultFromNextAction(reportTargetEvent(input.Event, additionalEvents), next), nil
 		}
 		toolChoices := append([]agent.ToolChoice(nil), next.ToolChoices...)
@@ -191,6 +215,7 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 		ExecutionCycle:     maxExecutionCycles + 1,
 		ForceFinal:         true,
 		ResumedFromPause:   input.ResumedFromPause,
+		Onboarding:         onboarding,
 	})
 	if err != nil {
 		return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)
@@ -210,6 +235,15 @@ func TaskWorkflow(ctx workflow.Context, input TaskWorkflowInput) (TaskWorkflowRe
 	if !final.IsTerminal() {
 		return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, fmt.Errorf("Activities.NextAction returned non-terminal status %q for force-final request", final.Status))
 	}
+	if onboardingEnabled {
+		if err := finalizeOnboarding(persistenceCtx, activities.FinalizeOnboardingRequest{
+			ProjectID:  input.ProjectID,
+			Event:      input.Event,
+			Onboarding: onboarding,
+		}); err != nil {
+			return completeTaskAfterProcessStart(nextActionCtx, input.ProjectID, input.Event, processes, err)
+		}
+	}
 	return resultFromNextAction(reportTargetEvent(input.Event, additionalEvents), final), nil
 }
 
@@ -225,6 +259,16 @@ func persistEvent(ctx workflow.Context, request activities.PersistEventRequest) 
 
 func compressConversation(ctx workflow.Context, request activities.CompressConversationRequest) error {
 	return workflow.ExecuteActivity(ctx, "Activities.CompressConversation", request).Get(ctx, nil)
+}
+
+func prepareOnboarding(ctx workflow.Context, request activities.PrepareOnboardingRequest) (activities.PrepareOnboardingResult, error) {
+	var result activities.PrepareOnboardingResult
+	err := workflow.ExecuteActivity(ctx, "Activities.PrepareOnboarding", request).Get(ctx, &result)
+	return result, err
+}
+
+func finalizeOnboarding(ctx workflow.Context, request activities.FinalizeOnboardingRequest) error {
+	return workflow.ExecuteActivity(ctx, "Activities.FinalizeOnboarding", request).Get(ctx, nil)
 }
 
 func resetConversationContext(ctx workflow.Context, request activities.ResetConversationContextRequest) (activities.ResetConversationContextResult, error) {
@@ -562,7 +606,7 @@ func resetConversationTask(ctx workflow.Context, projectID string, event domain.
 		Completed:       true,
 		Status:          activities.NextActionStatusCompleted,
 		Event:           event,
-		ResponseMessage: "Started a new conversation.",
+		ResponseMessage: domain.ConversationResetConfirmation,
 		Report:          !commandResponseAcknowledged(event),
 	}, nil
 }

@@ -243,8 +243,8 @@ func handleProjectEventSignal(ctx workflow.Context, state *ProjectWorkflowState,
 		state.Queue = append(state.Queue, event)
 		return
 	}
-	if domain.IsConversationResetCommand(event.Body) {
-		workflow.GetLogger(ctx).Info("project route reset command as new task",
+	if domain.IsConversationResetCommand(event.Body) || domain.IsOnboardingCommand(event.Body) {
+		workflow.GetLogger(ctx).Info("project route command as new task",
 			"event_id", event.ID,
 			"source_message_id", strings.TrimSpace(event.Provenance.SourceID),
 			"channel_id", strings.TrimSpace(event.ChannelID),

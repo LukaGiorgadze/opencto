@@ -27,6 +27,8 @@ const (
 
 const (
 	ConversationResetSlashCommand = "/new"
+	ConversationResetConfirmation = "Memory flash complete. Previous history cleared. 🕶️🔦"
+	OnboardingSlashCommand        = "/onboard"
 )
 
 const conversationResetEmojiCommand = "\U0001F576\uFE0F\U0001F526"
@@ -38,6 +40,35 @@ func IsConversationResetCommand(body string) bool {
 	default:
 		return false
 	}
+}
+
+func IsOnboardingCommand(body string) bool {
+	fields := strings.Fields(strings.TrimSpace(body))
+	if len(fields) == 0 {
+		return false
+	}
+	command := fields[0]
+	if base, target, ok := strings.Cut(command, "@"); ok && strings.TrimSpace(target) != "" {
+		command = base
+	}
+	return command == OnboardingSlashCommand
+}
+
+type OnboardingStatus string
+
+const (
+	OnboardingStatusPrompted  OnboardingStatus = "prompted"
+	OnboardingStatusCompleted OnboardingStatus = "completed"
+	OnboardingStatusSkipped   OnboardingStatus = "skipped"
+)
+
+type OnboardingState struct {
+	ProjectID string           `json:"project_id"`
+	Status    OnboardingStatus `json:"status,omitempty"`
+	Source    string           `json:"source,omitempty"`
+	Metadata  Metadata         `json:"metadata,omitempty"`
+	CreatedAt time.Time        `json:"created_at"`
+	UpdatedAt time.Time        `json:"updated_at"`
 }
 
 type Provenance struct {
@@ -508,7 +539,6 @@ const (
 
 type ContextResetRequest struct {
 	ProjectID   string            `json:"project_id,omitempty"`
-	UserID      string            `json:"user_id,omitempty"`
 	ChannelType ChannelType       `json:"channel_type,omitempty"`
 	ChannelID   string            `json:"channel_id,omitempty"`
 	ThreadID    string            `json:"thread_id,omitempty"`
