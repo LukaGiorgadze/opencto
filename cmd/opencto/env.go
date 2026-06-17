@@ -19,6 +19,7 @@ import (
 
 type commandEnvironment struct {
 	ConfigPath          string
+	DotEnvPath          string
 	Config              config.Config
 	Logger              *slog.Logger
 	Created             []string
@@ -49,10 +50,12 @@ func loadCommandEnvironment(logOut io.Writer) (commandEnvironment, error) {
 		return commandEnvironment{}, err
 	}
 	configPath := filepath.Join(workspaceRoot, "config.json")
+	dotEnvPath := filepath.Join(workspaceRoot, ".env")
 	env, err := loadCommandEnvironmentWithRoot(configPath, workspaceRoot, logOut)
 	if err != nil {
 		return commandEnvironment{}, err
 	}
+	env.DotEnvPath = dotEnvPath
 	env.Created = starter.Created
 	env.UserEditableCreated = starter.UserEditableCreated
 	return env, nil
@@ -78,6 +81,7 @@ func loadCommandEnvironmentFromRepo(repoRoot, workspaceRoot string, logOut io.Wr
 	if ok {
 		env.SkillsRoot = skillsRoot
 	}
+	env.DotEnvPath = filepath.Join(repoRoot, ".env")
 	return env, nil
 }
 

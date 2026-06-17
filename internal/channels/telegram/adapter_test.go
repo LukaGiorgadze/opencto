@@ -135,9 +135,11 @@ func TestRegisterCommandsAddsNewCommand(t *testing.T) {
 	if err := adapter.registerCommands(context.Background()); err != nil {
 		t.Fatalf("register commands: %v", err)
 	}
-	if len(bot.commands) != 1 ||
+	if len(bot.commands) != 2 ||
 		bot.commands[0].Command != "new" ||
-		bot.commands[0].Description != telegramResetCommandDescription {
+		bot.commands[0].Description != telegramResetCommandDescription ||
+		bot.commands[1].Command != "onboard" ||
+		bot.commands[1].Description != telegramOnboardingCommandDescription {
 		t.Fatalf("unexpected commands: %#v", bot.commands)
 	}
 }

@@ -34,6 +34,8 @@ type RuntimeStore interface {
 	Migrate(context.Context) error
 	VerifySchema(context.Context) error
 	EnsureProject(context.Context, domain.Project) error
+	GetOnboardingState(context.Context, string) (domain.OnboardingState, bool, error)
+	UpsertOnboardingState(context.Context, domain.OnboardingState) error
 	AppendEvent(context.Context, domain.Event) (EventAppendResult, error)
 	ListPendingWorkItems(context.Context, string) ([]domain.WorkItem, error)
 	UpsertWorkItems(context.Context, []domain.WorkItem) error

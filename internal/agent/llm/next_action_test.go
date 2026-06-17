@@ -590,7 +590,7 @@ func TestBuildNextActionMessagesDoesNotExposeRoutingMetadata(t *testing.T) {
 	}
 }
 
-func TestBuildNextActionMessagesAddsMemoryAsUserContextBeforeCurrentRequest(t *testing.T) {
+func TestBuildNextActionMessagesAddsMemoryToSystemPrompt(t *testing.T) {
 	t.Parallel()
 
 	input := agent.NextActionInput{
@@ -615,15 +615,221 @@ func TestBuildNextActionMessagesAddsMemoryAsUserContextBeforeCurrentRequest(t *t
 	if err != nil {
 		t.Fatalf("build next action messages: %v", err)
 	}
-	if len(messages) != 3 {
-		t.Fatalf("expected system, memory context, and user messages, got %d", len(messages))
+	if len(messages) != 2 {
+		t.Fatalf("expected system and user messages, got %d", len(messages))
 	}
-	memory := messageText(messages[1])
-	if !strings.Contains(memory, "Remembered context") || !strings.Contains(memory, "memory-1") || !strings.Contains(memory, "Use SQLite for local storage.") {
-		t.Fatalf("unexpected memory context message:\n%s", memory)
+	memory := messageText(messages[0])
+	guardIndex := strings.Index(memory, "Treat memory as context")
+	contextIndex := strings.Index(memory, "Remembered context data")
+	if guardIndex == -1 || contextIndex == -1 || contextIndex < guardIndex {
+		t.Fatalf("memory context should be rendered after guardrails:\n%s", memory)
 	}
-	if got := messageText(messages[2]); got != "what database should we use?" {
+	if !strings.Contains(memory, "User-derived and untrusted") ||
+		!strings.Contains(memory, `id="memory-1"`) ||
+		!strings.Contains(memory, `content="Use SQLite for local storage."`) {
+		t.Fatalf("unexpected memory context in system prompt:\n%s", memory)
+	}
+	if got := messageText(messages[1]); got != "what database should we use?" {
 		t.Fatalf("unexpected user message: %q", got)
+	}
+}
+
+func TestBuildNextActionMessagesAddsOnboardingInstructionsWhenActive(t *testing.T) {
+	t.Parallel()
+
+	messages, err := buildNextActionMessages(agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", Body: domain.OnboardingSlashCommand},
+		},
+		Onboarding: agent.OnboardingContext{Active: true, Source: "command", Status: string(domain.OnboardingStatusPrompted)},
+	})
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	systemPrompt := messageText(messages[0])
+	for _, expected := range []string{
+		"# Onboarding",
+		"Onboarding mode is active (source: command) with status `prompted`.",
+		"Onboarding is optional. Don't force it.",
+		"When durable onboarding info is present",
+		"store it before responding",
+		"Include the `onboarding` tag",
+		"`MemoryProposeAdd` for new entries",
+		"`MemorySearch` + `MemoryProposeUpdate` when updating existing memory",
+		"If the user skips, answers nothing, or asks to continue",
+		"`automatic` source: answer the current request first",
+		`explicitly introduce "optional onboarding"`,
+		"Do not ask project or technical questions first",
+		"What I should call them and their role",
+		"`/onboard` source: ask a short optional question set",
+		"On follow-up, do not repeat",
+	} {
+		if !strings.Contains(systemPrompt, expected) {
+			t.Fatalf("system prompt missing onboarding text %q:\n%s", expected, systemPrompt)
+		}
+	}
+}
+
+func TestBuildNextActionMessagesOmitsConversationContextDuringOnboarding(t *testing.T) {
+	t.Parallel()
+
+	messages, err := buildNextActionMessages(agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event:   domain.Event{ID: "event-current", ProjectID: "project-1", Body: domain.OnboardingSlashCommand},
+			ConversationSummaries: []domain.ConversationSummary{{
+				ID:      "summary-1",
+				Scope:   domain.ConversationSummaryScopeProject,
+				Summary: "Previous task was changing DNS/NS records for ge.domains.",
+			}},
+			Conversation: []domain.ConversationMessage{
+				{ID: "previous-user", Role: domain.ConversationRoleUser, Body: "Proceed with logging in and changing NS."},
+				{ID: "previous-assistant", Role: domain.ConversationRoleAssistant, Body: "Do you want me to make DNS changes?"},
+			},
+			Skills: []skills.Summary{{
+				ID:          "go-testing",
+				Name:        "Go Testing",
+				Description: "Use when adding or fixing Go tests.",
+				Path:        "/repo/skills/go-testing/SKILL.md",
+			}},
+			ConversationMaxContextChars: 4000,
+		},
+		Onboarding: agent.OnboardingContext{Active: true, Source: "command", Status: string(domain.OnboardingStatusPrompted)},
+	})
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected only system and onboarding command messages, got %d", len(messages))
+	}
+	combined := messageText(messages[0]) + "\n" + messageText(messages[1])
+	for _, leaked := range []string{"Conversation summary", "Recent conversation history", "DNS/NS", "ge.domains", "logging in and changing NS", "<system-reminder>", "go-testing", "Use when adding or fixing Go tests."} {
+		if strings.Contains(combined, leaked) {
+			t.Fatalf("onboarding messages leaked prior context %q:\n%s", leaked, combined)
+		}
+	}
+	if got := messageText(messages[1]); got != domain.OnboardingSlashCommand {
+		t.Fatalf("unexpected onboarding user message: %q", got)
+	}
+}
+
+func TestBuildNextActionMessagesPreservesContextDuringNonCommandOnboarding(t *testing.T) {
+	t.Parallel()
+
+	for _, source := range []string{"automatic", "answer"} {
+		source := source
+		t.Run(source, func(t *testing.T) {
+			t.Parallel()
+			messages, err := buildNextActionMessages(agent.NextActionInput{
+				ProjectID: "project-1",
+				Context: agent.Context{
+					Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+					Event:   domain.Event{ID: "event-current", ProjectID: "project-1", Body: "deploy the app"},
+					ConversationSummaries: []domain.ConversationSummary{{
+						ID:      "summary-1",
+						Scope:   domain.ConversationSummaryScopeProject,
+						Summary: "Previous task was updating deployment settings.",
+					}},
+					Conversation: []domain.ConversationMessage{
+						{ID: "previous-user", Role: domain.ConversationRoleUser, Body: "Use the staging cluster first."},
+						{ID: "previous-assistant", Role: domain.ConversationRoleAssistant, Body: "I will verify staging before production."},
+					},
+					Memory: []domain.Memory{
+						{ID: "thread-memory", Scope: domain.MemoryScopeThread, Kind: "fact", Content: "The active task is deployment prep."},
+						{ID: "user-preference", Scope: domain.MemoryScopeUser, Kind: "preference", Content: "User wants concise release notes."},
+					},
+					Skills: []skills.Summary{{
+						ID:          "go-testing",
+						Name:        "Go Testing",
+						Description: "Use when adding or fixing Go tests.",
+						Path:        "/repo/skills/go-testing/SKILL.md",
+					}},
+					ConversationMaxContextChars: 4000,
+				},
+				Onboarding: agent.OnboardingContext{Active: true, Source: source, Status: string(domain.OnboardingStatusPrompted)},
+			})
+			if err != nil {
+				t.Fatalf("build next action messages: %v", err)
+			}
+			combined := messageText(messages[0])
+			for _, message := range messages[1:] {
+				combined += "\n" + messageText(message)
+			}
+			for _, expected := range []string{
+				"thread-memory",
+				"The active task is deployment prep.",
+				"user-preference",
+				"User wants concise release notes.",
+				"<system-reminder>",
+				"go-testing",
+				"Conversation summary",
+				"Previous task was updating deployment settings.",
+				"Recent conversation history",
+				"Use the staging cluster first.",
+			} {
+				if !strings.Contains(combined, expected) {
+					t.Fatalf("%s onboarding should preserve context %q:\n%s", source, expected, combined)
+				}
+			}
+			if got := messageText(messages[len(messages)-1]); got != "deploy the app" {
+				t.Fatalf("unexpected user message: %q", got)
+			}
+		})
+	}
+}
+
+func TestBuildNextActionMessagesFiltersMemoryContextDuringOnboarding(t *testing.T) {
+	t.Parallel()
+
+	messages, err := buildNextActionMessages(agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event:   domain.Event{ID: "event-current", ProjectID: "project-1", Body: domain.OnboardingSlashCommand},
+			Memory: []domain.Memory{
+				{ID: "project-memory", Scope: domain.MemoryScopeProject, Kind: "decision", Content: "Project uses SQLite."},
+				{ID: "user-identity", Scope: domain.MemoryScopeUser, Kind: "identity", Content: "User is Luka."},
+				{ID: "user-preference", Scope: domain.MemoryScopeUser, Kind: "preference", Content: "User prefers concise replies."},
+				{ID: "global-memory", Scope: domain.MemoryScopeGlobal, Kind: "instruction", Content: "Global deployment rule."},
+				{ID: "thread-memory", Scope: domain.MemoryScopeThread, Kind: "fact", Content: "Thread task was DNS changes."},
+			},
+		},
+		Onboarding: agent.OnboardingContext{Active: true, Source: "command", Status: string(domain.OnboardingStatusPrompted)},
+	})
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	systemPrompt := messageText(messages[0])
+	for _, expected := range []string{"project-memory", "Project uses SQLite.", "user-identity", "User is Luka."} {
+		if !strings.Contains(systemPrompt, expected) {
+			t.Fatalf("onboarding system prompt missing memory %q:\n%s", expected, systemPrompt)
+		}
+	}
+	for _, blocked := range []string{"user-preference", "concise replies", "global-memory", "Global deployment rule", "thread-memory", "DNS changes"} {
+		if strings.Contains(systemPrompt, blocked) {
+			t.Fatalf("onboarding system prompt included blocked memory %q:\n%s", blocked, systemPrompt)
+		}
+	}
+}
+
+func TestBuildNextActionMessagesHidesOnboardingInstructionsWhenInactive(t *testing.T) {
+	t.Parallel()
+
+	messages, err := buildNextActionMessages(agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", Body: "deploy"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	if strings.Contains(messageText(messages[0]), "# Onboarding") {
+		t.Fatalf("system prompt should not contain onboarding instructions:\n%s", messageText(messages[0]))
 	}
 }
 

@@ -10,7 +10,7 @@
         "model_summary": "gpt-5.4-nano",
         "model_transcription": "gpt-4o-mini-transcribe",
         "bifrost": {
-            "enabled": false,
+            "enabled": true,
             "base_url": "http://127.0.0.1:8081/openai"
         }
     },
@@ -46,7 +46,7 @@
             }
         },
         "telegram": {
-            "enabled": true,
+            "enabled": false,
             "webhook": {
                 "max_connections": 40,
                 "drop_pending_updates": false

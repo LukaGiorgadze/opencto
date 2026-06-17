@@ -29,7 +29,6 @@ func (a *Activities) ResetConversationContext(ctx context.Context, request Reset
 	}
 	result, err := a.Store.ResetContext(ctx, domain.ContextResetRequest{
 		ProjectID:   strings.TrimSpace(event.ProjectID),
-		UserID:      eventUserID(event),
 		ChannelType: event.ChannelType,
 		ChannelID:   strings.TrimSpace(event.ChannelID),
 		ThreadID:    strings.TrimSpace(event.ThreadID),

@@ -97,6 +97,12 @@ type RuntimeContext struct {
 	HostTimeZoneError string `json:"host_time_zone_error,omitempty"`
 }
 
+type OnboardingContext struct {
+	Active bool   `json:"active,omitempty"`
+	Source string `json:"source,omitempty"`
+	Status string `json:"status,omitempty"`
+}
+
 type LLMSession struct {
 	ProjectID     string
 	WorkflowID    string
@@ -137,6 +143,7 @@ type ToolSelectionInput struct {
 	Context        Context
 	Runtime        RuntimeContext
 	ExecutionCycle int
+	Onboarding     OnboardingContext
 	ToolAllowlist  []domain.ToolType
 	RestrictTools  bool
 }
@@ -152,6 +159,7 @@ type NextActionInput struct {
 	LastObservation    *ExecutionFeedback
 	ObservationHistory []ExecutionFeedback
 	ChannelType        domain.ChannelType
+	Onboarding         OnboardingContext
 	SubAgent           *SubAgentContext
 	ToolAllowlist      []domain.ToolType
 	RestrictTools      bool

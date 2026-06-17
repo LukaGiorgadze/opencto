@@ -20,6 +20,7 @@ type NextActionRequest struct {
 	ForceFinal         bool                      `json:"force_final,omitempty"`
 	ResumedFromPause   bool                      `json:"resumed_from_pause,omitempty"`
 	Completion         *TaskCompletionRequest    `json:"completion,omitempty"`
+	Onboarding         agent.OnboardingContext   `json:"onboarding,omitempty"`
 	SubAgent           *agent.SubAgentContext    `json:"sub_agent,omitempty"`
 	ToolAllowlist      []domain.ToolType         `json:"tool_allowlist,omitempty"`
 	RestrictTools      bool                      `json:"restrict_tools,omitempty"`
@@ -91,6 +92,21 @@ type ResetConversationContextResult struct {
 	DeletedConversationSummaries int      `json:"deleted_conversation_summaries,omitempty"`
 	DeletedConversationThreads   int      `json:"deleted_conversation_threads,omitempty"`
 	DeletedMemoryIDs             []string `json:"deleted_memory_ids,omitempty"`
+}
+
+type PrepareOnboardingRequest struct {
+	ProjectID string       `json:"project_id"`
+	Event     domain.Event `json:"event"`
+}
+
+type PrepareOnboardingResult struct {
+	Onboarding agent.OnboardingContext `json:"onboarding,omitempty"`
+}
+
+type FinalizeOnboardingRequest struct {
+	ProjectID  string                  `json:"project_id"`
+	Event      domain.Event            `json:"event"`
+	Onboarding agent.OnboardingContext `json:"onboarding,omitempty"`
 }
 
 type PersistNextActionRequest struct {

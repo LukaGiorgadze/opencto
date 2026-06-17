@@ -67,6 +67,9 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 			}
 			return memoryToolRunResult{}, err
 		}
+		if err := a.completeOnboardingFromMemoryTool(ctx, execution.ProjectID, sourceEvent, choice, remembered.Tags); err != nil {
+			return memoryToolRunResult{}, err
+		}
 		a.upsertMemoryEmbedding(ctx, remembered)
 		payload := mustJSON(memorytool.ProposeAddResult{Memory: remembered})
 		return memoryToolRunResult{
@@ -253,6 +256,9 @@ func (a *Activities) runMemoryTool(ctx context.Context, choice agent.ToolChoice,
 			"updated":   strconv.FormatBool(result.Updated),
 		}
 		if result.Updated {
+			if err := a.completeOnboardingFromMemoryTool(ctx, execution.ProjectID, sourceEvent, choice, result.Memory.Tags); err != nil {
+				return memoryToolRunResult{}, err
+			}
 			if memoryUpdateAffectsEmbedding(update) {
 				a.upsertMemoryEmbedding(ctx, result.Memory)
 			}

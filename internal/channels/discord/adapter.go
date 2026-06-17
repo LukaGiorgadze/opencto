@@ -31,6 +31,8 @@ const discordTypingTimeout = 3 * time.Second
 const discordReferencedContentMaxChars = 2000
 const discordResetCommandName = "new"
 const discordResetCommandDescription = "Start a new OpenCTO conversation"
+const discordOnboardingCommandName = "onboard"
+const discordOnboardingCommandDescription = "Update OpenCTO onboarding memory"
 
 type AttachmentLimits = channels.AttachmentLimits
 type MessageLimits = channels.MessageLimits
@@ -173,24 +175,33 @@ func (a *Adapter) handleInteractionCreate(ctx context.Context, session *discordg
 		return
 	}
 	data := interaction.ApplicationCommandData()
-	if strings.TrimSpace(data.Name) != discordResetCommandName {
+	commandName := strings.TrimSpace(data.Name)
+	if commandName != discordResetCommandName && commandName != discordOnboardingCommandName {
 		return
 	}
-	event, err := a.resetEventFromInteraction(ctx, session, interaction)
+	body := domain.ConversationResetSlashCommand
+	successMessage := domain.ConversationResetConfirmation
+	errorMessage := "I couldn't start a new conversation."
+	if commandName == discordOnboardingCommandName {
+		body = domain.OnboardingSlashCommand
+		successMessage = "Onboarding started."
+		errorMessage = "I couldn't start onboarding."
+	}
+	event, err := a.commandEventFromInteraction(ctx, session, interaction, body)
 	if err != nil {
-		a.logger.Error("normalize discord reset interaction", slog.String("error", err.Error()))
-		_ = respondDiscordInteraction(session, interaction.Interaction, "I couldn't start a new conversation.")
+		a.logger.Error("normalize discord command interaction", slog.String("command", commandName), slog.String("error", err.Error()))
+		_ = respondDiscordInteraction(session, interaction.Interaction, errorMessage)
 		return
 	}
 	if a.dispatcher != nil {
 		if err := a.dispatcher.EnqueueEvent(ctx, event); err != nil {
-			a.logger.Error("enqueue discord reset interaction", slog.String("error", err.Error()), slog.String("event_id", event.ID))
-			_ = respondDiscordInteraction(session, interaction.Interaction, "I couldn't start a new conversation.")
+			a.logger.Error("enqueue discord command interaction", slog.String("command", commandName), slog.String("error", err.Error()), slog.String("event_id", event.ID))
+			_ = respondDiscordInteraction(session, interaction.Interaction, errorMessage)
 			return
 		}
 	}
-	if err := respondDiscordInteraction(session, interaction.Interaction, "Started a new conversation."); err != nil {
-		a.logger.Warn("respond discord reset interaction", slog.String("error", err.Error()), slog.String("event_id", event.ID))
+	if err := respondDiscordInteraction(session, interaction.Interaction, successMessage); err != nil {
+		a.logger.Warn("respond discord command interaction", slog.String("command", commandName), slog.String("error", err.Error()), slog.String("event_id", event.ID))
 	}
 }
 
@@ -206,7 +217,7 @@ func respondDiscordInteraction(session *discordgo.Session, interaction *discordg
 	})
 }
 
-func (a *Adapter) resetEventFromInteraction(ctx context.Context, session *discordgo.Session, interaction *discordgo.InteractionCreate) (domain.Event, error) {
+func (a *Adapter) commandEventFromInteraction(ctx context.Context, session *discordgo.Session, interaction *discordgo.InteractionCreate, body string) (domain.Event, error) {
 	id, err := domain.NewID()
 	if err != nil {
 		return domain.Event{}, err
@@ -227,7 +238,7 @@ func (a *Adapter) resetEventFromInteraction(ctx context.Context, session *discor
 		ThreadID:    threadID,
 		ActorID:     actorID,
 		ActorName:   actorName,
-		Body:        domain.ConversationResetSlashCommand,
+		Body:        strings.TrimSpace(body),
 		Metadata: domain.Metadata{
 			domain.MetadataKeyCommandResponseAcknowledged: "true",
 		},
@@ -267,27 +278,45 @@ func (a *Adapter) registerApplicationCommands(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	command := &discordgo.ApplicationCommand{
-		Name:        discordResetCommandName,
-		Description: discordResetCommandDescription,
-		Type:        discordgo.ChatApplicationCommand,
+	desired := []*discordgo.ApplicationCommand{
+		{
+			Name:        discordResetCommandName,
+			Description: discordResetCommandDescription,
+			Type:        discordgo.ChatApplicationCommand,
+		},
+		{
+			Name:        discordOnboardingCommandName,
+			Description: discordOnboardingCommandDescription,
+			Type:        discordgo.ChatApplicationCommand,
+		},
 	}
 	commands, err := a.session.ApplicationCommands(appID, "", discordgo.WithContext(ctx))
 	if err != nil {
 		return err
 	}
-	for _, existing := range commands {
-		if existing == nil || existing.Name != command.Name || existing.Type != command.Type {
+	for _, command := range desired {
+		found := false
+		for _, existing := range commands {
+			if existing == nil || existing.Name != command.Name || existing.Type != command.Type {
+				continue
+			}
+			found = true
+			if existing.Description == command.Description {
+				break
+			}
+			if _, err := a.session.ApplicationCommandEdit(appID, "", existing.ID, command, discordgo.WithContext(ctx)); err != nil {
+				return err
+			}
+			break
+		}
+		if found {
 			continue
 		}
-		if existing.Description == command.Description {
-			return nil
+		if _, err := a.session.ApplicationCommandCreate(appID, "", command, discordgo.WithContext(ctx)); err != nil {
+			return err
 		}
-		_, err := a.session.ApplicationCommandEdit(appID, "", existing.ID, command, discordgo.WithContext(ctx))
-		return err
 	}
-	_, err = a.session.ApplicationCommandCreate(appID, "", command, discordgo.WithContext(ctx))
-	return err
+	return nil
 }
 
 func (a *Adapter) discordApplicationID(ctx context.Context) (string, error) {

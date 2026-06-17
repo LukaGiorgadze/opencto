@@ -214,6 +214,13 @@ func memoryToolChoiceFromInput(definition toolregistry.Definition, call llms.Too
 	choice.RunMode = domain.ToolRunModeWaitForExit
 	choice.Idempotency = idempotency
 	choice.ProcessScope = domain.ProcessScopeStopOnFinish
+	if input.Onboarding.Active {
+		if choice.Metadata == nil {
+			choice.Metadata = map[string]string{}
+		}
+		choice.Metadata["onboarding"] = "true"
+		choice.Metadata["onboarding_source"] = strings.TrimSpace(input.Onboarding.Source)
+	}
 	return choice
 }
 

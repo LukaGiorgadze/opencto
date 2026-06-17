@@ -9,7 +9,7 @@
         },
         "content": {
             "type": "string",
-            "description": "Replacement memory content. Use an empty string to keep existing content."
+            "description": "Replacement memory content. Use an empty string to keep existing content. Keep replacement content atomic: one reusable fact/preference/constraint/decision/identity/workflow note with one scope and one primary kind. Do not merge unrelated facts into an existing memory; keep or create separate memories for facts with different scopes or kinds."
         },
         "kind": {
             "type": "string",
@@ -19,7 +19,7 @@
         "scope": {
             "type": "string",
             "enum": ["", "thread", "channel", "project", "user", "global"],
-            "description": "Replacement memory scope. Use an empty string to keep existing scope. Use this to move a memory between thread, channel, project, user, or global visibility; the backend applies the current platform context for thread/channel/user targets."
+            "description": "Replacement memory scope. Use an empty string to keep existing scope. Use this to move an atomic memory between thread, channel, project, user, or global visibility; the backend applies the current platform context for thread/channel/user targets. If only part of a mixed memory belongs in another scope, update or create separate atomic memories instead of preserving mixed content."
         },
         "tags_mode": {
             "type": "string",
@@ -31,7 +31,7 @@
             "items": {
                 "type": "string"
             },
-            "description": "Replacement tags when tags_mode is replace. Use an empty array to clear tags."
+            "description": "Replacement tags when tags_mode is replace. Use an empty array to clear tags. During onboarding, preserve or include onboarding only on memories that store onboarding answers and should complete onboarding."
         },
         "confidence_mode": {
             "type": "string",

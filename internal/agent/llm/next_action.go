@@ -24,6 +24,10 @@ type nextActionPromptData struct {
 	ProjectName        string
 	ProjectID          string
 	ProjectDescription string
+	MemoryContext      string
+	OnboardingActive   bool
+	OnboardingSource   string
+	OnboardingStatus   string
 	OS                 string
 	Arch               string
 	Exec               string
@@ -112,22 +116,26 @@ func buildNextActionMessagesWithContext(ctx context.Context, input agent.NextAct
 	messages := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, prompt),
 	}
-	if reminder := skills.Reminder(input.Context.Skills); reminder != "" {
+	if reminder := skills.Reminder(input.Context.Skills); reminder != "" && !isIsolatedOnboarding(input.Onboarding) {
 		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, reminder))
 	}
-	if memory := memoryContextMessage(input.Context.Memory); memory != "" {
-		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, memory))
+	if memory := memoryContextForInput(input); memory != "" {
+		if input.SubAgent != nil {
+			messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, memory))
+		}
 	}
 	if summary := subAgentRunSummaryMessage(input.SubAgent); summary != "" {
 		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, summary))
 	}
-	summaryBudget, historyBudget := conversationContextBudgets(input.Context.ConversationMaxContextChars, len(input.Context.ConversationSummaries) > 0)
-	if summaries := conversationSummaryContextMessage(input.Context.ConversationSummaries, summaryBudget); summaries != "" {
-		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, summaries))
-	}
-	conversation := conversationWithoutCurrentEvents(input.Context.Conversation, input.Context.Event, input.Context.AdditionalEvents)
-	if history := conversationContextMessage(conversation, historyBudget); history != "" {
-		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, history))
+	if !isIsolatedOnboarding(input.Onboarding) {
+		summaryBudget, historyBudget := conversationContextBudgets(input.Context.ConversationMaxContextChars, len(input.Context.ConversationSummaries) > 0)
+		if summaries := conversationSummaryContextMessage(input.Context.ConversationSummaries, summaryBudget); summaries != "" {
+			messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, summaries))
+		}
+		conversation := conversationWithoutCurrentEvents(input.Context.Conversation, input.Context.Event, input.Context.AdditionalEvents)
+		if history := conversationContextMessage(conversation, historyBudget); history != "" {
+			messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, history))
+		}
 	}
 	messages = append(messages, userMessage)
 	for index := 0; index < len(input.ObservationHistory); {
@@ -180,6 +188,10 @@ func renderNextActionPrompt(input agent.NextActionInput) (string, error) {
 		ProjectName:        projectName,
 		ProjectID:          input.ProjectID,
 		ProjectDescription: strings.TrimSpace(input.Context.Project.Description),
+		MemoryContext:      memoryContextForInput(input),
+		OnboardingActive:   input.Onboarding.Active,
+		OnboardingSource:   strings.TrimSpace(input.Onboarding.Source),
+		OnboardingStatus:   strings.TrimSpace(input.Onboarding.Status),
 		OS:                 input.Runtime.OS,
 		Arch:               input.Runtime.Arch,
 		Exec:               firstNonEmpty(strings.TrimSpace(input.Runtime.Exec), "unknown"),
@@ -264,6 +276,56 @@ func memoryContextMessage(memories []domain.Memory) string {
 		return ""
 	}
 	return strings.TrimSpace(prompts.MustRender("memory_context.tmpl", memoryContextPromptData{Memories: items}))
+}
+
+func memoryContextForInput(input agent.NextActionInput) string {
+	memories := input.Context.Memory
+	if isIsolatedOnboarding(input.Onboarding) {
+		memories = onboardingMemories(memories)
+	}
+	return memoryContextMessage(memories)
+}
+
+func isIsolatedOnboarding(onboarding agent.OnboardingContext) bool {
+	if !onboarding.Active {
+		return false
+	}
+	switch strings.TrimSpace(onboarding.Source) {
+	case "command":
+		return true
+	default:
+		return false
+	}
+}
+
+func onboardingMemories(memories []domain.Memory) []domain.Memory {
+	if len(memories) == 0 {
+		return nil
+	}
+	filtered := make([]domain.Memory, 0, len(memories))
+	for _, memory := range memories {
+		switch memory.Scope {
+		case domain.MemoryScopeProject:
+			filtered = append(filtered, memory)
+		case domain.MemoryScopeUser:
+			if memoryIsIdentity(memory) {
+				filtered = append(filtered, memory)
+			}
+		}
+	}
+	return filtered
+}
+
+func memoryIsIdentity(memory domain.Memory) bool {
+	if strings.EqualFold(strings.TrimSpace(memory.Kind), "identity") {
+		return true
+	}
+	for _, tag := range memory.Tags {
+		if strings.EqualFold(strings.TrimSpace(tag), "identity") {
+			return true
+		}
+	}
+	return false
 }
 
 func conversationWithoutCurrentEvents(messages []domain.ConversationMessage, current domain.Event, additional []domain.Event) []domain.ConversationMessage {
@@ -953,6 +1015,7 @@ func nextActionToolOutput(choice *llms.ContentChoice, input agent.NextActionInpu
 		Context:        input.Context,
 		Runtime:        input.Runtime,
 		ExecutionCycle: input.ExecutionCycle,
+		Onboarding:     input.Onboarding,
 		ToolAllowlist:  input.ToolAllowlist,
 		RestrictTools:  input.RestrictTools,
 	}

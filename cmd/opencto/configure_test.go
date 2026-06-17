@@ -127,7 +127,7 @@ func TestRunConfigureSwitchesChannelConfig(t *testing.T) {
 	assertChannelConfig(t, workspaceRoot, false, true)
 }
 
-func TestRunConfigureAllowsSkippingAllValues(t *testing.T) {
+func TestRunConfigureAllowsSkippingSecretsAndDisablingChannels(t *testing.T) {
 	t.Parallel()
 
 	workspaceRoot := t.TempDir()
@@ -141,7 +141,7 @@ func TestRunConfigureAllowsSkippingAllValues(t *testing.T) {
 	if envText != string(defaultEnvFile()) {
 		t.Fatalf("expected default .env when all values are skipped:\n%s", envText)
 	}
-	assertDefaultConfig(t, workspaceRoot)
+	assertChannelConfig(t, workspaceRoot, false, false)
 }
 
 type ioDiscard struct{}

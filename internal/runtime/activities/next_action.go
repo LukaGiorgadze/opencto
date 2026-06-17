@@ -151,6 +151,7 @@ func (a *Activities) NextAction(ctx context.Context, request NextActionRequest) 
 		LastObservation:    lastObservation(observations),
 		ObservationHistory: history,
 		ChannelType:        event.ChannelType,
+		Onboarding:         request.Onboarding,
 		SubAgent:           request.SubAgent,
 		ToolAllowlist:      request.ToolAllowlist,
 		RestrictTools:      request.RestrictTools,
