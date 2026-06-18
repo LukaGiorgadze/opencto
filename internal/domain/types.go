@@ -40,12 +40,13 @@ func ConversationResetEraseAttachment(index int) ReportAttachment {
 		index = 1
 	}
 	filename := fmt.Sprintf("erase-%d.png", index)
+	assetPath := "assets/" + filename
 	return ReportAttachment{
-		Path:        "assets/" + filename,
+		Path:        assetPath,
 		Filename:    filename,
 		ContentType: "image/png",
 		Metadata: Metadata{
-			MetadataKeyEmbeddedAsset: "assets/" + filename,
+			MetadataKeyEmbeddedAsset: assetPath,
 		},
 	}
 }

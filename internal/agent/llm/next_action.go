@@ -117,7 +117,7 @@ func buildNextActionMessagesWithContext(ctx context.Context, input agent.NextAct
 	messages := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, prompt),
 	}
-	if reminder := skills.Reminder(input.Context.Skills); reminder != "" && !isIsolatedOnboarding(input.Onboarding) {
+	if reminder := skills.Reminder(input.Context.Skills); reminder != "" && !input.Onboarding.Active {
 		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, reminder))
 	}
 	if memory := memoryContextForInput(input); memory != "" {
@@ -128,7 +128,7 @@ func buildNextActionMessagesWithContext(ctx context.Context, input agent.NextAct
 	if summary := subAgentRunSummaryMessage(input.SubAgent); summary != "" {
 		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, summary))
 	}
-	if !isIsolatedOnboarding(input.Onboarding) {
+	if !input.Onboarding.Active {
 		summaryBudget, historyBudget := conversationContextBudgets(input.Context.ConversationMaxContextChars, len(input.Context.ConversationSummaries) > 0)
 		if summaries := conversationSummaryContextMessage(input.Context.ConversationSummaries, summaryBudget); summaries != "" {
 			messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, summaries))
@@ -282,14 +282,10 @@ func memoryContextMessage(memories []domain.Memory) string {
 
 func memoryContextForInput(input agent.NextActionInput) string {
 	memories := input.Context.Memory
-	if isIsolatedOnboarding(input.Onboarding) {
+	if input.Onboarding.Active {
 		memories = onboardingMemories(memories)
 	}
 	return memoryContextMessage(memories)
-}
-
-func isIsolatedOnboarding(onboarding agent.OnboardingContext) bool {
-	return onboarding.Active
 }
 
 func onboardingMemories(memories []domain.Memory) []domain.Memory {

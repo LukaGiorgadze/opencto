@@ -866,15 +866,7 @@ func (a *Adapter) Report(ctx context.Context, event domain.Event, report domain.
 		return nil, nil
 	}
 
-	messageOpts, err := telegramSendMessageOptions(event, report)
-	if err != nil {
-		return nil, err
-	}
-	documentOpts, err := telegramSendDocumentOptions(event, report)
-	if err != nil {
-		return nil, err
-	}
-	photoOpts, err := telegramSendPhotoOptions(event, report)
+	messageOpts, documentOpts, photoOpts, err := telegramSendOptions(event, report)
 	if err != nil {
 		return nil, err
 	}
@@ -946,12 +938,7 @@ func (a *Adapter) sendPhoto(ctx context.Context, chatID int64, attachment domain
 
 func telegramAttachmentIsPhoto(attachment domain.ReportAttachment) bool {
 	contentType := strings.ToLower(strings.TrimSpace(attachment.ContentType))
-	switch contentType {
-	case "image/jpeg", "image/png":
-		return true
-	default:
-		return false
-	}
+	return contentType == "image/jpeg" || contentType == "image/png"
 }
 
 func telegramOutboundChatID(event domain.Event) (int64, bool, error) {
@@ -966,58 +953,28 @@ func telegramOutboundChatID(event domain.Event) (int64, bool, error) {
 	return chatID, true, nil
 }
 
-func telegramSendMessageOptions(event domain.Event, report domain.ReportMessage) (*gotgbot.SendMessageOpts, error) {
+func telegramSendOptions(event domain.Event, report domain.ReportMessage) (*gotgbot.SendMessageOpts, *gotgbot.SendDocumentOpts, *gotgbot.SendPhotoOpts, error) {
 	threadID, err := telegramOutboundThreadID(event)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	reply, err := telegramReplyParameters(report)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	if threadID == 0 && reply == nil {
-		return nil, nil
+		return nil, nil, nil, nil
 	}
 	return &gotgbot.SendMessageOpts{
-		MessageThreadId: threadID,
-		ReplyParameters: reply,
-	}, nil
-}
-
-func telegramSendDocumentOptions(event domain.Event, report domain.ReportMessage) (*gotgbot.SendDocumentOpts, error) {
-	threadID, err := telegramOutboundThreadID(event)
-	if err != nil {
-		return nil, err
-	}
-	reply, err := telegramReplyParameters(report)
-	if err != nil {
-		return nil, err
-	}
-	if threadID == 0 && reply == nil {
-		return nil, nil
-	}
-	return &gotgbot.SendDocumentOpts{
-		MessageThreadId: threadID,
-		ReplyParameters: reply,
-	}, nil
-}
-
-func telegramSendPhotoOptions(event domain.Event, report domain.ReportMessage) (*gotgbot.SendPhotoOpts, error) {
-	threadID, err := telegramOutboundThreadID(event)
-	if err != nil {
-		return nil, err
-	}
-	reply, err := telegramReplyParameters(report)
-	if err != nil {
-		return nil, err
-	}
-	if threadID == 0 && reply == nil {
-		return nil, nil
-	}
-	return &gotgbot.SendPhotoOpts{
-		MessageThreadId: threadID,
-		ReplyParameters: reply,
-	}, nil
+			MessageThreadId: threadID,
+			ReplyParameters: reply,
+		}, &gotgbot.SendDocumentOpts{
+			MessageThreadId: threadID,
+			ReplyParameters: reply,
+		}, &gotgbot.SendPhotoOpts{
+			MessageThreadId: threadID,
+			ReplyParameters: reply,
+		}, nil
 }
 
 func telegramOutboundThreadID(event domain.Event) (int64, error) {
