@@ -3,6 +3,7 @@ package activities
 import (
 	"context"
 	"log/slog"
+	"os"
 	"strings"
 
 	"github.com/opencto/opencto/internal/agent"
@@ -14,6 +15,7 @@ const (
 	onboardingSourceAutomatic = "automatic"
 	onboardingSourceCommand   = "command"
 	onboardingSourceAnswer    = "answer"
+	agentMailAPIKeyEnv        = "AGENTMAIL_API_KEY"
 )
 
 func (a *Activities) PrepareOnboarding(ctx context.Context, request PrepareOnboardingRequest) (PrepareOnboardingResult, error) {
@@ -125,10 +127,15 @@ func explicitOnboardingWithInlineResponse(event domain.Event, source string) boo
 
 func activeOnboarding(source, status string) agent.OnboardingContext {
 	return agent.OnboardingContext{
-		Active: true,
-		Source: strings.TrimSpace(source),
-		Status: strings.TrimSpace(status),
+		Active:                   true,
+		Source:                   strings.TrimSpace(source),
+		Status:                   strings.TrimSpace(status),
+		AgentMailAPIKeyAvailable: agentMailAPIKeyAvailable(),
 	}
+}
+
+func agentMailAPIKeyAvailable() bool {
+	return strings.TrimSpace(os.Getenv(agentMailAPIKeyEnv)) != ""
 }
 
 func (a *Activities) markOnboarding(ctx context.Context, projectID string, status domain.OnboardingStatus, source string, event domain.Event) error {

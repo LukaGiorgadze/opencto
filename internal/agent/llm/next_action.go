@@ -21,25 +21,26 @@ import (
 )
 
 type nextActionPromptData struct {
-	ProjectName        string
-	ProjectID          string
-	ProjectDescription string
-	MemoryContext      string
-	OnboardingActive   bool
-	OnboardingSource   string
-	OnboardingStatus   string
-	OS                 string
-	Arch               string
-	Exec               string
-	Path               string
-	WorkspaceRoot      string
-	CurrentLocalTime   string
-	CurrentUTCTime     string
-	HostTimeZone       string
-	HostTimeZoneError  string
-	ChannelType        domain.ChannelType
-	SubAgentGoal       string
-	AllowedTools       []string
+	ProjectName                        string
+	ProjectID                          string
+	ProjectDescription                 string
+	MemoryContext                      string
+	OnboardingActive                   bool
+	OnboardingSource                   string
+	OnboardingStatus                   string
+	OnboardingAgentMailAPIKeyAvailable bool
+	OS                                 string
+	Arch                               string
+	Exec                               string
+	Path                               string
+	WorkspaceRoot                      string
+	CurrentLocalTime                   string
+	CurrentUTCTime                     string
+	HostTimeZone                       string
+	HostTimeZoneError                  string
+	ChannelType                        domain.ChannelType
+	SubAgentGoal                       string
+	AllowedTools                       []string
 }
 
 type memoryContextPromptData struct {
@@ -185,23 +186,24 @@ func renderNextActionPrompt(input agent.NextActionInput) (string, error) {
 	}
 
 	data := nextActionPromptData{
-		ProjectName:        projectName,
-		ProjectID:          input.ProjectID,
-		ProjectDescription: strings.TrimSpace(input.Context.Project.Description),
-		MemoryContext:      memoryContextForInput(input),
-		OnboardingActive:   input.Onboarding.Active,
-		OnboardingSource:   strings.TrimSpace(input.Onboarding.Source),
-		OnboardingStatus:   strings.TrimSpace(input.Onboarding.Status),
-		OS:                 input.Runtime.OS,
-		Arch:               input.Runtime.Arch,
-		Exec:               firstNonEmpty(strings.TrimSpace(input.Runtime.Exec), "unknown"),
-		Path:               strings.TrimSpace(input.Runtime.Path),
-		WorkspaceRoot:      firstNonEmpty(strings.TrimSpace(input.Runtime.WorkspaceRoot), "."),
-		CurrentLocalTime:   strings.TrimSpace(input.Runtime.CurrentLocalTime),
-		CurrentUTCTime:     strings.TrimSpace(input.Runtime.CurrentUTCTime),
-		HostTimeZone:       strings.TrimSpace(input.Runtime.HostTimeZone),
-		HostTimeZoneError:  strings.TrimSpace(input.Runtime.HostTimeZoneError),
-		ChannelType:        input.ChannelType,
+		ProjectName:                        projectName,
+		ProjectID:                          input.ProjectID,
+		ProjectDescription:                 strings.TrimSpace(input.Context.Project.Description),
+		MemoryContext:                      memoryContextForInput(input),
+		OnboardingActive:                   input.Onboarding.Active,
+		OnboardingSource:                   strings.TrimSpace(input.Onboarding.Source),
+		OnboardingStatus:                   strings.TrimSpace(input.Onboarding.Status),
+		OnboardingAgentMailAPIKeyAvailable: input.Onboarding.AgentMailAPIKeyAvailable,
+		OS:                                 input.Runtime.OS,
+		Arch:                               input.Runtime.Arch,
+		Exec:                               firstNonEmpty(strings.TrimSpace(input.Runtime.Exec), "unknown"),
+		Path:                               strings.TrimSpace(input.Runtime.Path),
+		WorkspaceRoot:                      firstNonEmpty(strings.TrimSpace(input.Runtime.WorkspaceRoot), "."),
+		CurrentLocalTime:                   strings.TrimSpace(input.Runtime.CurrentLocalTime),
+		CurrentUTCTime:                     strings.TrimSpace(input.Runtime.CurrentUTCTime),
+		HostTimeZone:                       strings.TrimSpace(input.Runtime.HostTimeZone),
+		HostTimeZoneError:                  strings.TrimSpace(input.Runtime.HostTimeZoneError),
+		ChannelType:                        input.ChannelType,
 	}
 
 	if input.SubAgent != nil {
@@ -287,15 +289,7 @@ func memoryContextForInput(input agent.NextActionInput) string {
 }
 
 func isIsolatedOnboarding(onboarding agent.OnboardingContext) bool {
-	if !onboarding.Active {
-		return false
-	}
-	switch strings.TrimSpace(onboarding.Source) {
-	case "command":
-		return true
-	default:
-		return false
-	}
+	return onboarding.Active
 }
 
 func onboardingMemories(memories []domain.Memory) []domain.Memory {

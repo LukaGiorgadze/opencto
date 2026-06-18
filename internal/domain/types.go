@@ -15,6 +15,7 @@ const (
 	MetadataKeyReplyToChannelID = "reply_to_channel_id"
 	MetadataKeyReplyToContextID = "reply_to_context_id"
 	MetadataKeyReplyToActorID   = "reply_to_actor_id"
+	MetadataKeyEmbeddedAsset    = "embedded_asset"
 )
 
 const (
@@ -27,11 +28,27 @@ const (
 
 const (
 	ConversationResetSlashCommand = "/new"
-	ConversationResetConfirmation = "Memory flash complete. Previous history cleared. 🕶️🔦"
+	ConversationResetConfirmation = "Memory flash complete. Previous history cleared."
+	ConversationResetEraseAssets  = 6
 	OnboardingSlashCommand        = "/onboard"
 )
 
 const conversationResetEmojiCommand = "\U0001F576\uFE0F\U0001F526"
+
+func ConversationResetEraseAttachment(index int) ReportAttachment {
+	if index < 1 || index > ConversationResetEraseAssets {
+		index = 1
+	}
+	filename := fmt.Sprintf("erase-%d.png", index)
+	return ReportAttachment{
+		Path:        "assets/" + filename,
+		Filename:    filename,
+		ContentType: "image/png",
+		Metadata: Metadata{
+			MetadataKeyEmbeddedAsset: "assets/" + filename,
+		},
+	}
+}
 
 func IsConversationResetCommand(body string) bool {
 	switch strings.TrimSpace(body) {

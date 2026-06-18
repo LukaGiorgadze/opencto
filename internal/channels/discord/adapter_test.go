@@ -100,6 +100,203 @@ func TestReportSplitsMessagesByConfiguredLimit(t *testing.T) {
 	}
 }
 
+func TestReportSendsAttachmentsAfterText(t *testing.T) {
+	attachmentPath := filepath.Join(t.TempDir(), "erase.png")
+	if err := os.WriteFile(attachmentPath, []byte("image"), 0o644); err != nil {
+		t.Fatalf("write attachment: %v", err)
+	}
+
+	var mu sync.Mutex
+	var sends []struct {
+		content   string
+		multipart bool
+		files     int
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+		if r.URL.Path != "/channels/channel-1/messages" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+
+		send := struct {
+			content   string
+			multipart bool
+			files     int
+		}{}
+		if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+			send.multipart = true
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Errorf("parse multipart: %v", err)
+			}
+			send.files = len(r.MultipartForm.File)
+			var payload struct {
+				Content string `json:"content"`
+			}
+			if raw := r.FormValue("payload_json"); raw != "" {
+				if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+					t.Errorf("decode payload_json: %v", err)
+				}
+			}
+			send.content = payload.Content
+		} else {
+			var payload struct {
+				Content string `json:"content"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("decode request: %v", err)
+			}
+			send.content = payload.Content
+		}
+
+		mu.Lock()
+		sends = append(sends, send)
+		id := len(sends)
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"id":         strconv.Itoa(id),
+			"channel_id": "channel-1",
+			"content":    send.content,
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointChannels := discordgo.EndpointChannels
+	discordgo.EndpointChannels = server.URL + "/channels/"
+	t.Cleanup(func() {
+		discordgo.EndpointChannels = oldEndpointChannels
+	})
+
+	session, err := discordgo.New("Bot test-token")
+	if err != nil {
+		t.Fatalf("new discord session: %v", err)
+	}
+	session.Client = server.Client()
+
+	adapter := &Adapter{
+		session:       session,
+		messageLimits: MessageLimits{MaxChars: 2000},
+		attachmentLimits: AttachmentLimits{
+			MaxFiles:      1,
+			MaxFileBytes:  1024,
+			MaxTotalBytes: 1024,
+		},
+	}
+	_, err = adapter.Report(context.Background(), domain.Event{
+		ChannelID:   "channel-1",
+		ChannelType: domain.ChannelTypeDiscord,
+	}, domain.ReportMessage{
+		Text: "done",
+		Attachments: []domain.ReportAttachment{{
+			Path:        attachmentPath,
+			Filename:    "erase.png",
+			ContentType: "image/png",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("report: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sends) != 2 {
+		t.Fatalf("expected text then attachment sends, got %#v", sends)
+	}
+	if sends[0].content != "done" || sends[0].multipart {
+		t.Fatalf("expected text send first, got %#v", sends[0])
+	}
+	if sends[1].content != "" || !sends[1].multipart || sends[1].files != 1 {
+		t.Fatalf("expected attachment send second, got %#v", sends[1])
+	}
+}
+
+func TestReportSendsThreadedAttachmentOnlyWithoutPhantomReceipt(t *testing.T) {
+	attachmentPath := filepath.Join(t.TempDir(), "erase.png")
+	if err := os.WriteFile(attachmentPath, []byte("image"), 0o644); err != nil {
+		t.Fatalf("write attachment: %v", err)
+	}
+
+	var mu sync.Mutex
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+		if r.URL.Path != "/channels/thread-1/messages" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+			t.Errorf("expected multipart attachment request, got %q", r.Header.Get("Content-Type"))
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("parse multipart: %v", err)
+		}
+		if len(r.MultipartForm.File) != 1 {
+			t.Errorf("expected one file, got %d", len(r.MultipartForm.File))
+		}
+
+		mu.Lock()
+		requests++
+		id := requests
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"id":         strconv.Itoa(id),
+			"channel_id": "thread-1",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	oldEndpointChannels := discordgo.EndpointChannels
+	discordgo.EndpointChannels = server.URL + "/channels/"
+	t.Cleanup(func() {
+		discordgo.EndpointChannels = oldEndpointChannels
+	})
+
+	session, err := discordgo.New("Bot test-token")
+	if err != nil {
+		t.Fatalf("new discord session: %v", err)
+	}
+	session.Client = server.Client()
+
+	adapter := &Adapter{
+		session:       session,
+		messageLimits: MessageLimits{MaxChars: 2000},
+		attachmentLimits: AttachmentLimits{
+			MaxFiles:      1,
+			MaxFileBytes:  1024,
+			MaxTotalBytes: 1024,
+		},
+	}
+	receipts, err := adapter.Report(context.Background(), domain.Event{
+		ChannelID:   "channel-1",
+		ChannelType: domain.ChannelTypeDiscord,
+		ThreadID:    "thread-1",
+	}, domain.ReportMessage{
+		Attachments: []domain.ReportAttachment{{
+			Path:        attachmentPath,
+			Filename:    "erase.png",
+			ContentType: "image/png",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("report: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if requests != 1 {
+		t.Fatalf("expected only attachment request, got %d", requests)
+	}
+	if len(receipts) != 1 || receipts[0].MessageID != "1" || receipts[0].ThreadID != "thread-1" || receipts[0].Body != "" {
+		t.Fatalf("expected one real attachment receipt, got %#v", receipts)
+	}
+}
+
 func TestReportCanReplyToDiscordMessage(t *testing.T) {
 	var payload struct {
 		Content          string `json:"content"`
@@ -423,8 +620,6 @@ func TestNormalizeMessageHydratesEmptyGatewayContent(t *testing.T) {
 }
 
 func TestDiscordThreadIDDoesNotCacheFailedLookup(t *testing.T) {
-	t.Parallel()
-
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "missing", http.StatusNotFound)
 	}))
