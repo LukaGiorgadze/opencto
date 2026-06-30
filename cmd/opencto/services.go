@@ -398,7 +398,7 @@ services:
       start_period: 10s
 
   temporal-admin-tools:
-    image: temporalio/admin-tools:latest
+    image: temporalio/admin-tools:1.30.5
     restart: on-failure:6
     depends_on:
       postgresql:
@@ -417,7 +417,7 @@ services:
     entrypoint: ["/bin/sh", "/scripts/setup-postgres.sh"]
 
   temporal:
-    image: temporalio/server:latest
+    image: temporalio/server:1.30.5
     restart: unless-stopped
     depends_on:
       temporal-admin-tools:
@@ -447,7 +447,7 @@ services:
       retries: 60
 
   temporal-create-namespace:
-    image: temporalio/admin-tools:latest
+    image: temporalio/admin-tools:1.30.5
     restart: on-failure:5
     depends_on:
       temporal:
@@ -463,7 +463,7 @@ services:
     entrypoint: ["/bin/sh", "/scripts/create-namespace.sh"]
 
   temporal-init:
-    image: temporalio/admin-tools:latest
+    image: temporalio/admin-tools:1.30.5
     restart: on-failure:5
     depends_on:
       temporal-create-namespace:
@@ -480,7 +480,7 @@ services:
 
   bifrost:
     profiles: ["bifrost"]
-    image: maximhq/bifrost:latest
+    image: maximhq/bifrost:v1.6.1
     restart: unless-stopped
     depends_on:
       postgresql:

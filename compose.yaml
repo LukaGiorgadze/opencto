@@ -23,7 +23,7 @@ services:
       start_period: 10s
 
   temporal-admin-tools:
-    image: temporalio/admin-tools:latest
+    image: temporalio/admin-tools:1.30.5
     container_name: opencto-temporal-admin-tools
     restart: on-failure:6
     depends_on:
@@ -43,7 +43,7 @@ services:
     entrypoint: ["/bin/sh", "/scripts/setup-postgres.sh"]
 
   temporal:
-    image: temporalio/server:latest
+    image: temporalio/server:1.30.5
     container_name: opencto-temporal
     restart: unless-stopped
     depends_on:
@@ -74,7 +74,7 @@ services:
       retries: 60
 
   temporal-create-namespace:
-    image: temporalio/admin-tools:latest
+    image: temporalio/admin-tools:1.30.5
     container_name: opencto-temporal-create-namespace
     restart: on-failure:5
     depends_on:
@@ -91,7 +91,7 @@ services:
     entrypoint: ["/bin/sh", "/scripts/create-namespace.sh"]
 
   temporal-init:
-    image: temporalio/admin-tools:latest
+    image: temporalio/admin-tools:1.30.5
     container_name: opencto-temporal-init
     restart: on-failure:5
     depends_on:
@@ -108,7 +108,7 @@ services:
     entrypoint: ["/bin/sh", "/scripts/temporal-init-entrypoint.sh"]
 
   temporal-ui:
-    image: temporalio/ui:latest
+    image: temporalio/ui:2.51.1
     container_name: opencto-temporal-ui
     restart: unless-stopped
     depends_on:
@@ -123,7 +123,7 @@ services:
       - "8080:8080"
 
   bifrost:
-    image: maximhq/bifrost:latest
+    image: maximhq/bifrost:v1.6.1
     container_name: opencto-bifrost
     restart: unless-stopped
     depends_on:
