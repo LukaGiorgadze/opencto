@@ -98,9 +98,10 @@ type RuntimeContext struct {
 }
 
 type OnboardingContext struct {
-	Active bool   `json:"active,omitempty"`
-	Source string `json:"source,omitempty"`
-	Status string `json:"status,omitempty"`
+	Active                   bool   `json:"active,omitempty"`
+	Source                   string `json:"source,omitempty"`
+	Status                   string `json:"status,omitempty"`
+	AgentMailAPIKeyAvailable bool   `json:"agentmail_api_key_available,omitempty"`
 }
 
 type LLMSession struct {

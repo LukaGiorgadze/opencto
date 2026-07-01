@@ -155,12 +155,16 @@ type captureReporter struct {
 	receipts     []domain.ReportReceipt
 	typingEvents []domain.Event
 	typingErr    error
+	onReport     func(domain.ReportMessage)
 	onTyping     func()
 }
 
 func (r *captureReporter) Report(_ context.Context, _ domain.Event, report domain.ReportMessage) ([]domain.ReportReceipt, error) {
 	r.reports = append(r.reports, report)
 	r.messages = append(r.messages, report.Text)
+	if r.onReport != nil {
+		r.onReport(report)
+	}
 	return append([]domain.ReportReceipt(nil), r.receipts...), nil
 }
 
@@ -489,6 +493,37 @@ func TestPrepareOnboardingCommandAlwaysActive(t *testing.T) {
 	}
 }
 
+func TestPrepareOnboardingIncludesAgentMailAPIKeyStatus(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		value     string
+		available bool
+	}{
+		{name: "missing"},
+		{name: "available", value: "agentmail-key", available: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(agentMailAPIKeyEnv, tt.value)
+
+			state := domain.OnboardingState{ProjectID: "default", Status: domain.OnboardingStatusCompleted}
+			activities := Activities{
+				Project: domain.Project{ID: "default"},
+				Store:   stubProjectStore{onboardingState: &state},
+			}
+			result, err := activities.PrepareOnboarding(context.Background(), PrepareOnboardingRequest{
+				ProjectID: "default",
+				Event:     domain.Event{ID: "event-1", ProjectID: "default", Body: domain.OnboardingSlashCommand},
+			})
+			if err != nil {
+				t.Fatalf("prepare onboarding: %v", err)
+			}
+			if result.Onboarding.AgentMailAPIKeyAvailable != tt.available {
+				t.Fatalf("expected AgentMail API key available %t, got %#v", tt.available, result.Onboarding)
+			}
+		})
+	}
+}
+
 func TestFinalizeOnboardingSkipsPromptedAnswerWithoutMemory(t *testing.T) {
 	t.Parallel()
 
@@ -795,6 +830,41 @@ func TestReportResponseIncludesAttachments(t *testing.T) {
 	report := reporter.reports[0]
 	if report.Text != "see attached" || len(report.Attachments) != 1 || report.Attachments[0].Path != "/workspace/screenshot.png" {
 		t.Fatalf("unexpected report: %#v", report)
+	}
+}
+
+func TestReportResponseMaterializesEmbeddedAttachments(t *testing.T) {
+	t.Parallel()
+
+	var seenPath string
+	reporter := &captureReporter{
+		onReport: func(report domain.ReportMessage) {
+			if len(report.Attachments) != 1 {
+				t.Fatalf("expected one attachment, got %#v", report.Attachments)
+			}
+			seenPath = report.Attachments[0].Path
+			if _, err := os.Stat(seenPath); err != nil {
+				t.Fatalf("expected materialized attachment to exist during report: %v", err)
+			}
+		},
+	}
+	activities := Activities{Reporter: reporter}
+	_, err := activities.ReportResponse(context.Background(), ReportResponseRequest{
+		Event: domain.Event{
+			ID:        "event-1",
+			ProjectID: "project-1",
+		},
+		Message:     domain.ConversationResetConfirmation,
+		Attachments: []domain.ReportAttachment{domain.ConversationResetEraseAttachment(1)},
+	})
+	if err != nil {
+		t.Fatalf("report response: %v", err)
+	}
+	if seenPath == "" || !filepath.IsAbs(seenPath) {
+		t.Fatalf("expected absolute materialized path, got %q", seenPath)
+	}
+	if _, err := os.Stat(seenPath); !os.IsNotExist(err) {
+		t.Fatalf("expected materialized attachment cleanup, stat err=%v", err)
 	}
 }
 

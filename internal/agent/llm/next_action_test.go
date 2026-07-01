@@ -655,19 +655,69 @@ func TestBuildNextActionMessagesAddsOnboardingInstructionsWhenActive(t *testing.
 		"Onboarding is optional. Don't force it.",
 		"When durable onboarding info is present",
 		"store it before responding",
-		"Include the `onboarding` tag",
+		"Tag every onboarding memory with `onboarding`",
 		"`MemoryProposeAdd` for new entries",
 		"`MemorySearch` + `MemoryProposeUpdate` when updating existing memory",
+		"agent-owned email",
+		"create one with AgentMail",
+		"AgentMail API key status: missing",
+		"tell the user to set `AGENTMAIL_API_KEY` first",
+		"do not load or run `agentmail`",
+		"Store only non-secret agent email details",
+		"`agent-email`",
+		"Never store API keys, passwords, OTPs, cookies, or recovery secrets",
 		"If the user skips, answers nothing, or asks to continue",
 		"`automatic` source: answer the current request first",
-		`explicitly introduce "optional onboarding"`,
-		"Do not ask project or technical questions first",
-		"What I should call them and their role",
-		"`/onboard` source: ask a short optional question set",
-		"On follow-up, do not repeat",
+		"then introduce optional onboarding",
+		"Do not lead with project or technical questions",
+		"Their name and role",
+		"Agent email: existing address, create with AgentMail, or skip",
+		"`/onboard` source: ask a short optional question set in your own words",
+		"On follow-up, don't repeat",
 	} {
 		if !strings.Contains(systemPrompt, expected) {
 			t.Fatalf("system prompt missing onboarding text %q:\n%s", expected, systemPrompt)
+		}
+	}
+	if strings.Contains(systemPrompt, "check `AGENTMAIL_API_KEY`") {
+		t.Fatalf("system prompt should use runtime AgentMail key status instead of telling the model to check env:\n%s", systemPrompt)
+	}
+}
+
+func TestBuildNextActionMessagesUsesAvailableAgentMailKeyStatus(t *testing.T) {
+	t.Parallel()
+
+	messages, err := buildNextActionMessages(agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", Body: domain.OnboardingSlashCommand},
+		},
+		Onboarding: agent.OnboardingContext{
+			Active:                   true,
+			Source:                   "command",
+			Status:                   string(domain.OnboardingStatusPrompted),
+			AgentMailAPIKeyAvailable: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	systemPrompt := messageText(messages[0])
+	for _, expected := range []string{
+		"AgentMail API key status: available",
+		"load skill `agentmail` and create the inbox",
+	} {
+		if !strings.Contains(systemPrompt, expected) {
+			t.Fatalf("system prompt missing available AgentMail text %q:\n%s", expected, systemPrompt)
+		}
+	}
+	for _, blocked := range []string{
+		"do not load or run `agentmail`",
+		"check `AGENTMAIL_API_KEY`",
+	} {
+		if strings.Contains(systemPrompt, blocked) {
+			t.Fatalf("system prompt included unavailable AgentMail text %q:\n%s", blocked, systemPrompt)
 		}
 	}
 }
@@ -716,7 +766,7 @@ func TestBuildNextActionMessagesOmitsConversationContextDuringOnboarding(t *test
 	}
 }
 
-func TestBuildNextActionMessagesPreservesContextDuringNonCommandOnboarding(t *testing.T) {
+func TestBuildNextActionMessagesOmitsContextDuringNonCommandOnboarding(t *testing.T) {
 	t.Parallel()
 
 	for _, source := range []string{"automatic", "answer"} {
@@ -754,11 +804,14 @@ func TestBuildNextActionMessagesPreservesContextDuringNonCommandOnboarding(t *te
 			if err != nil {
 				t.Fatalf("build next action messages: %v", err)
 			}
+			if len(messages) != 2 {
+				t.Fatalf("expected only system and current user messages, got %d", len(messages))
+			}
 			combined := messageText(messages[0])
 			for _, message := range messages[1:] {
 				combined += "\n" + messageText(message)
 			}
-			for _, expected := range []string{
+			for _, leaked := range []string{
 				"thread-memory",
 				"The active task is deployment prep.",
 				"user-preference",
@@ -770,8 +823,8 @@ func TestBuildNextActionMessagesPreservesContextDuringNonCommandOnboarding(t *te
 				"Recent conversation history",
 				"Use the staging cluster first.",
 			} {
-				if !strings.Contains(combined, expected) {
-					t.Fatalf("%s onboarding should preserve context %q:\n%s", source, expected, combined)
+				if strings.Contains(combined, leaked) {
+					t.Fatalf("%s onboarding leaked context %q:\n%s", source, leaked, combined)
 				}
 			}
 			if got := messageText(messages[len(messages)-1]); got != "deploy the app" {

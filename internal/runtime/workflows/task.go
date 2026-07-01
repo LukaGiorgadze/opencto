@@ -3,6 +3,7 @@ package workflows
 import (
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"strings"
 	"time"
 
@@ -602,13 +603,38 @@ func resetConversationTask(ctx workflow.Context, projectID string, event domain.
 	if _, err := resetConversationContext(ctx, activities.ResetConversationContextRequest{Event: event}); err != nil {
 		return TaskWorkflowResult{}, err
 	}
+	assetIndex := resetEraseAssetIndex(projectID, event)
+	message := domain.ConversationResetConfirmation
+	if commandResponseAcknowledged(event) {
+		message = ""
+	}
 	return TaskWorkflowResult{
-		Completed:       true,
-		Status:          activities.NextActionStatusCompleted,
-		Event:           event,
-		ResponseMessage: domain.ConversationResetConfirmation,
-		Report:          !commandResponseAcknowledged(event),
+		Completed:           true,
+		Status:              activities.NextActionStatusCompleted,
+		Event:               event,
+		ResponseMessage:     message,
+		ResponseAttachments: []domain.ReportAttachment{domain.ConversationResetEraseAttachment(assetIndex)},
+		Report:              true,
 	}, nil
+}
+
+func resetEraseAssetIndex(projectID string, event domain.Event) int {
+	if domain.ConversationResetEraseAssets < 1 {
+		return 1
+	}
+	hash := fnv.New32a()
+	for _, value := range []string{
+		projectID,
+		event.ProjectID,
+		event.ID,
+		event.ChannelID,
+		event.ThreadID,
+		event.ActorID,
+	} {
+		_, _ = hash.Write([]byte(strings.TrimSpace(value)))
+		_, _ = hash.Write([]byte{0})
+	}
+	return int(hash.Sum32()%uint32(domain.ConversationResetEraseAssets)) + 1
 }
 
 func commandResponseAcknowledged(event domain.Event) bool {

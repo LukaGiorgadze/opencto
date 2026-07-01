@@ -153,13 +153,14 @@ func TestTaskWorkflowResetsConversationContextForNewCommand(t *testing.T) {
 	if err := env.GetWorkflowResult(&result); err != nil {
 		t.Fatalf("get result: %v", err)
 	}
-	if !result.Completed || result.Status != activities.NextActionStatusCompleted || result.ResponseMessage != domain.ConversationResetConfirmation || !result.Report {
+	if !result.Completed || result.Status != activities.NextActionStatusCompleted || result.ResponseMessage != domain.ConversationResetConfirmation || len(result.ResponseAttachments) != 1 || !result.Report {
 		t.Fatalf("unexpected reset result: %#v", result)
 	}
+	assertConversationResetEraseAttachment(t, result.ResponseAttachments[0])
 	env.AssertExpectations(t)
 }
 
-func TestTaskWorkflowSkipsResetReportWhenCommandWasAcknowledged(t *testing.T) {
+func TestTaskWorkflowReportsOnlyResetImageWhenCommandWasAcknowledged(t *testing.T) {
 	t.Parallel()
 
 	var suite testsuite.WorkflowTestSuite
@@ -190,10 +191,21 @@ func TestTaskWorkflowSkipsResetReportWhenCommandWasAcknowledged(t *testing.T) {
 	if err := env.GetWorkflowResult(&result); err != nil {
 		t.Fatalf("get result: %v", err)
 	}
-	if result.Report {
-		t.Fatalf("expected reset report to be suppressed after interaction ack: %#v", result)
+	if !result.Report || result.ResponseMessage != "" || len(result.ResponseAttachments) != 1 {
+		t.Fatalf("expected only reset image to be reported after interaction ack: %#v", result)
 	}
+	assertConversationResetEraseAttachment(t, result.ResponseAttachments[0])
 	env.AssertExpectations(t)
+}
+
+func assertConversationResetEraseAttachment(t *testing.T, attachment domain.ReportAttachment) {
+	t.Helper()
+	if attachment.ContentType != "image/png" ||
+		!strings.HasPrefix(attachment.Path, "assets/erase-") ||
+		!strings.HasSuffix(attachment.Path, ".png") ||
+		attachment.Filename == "" {
+		t.Fatalf("unexpected reset attachment: %#v", attachment)
+	}
 }
 
 func TestTaskWorkflowRoutesAgentToolTosubWorkflow(t *testing.T) {

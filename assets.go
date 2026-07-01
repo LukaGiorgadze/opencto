@@ -5,7 +5,7 @@ import (
 	"io/fs"
 )
 
-//go:embed skills config.json .env.example
+//go:embed skills config.json .env.example assets
 var embeddedFS embed.FS
 
 func SkillsFS() fs.FS {
@@ -30,4 +30,12 @@ func DefaultEnvExample() []byte {
 		panic(err)
 	}
 	return append([]byte(nil), data...)
+}
+
+func EmbeddedAsset(path string) ([]byte, error) {
+	data, err := embeddedFS.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), data...), nil
 }

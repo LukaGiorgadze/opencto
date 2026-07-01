@@ -20,6 +20,7 @@ type fakeTelegramBot struct {
 	files         map[string]*gotgbot.File
 	messages      []fakeTelegramMessageSend
 	documents     []fakeTelegramDocumentSend
+	photos        []fakeTelegramPhotoSend
 	chatActions   []fakeTelegramChatAction
 	webhookURL    string
 	webhookOpts   *gotgbot.SetWebhookOpts
@@ -36,6 +37,11 @@ type fakeTelegramMessageSend struct {
 type fakeTelegramDocumentSend struct {
 	chatID int64
 	opts   *gotgbot.SendDocumentOpts
+}
+
+type fakeTelegramPhotoSend struct {
+	chatID int64
+	opts   *gotgbot.SendPhotoOpts
 }
 
 type fakeTelegramChatAction struct {
@@ -72,6 +78,11 @@ func (b *fakeTelegramBot) SendDocumentWithContext(_ context.Context, chatID int6
 	return b.nextMessage(chatID, optsDocumentThreadID(opts)), nil
 }
 
+func (b *fakeTelegramBot) SendPhotoWithContext(_ context.Context, chatID int64, _ gotgbot.InputFileOrString, opts *gotgbot.SendPhotoOpts) (*gotgbot.Message, error) {
+	b.photos = append(b.photos, fakeTelegramPhotoSend{chatID: chatID, opts: opts})
+	return b.nextMessage(chatID, optsPhotoThreadID(opts)), nil
+}
+
 func (b *fakeTelegramBot) SendChatActionWithContext(_ context.Context, chatID int64, action string, opts *gotgbot.SendChatActionOpts) (bool, error) {
 	b.chatActions = append(b.chatActions, fakeTelegramChatAction{chatID: chatID, action: action, opts: opts})
 	return true, nil
@@ -101,6 +112,13 @@ func optsMessageThreadID(opts *gotgbot.SendMessageOpts) int64 {
 }
 
 func optsDocumentThreadID(opts *gotgbot.SendDocumentOpts) int64 {
+	if opts == nil {
+		return 0
+	}
+	return opts.MessageThreadId
+}
+
+func optsPhotoThreadID(opts *gotgbot.SendPhotoOpts) int64 {
 	if opts == nil {
 		return 0
 	}
@@ -315,6 +333,94 @@ func TestReportSendsThreadedMessagesAndDocuments(t *testing.T) {
 		receipts[0].ThreadID != "7" ||
 		receipts[0].ChannelID != "-100123" {
 		t.Fatalf("unexpected receipts: %#v", receipts)
+	}
+}
+
+func TestReportSendsImageAttachmentsAsPhotos(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	attachmentPath := filepath.Join(root, "erase.png")
+	if err := os.WriteFile(attachmentPath, []byte("image"), 0o644); err != nil {
+		t.Fatalf("write attachment: %v", err)
+	}
+	bot := &fakeTelegramBot{}
+	adapter, err := newAdapter("project-1", "123:token", bot, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), Options{
+		WorkspaceRoot: root,
+		AttachmentLimits: AttachmentLimits{
+			MaxFiles:      1,
+			MaxFileBytes:  1024,
+			MaxTotalBytes: 1024,
+		},
+	})
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	_, err = adapter.Report(context.Background(), domain.Event{
+		ChannelID:   "-100123",
+		ChannelType: domain.ChannelTypeTelegram,
+	}, domain.ReportMessage{
+		Text: "done",
+		Attachments: []domain.ReportAttachment{{
+			Path:        attachmentPath,
+			Filename:    "erase.png",
+			ContentType: "image/png",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	if len(bot.messages) != 1 || bot.messages[0].text != "done" {
+		t.Fatalf("expected text first, got %#v", bot.messages)
+	}
+	if len(bot.photos) != 1 {
+		t.Fatalf("expected image attachment to be sent as photo, got photos=%#v documents=%#v", bot.photos, bot.documents)
+	}
+	if len(bot.documents) != 0 {
+		t.Fatalf("expected no document sends for image attachment, got %#v", bot.documents)
+	}
+}
+
+func TestReportSendsUnsupportedImageAttachmentsAsDocuments(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	attachmentPath := filepath.Join(root, "diagram.svg")
+	if err := os.WriteFile(attachmentPath, []byte("<svg></svg>"), 0o644); err != nil {
+		t.Fatalf("write attachment: %v", err)
+	}
+	bot := &fakeTelegramBot{}
+	adapter, err := newAdapter("project-1", "123:token", bot, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), Options{
+		WorkspaceRoot: root,
+		AttachmentLimits: AttachmentLimits{
+			MaxFiles:      1,
+			MaxFileBytes:  1024,
+			MaxTotalBytes: 1024,
+		},
+	})
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	_, err = adapter.Report(context.Background(), domain.Event{
+		ChannelID:   "-100123",
+		ChannelType: domain.ChannelTypeTelegram,
+	}, domain.ReportMessage{
+		Attachments: []domain.ReportAttachment{{
+			Path:        attachmentPath,
+			Filename:    "diagram.svg",
+			ContentType: "image/svg+xml",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	if len(bot.documents) != 1 {
+		t.Fatalf("expected unsupported image attachment to be sent as document, got photos=%#v documents=%#v", bot.photos, bot.documents)
+	}
+	if len(bot.photos) != 0 {
+		t.Fatalf("expected no photo sends for unsupported image attachment, got %#v", bot.photos)
 	}
 }
 

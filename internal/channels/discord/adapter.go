@@ -894,23 +894,31 @@ func (a *Adapter) Report(ctx context.Context, event domain.Event, report domain.
 	attachments := report.Attachments
 	chunks := channels.SplitText(report.Text, a.messageLimits.MaxChars)
 	reference := discordReportReference(event, report)
-	receipts := make([]domain.ReportReceipt, 0, len(chunks))
-	for i, chunk := range chunks {
-		var files []*discordgo.File
-		var closers []io.Closer
-		if i == 0 && len(attachments) > 0 {
-			files, closers, err = discordFiles(attachments)
-			if err != nil {
-				return nil, err
-			}
+	receipts := make([]domain.ReportReceipt, 0, len(chunks)+len(attachments))
+	for _, chunk := range chunks {
+		if strings.TrimSpace(chunk) == "" {
+			continue
 		}
-		sent, err := sendDiscordMessage(ctx, a.session, targetChannelID, chunk, files, reference)
+		sent, err := sendDiscordMessage(ctx, a.session, targetChannelID, chunk, nil, reference)
+		if err != nil {
+			return nil, err
+		}
+		if receipt := discordReportReceipt(event, sent); receipt.MessageID != "" || receipt.ThreadID != "" {
+			receipt.Body = chunk
+			receipts = append(receipts, receipt)
+		}
+	}
+	if len(attachments) > 0 {
+		files, closers, err := discordFiles(attachments)
+		if err != nil {
+			return nil, err
+		}
+		sent, err := sendDiscordMessage(ctx, a.session, targetChannelID, "", files, reference)
 		if err != nil {
 			closeDiscordFiles(closers)
 			return nil, err
 		}
 		if receipt := discordReportReceipt(event, sent); receipt.MessageID != "" || receipt.ThreadID != "" {
-			receipt.Body = chunk
 			receipts = append(receipts, receipt)
 		}
 		closeDiscordFiles(closers)

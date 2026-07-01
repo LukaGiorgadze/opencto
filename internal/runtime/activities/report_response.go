@@ -3,10 +3,13 @@ package activities
 import (
 	"context"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	opencto "github.com/opencto/opencto"
 	"github.com/opencto/opencto/internal/domain"
 )
 
@@ -19,6 +22,11 @@ func (a *Activities) ReportResponse(ctx context.Context, request ReportResponseR
 	if report.Empty() || a.Reporter == nil {
 		return ReportResponseResult{}, nil
 	}
+	cleanup, err := materializeEmbeddedReportAttachments(&report)
+	if err != nil {
+		return ReportResponseResult{}, err
+	}
+	defer cleanup()
 	a.logActivityStep(
 		"ReportResponse", "start",
 		slog.String("project_id", request.Event.ProjectID),
@@ -60,6 +68,49 @@ func (a *Activities) ReportResponse(ctx context.Context, request ReportResponseR
 		slog.String("event_id", request.Event.ID),
 	)
 	return ReportResponseResult{Receipts: receipts}, nil
+}
+
+func materializeEmbeddedReportAttachments(report *domain.ReportMessage) (func(), error) {
+	if report == nil || len(report.Attachments) == 0 {
+		return func() {}, nil
+	}
+	cleanupPaths := []string{}
+	cleanup := func() {
+		for _, path := range cleanupPaths {
+			_ = os.Remove(path)
+		}
+	}
+	for index := range report.Attachments {
+		assetPath := strings.TrimSpace(report.Attachments[index].Metadata[domain.MetadataKeyEmbeddedAsset])
+		if assetPath == "" {
+			continue
+		}
+		data, err := opencto.EmbeddedAsset(assetPath)
+		if err != nil {
+			cleanup()
+			return func() {}, err
+		}
+		file, err := os.CreateTemp("", "opencto-asset-*-"+filepath.Base(assetPath))
+		if err != nil {
+			cleanup()
+			return func() {}, err
+		}
+		if _, err := file.Write(data); err != nil {
+			_ = file.Close()
+			_ = os.Remove(file.Name())
+			cleanup()
+			return func() {}, err
+		}
+		if err := file.Close(); err != nil {
+			_ = os.Remove(file.Name())
+			cleanup()
+			return func() {}, err
+		}
+		report.Attachments[index].Path = file.Name()
+		report.Attachments[index].SizeBytes = int64(len(data))
+		cleanupPaths = append(cleanupPaths, file.Name())
+	}
+	return cleanup, nil
 }
 
 func (a *Activities) persistReportedConversationMessages(ctx context.Context, event domain.Event, report domain.ReportMessage, receipts []domain.ReportReceipt) error {

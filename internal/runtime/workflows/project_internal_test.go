@@ -8,6 +8,7 @@ import (
 
 	"go.temporal.io/sdk/temporal"
 
+	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/workflowbundle"
 )
 
@@ -67,6 +68,26 @@ func TestWorkflowFailureMessageFallsBackToErrorString(t *testing.T) {
 	err := errors.New("plain failure")
 	if got := workflowFailureMessage(err); got != "plain failure" {
 		t.Fatalf("expected fallback error string, got %q", got)
+	}
+}
+
+func TestResetEraseAssetIndexIsDeterministic(t *testing.T) {
+	t.Parallel()
+
+	event := domain.Event{
+		ID:        "event-1",
+		ProjectID: "project-1",
+		ChannelID: "channel-1",
+		ThreadID:  "thread-1",
+		ActorID:   "user-1",
+	}
+	first := resetEraseAssetIndex("project-1", event)
+	second := resetEraseAssetIndex("project-1", event)
+	if first != second {
+		t.Fatalf("expected deterministic reset asset index, got %d and %d", first, second)
+	}
+	if first < 1 || first > domain.ConversationResetEraseAssets {
+		t.Fatalf("reset asset index out of bounds: %d", first)
 	}
 }
 
