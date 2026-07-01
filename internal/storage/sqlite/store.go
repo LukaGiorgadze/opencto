@@ -18,7 +18,9 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/ncruces/go-sqlite3"
 	"github.com/ncruces/go-sqlite3/driver"
+	"github.com/ncruces/go-sqlite3/ext/fts5"
 	"github.com/ncruces/go-sqlite3/ext/vec1"
 
 	"github.com/opencto/opencto/internal/domain"
@@ -45,7 +47,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		}
 	}
 
-	db, err := driver.Open(dataSourceName(path), vec1.Register)
+	db, err := driver.Open(dataSourceName(path), registerExtensions)
 	if err != nil {
 		return nil, err
 	}
@@ -58,6 +60,13 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, err
 	}
 	return store, nil
+}
+
+func registerExtensions(db *sqlite3.Conn) error {
+	if err := fts5.Register(db); err != nil {
+		return err
+	}
+	return vec1.Register(db)
 }
 
 func (s *Store) Close() error {
