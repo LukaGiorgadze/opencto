@@ -13,6 +13,7 @@ import (
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
 	toolregistry "github.com/opencto/opencto/internal/tools"
+	agentemailtool "github.com/opencto/opencto/internal/tools/agentemail"
 	edittool "github.com/opencto/opencto/internal/tools/edit"
 	exectool "github.com/opencto/opencto/internal/tools/exec"
 	globtool "github.com/opencto/opencto/internal/tools/glob"
@@ -28,6 +29,8 @@ func (a *Activities) runChosenTool(ctx context.Context, choice agent.ToolChoice,
 	switch choice.Type {
 	case domain.ToolTypeExec:
 		return a.runExecTool(ctx, choice, execution)
+	case domain.ToolTypeAgentEmail:
+		return a.runAgentEmailTool(ctx, choice, execution)
 	case domain.ToolTypeRead:
 		return a.runReadTool(ctx, choice)
 	case domain.ToolTypeEdit:
@@ -45,6 +48,44 @@ func (a *Activities) runChosenTool(ctx context.Context, choice agent.ToolChoice,
 	default:
 		return toolRunResult{ResultCode: "1"}, fmt.Errorf("unsupported tool type %q", choice.Type)
 	}
+}
+
+func (a *Activities) runAgentEmailTool(ctx context.Context, choice agent.ToolChoice, execution toolExecutionContext) (toolRunResult, error) {
+	var req agentemailtool.Request
+	if err := decodeChoiceInput(choice, &req); err != nil {
+		return toolRunResult{ResultCode: "1"}, err
+	}
+	req.ProjectID = execution.ProjectID
+	req.WorkItemID = execution.WorkItemID
+	req.ToolCallID = execution.ToolCallID
+	req.ActorID = execution.SourceEvent.ActorID
+	req.ActorName = execution.SourceEvent.ActorName
+	req.ChannelID = execution.SourceEvent.ChannelID
+	req.ChannelType = string(execution.SourceEvent.ChannelType)
+	req.ThreadID = execution.SourceEvent.ThreadID
+
+	executor := a.AgentEmail
+	if executor == nil {
+		executor = agentemailtool.NewSafeExecutor()
+	}
+	result, err := executor.Run(ctx, req)
+	metadata := map[string]string{
+		"agent_email_action":   result.Action,
+		"agent_email_provider": result.Provider,
+		"agent_email_status":   result.Status,
+		"agent_email":          result.Email,
+		"agent_email_inbox_id": result.InboxID,
+		"message_id":           result.MessageID,
+		"thread_id":            result.ThreadID,
+	}
+	if len(result.Messages) > 0 {
+		metadata["message_count"] = strconv.Itoa(len(result.Messages))
+	}
+	return toolRunResult{
+		Observation: agentemailtool.FormatObservation(result, err),
+		ResultCode:  resultCodeForError(err),
+		Metadata:    metadata,
+	}, err
 }
 
 func toolTypeInList(toolType domain.ToolType, values []domain.ToolType) bool {

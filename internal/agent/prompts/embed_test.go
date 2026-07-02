@@ -5,7 +5,7 @@ import "testing"
 func TestLoadPrompt(t *testing.T) {
 	t.Parallel()
 
-	for _, name := range []string{"next_action.tmpl", "conversation_compression.tmpl", "agent_observation_compression.tmpl", "agent_run_summary.tmpl"} {
+	for _, name := range []string{"next_action.tmpl", "agent.tmpl", "agent_email.tmpl", "conversation_compression.tmpl", "agent_observation_compression.tmpl", "agent_run_summary.tmpl"} {
 		name := name
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

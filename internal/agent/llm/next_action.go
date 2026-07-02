@@ -21,26 +21,26 @@ import (
 )
 
 type nextActionPromptData struct {
-	ProjectName                        string
-	ProjectID                          string
-	ProjectDescription                 string
-	MemoryContext                      string
-	OnboardingActive                   bool
-	OnboardingSource                   string
-	OnboardingStatus                   string
-	OnboardingAgentMailAPIKeyAvailable bool
-	OS                                 string
-	Arch                               string
-	Exec                               string
-	Path                               string
-	WorkspaceRoot                      string
-	CurrentLocalTime                   string
-	CurrentUTCTime                     string
-	HostTimeZone                       string
-	HostTimeZoneError                  string
-	ChannelType                        domain.ChannelType
-	SubAgentGoal                       string
-	AllowedTools                       []string
+	ProjectName              string
+	ProjectID                string
+	ProjectDescription       string
+	MemoryContext            string
+	OnboardingActive         bool
+	OnboardingSource         string
+	OnboardingStatus         string
+	AgentMailAPIKeyAvailable bool
+	OS                       string
+	Arch                     string
+	Exec                     string
+	Path                     string
+	WorkspaceRoot            string
+	CurrentLocalTime         string
+	CurrentUTCTime           string
+	HostTimeZone             string
+	HostTimeZoneError        string
+	ChannelType              domain.ChannelType
+	SubAgentGoal             string
+	AllowedTools             []string
 }
 
 type memoryContextPromptData struct {
@@ -186,33 +186,33 @@ func renderNextActionPrompt(input agent.NextActionInput) (string, error) {
 	}
 
 	data := nextActionPromptData{
-		ProjectName:                        projectName,
-		ProjectID:                          input.ProjectID,
-		ProjectDescription:                 strings.TrimSpace(input.Context.Project.Description),
-		MemoryContext:                      memoryContextForInput(input),
-		OnboardingActive:                   input.Onboarding.Active,
-		OnboardingSource:                   strings.TrimSpace(input.Onboarding.Source),
-		OnboardingStatus:                   strings.TrimSpace(input.Onboarding.Status),
-		OnboardingAgentMailAPIKeyAvailable: input.Onboarding.AgentMailAPIKeyAvailable,
-		OS:                                 input.Runtime.OS,
-		Arch:                               input.Runtime.Arch,
-		Exec:                               firstNonEmpty(strings.TrimSpace(input.Runtime.Exec), "unknown"),
-		Path:                               strings.TrimSpace(input.Runtime.Path),
-		WorkspaceRoot:                      firstNonEmpty(strings.TrimSpace(input.Runtime.WorkspaceRoot), "."),
-		CurrentLocalTime:                   strings.TrimSpace(input.Runtime.CurrentLocalTime),
-		CurrentUTCTime:                     strings.TrimSpace(input.Runtime.CurrentUTCTime),
-		HostTimeZone:                       strings.TrimSpace(input.Runtime.HostTimeZone),
-		HostTimeZoneError:                  strings.TrimSpace(input.Runtime.HostTimeZoneError),
-		ChannelType:                        input.ChannelType,
+		ProjectName:              projectName,
+		ProjectID:                input.ProjectID,
+		ProjectDescription:       strings.TrimSpace(input.Context.Project.Description),
+		MemoryContext:            memoryContextForInput(input),
+		OnboardingActive:         input.Onboarding.Active,
+		OnboardingSource:         strings.TrimSpace(input.Onboarding.Source),
+		OnboardingStatus:         strings.TrimSpace(input.Onboarding.Status),
+		AgentMailAPIKeyAvailable: input.Runtime.AgentMailAPIKeyAvailable,
+		OS:                       input.Runtime.OS,
+		Arch:                     input.Runtime.Arch,
+		Exec:                     firstNonEmpty(strings.TrimSpace(input.Runtime.Exec), "unknown"),
+		Path:                     strings.TrimSpace(input.Runtime.Path),
+		WorkspaceRoot:            firstNonEmpty(strings.TrimSpace(input.Runtime.WorkspaceRoot), "."),
+		CurrentLocalTime:         strings.TrimSpace(input.Runtime.CurrentLocalTime),
+		CurrentUTCTime:           strings.TrimSpace(input.Runtime.CurrentUTCTime),
+		HostTimeZone:             strings.TrimSpace(input.Runtime.HostTimeZone),
+		HostTimeZoneError:        strings.TrimSpace(input.Runtime.HostTimeZoneError),
+		ChannelType:              input.ChannelType,
 	}
 
 	if input.SubAgent != nil {
 		data.SubAgentGoal = strings.TrimSpace(input.SubAgent.Goal)
 		data.AllowedTools = toolTypeNames(input.ToolAllowlist)
-		return prompts.Render("agent.tmpl", data)
+		return prompts.RenderWithIncludes("agent.tmpl", data, "agent_email.tmpl")
 	}
 
-	return prompts.Render("next_action.tmpl", data)
+	return prompts.RenderWithIncludes("next_action.tmpl", data, "agent_email.tmpl")
 }
 
 func subAgentRunSummaryMessage(context *agent.SubAgentContext) string {

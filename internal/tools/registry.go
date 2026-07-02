@@ -6,6 +6,7 @@ import (
 	"github.com/tmc/langchaingo/llms"
 
 	"github.com/opencto/opencto/internal/domain"
+	agentemailtool "github.com/opencto/opencto/internal/tools/agentemail"
 	agenttool "github.com/opencto/opencto/internal/tools/agenttool"
 	edittool "github.com/opencto/opencto/internal/tools/edit"
 	exectool "github.com/opencto/opencto/internal/tools/exec"
@@ -42,6 +43,12 @@ var definitions = []Definition{
 		Type:        domain.ToolTypeAgent,
 		Description: agenttool.AgentToolDescription,
 		Schema:      agenttool.AgentToolSchema(),
+	},
+	{
+		Name:        agentemailtool.AgentEmailToolName,
+		Type:        domain.ToolTypeAgentEmail,
+		Description: agentemailtool.AgentEmailToolDescription,
+		Schema:      agentemailtool.AgentEmailToolSchema(),
 	},
 	{
 		Name:        readtool.ReadToolName,

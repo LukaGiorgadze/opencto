@@ -86,22 +86,22 @@ type NextAction struct {
 }
 
 type RuntimeContext struct {
-	OS                string `json:"os"`
-	Arch              string `json:"arch"`
-	Exec              string `json:"exec,omitempty"`
-	Path              string `json:"path,omitempty"`
-	WorkspaceRoot     string `json:"workspace_root,omitempty"`
-	CurrentLocalTime  string `json:"current_local_time,omitempty"`
-	CurrentUTCTime    string `json:"current_utc_time,omitempty"`
-	HostTimeZone      string `json:"host_time_zone,omitempty"`
-	HostTimeZoneError string `json:"host_time_zone_error,omitempty"`
+	OS                       string `json:"os"`
+	Arch                     string `json:"arch"`
+	Exec                     string `json:"exec,omitempty"`
+	Path                     string `json:"path,omitempty"`
+	WorkspaceRoot            string `json:"workspace_root,omitempty"`
+	CurrentLocalTime         string `json:"current_local_time,omitempty"`
+	CurrentUTCTime           string `json:"current_utc_time,omitempty"`
+	HostTimeZone             string `json:"host_time_zone,omitempty"`
+	HostTimeZoneError        string `json:"host_time_zone_error,omitempty"`
+	AgentMailAPIKeyAvailable bool   `json:"agentmail_api_key_available,omitempty"`
 }
 
 type OnboardingContext struct {
-	Active                   bool   `json:"active,omitempty"`
-	Source                   string `json:"source,omitempty"`
-	Status                   string `json:"status,omitempty"`
-	AgentMailAPIKeyAvailable bool   `json:"agentmail_api_key_available,omitempty"`
+	Active bool   `json:"active,omitempty"`
+	Source string `json:"source,omitempty"`
+	Status string `json:"status,omitempty"`
 }
 
 type LLMSession struct {

@@ -27,6 +27,8 @@ Host timezone:{{- if .HostTimeZone }} {{ .HostTimeZone }}{{- else }} unresolved{
 PATH: {{ .Path }}
 {{- end }}
 
+{{ template "agent_email.tmpl" . }}
+
 # Project
 
 Project: {{ .ProjectName }} (ID: {{ .ProjectID }})

@@ -23,15 +23,16 @@ func buildRuntimeContext(workspaceRoot string) agent.RuntimeContext {
 		localNow = now.In(location)
 	}
 	return agent.RuntimeContext{
-		OS:                goruntime.GOOS,
-		Arch:              goruntime.GOARCH,
-		Exec:              execPath,
-		Path:              os.Getenv("PATH"),
-		WorkspaceRoot:     workspaceRoot,
-		CurrentLocalTime:  localNow.Format(time.RFC3339),
-		CurrentUTCTime:    now.UTC().Format(time.RFC3339),
-		HostTimeZone:      timeZone,
-		HostTimeZoneError: timeZoneError,
+		OS:                       goruntime.GOOS,
+		Arch:                     goruntime.GOARCH,
+		Exec:                     execPath,
+		Path:                     os.Getenv("PATH"),
+		WorkspaceRoot:            workspaceRoot,
+		CurrentLocalTime:         localNow.Format(time.RFC3339),
+		CurrentUTCTime:           now.UTC().Format(time.RFC3339),
+		HostTimeZone:             timeZone,
+		HostTimeZoneError:        timeZoneError,
+		AgentMailAPIKeyAvailable: agentMailAPIKeyAvailable(),
 	}
 }
 

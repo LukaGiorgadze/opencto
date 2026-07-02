@@ -174,6 +174,7 @@ type ToolType string
 
 const (
 	ToolTypeAgent               ToolType = "Agent"
+	ToolTypeAgentEmail          ToolType = "AgentEmail"
 	ToolTypeExec                ToolType = "Exec"
 	ToolTypeEdit                ToolType = "Edit"
 	ToolTypeGlob                ToolType = "Glob"
