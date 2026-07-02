@@ -23,6 +23,7 @@ import (
 	"github.com/opencto/opencto/internal/runtime/workflowrun"
 	skillcatalog "github.com/opencto/opencto/internal/skills"
 	"github.com/opencto/opencto/internal/storage"
+	agentemailtool "github.com/opencto/opencto/internal/tools/agentemail"
 	exectool "github.com/opencto/opencto/internal/tools/exec"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
 	"github.com/opencto/opencto/internal/tools/postprocess"
@@ -493,7 +494,7 @@ func TestPrepareOnboardingCommandAlwaysActive(t *testing.T) {
 	}
 }
 
-func TestPrepareOnboardingIncludesAgentMailAPIKeyStatus(t *testing.T) {
+func TestBuildRuntimeContextIncludesAgentMailAPIKeyStatus(t *testing.T) {
 	for _, tt := range []struct {
 		name      string
 		value     string
@@ -505,20 +506,9 @@ func TestPrepareOnboardingIncludesAgentMailAPIKeyStatus(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv(agentMailAPIKeyEnv, tt.value)
 
-			state := domain.OnboardingState{ProjectID: "default", Status: domain.OnboardingStatusCompleted}
-			activities := Activities{
-				Project: domain.Project{ID: "default"},
-				Store:   stubProjectStore{onboardingState: &state},
-			}
-			result, err := activities.PrepareOnboarding(context.Background(), PrepareOnboardingRequest{
-				ProjectID: "default",
-				Event:     domain.Event{ID: "event-1", ProjectID: "default", Body: domain.OnboardingSlashCommand},
-			})
-			if err != nil {
-				t.Fatalf("prepare onboarding: %v", err)
-			}
-			if result.Onboarding.AgentMailAPIKeyAvailable != tt.available {
-				t.Fatalf("expected AgentMail API key available %t, got %#v", tt.available, result.Onboarding)
+			runtime := buildRuntimeContext(t.TempDir())
+			if runtime.AgentMailAPIKeyAvailable != tt.available {
+				t.Fatalf("expected AgentMail API key available %t, got %#v", tt.available, runtime)
 			}
 		})
 	}
@@ -2996,6 +2986,13 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 	activities := Activities{
 		WorkspaceRoot: dir,
 		SkillsRoot:    skillsRoot,
+		AgentEmail: fakeAgentEmailExecutor{result: agentemailtool.Result{
+			Action:   agentemailtool.ActionSetupCreate,
+			Status:   "succeeded",
+			Provider: agentemailtool.ProviderAgentMail,
+			Email:    "ops@example.agentmail.to",
+			InboxID:  "inb_1",
+		}},
 		Grep: fakeGrepExecutor{result: greptool.Result{
 			Stdout:   filePath + ":hi\n",
 			ExitCode: 0,
@@ -3075,6 +3072,36 @@ func TestExecuteToolRunsDedicatedFileTools(t *testing.T) {
 	}
 	if skillResult.Status != domain.ExecutionStatusSucceeded || !strings.Contains(skillResult.Observation, "# Go Testing") {
 		t.Fatalf("unexpected skill result: %#v", skillResult)
+	}
+
+	agentEmailResult, err := activities.ExecuteTool(ctx, executeRequest(domain.ToolTypeAgentEmail, "agentemail-1", map[string]any{
+		"action":                "setup_create",
+		"inbox_id":              "",
+		"display_name":          "",
+		"username":              "",
+		"domain":                "",
+		"query":                 "",
+		"message_id":            "",
+		"from":                  "",
+		"to":                    []string{},
+		"cc":                    []string{},
+		"bcc":                   []string{},
+		"reply_to":              []string{},
+		"subject":               "",
+		"text":                  "",
+		"html":                  "",
+		"limit":                 0,
+		"timeout_seconds":       0,
+		"poll_interval_seconds": 0,
+	}))
+	if err != nil {
+		t.Fatalf("AgentEmail tool: %v", err)
+	}
+	if agentEmailResult.Status != domain.ExecutionStatusSucceeded ||
+		agentEmailResult.Metadata["agent_email"] != "ops@example.agentmail.to" ||
+		agentEmailResult.Metadata["agent_email_inbox_id"] != "inb_1" ||
+		!strings.Contains(agentEmailResult.Observation, "AgentEmail setup_create succeeded") {
+		t.Fatalf("unexpected AgentEmail result: %#v", agentEmailResult)
 	}
 
 	scheduleExecutor := &fakeScheduleExecutor{result: scheduletool.Result{
@@ -4772,6 +4799,15 @@ func writeActivitySkill(t *testing.T, root, id, content string) {
 type fakeGrepExecutor struct {
 	result greptool.Result
 	err    error
+}
+
+type fakeAgentEmailExecutor struct {
+	result agentemailtool.Result
+	err    error
+}
+
+func (f fakeAgentEmailExecutor) Run(context.Context, agentemailtool.Request) (agentemailtool.Result, error) {
+	return f.result, f.err
 }
 
 func (f fakeGrepExecutor) Run(context.Context, greptool.Request) (greptool.Result, error) {

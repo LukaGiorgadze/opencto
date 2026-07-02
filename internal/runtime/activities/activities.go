@@ -9,6 +9,7 @@ import (
 	"github.com/opencto/opencto/internal/domain"
 	"github.com/opencto/opencto/internal/embedding"
 	"github.com/opencto/opencto/internal/storage"
+	agentemailtool "github.com/opencto/opencto/internal/tools/agentemail"
 	edittool "github.com/opencto/opencto/internal/tools/edit"
 	exectool "github.com/opencto/opencto/internal/tools/exec"
 	globtool "github.com/opencto/opencto/internal/tools/glob"
@@ -35,6 +36,7 @@ type TypingReporter interface {
 type Activities struct {
 	Store                       storage.RuntimeStore
 	Engine                      agent.Engine
+	AgentEmail                  agentemailtool.Executor
 	Exec                        exectool.Executor
 	Edit                        edittool.Executor
 	Glob                        globtool.Executor

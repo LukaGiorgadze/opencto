@@ -1,0 +1,117 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+        "action",
+        "inbox_id",
+        "display_name",
+        "username",
+        "domain",
+        "query",
+        "message_id",
+        "from",
+        "to",
+        "cc",
+        "bcc",
+        "reply_to",
+        "subject",
+        "text",
+        "html",
+        "limit",
+        "timeout_seconds",
+        "poll_interval_seconds"
+    ],
+    "additionalProperties": false,
+    "properties": {
+        "action": {
+            "type": "string",
+            "enum": [
+                "setup_create",
+                "list_messages",
+                "search_messages",
+                "read_message",
+                "wait_for_message",
+                "send_message"
+            ],
+            "description": "Operation to perform. Use setup_create to create or reuse OpenCTO's AgentMail-backed AgentEmail inbox."
+        },
+        "inbox_id": {
+            "type": "string",
+            "description": "AgentMail inbox ID for message operations. Use an empty string when not known or not relevant."
+        },
+        "display_name": {
+            "type": "string",
+            "description": "Display name for setup_create. Use an empty string to let OpenCTO choose a default."
+        },
+        "username": {
+            "type": "string",
+            "description": "Optional local-part username for setup_create. Use an empty string to let OpenCTO choose a stable generated username."
+        },
+        "domain": {
+            "type": "string",
+            "description": "Optional AgentMail domain for setup_create. Use an empty string for AgentMail's default domain."
+        },
+        "query": {
+            "type": "string",
+            "description": "Full-text search query for search_messages or wait_for_message. Use an empty string when not relevant."
+        },
+        "message_id": {
+            "type": "string",
+            "description": "Message ID for read_message. Use an empty string when not relevant."
+        },
+        "from": {
+            "type": "string",
+            "description": "Sender substring filter for list_messages or wait_for_message. Use an empty string for no sender filter."
+        },
+        "to": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Recipients for send_message, or recipient substring filters for list_messages/wait_for_message. Use an empty array when not relevant."
+        },
+        "cc": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "CC recipients for send_message. Use an empty array when not relevant."
+        },
+        "bcc": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "BCC recipients for send_message. Use an empty array when not relevant."
+        },
+        "reply_to": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Reply-To addresses for send_message. Use an empty array when not relevant."
+        },
+        "subject": {
+            "type": "string",
+            "description": "Subject for send_message, or subject substring filter for list_messages/wait_for_message. Use an empty string when not relevant."
+        },
+        "text": {
+            "type": "string",
+            "description": "Plain text body for send_message. Use an empty string when not sending a message."
+        },
+        "html": {
+            "type": "string",
+            "description": "HTML body for send_message. Use an empty string when not sending HTML."
+        },
+        "limit": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Maximum messages or inboxes to return. Use 0 for the tool default."
+        },
+        "timeout_seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 570,
+            "description": "Maximum wait time for wait_for_message. Use 0 for the tool default."
+        },
+        "poll_interval_seconds": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 60,
+            "description": "Polling interval for wait_for_message. Use 0 for the tool default."
+        }
+    }
+}

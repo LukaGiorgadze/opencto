@@ -127,10 +127,9 @@ func explicitOnboardingWithInlineResponse(event domain.Event, source string) boo
 
 func activeOnboarding(source, status string) agent.OnboardingContext {
 	return agent.OnboardingContext{
-		Active:                   true,
-		Source:                   strings.TrimSpace(source),
-		Status:                   strings.TrimSpace(status),
-		AgentMailAPIKeyAvailable: agentMailAPIKeyAvailable(),
+		Active: true,
+		Source: strings.TrimSpace(source),
+		Status: strings.TrimSpace(status),
 	}
 }
 

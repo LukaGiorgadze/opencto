@@ -22,6 +22,7 @@ import (
 	"github.com/opencto/opencto/internal/media"
 	"github.com/opencto/opencto/internal/skills"
 	toolregistry "github.com/opencto/opencto/internal/tools"
+	agentemailtool "github.com/opencto/opencto/internal/tools/agentemail"
 	agenttool "github.com/opencto/opencto/internal/tools/agenttool"
 	globtool "github.com/opencto/opencto/internal/tools/glob"
 	greptool "github.com/opencto/opencto/internal/tools/grep"
@@ -659,11 +660,11 @@ func TestBuildNextActionMessagesAddsOnboardingInstructionsWhenActive(t *testing.
 		"`MemoryProposeAdd` for new entries",
 		"`MemorySearch` + `MemoryProposeUpdate` when updating existing memory",
 		"agent-owned email",
-		"create one with AgentMail",
+		"third-party service accounts",
 		"AgentMail API key status: missing",
+		"If AgentMail API key status is missing, do not offer AgentEmail as an auth option",
 		"tell the user to set `AGENTMAIL_API_KEY` first",
-		"do not load or run `agentmail`",
-		"Store only non-secret agent email details",
+		"Store only non-secret AgentEmail facts",
 		"`agent-email`",
 		"Never store API keys, passwords, OTPs, cookies, or recovery secrets",
 		"If the user skips, answers nothing, or asks to continue",
@@ -671,7 +672,7 @@ func TestBuildNextActionMessagesAddsOnboardingInstructionsWhenActive(t *testing.
 		"then introduce optional onboarding",
 		"Do not lead with project or technical questions",
 		"Their name and role",
-		"Agent email: existing address, create with AgentMail, or skip",
+		"AgentEmail for service accounts, or skip",
 		"`/onboard` source: ask a short optional question set in your own words",
 		"On follow-up, don't repeat",
 	} {
@@ -693,11 +694,11 @@ func TestBuildNextActionMessagesUsesAvailableAgentMailKeyStatus(t *testing.T) {
 			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
 			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", Body: domain.OnboardingSlashCommand},
 		},
+		Runtime: agent.RuntimeContext{AgentMailAPIKeyAvailable: true},
 		Onboarding: agent.OnboardingContext{
-			Active:                   true,
-			Source:                   "command",
-			Status:                   string(domain.OnboardingStatusPrompted),
-			AgentMailAPIKeyAvailable: true,
+			Active: true,
+			Source: "command",
+			Status: string(domain.OnboardingStatusPrompted),
 		},
 	})
 	if err != nil {
@@ -706,14 +707,15 @@ func TestBuildNextActionMessagesUsesAvailableAgentMailKeyStatus(t *testing.T) {
 	systemPrompt := messageText(messages[0])
 	for _, expected := range []string{
 		"AgentMail API key status: available",
-		"load skill `agentmail` and create the inbox",
+		"also offer to use AgentEmail instead",
+		"Use action `setup_create`",
 	} {
 		if !strings.Contains(systemPrompt, expected) {
 			t.Fatalf("system prompt missing available AgentMail text %q:\n%s", expected, systemPrompt)
 		}
 	}
 	for _, blocked := range []string{
-		"do not load or run `agentmail`",
+		"load skill `agentmail`",
 		"check `AGENTMAIL_API_KEY`",
 	} {
 		if strings.Contains(systemPrompt, blocked) {
@@ -883,6 +885,40 @@ func TestBuildNextActionMessagesHidesOnboardingInstructionsWhenInactive(t *testi
 	}
 	if strings.Contains(messageText(messages[0]), "# Onboarding") {
 		t.Fatalf("system prompt should not contain onboarding instructions:\n%s", messageText(messages[0]))
+	}
+}
+
+func TestBuildNextActionMessagesIncludesAgentEmailAuthGuidanceOutsideOnboarding(t *testing.T) {
+	t.Parallel()
+
+	messages, err := buildNextActionMessages(agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1", Name: "OpenCTO"},
+			Event:   domain.Event{ID: "event-1", ProjectID: "project-1", Body: "deploy my app to Cloudflare"},
+		},
+		Runtime: agent.RuntimeContext{AgentMailAPIKeyAvailable: true},
+	})
+	if err != nil {
+		t.Fatalf("build next action messages: %v", err)
+	}
+	systemPrompt := messageText(messages[0])
+	for _, expected := range []string{
+		"# AgentEmail",
+		"AgentMail API key status: available",
+		"ask the user to authenticate with their own account",
+		"also offer to use AgentEmail instead",
+		"Only call `AgentEmail` after the user chooses the AgentEmail option",
+		"wait_for_message",
+		"read_message",
+	} {
+		if !strings.Contains(systemPrompt, expected) {
+			t.Fatalf("system prompt missing AgentEmail auth guidance %q:\n%s", expected, systemPrompt)
+		}
+	}
+	if strings.Contains(systemPrompt, "user can provide an existing email") ||
+		strings.Contains(systemPrompt, "existing address") {
+		t.Fatalf("system prompt should not frame AgentEmail as user-provided email:\n%s", systemPrompt)
 	}
 }
 
@@ -1764,6 +1800,47 @@ func TestNextActionSubAgentUsesRestrictedToolsAndPrompt(t *testing.T) {
 	}
 }
 
+func TestNextActionSubAgentIncludesAgentEmailPolicy(t *testing.T) {
+	t.Parallel()
+
+	model := &recordingToolModel{
+		response: &llms.ContentResponse{
+			Choices: []*llms.ContentChoice{{Content: "done"}},
+		},
+	}
+
+	engine := &OpenAIEngine{reasoningModel: model}
+	_, err := engine.NextAction(context.Background(), agent.NextActionInput{
+		ProjectID: "project-1",
+		Context: agent.Context{
+			Project: domain.Project{ID: "project-1"},
+			Event:   domain.Event{Body: "# Goal\nAuthenticate\n\n# Task Context And Instructions\nHandle provider auth."},
+		},
+		Runtime:       agent.RuntimeContext{AgentMailAPIKeyAvailable: true},
+		SubAgent:      &agent.SubAgentContext{Goal: "Authenticate provider"},
+		RestrictTools: true,
+		ToolAllowlist: []domain.ToolType{domain.ToolTypeAgentEmail},
+	})
+	if err != nil {
+		t.Fatalf("NextAction: %v", err)
+	}
+	if len(model.options.Tools) != 1 || model.options.Tools[0].Function.Name != agentemailtool.AgentEmailToolName {
+		t.Fatalf("expected only AgentEmail tool, got %#v", model.options.Tools)
+	}
+	systemPrompt := messageText(model.messages[0])
+	for _, expected := range []string{
+		"# AgentEmail",
+		"AgentMail API key status: available",
+		"ask the user to authenticate with their own account",
+		"Only call `AgentEmail` after the user chooses the AgentEmail option",
+		"Never store API keys, passwords, OTPs, cookies, or recovery secrets",
+	} {
+		if !strings.Contains(systemPrompt, expected) {
+			t.Fatalf("subagent prompt missing AgentEmail policy %q:\n%s", expected, systemPrompt)
+		}
+	}
+}
+
 func TestNextActionCombinesMultipleExecToolCalls(t *testing.T) {
 	t.Parallel()
 
@@ -2171,6 +2248,57 @@ func TestToolChoiceCapturesSkillInput(t *testing.T) {
 	}
 	if choice.Metadata["model_tool"] != skilltool.SkillToolName {
 		t.Fatalf("expected model tool metadata, got %#v", choice.Metadata)
+	}
+}
+
+func TestToolChoiceCapturesAgentEmailInput(t *testing.T) {
+	t.Parallel()
+
+	choice, err := toolChoiceFromToolCall(llms.ToolCall{
+		ID:   "toolu_agentemail",
+		Type: "function",
+		FunctionCall: &llms.FunctionCall{
+			Name:      agentemailtool.AgentEmailToolName,
+			Arguments: `{"action":"wait_for_message","inbox_id":"inb_123","display_name":"","username":"","domain":"","query":"cloudflare verification","message_id":"","from":"","to":[],"cc":[],"bcc":[],"reply_to":[],"subject":"","text":"","html":"","limit":0,"timeout_seconds":120,"poll_interval_seconds":5}`,
+		},
+	}, agent.ToolSelectionInput{
+		Runtime: agent.RuntimeContext{WorkspaceRoot: "/workspace"},
+	})
+	if err != nil {
+		t.Fatalf("tool choice: %v", err)
+	}
+	if choice.Type != domain.ToolTypeAgentEmail {
+		t.Fatalf("expected AgentEmail tool type, got %q", choice.Type)
+	}
+	if choice.Idempotency != domain.ToolIdempotencyReadOnly || choice.TimeoutMs != 125000 {
+		t.Fatalf("unexpected AgentEmail execution metadata: %#v", choice)
+	}
+	if choice.Metadata["agent_email_action"] != "wait_for_message" {
+		t.Fatalf("expected AgentEmail action metadata, got %#v", choice.Metadata)
+	}
+	if !strings.Contains(choice.Intent, "cloudflare verification") {
+		t.Fatalf("expected AgentEmail summary to include query, got %q", choice.Intent)
+	}
+}
+
+func TestToolChoiceCapsAgentEmailWaitTimeoutBelowActivityTimeout(t *testing.T) {
+	t.Parallel()
+
+	choice, err := toolChoiceFromToolCall(llms.ToolCall{
+		ID:   "toolu_agentemail",
+		Type: "function",
+		FunctionCall: &llms.FunctionCall{
+			Name:      agentemailtool.AgentEmailToolName,
+			Arguments: `{"action":"wait_for_message","inbox_id":"inb_123","display_name":"","username":"","domain":"","query":"cloudflare verification","message_id":"","from":"","to":[],"cc":[],"bcc":[],"reply_to":[],"subject":"","text":"","html":"","limit":0,"timeout_seconds":600,"poll_interval_seconds":5}`,
+		},
+	}, agent.ToolSelectionInput{
+		Runtime: agent.RuntimeContext{WorkspaceRoot: "/workspace"},
+	})
+	if err != nil {
+		t.Fatalf("tool choice: %v", err)
+	}
+	if choice.TimeoutMs != 575000 {
+		t.Fatalf("expected AgentEmail wait timeout to stay below 10 minute activity timeout, got %#v", choice)
 	}
 }
 

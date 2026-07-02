@@ -14,8 +14,8 @@ func TestDefinitionsIncludeDedicatedTools(t *testing.T) {
 	t.Parallel()
 
 	definitions := Definitions()
-	if len(definitions) != 17 {
-		t.Fatalf("expected seventeen tool definitions, got %d", len(definitions))
+	if len(definitions) != 18 {
+		t.Fatalf("expected eighteen tool definitions, got %d", len(definitions))
 	}
 
 	definition := definitions[0]
@@ -41,6 +41,7 @@ func TestDefinitionsIncludeDedicatedTools(t *testing.T) {
 	}
 	for _, toolType := range []domain.ToolType{
 		domain.ToolTypeAgent,
+		domain.ToolTypeAgentEmail,
 		domain.ToolTypeExec,
 		domain.ToolTypeRead,
 		domain.ToolTypeEdit,
@@ -71,8 +72,8 @@ func TestLLMDefinitionsUseCommandNameAndDescription(t *testing.T) {
 	t.Parallel()
 
 	definitions := LLMDefinitions()
-	if len(definitions) != 17 || definitions[0].Function == nil {
-		t.Fatalf("expected seventeen function definitions, got %#v", definitions)
+	if len(definitions) != 18 || definitions[0].Function == nil {
+		t.Fatalf("expected eighteen function definitions, got %#v", definitions)
 	}
 
 	function := definitions[0].Function
@@ -146,6 +147,36 @@ func TestModelToolTypesCanExcludeAgent(t *testing.T) {
 	}
 }
 
+func TestAgentAllowedToolsSchemaMatchesChildModelTools(t *testing.T) {
+	t.Parallel()
+
+	definition, ok := DefinitionByType(domain.ToolTypeAgent)
+	if !ok {
+		t.Fatalf("missing Agent tool definition")
+	}
+	var schema struct {
+		Properties map[string]struct {
+			Items struct {
+				Enum []domain.ToolType `json:"enum"`
+			} `json:"items"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(definition.Schema, &schema); err != nil {
+		t.Fatalf("decode Agent schema: %v", err)
+	}
+	allowedTools := schema.Properties["allowed_tools"].Items.Enum
+	sort.Slice(allowedTools, func(i, j int) bool {
+		return allowedTools[i] < allowedTools[j]
+	})
+	modelTools := ModelToolTypes(false)
+	sort.Slice(modelTools, func(i, j int) bool {
+		return modelTools[i] < modelTools[j]
+	})
+	if strings.Join(toolTypeStrings(allowedTools), ",") != strings.Join(toolTypeStrings(modelTools), ",") {
+		t.Fatalf("Agent allowed_tools schema enum should match child model tools: schema=%v model=%v", allowedTools, modelTools)
+	}
+}
+
 func TestToolResultProcessorsEmptyByDefault(t *testing.T) {
 	t.Parallel()
 
@@ -153,6 +184,14 @@ func TestToolResultProcessorsEmptyByDefault(t *testing.T) {
 	if len(processors) != 0 {
 		t.Fatalf("expected no tool result processors, got %d", len(processors))
 	}
+}
+
+func toolTypeStrings(values []domain.ToolType) []string {
+	strings := make([]string, 0, len(values))
+	for _, value := range values {
+		strings = append(strings, string(value))
+	}
+	return strings
 }
 
 func TestDefinitionSchemasDoNotUseNullDefaults(t *testing.T) {

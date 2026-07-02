@@ -22,6 +22,7 @@
         "type": "string",
         "enum": [
           "Exec",
+          "AgentEmail",
           "Read",
           "Edit",
           "Write",

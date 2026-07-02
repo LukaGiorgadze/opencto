@@ -12,6 +12,7 @@ import (
 	"github.com/opencto/opencto/internal/agent"
 	"github.com/opencto/opencto/internal/domain"
 	toolregistry "github.com/opencto/opencto/internal/tools"
+	agentemailtool "github.com/opencto/opencto/internal/tools/agentemail"
 	agenttool "github.com/opencto/opencto/internal/tools/agenttool"
 	edittool "github.com/opencto/opencto/internal/tools/edit"
 	globtool "github.com/opencto/opencto/internal/tools/glob"
@@ -71,6 +72,12 @@ func toolChoiceFromToolCall(call llms.ToolCall, input agent.ToolSelectionInput) 
 			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
 		}
 		return agentToolChoiceFromInput(definition, call, raw, input, args), nil
+	case domain.ToolTypeAgentEmail:
+		var args agentemailtool.Request
+		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
+			return agent.ToolChoice{}, fmt.Errorf("decode %s tool arguments: %w", definition.Name, err)
+		}
+		return agentEmailToolChoiceFromInput(definition, call, raw, input, args), nil
 	case domain.ToolTypeExec:
 		var args execToolInput
 		if err := decodeToolArguments(definition.Name, raw, &args); err != nil {
@@ -222,6 +229,41 @@ func memoryToolChoiceFromInput(definition toolregistry.Definition, call llms.Too
 		choice.Metadata["onboarding_source"] = strings.TrimSpace(input.Onboarding.Source)
 	}
 	return choice
+}
+
+func agentEmailToolChoiceFromInput(definition toolregistry.Definition, call llms.ToolCall, raw json.RawMessage, input agent.ToolSelectionInput, args agentemailtool.Request) agent.ToolChoice {
+	summary := agentemailtool.PromptSummary(args)
+	choice := structuredToolChoiceFromInput(definition, call, raw, input, summary)
+	choice.RunMode = domain.ToolRunModeWaitForExit
+	choice.Idempotency = agentEmailToolIdempotency(args.Action)
+	choice.ProcessScope = domain.ProcessScopeStopOnFinish
+	choice.TimeoutMs = agentEmailToolTimeoutMs(args)
+	if choice.Metadata == nil {
+		choice.Metadata = map[string]string{}
+	}
+	choice.Metadata["agent_email_action"] = strings.TrimSpace(args.Action)
+	return choice
+}
+
+func agentEmailToolIdempotency(action string) domain.ToolIdempotency {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case agentemailtool.ActionListMessages, agentemailtool.ActionSearchMessages, agentemailtool.ActionReadMessage, agentemailtool.ActionWaitForMessage:
+		return domain.ToolIdempotencyReadOnly
+	case agentemailtool.ActionSendMessage:
+		return domain.ToolIdempotencyNonIdempotent
+	case agentemailtool.ActionSetupCreate:
+		return domain.ToolIdempotencyIdempotent
+	default:
+		return domain.ToolIdempotencyUnknown
+	}
+}
+
+func agentEmailToolTimeoutMs(args agentemailtool.Request) int {
+	if strings.EqualFold(strings.TrimSpace(args.Action), agentemailtool.ActionWaitForMessage) {
+		waitSeconds := agentemailtool.NormalizeWaitSeconds(args.TimeoutSeconds)
+		return clampToolTimeoutMs((waitSeconds + 5) * 1000)
+	}
+	return clampToolTimeoutMs(0)
 }
 
 func forgetMemorySummary(args memorytool.ProposeForgetRequest) string {
