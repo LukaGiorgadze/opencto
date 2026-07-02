@@ -209,10 +209,10 @@ func renderNextActionPrompt(input agent.NextActionInput) (string, error) {
 	if input.SubAgent != nil {
 		data.SubAgentGoal = strings.TrimSpace(input.SubAgent.Goal)
 		data.AllowedTools = toolTypeNames(input.ToolAllowlist)
-		return prompts.Render("agent.tmpl", data)
+		return prompts.RenderWithIncludes("agent.tmpl", data, "agent_email.tmpl")
 	}
 
-	return prompts.Render("next_action.tmpl", data)
+	return prompts.RenderWithIncludes("next_action.tmpl", data, "agent_email.tmpl")
 }
 
 func subAgentRunSummaryMessage(context *agent.SubAgentContext) string {

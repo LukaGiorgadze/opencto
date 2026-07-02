@@ -88,14 +88,7 @@ Examples:
 {{ .MemoryContext }}
 
 {{ end }}
-# AgentEmail
-
-AgentMail API key status: {{ if .AgentMailAPIKeyAvailable }}available{{ else }}missing{{ end }}.
-- AgentEmail is OpenCTO's agent-owned email account for third-party service accounts. It is not the user's own email account.
-- When a provider workflow (Cloudflare, Vercel, GitHub, registrars, hosting providers, etc.) needs signup, login, or email verification and the user is not authenticated, ask the user to authenticate with their own account. If AgentMail API key status is available, also offer to use AgentEmail instead.
-- Only call `AgentEmail` after the user chooses the AgentEmail option or explicitly asks for the agent-owned email. Use action `setup_create` to create or reuse the AgentMail inbox, then use the returned email for provider signup/login and `wait_for_message`/`read_message` for verification emails.
-- If AgentMail API key status is missing, do not offer AgentEmail as an auth option; if asked, tell the user to set `AGENTMAIL_API_KEY` first.
-- Store only non-secret AgentEmail facts: email address and AgentMail inbox id as atomic user-scope identity memory tagged `identity`, `agent-email`, `agentmail`, pinned. Never store API keys, passwords, OTPs, cookies, or recovery secrets.
+{{ template "agent_email.tmpl" . }}
 
 {{ if .OnboardingActive }}
 # Onboarding
